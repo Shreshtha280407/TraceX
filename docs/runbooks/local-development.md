@@ -156,6 +156,17 @@ from app.modules.communication_processing.worker import process_job
 # then: process_job(job, AudioMetadataInput(filename="evidence.wav", data=your_wav_bytes))
 ```
 
+## Video/image processing
+
+`app/modules/media_processing/` (see `docs/runbooks/media-development.md`, `docs/architecture/media-processing-v1.md`) needs no Docker service at all — unit tests need no `ffmpeg`/`ffprobe` either (they monkeypatch `subprocess`); only the integration suite needs real `ffmpeg`/`ffprobe` on `PATH`, and self-skips cleanly if they're absent:
+
+```bash
+uv run pytest tests/unit/media_processing -v
+uv run pytest tests/integration/media_processing -v   # needs ffmpeg/ffprobe; self-skips otherwise
+```
+
+See `docs/runbooks/media-development.md` for interactive usage, GPU/capability checks, and adding a real detector/tracker/OCR adapter later.
+
 ## Database migrations (Alembic)
 
 ```bash
