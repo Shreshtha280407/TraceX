@@ -2,6 +2,105 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-10 — Sarthak — Audio, Social/Chat, Multilingual Alias, and Communication Foundation build
+
+Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `sarthak` was based on `main` after every build below was merged (`075e52b`, `a903d3a`, `85c55c4`, `67cd31c`, `dac3362`, `e2f8827`) — confirmed via `git log --oneline -8` and `git status --short` before starting (clean tree, correct branch). No dependency changes: `app/modules/communication_processing/` uses only the Python standard library (`wave`, `json`, `unicodedata`, `re`, `dataclasses`, `enum`, `itertools`, `datetime`) plus this repo's own `app.core.ids`/`app.contracts`, per the task's "prefer stdlib, add a dependency only if unavoidable" instruction — genuinely unavoidable here, so `pyproject.toml`/`uv.lock` are untouched (confirmed below).
+
+```bash
+$ uv sync --all-groups
+Resolved 62 packages in 1ms
+Checked 61 packages in 14ms
+```
+Result: **pass**. Zero new/changed packages.
+
+```bash
+$ uv run ruff format --check .
+189 files already formatted
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff check .
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 85 source files
+```
+Result: **pass**. (61 files before this build, per Aditya's entry below → 85 after adding the 24 files under `app/modules/communication_processing/`.)
+
+```bash
+$ uv run pytest tests/unit/communication_processing -q
+215 passed in 0.31s
+```
+Result: **pass**.
+
+```bash
+$ uv run pytest tests/integration/communication_processing -q
+1 passed in 0.03s
+```
+Result: **pass** — the full seven-processor pipeline test, which needs no external service and therefore never self-skips.
+
+```bash
+$ uv run pytest -q
+664 passed, 19 skipped in 16.41s
+```
+Result: **pass**, no regressions. 664 vs. the prior baseline of 448 (see Aditya's entry below) is exactly the 216 new tests in `tests/unit/communication_processing/` (215) + `tests/integration/communication_processing/` (1); skip count unchanged (19) since this build touches no database/queue/storage code path and no infra was started for it.
+
+```bash
+$ docker compose config
+compose config valid
+```
+Result: **pass** (exit 0; one warning about `AUTH_JWT_SECRET` defaulting to blank, expected since no `.env` exists in this session — this task never needed Docker services running, per its own instruction not to start them unless required, and this module requires none).
+
+```bash
+$ git status --short
+ M docs/progress/mvp-progress.md
+ M docs/qa/known-limitations.md
+ M docs/qa/test-data.md
+ M docs/qa/test-matrix.md
+ M docs/runbooks/local-development.md
+?? app/modules/communication_processing/
+?? docs/architecture/audio-social-and-communication-processing-v1.md
+?? docs/architecture/multilingual-alias-candidates-v1.md
+?? docs/decisions/ADR-005-provenance-first-communication-processing.md
+?? tests/fixtures/communication_processing/
+?? tests/integration/communication_processing/
+?? tests/unit/communication_processing/
+```
+Result: 5 docs additively modified, 6 new paths — nothing staged, nothing committed, no branch changed, per explicit instruction.
+
+```bash
+$ git diff --check
+(no output)
+$ git diff --stat
+ docs/progress/mvp-progress.md      | 29 +++++++++++++++++++++++++----
+ docs/qa/known-limitations.md       |  9 +++++++++
+ docs/qa/test-data.md               |  6 ++++++
+ docs/qa/test-matrix.md             | 13 +++++++++++++
+ docs/runbooks/local-development.md | 18 ++++++++++++++++++
+ 5 files changed, 71 insertions(+), 4 deletions(-)
+$ git diff --name-only
+docs/progress/mvp-progress.md
+docs/qa/known-limitations.md
+docs/qa/test-data.md
+docs/qa/test-matrix.md
+docs/runbooks/local-development.md
+```
+Result: **pass** — no whitespace errors; the diff touches only the five QA/progress/runbook docs this task was scoped to update additively.
+
+```bash
+$ git status --short -- app/contracts app/core app/main.py app/api app/dependencies app/modules/graph app/modules/structured_processing app/modules/access_control app/modules/media_processing migrations compose.yaml Dockerfile pyproject.toml uv.lock .env.example
+(no output)
+```
+Result: **pass** — zero diff against every frozen-contract and forbidden path, and against Gaurav's `app/modules/media_processing/` (which doesn't exist in this branch yet — confirmed not created by this task either).
+
+### One real design decision revised during this build (before this record)
+
+- **Worker input-payload shape.** The task brief's `process_job(job: WorkerJobV1, input_payload: ...) -> WorkerResultV1` signature (distinct from `structured_processing.worker.process_job(job, evidence, resolver)`) was interpreted as: `input_payload` is one of four already-typed, role-tagged dataclasses (`AudioMetadataInput`/`TranscriptImportInput`/`DiarizationImportInput`/`SocialExportInput`) rather than raw bytes needing a `SourceResolver`-style fetch — matching the task's "three safe input roles" framing for audio and the fact that transcript/diarization *import* inherently starts from already-produced structured data, not a file to resolve. Documented as Decision non-obvious enough to flag: see `docs/architecture/audio-social-and-communication-processing-v1.md`'s "Supported input boundaries" section.
+
 ## 2026-09-10 — Aditya — Integration Hardening 1: Central Middleware and Exception Handling
 
 Environment: same sandbox as the build below, Python 3.12.13 (via `uv`), Docker 29.7.2, worked from the `gaurav` branch at the user's explicit direction (git operations — commit/push/branch changes — intentionally not performed; see git status confirmation below). Task: reproduce the reported "unhandled exception escapes the safe error envelope" symptom, determine the true root cause rather than trusting the originally-assumed diagnosis, and implement one central fix.
