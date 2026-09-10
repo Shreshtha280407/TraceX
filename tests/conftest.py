@@ -33,6 +33,14 @@ _TEST_ENV_DEFAULTS = {
     "MINIO_SECURE": "false",
     "MINIO_BUCKET": "tracex-evidence-test",
     "CONTRACT_VERSION": "v1",
+    "AUTH_JWT_SECRET": "test-only-jwt-secret-32-characters-min",
+    "AUTH_JWT_ALGORITHM": "HS256",
+    "AUTH_JWT_ISSUER": "tracex-api-test",
+    "AUTH_JWT_AUDIENCE": "tracex-clients-test",
+    "AUTH_ACCESS_TOKEN_TTL_SECONDS": "900",
+    "AUTH_REFRESH_TOKEN_TTL_SECONDS": "1209600",
+    "AUTH_LOGIN_RATE_LIMIT": "5",
+    "AUTH_REFRESH_RATE_LIMIT": "20",
 }
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():

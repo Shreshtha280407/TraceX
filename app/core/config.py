@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# HS256 wants a key with at least 256 bits of entropy; 32 ASCII characters is
+# the simplest way to guarantee that floor without parsing key encoding.
+_MIN_JWT_SECRET_LENGTH = 32
 
 
 class AppEnv(StrEnum):
@@ -65,6 +69,36 @@ class Settings(BaseSettings):
 
     # --- Contracts ---
     contract_version: str = Field(default="v1")
+
+    # --- Authentication / access control ---
+    # No default: a misconfigured deployment must fail loudly at startup,
+    # same policy as postgres_dsn/neo4j_uri/etc. above. `.env.example` ships
+    # a syntactically-valid (>= 32 char) development-only placeholder.
+    auth_jwt_secret: SecretStr
+    auth_jwt_algorithm: str = Field(default="HS256")
+    auth_jwt_issuer: str = Field(default="tracex-api")
+    auth_jwt_audience: str = Field(default="tracex-clients")
+    # 15 minutes: short enough that a compromised/leaked access token or a
+    # revoked session stops working promptly without needing per-request
+    # session validation on every future case/evidence endpoint.
+    auth_access_token_ttl_seconds: int = Field(default=900, ge=60)
+    # 14 days: long enough to avoid forcing a working analyst to re-login
+    # daily; refresh rotation + reuse detection (see `sessions.py`) bounds
+    # the blast radius of a leaked refresh token more than shortening this
+    # window further would.
+    auth_refresh_token_ttl_seconds: int = Field(default=1_209_600, ge=3600)
+    # Attempts allowed per 60-second fixed window (see `rate_limit.py`).
+    auth_login_rate_limit: int = Field(default=5, ge=1)
+    auth_refresh_rate_limit: int = Field(default=20, ge=1)
+
+    @field_validator("auth_jwt_secret")
+    @classmethod
+    def _validate_jwt_secret_strength(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value()) < _MIN_JWT_SECRET_LENGTH:
+            raise ValueError(
+                f"auth_jwt_secret must be at least {_MIN_JWT_SECRET_LENGTH} characters"
+            )
+        return value
 
 
 def get_settings() -> Settings:
