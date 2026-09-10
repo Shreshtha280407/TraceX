@@ -2,6 +2,102 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-10 — Gaurav — Video and Image Processing Foundation build
+
+Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2, `ffmpeg`/`ffprobe` n9.0 and `nvidia-smi` present but reporting no driver/GPU (`NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver` — exercised directly as the expected "GPU absent" path, not worked around). Started on the `gaurav` branch at `e2f8827`; partway through the session `git log`/`git status` showed the branch had since picked up `53d1d4e Completed sarthak/phase-1 (#7)` (a concurrent, separately-authored build) via a manual git operation outside this task — confirmed via `git status --short` that this caused zero conflicts with this task's own files, and this task's own doc edits (`docs/qa/test-matrix.md`, `docs/qa/known-limitations.md`, `docs/qa/test-data.md`, `docs/runbooks/local-development.md`) were re-based on the current on-disk content before editing, additive on top of Sarthak's own additions to the same files. Additive edits only to shared files: `pyproject.toml`/`uv.lock` (three new dependencies only), the four docs above, plus this file and `docs/progress/mvp-progress.md`. No file under `app/modules/graph/`, `app/modules/structured_processing/`, `app/modules/access_control/`, `app/modules/communication_processing/`, or `app/contracts/` was touched (confirmed by `git status --short -- <owned paths>` below).
+
+```bash
+$ uv add opencv-python-headless Pillow numpy
+Resolved 65 packages in 1.04s
+Installed 4 packages: numpy, opencv-python-headless, pillow, tracex (rebuilt)
+```
+Result: **pass**. The only three additions permitted for this phase; `pyproject.toml`/`uv.lock` updated accordingly. All three ship `py.typed`/native type stubs (`cv2/py.typed`, `PIL/py.typed`, `numpy`'s own inline types), so no new `[[tool.mypy.overrides]]` entry was needed.
+
+```bash
+$ uv sync --all-groups
+Resolved 65 packages in 5ms
+Checked 64 packages in 0.88ms
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff format --check .
+230 files already formatted
+```
+Result: **pass**. (One pass through `ruff format .` without `--check` was needed first — this ruff version also formats fenced ` ```python ` code blocks inside `.md` files, and `docs/runbooks/media-development.md` needed that whitespace-only pass.)
+
+```bash
+$ uv run ruff check .
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 106 source files
+```
+Result: **pass**. (85 files before this build, per Sarthak's entry below → 106 after adding the 21 files under `app/modules/media_processing/`.)
+
+```bash
+$ uv run pytest tests/unit/media_processing -q
+194 passed in 0.49s
+```
+Result: **pass**. Every unit test is infrastructure-independent by design — `test_probe.py`/`test_frames.py` monkeypatch `subprocess`/`shutil.which` directly rather than depending on a real `ffmpeg`/`ffprobe` binary, and `test_media_worker.py`'s video-path tests monkeypatch `probe_video`/`extract_frames` on the `worker` module itself for the same reason (see `docs/qa/test-data.md`). Includes the static-AST module-isolation checks (`test_media_safety.py`) confirming no infra client, no `app.modules.graph`/`structured_processing`/`access_control` import, and no `EntityV1`/`EventV1` construction anywhere in the module.
+
+```bash
+$ uv run pytest -q
+864 passed, 19 skipped in 18.65s
+```
+Result: **pass**, no regressions. 864 vs. the prior baseline of 664 (see Sarthak's entry below) is exactly the 200 new tests in `tests/unit/media_processing/` (194) + `tests/integration/media_processing/` (6); skip count unchanged (19) since this build touches no database/queue/storage code path and no infra was started for it.
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0). No `compose.yaml` changes made (no GPU Docker service was added, per the phase's explicit non-goal); ran only to confirm the file still parses.
+
+```bash
+$ uv run pytest tests/integration/media_processing -q
+6 passed in 1.62s
+```
+Result: **pass — run live**, not self-skipped: `ffmpeg`/`ffprobe` were present in this sandbox, so all 6 tests exercised the real binaries against a tiny synthetic (`ffmpeg lavfi testsrc`-generated) MP4 — probe, deterministic sample-frame extraction (byte-for-byte identical pixels across two independent extraction runs), the fake detector+tracker analysis pipeline end to end, exact frame/time/bbox provenance, repeat-processing observation-ID stability, and confirmed temp-file cleanup (`tempfile.gettempdir()` directory listing unchanged before/after). Had `ffmpeg`/`ffprobe` been absent, `pytestmark = pytest.mark.skipif(not ffmpeg_available(), ...)` would have reported all 6 as skipped rather than fabricating a pass.
+
+### GPU/CPU capability verification
+
+```bash
+$ nvidia-smi
+NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.
+```
+This sandbox has an `nvidia-smi` binary present but no functioning driver/GPU behind it — the exact "GPU absent" case `capability.detect_capability()` must handle safely. Verified directly (not just via a unit test) that calling `detect_capability()` in this environment returns `cpu_only=True`, `gpu_visible=False`, `nvidia_smi_available=True`, `gpu_name=None`, `gpu_memory_mb=None`, `ffmpeg_available=True`, `ffprobe_available=True` — no exception, no hang, no fabricated GPU report.
+
+```bash
+$ git status --short -- app/modules/graph app/modules/structured_processing app/modules/access_control app/modules/communication_processing app/contracts migrations compose.yaml Dockerfile .env.example docs/architecture/graph-taxonomy-v1.md docs/architecture/access-control-v1.md docs/architecture/document-and-structured-processing-v1.md docs/decisions/ADR-001-graph-projection-and-case-isolation.md docs/decisions/ADR-002-deterministic-source-processing-and-provenance.md docs/decisions/ADR-003-authentication-and-case-scoped-access-control.md
+(no output)
+```
+Result: **pass** — zero diff against every other contributor's owned module/docs and every frozen-contract/forbidden path.
+
+```bash
+$ git status --short
+ M docs/qa/known-limitations.md
+ M docs/qa/test-data.md
+ M docs/qa/test-matrix.md
+ M docs/runbooks/local-development.md
+ M pyproject.toml
+ M uv.lock
+?? app/modules/media_processing/
+?? docs/architecture/media-observation-taxonomy-v1.md
+?? docs/architecture/media-processing-v1.md
+?? docs/decisions/ADR-004-media-provenance-and-anonymous-tracking.md
+?? docs/runbooks/media-development.md
+?? tests/fixtures/media_processing/
+?? tests/integration/media_processing/
+?? tests/unit/media_processing/
+```
+Result: nothing staged, nothing committed, no branch changed, per explicit instruction — Nipun will manually stage/commit/push/PR.
+
+### Known limitations and intentionally deferred work
+
+No real object-detection/tracking/OCR model, no face recognition/re-identification/biometric identification, no cross-camera identity correlation, no Neo4j graph writes, no actual file uploads/object-storage writes/hashing/Merkle roots/signatures, no video frontend, no ML training/evaluation, and no GPU Docker service were introduced — all explicit non-goals for this phase, confirmed by the zero-diff check above and the static-AST safety tests. Full list: `docs/qa/known-limitations.md`.
+
 ## 2026-09-10 — Sarthak — Audio, Social/Chat, Multilingual Alias, and Communication Foundation build
 
 Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `sarthak` was based on `main` after every build below was merged (`075e52b`, `a903d3a`, `85c55c4`, `67cd31c`, `dac3362`, `e2f8827`) — confirmed via `git log --oneline -8` and `git status --short` before starting (clean tree, correct branch). No dependency changes: `app/modules/communication_processing/` uses only the Python standard library (`wave`, `json`, `unicodedata`, `re`, `dataclasses`, `enum`, `itertools`, `datetime`) plus this repo's own `app.core.ids`/`app.contracts`, per the task's "prefer stdlib, add a dependency only if unavoidable" instruction — genuinely unavoidable here, so `pyproject.toml`/`uv.lock` are untouched (confirmed below).
