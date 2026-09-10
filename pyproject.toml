@@ -18,6 +18,9 @@ dependencies = [
     "minio>=7.2.9",
     "structlog>=24.4.0",
     "orjson>=3.10.7",
+    "pypdf>=6.18.0",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
@@ -72,7 +75,7 @@ no_implicit_reexport = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["neo4j.*", "minio.*", "asyncpg.*"]
+module = ["neo4j.*", "minio.*", "asyncpg.*", "openpyxl.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

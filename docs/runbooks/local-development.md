@@ -83,6 +83,24 @@ uv run pytest tests/integration/graph -v
 
 Like `tests/integration/test_readiness_live.py`, this suite self-skips (never fabricates a pass) if there's no `.env` at the repo root, or if Neo4j specifically isn't reachable through it.
 
+## Document/structured-data processing
+
+`app/modules/structured_processing/` (see `docs/architecture/document-and-structured-processing-v1.md`, `docs/architecture/parser-profiles-v1.md`) needs no live infrastructure at all — every test is a deterministic unit test against in-memory or local-file bytes:
+
+```bash
+uv run pytest tests/unit/structured_processing -v
+uv run pytest tests/integration/structured_processing -v   # local-file-resolver pipeline test, no external service
+```
+
+To try it interactively:
+
+```python
+from app.modules.structured_processing.models import StaticBytesResolver
+from app.modules.structured_processing.worker import process_job
+# construct a WorkerJobV1 + EvidenceRecordV1 (see tests/fixtures/structured_processing/factory.py),
+# then: process_job(job, evidence, StaticBytesResolver(payload=your_bytes))
+```
+
 ## Database migrations (Alembic)
 
 Phase 1 ships only the baseline revision (no domain tables). To add a new migration once domain models exist in a later phase:
