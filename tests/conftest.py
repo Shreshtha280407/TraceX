@@ -51,6 +51,20 @@ from app.main import app  # noqa: E402  (must follow env setup above)
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app)
+    # `raise_app_exceptions=False` (httpx's default is `True`) makes this
+    # client behave like a real HTTP client / real ASGI server (uvicorn):
+    # it returns whatever response the app actually sent, even for a
+    # request that raised a genuinely unhandled exception. httpx's default
+    # instead re-raises that exception to the *caller* of `client.get(...)`
+    # -- which is Starlette's own documented behavior for such exceptions
+    # (`ServerErrorMiddleware` sends the safe response, then deliberately
+    # re-raises purely so a real server or test harness can additionally
+    # observe/log it -- see `app/core/errors.py`'s module docstring). With
+    # the default, a test exercising that path would see the `await
+    # client.get(...)` call itself raise instead of returning a `Response`,
+    # which looks like "the safe envelope was never sent" when it actually
+    # was -- confirmed by comparing both transport settings against the
+    # same route in `tests/unit/test_error_handling.py`.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac

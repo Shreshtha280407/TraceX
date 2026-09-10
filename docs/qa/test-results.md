@@ -2,6 +2,117 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-10 — Aditya — Integration Hardening 1: Central Middleware and Exception Handling
+
+Environment: same sandbox as the build below, Python 3.12.13 (via `uv`), Docker 29.7.2, worked from the `gaurav` branch at the user's explicit direction (git operations — commit/push/branch changes — intentionally not performed; see git status confirmation below). Task: reproduce the reported "unhandled exception escapes the safe error envelope" symptom, determine the true root cause rather than trusting the originally-assumed diagnosis, and implement one central fix.
+
+**Root cause investigation.** Reproduced the exact symptom with a synthetic app carrying *zero* custom middleware — it still occurred, which already falsified the assumed `BaseHTTPMiddleware` diagnosis. Read Starlette's `ServerErrorMiddleware` source directly: it sends a safe response via `send()`, then unconditionally re-raises the original exception afterward (an intentional, documented upstream behavior, so a server or test harness can also observe/log the error). Read httpx's `ASGITransport.__call__`: with its default `raise_app_exceptions=True`, that re-raise propagates to the test caller instead of the transport returning the response the app already sent. Confirmed empirically by running a real `uv run uvicorn app.main:app` process and hitting an endpoint designed to raise unexpectedly over real HTTP with `curl` — it returned the correct safe `500` envelope the whole time, proving real client/server traffic was never actually affected; only the test transport's default masked this.
+
+A second, previously-unknown, real gap was found during the same investigation: Starlette dispatches the bare-`Exception` handler from its outermost `ServerErrorMiddleware` directly, bypassing every user-added middleware (including both `RequestIDMiddleware` and `SecurityHeadersMiddleware`) for that one response path — so an unhandled exception's `500` response was missing the correlation-ID header and security headers, regardless of `BaseHTTPMiddleware` vs. pure ASGI.
+
+**Central fix.** `app/core/errors.py`'s three exception handlers (`http_exception_handler`, `request_validation_exception_handler`, `unhandled_exception_handler`) now build their own safe headers directly via a shared `_safe_error_headers()` helper (correlation ID + `Cache-Control: no-store` + baseline security headers), instead of relying on middleware to add them after the fact. Correlation ID survives exception unwinding via `request.state.request_id` (set on the ASGI `scope["state"]`, which persists through `ServerErrorMiddleware`'s re-raise/re-catch, unlike a `contextvars.ContextVar` alone) with a `_resolve_request_id()` fallback. `RequestIDMiddleware` and `SecurityHeadersMiddleware` were converted to pure ASGI middleware as an independent, well-justified simplification (both only ever wrapped `send`) — not itself the fix for the reported bug. The now-redundant per-endpoint/per-dependency `_internal_error` workaround in `app/modules/access_control/api.py` and `dependencies.py` was removed.
+
+```bash
+$ uv sync --all-groups
+Resolved 62 packages in 1ms
+Checked 61 packages in 0.74ms
+```
+Result: **pass**. No dependency changes — this task added no new packages (explicit non-goal).
+
+```bash
+$ uv run ruff format --check .
+144 files already formatted
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff check .
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 61 source files
+```
+Result: **pass**. Same file count as before this task (`app/core/errors.py`, `app/modules/access_control/api.py`, `app/modules/access_control/dependencies.py` edited in place; no files added under `app/`).
+
+```bash
+$ uv run pytest tests/unit -q
+353 passed in 9.93s
+```
+Result: **pass**. Includes the new `tests/unit/test_error_handling.py` (18 tests: route/dependency `HTTPException`, request-validation failure, unexpected exception on both route and dependency paths, no `ExceptionGroup`/traceback/secret ever reaches the client, correlation ID present on success and on every error path including the `ServerErrorMiddleware`-dispatched one, non-HTTP `lifespan` scope pass-through, and per-request context cleanup) and `tests/unit/access_control` unchanged and passing with the local `_internal_error` workaround removed.
+
+```bash
+$ uv run pytest tests/security -q
+36 passed in 0.57s
+```
+Result: **pass**. Includes `tests/security/access_control/test_auth_no_secret_leakage.py::test_unexpected_backend_failure_never_leaks_a_connection_secret`, the direct proof that removing `_internal_error` from `login()` still safely produces a generic `500` via the central handler with no secret leakage.
+
+```bash
+$ uv run pytest tests/integration -q
+2 passed, 19 skipped in 6.45s
+```
+Result: **pass** — self-skipping as expected with no Postgres/Redis/Neo4j/MinIO running in this session (no infra was started for this task; it touches no database/queue/storage code path). The 2 that ran require no live infra.
+
+```bash
+$ uv run pytest -q
+448 passed, 19 skipped in 16.65s
+```
+Result: **pass**, no regressions. 448 vs. the prior baseline of 430 (see the build below) is exactly the 18 new tests in `tests/unit/test_error_handling.py`; skip count unchanged (19) since no infra was started this session.
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0). No `compose.yaml` changes made (explicit non-goal); ran only to confirm the file still parses.
+
+```bash
+$ git status --short
+ M app/core/errors.py
+ M app/modules/access_control/api.py
+ M app/modules/access_control/dependencies.py
+ M docs/architecture/security-boundaries-v1.md
+ M docs/decisions/ADR-003-authentication-and-case-scoped-access-control.md
+ M docs/progress/mvp-progress.md
+ M docs/qa/known-limitations.md
+ M docs/qa/test-matrix.md
+ M tests/conftest.py
+ M tests/security/access_control/test_auth_no_secret_leakage.py
+ M tests/unit/access_control/test_api.py
+?? tests/unit/test_error_handling.py
+```
+Result: 11 files modified, 1 new test file — nothing staged, nothing committed, no branch changed, per explicit instruction.
+
+```bash
+$ git diff --check
+(no output)
+$ git diff --stat
+ app/core/errors.py                                 | 192 ++++++++++++++++++---
+ app/modules/access_control/api.py                  |  93 ++++------
+ app/modules/access_control/dependencies.py         |  34 +---
+ docs/architecture/security-boundaries-v1.md        |  45 ++++-
+ .../ADR-003-authentication-and-case-scoped-access-control.md |   4 +-
+ docs/progress/mvp-progress.md                      |  22 ++-
+ docs/qa/known-limitations.md                       |   3 +-
+ docs/qa/test-matrix.md                             |   4 +
+ tests/conftest.py                                  |  16 +-
+ tests/security/access_control/test_auth_no_secret_leakage.py |  15 +-
+ tests/unit/access_control/test_api.py              |   6 +-
+ 11 files changed, 308 insertions(+), 126 deletions(-)
+```
+Result: **pass** — no whitespace errors; confirmed the diff touches only the files this task was scoped to.
+
+```bash
+$ git status --short -- app/contracts app/modules/graph app/modules/structured_processing migrations compose.yaml Dockerfile pyproject.toml uv.lock .env.example
+(no output)
+```
+Result: **pass** — zero diff against every frozen-contract and forbidden path; no new dependency was added.
+
+### Known limitations and intentionally deferred work
+
+- Starlette's `ServerErrorMiddleware`-re-raises-after-sending behavior is upstream and intentional, not something this project's code controls. Every test fixture in this repo that drives HTTP through the real app now explicitly sets `ASGITransport(..., raise_app_exceptions=False)`; a future test file that constructs its own `ASGITransport` without this setting will reproduce the original, misleading symptom if it exercises a genuinely-unhandled-exception path. Flagged in `docs/qa/known-limitations.md`.
+- No new auth features, MFA/SSO/CORS/cookies/CSRF, business endpoints, DB/schema/migration changes, rate-limiting redesign, logging-platform integration, frontend, or graph/entity-resolution/document/media functionality were introduced — all explicit non-goals for this task, confirmed by the zero-diff check above.
+
 ## 2026-09-10 — Aditya — Authentication, Case Access Control, Security Middleware, and Operational Foundation build
 
 Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `aditya` was based on `main` after the Nipun/Shreshtha/Jasraj builds below were merged (`075e52b`, `a903d3a`, `85c55c4`, `67cd31c`) — confirmed via local `git log --oneline -5` before starting (`git fetch origin` itself failed with `fatal: could not read Username for 'https://github.com'` in this sandbox — no network credentials for GitHub specifically, unrelated to package registries, which worked fine for `uv add`). Additive edits only to shared files: `app/main.py`, `app/core/config.py`, `app/core/errors.py`, `tests/conftest.py`, `.env.example`, `compose.yaml` (new `AUTH_*` env passthrough for the `api` service only), plus `docs/qa/*`, `docs/progress/mvp-progress.md`, `docs/runbooks/local-development.md`. No file under `app/modules/graph/`, `app/modules/structured_processing/`, or `app/contracts/` was touched (confirmed by `git status` before finishing and by `tests/security/access_control/test_module_boundaries.py`).
@@ -101,7 +212,7 @@ Login response headers confirmed present: `x-content-type-options: nosniff`, `x-
 
 - **`repository.rotate_session` violated a foreign-key constraint against real PostgreSQL.** The original implementation ran `UPDATE auth_sessions SET replaced_by_session_id = <new_id> ...` *before* inserting the new session row. `auth_sessions.replaced_by_session_id` has a foreign key onto `auth_sessions.session_id`, checked immediately (no `DEFERRABLE` constraints in this schema) — so the `UPDATE` failed with `ForeignKeyViolationError: Key (replaced_by_session_id)=(...) is not present in table "auth_sessions"` the first time it ran against a real database. Every unit test passed regardless, because `FakeAccessControlRepository` (the in-memory test double) doesn't enforce foreign keys — this is exactly the class of bug the task's live-integration-test requirement exists to catch. Fixed by swapping the statement order (insert the new session first, then revoke-and-point the old one at it) in the same transaction. Caught by `tests/integration/access_control/test_auth_lifecycle_live.py::test_register_login_refresh_logout_round_trip_against_live_db` and `::test_token_family_revocation_works_in_live_persistence`. See `docs/decisions/ADR-003-authentication-and-case-scoped-access-control.md`, Decision 7.
 - **A test-cleanup bug (not an application bug), also only caught live.** `tests/integration/access_control/conftest.py`'s `cleanup_user_ids`/`cleanup_case_ids` fixtures originally issued `DELETE FROM ... WHERE id = ANY(:ids)` via a raw `sa.text(...)` bind with a plain Python `list[UUID]` — which silently matched zero rows instead of raising (no type information to cast the array against), leaving real rows behind across test runs undetected until a manual row-count check after a full local run. Fixed by rebuilding the same deletes through the typed `users_table`/`cases_table` SQLAlchemy Core objects (`.where(col.in_(ids))`), which bind correctly through the column's own `UUID` type. Confirmed fixed via a before/after row-count check (`docs/qa/test-data.md`).
-- **A genuinely pre-existing (not introduced by this build) Starlette/`BaseHTTPMiddleware` interaction**, reproduced and worked around locally rather than fixed at the shared-middleware level — see `docs/architecture/security-boundaries-v1.md` and `docs/decisions/ADR-003-...md`, Decision 10, and `docs/qa/known-limitations.md`.
+- **A genuinely pre-existing (not introduced by this build) Starlette/`BaseHTTPMiddleware` interaction**, reproduced and worked around locally rather than fixed at the shared-middleware level — see `docs/architecture/security-boundaries-v1.md` and `docs/decisions/ADR-003-...md`, Decision 10, and `docs/qa/known-limitations.md`. **Correction (Integration Hardening 1, see the entry above):** re-investigated from scratch; `BaseHTTPMiddleware` was not actually the cause of the observed symptom (that was httpx's `ASGITransport` test-only default). A different, real gap was found and fixed centrally instead; the local workaround referenced here was removed as redundant.
 
 Stack was stopped cleanly afterward: `docker compose down` (containers/network removed, named volumes preserved). Re-ran `uv run pytest -q` once more after teardown to confirm the suite returns to self-skipping (`430 passed, 19 skipped` — the 19 are the pre-existing 8 (`test_readiness_live.py` ×4, `tests/integration/graph/` ×4) plus this build's 11 `tests/integration/access_control/` tests, all skipping cleanly rather than fabricating a pass with no infra up).
 

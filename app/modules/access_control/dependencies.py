@@ -20,7 +20,6 @@ from typing import Annotated
 from uuid import UUID
 
 import redis.asyncio as redis
-import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -44,28 +43,9 @@ _redis_client: redis.Redis = redis.from_url(str(_settings.redis_url))
 _login_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _refresh_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 
-logger = structlog.get_logger(__name__)
-
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 _INVALID_TOKEN_DETAIL = "invalid or expired access token"
-_INTERNAL_ERROR_DETAIL = "an internal error occurred"
-
-
-def _internal_error(exc: Exception) -> HTTPException:
-    """Convert an unexpected failure (e.g. a database outage) into a safe 500.
-
-    See the identical helper and its docstring in `api.py` -- same
-    reasoning applies here: this is the backstop for anything that isn't
-    one of this module's own typed errors, and catching it inside the
-    dependency (rather than letting it propagate) avoids a real
-    Starlette/`BaseHTTPMiddleware` interaction on the pinned version that
-    can otherwise let such an exception escape the app's generic handler.
-    """
-    logger.warning("access_control_unhandled_error", exc_type=type(exc).__name__)
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=_INTERNAL_ERROR_DETAIL
-    )
 
 
 def get_access_control_repository() -> AccessControlRepository:
@@ -136,11 +116,8 @@ async def require_authenticated_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    try:
-        session = await repository.get_session_by_id(claims.sid)
-        user = await repository.get_user_by_id(claims.sub) if session is not None else None
-    except Exception as exc:
-        raise _internal_error(exc) from exc
+    session = await repository.get_session_by_id(claims.sid)
+    user = await repository.get_user_by_id(claims.sub) if session is not None else None
 
     if session is None or session.revoked_at is not None or session.user_id != claims.sub:
         raise HTTPException(
@@ -173,11 +150,8 @@ def require_case_action(
         principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
         repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     ) -> AuthorizedCasePrincipal:
-        try:
-            membership = await repository.get_active_membership(case_id, principal.user_id)
-            case = await repository.get_case(case_id)
-        except Exception as exc:
-            raise _internal_error(exc) from exc
+        membership = await repository.get_active_membership(case_id, principal.user_id)
+        case = await repository.get_case(case_id)
         allowed = authorize_case_action(
             case_id=case_id,
             action=action,
