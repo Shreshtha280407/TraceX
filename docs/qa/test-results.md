@@ -2,6 +2,70 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-10 — Jasraj — Document and Structured-Data Processing build
+
+Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `jasraj` was based on `main` after both the Nipun and Shreshtha builds below were merged (`075e52b`, `a903d3a`, `85c55c4`) — confirmed via `git log --oneline HEAD..origin/main` (empty) before starting, and re-confirmed no conflicts with `app/modules/graph/` or any shared doc after finishing (additive edits only to `docs/qa/*`, `docs/progress/mvp-progress.md`, `docs/runbooks/local-development.md`).
+
+```bash
+$ uv add pypdf python-docx openpyxl
+Resolved 60 packages
+Installed 6 packages: et-xmlfile, lxml, openpyxl, pypdf, python-docx, (tracex rebuilt)
+```
+Result: **pass**. The only three additions allowed for this phase; `pyproject.toml`/`uv.lock` updated accordingly, plus an `openpyxl.*` entry in `[[tool.mypy.overrides]]` (no type stubs published for `openpyxl`, same pattern as the existing `neo4j.*`/`minio.*`/`asyncpg.*` entries).
+
+```bash
+$ uv sync --all-groups
+Resolved 60 packages in 1ms
+Checked 59 packages in 0.82ms
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff format --check .
+107 files already formatted
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff check .
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 47 source files
+```
+Result: **pass**. (39 files after adding `app/modules/structured_processing/` → 47 once `openpyxl` stub coverage was added and re-checked; 26 files before this build, per Shreshtha's entry below.)
+
+```bash
+$ uv run pytest tests/unit/structured_processing -q
+150 passed in 0.44s
+```
+Result: **pass**.
+
+```bash
+$ uv run pytest tests/contract -q
+56 passed in 0.03s
+```
+Result: **pass** (frozen contracts untouched — confirms this build didn't regress them).
+
+```bash
+$ uv run pytest -q
+291 passed, 8 skipped in 12.80s
+```
+Result: **pass**. 140 pre-existing (per Shreshtha's entry: 140 passed/8 skipped without live infra) + 151 new (150 unit + 1 integration) = 291. The 8 skips are the pre-existing self-skipping live-infrastructure suites (4 `test_readiness_live.py`, 4 `tests/integration/graph/`) — unrelated to this build, which needs no live infrastructure at all (`tests/integration/structured_processing/test_local_file_pipeline.py` uses a real local-file `SourceResolver`, not a network service, so it runs unconditionally and is included in the 291 passed).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0; also covered by `tests/integration/test_compose_config.py`, included in the 291 passed above). Full-stack `docker compose up` was not re-verified in this session — this build adds no new services/compose changes, so nothing about the previously-verified stack (Nipun's entry below) changes.
+
+### One real design bug caught and fixed during this build (before this record)
+
+- **Error-code priority was backwards for a fundamentally unsupported content type.** `worker.process_job` originally resolved the parser profile (`get_profile(job.processor_name)`) and checked its `accepted_content_types` *before* calling `classify()`. A job pointed at e.g. `application/zip` (not a Phase 1 format at all) was reported as `unsupported_parser_profile` — technically true but less specific than it should be, since the content type isn't even in the supported set regardless of which profile was chosen. Reordered so `classify()` runs first: a fundamentally unsupported format now reports `unsupported_content_type`; a supported format that just doesn't match the chosen profile still reports `unsupported_parser_profile`. Caught by `tests/unit/structured_processing/test_worker_dispatch.py::test_unsupported_content_type_fails`.
+- Three other issues were test-fixture bugs, not code bugs (fixed in the test files, not the app): a CDR/finance CSV fixture with an unquoted comma-containing amount value that the CSV parser correctly split into extra columns; a zip-bomb test fixture written without compression, giving a 1:1 ratio that never tripped the compression-ratio limit; and a PDF fixture's second-page text one character short of the documented 20-character "meaningful text" threshold, correctly (if confusingly, for the test) routed to OCR.
+
 ## 2026-09-10 — Shreshtha — Graph Foundation and Taxonomy build
 
 Environment: same sandbox as the Nipun build below, Python 3.12.13 (via `uv`), Docker 29.7.2. No changes to `pyproject.toml`/`uv.lock` were needed — `neo4j>=5.25.0` was already a declared Phase 1 dependency; `uv sync` resolved it to `6.3.0`. Confirmed `AsyncGraphDatabase`/`AsyncDriver`/`AsyncManagedTransaction` imports and behavior this module relies on are unchanged against that version.

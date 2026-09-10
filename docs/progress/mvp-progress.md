@@ -26,7 +26,7 @@ All acceptance criteria below are verified as of 2026-09-10 — see `docs/qa/tes
 
 - [ ] Open questions in `docs/architecture/phase-1-decisions.md` (taxonomy ownership, classification/RBAC levels, `DerivedArtifact` shape) — not blockers for building against the frozen contracts, but worth a team pass.
 
-## Shreshtha Phase 1 — Graph Foundation and Taxonomy: In progress
+## Shreshtha Phase 1 — Graph Foundation and Taxonomy: Complete
 
 Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output, including live projection/query/schema/isolation tests run against the Compose Neo4j instance). Marked **in progress**, not complete, pending the team-review items below.
 
@@ -45,11 +45,33 @@ Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for ful
 - [ ] The "entities must be projected before the events that reference them" ordering constraint (ADR-001, Decision 3) needs confirming against whatever later-phase orchestrator actually calls this projection code.
 - [ ] No API endpoint, worker, or orchestrator calls `app/modules/graph/projection.py` yet — there is no ingestion pipeline to call it from in this phase.
 
+## Jasraj Phase 1 — Document and Structured-Data Processing: In progress
+
+Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for full command output). Marked **in progress**, not complete, pending the team-review items below and final sign-off.
+
+### Delivered
+
+- [x] `app/modules/structured_processing/` — `models.py`, `errors.py`, `limits.py`, `provenance.py`, `worker.py`; `document/` (`classifier`, `text_extractors`, `pdf`, `docx`, `txt`, `fir_report`, `ocr_routing`); `structured/` (`csv_parser`, `xlsx_parser`, `json_parser`, `profiles`, `cdr`, `finance`). Typed, deterministic, no ML/LLM/embeddings, no direct PostgreSQL/Neo4j/Redis/MinIO access (statically verified).
+- [x] Five explicit versioned parser profiles (`fir_report_text_v1`, `cdr_generic_v1`, `financial_transaction_generic_v1`, `generic_tabular_v1`, `generic_json_v1`) documented in `docs/architecture/parser-profiles-v1.md`.
+- [x] `docs/architecture/document-and-structured-processing-v1.md`, `docs/decisions/ADR-002-deterministic-source-processing-and-provenance.md` — design, provenance policy, and the decisions behind deterministic IDs, conservative normalization, Decimal-safe money, and OCR-deferral semantics.
+- [x] `pypdf`, `python-docx`, `openpyxl` added via `uv add` (the only three allowed additions), plus the `openpyxl.*` mypy override.
+- [x] `tests/unit/structured_processing/` (151 tests across classification, PDF/DOCX/TXT extraction, FIR regex extraction, CSV/XLSX/JSON parsing + limits, CDR/financial normalization, provenance/determinism, worker dispatch, and static safety checks), `tests/integration/structured_processing/` (full pipeline via a real local-file `SourceResolver`, no external service needed), `tests/fixtures/structured_processing/` (hand-built PDF bytes, `python-docx`/`openpyxl`-built DOCX/XLSX, evidence/job factories) — all 20 required scenarios from the task brief covered.
+- [x] QA entries `DOC-PROCESS-001`, `DOC-PROVENANCE-001`, `DOC-OCR-ROUTING-001`, `CDR-NORMALISE-001`, `FINANCE-NORMALISE-001`, `STRUCTURED-SAFETY-001`, `WORKER-RESULT-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/runbooks/local-development.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md` updated.
+
+### Outstanding for team review
+
+- [ ] No worker orchestration calls `worker.process_job` yet — there is no API endpoint, queue consumer, or scheduler in this repo to invoke it from, and no real MinIO-backed `SourceResolver` (later-phase evidence-lifecycle integration).
+- [ ] `document/fir_report.py`'s patterns (Indian mobile only, Indian vehicle-plate format only, a curated UPI handle list, no DD/MM date resolution) are intentionally narrow — see `docs/qa/known-limitations.md` and ADR-002's open questions.
+- [ ] DOCX extraction order (paragraphs, then tables) is deterministic but not visually interleaved — flagged in ADR-002 in case a later phase needs positional fidelity.
+- [ ] No real OCR engine — `document/ocr_routing.py` only makes the routing decision; a later phase must consume its `document_requires_ocr` checkpoint.
+
 ## Later phases (not started)
 
-Owned by other contributors, building on the frozen Phase 1 contracts and the graph foundation above:
+Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, and the document/structured-processing foundation above:
 
-- Source extractors (documents, CDR, financial, video, image, audio, chat) → `ObservationV1` producers.
+- Real OCR (Tesseract/cloud/model) consuming `document_requires_ocr` checkpoints; video/image/audio/social-chat source extractors.
+- Worker orchestration invoking `structured_processing.worker.process_job` and `graph.projection` from a real ingestion pipeline; a MinIO-backed `SourceResolver`.
 - Entity resolution and merge review workflow; candidate identity links.
 - Cross-modal correlation, candidate scoring, hypothesis engine.
 - Graph analytics (centrality, community detection, motifs).
