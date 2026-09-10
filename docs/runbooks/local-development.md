@@ -64,6 +64,25 @@ uv add --group dev <package>  # dev-only dependency
 
 Always commit the resulting `uv.lock` change alongside `pyproject.toml`. Never hand-edit `uv.lock`.
 
+## Graph schema (Neo4j constraints and indexes)
+
+`app/modules/graph/schema.py` owns the graph foundation's constraints and indexes (see `docs/architecture/graph-taxonomy-v1.md` and `docs/architecture/neo4j-graph-foundation.md`). It is never run automatically by `app/main.py` on startup -- apply and verify it explicitly, with Neo4j reachable (`docker compose up -d neo4j` at minimum):
+
+```bash
+uv run python -m app.modules.graph.schema apply    # idempotent; safe to run any number of times
+uv run python -m app.modules.graph.schema verify   # exits 0 if every expected constraint/index is present, 1 otherwise
+```
+
+Both read connection details from the same `Settings`/`.env` as the rest of the app.
+
+Running the graph integration suite specifically, once schema is applied and Neo4j is up:
+
+```bash
+uv run pytest tests/integration/graph -v
+```
+
+Like `tests/integration/test_readiness_live.py`, this suite self-skips (never fabricates a pass) if there's no `.env` at the repo root, or if Neo4j specifically isn't reachable through it.
+
 ## Database migrations (Alembic)
 
 Phase 1 ships only the baseline revision (no domain tables). To add a new migration once domain models exist in a later phase:
