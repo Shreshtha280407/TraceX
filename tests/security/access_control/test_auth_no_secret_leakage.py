@@ -44,7 +44,11 @@ def _override_dependencies(fake_repository: FakeAccessControlRepository) -> Iter
 
 @pytest_asyncio.fixture
 async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app)
+    # See `tests/conftest.py::client`'s comment: without
+    # `raise_app_exceptions=False`, httpx re-raises an unhandled exception
+    # to the test instead of returning the safe response the app actually
+    # sent, which does not match real client/server behavior.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
 
@@ -168,7 +172,14 @@ async def test_unexpected_backend_failure_never_leaks_a_connection_secret(
     app.dependency_overrides[get_login_rate_limiter] = lambda: InMemoryRateLimiter()
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: InMemoryRateLimiter()
     try:
-        transport = ASGITransport(app=app)
+        # `raise_app_exceptions=False`: this test deliberately drives a
+        # genuinely unhandled exception (no local per-endpoint catch
+        # remains -- see `app/modules/access_control/api.py`) through the
+        # *central* `unhandled_exception_handler`. The default transport
+        # setting would re-raise it to this test instead of returning the
+        # safe response the app actually sent -- see
+        # `tests/conftest.py::client`'s comment for the full explanation.
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.post(
                 "/api/v1/auth/login",

@@ -52,7 +52,11 @@ def _override_dependencies(fake_repository: FakeAccessControlRepository) -> Iter
 
 @pytest_asyncio.fixture
 async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app)
+    # See the shared `tests/conftest.py::client` fixture's comment: without
+    # `raise_app_exceptions=False`, httpx re-raises an unhandled exception
+    # to the test instead of returning the safe response the app actually
+    # sent, which does not match real client/server behavior.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
 

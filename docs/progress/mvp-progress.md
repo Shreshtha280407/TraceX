@@ -66,7 +66,7 @@ Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for ful
 - [ ] DOCX extraction order (paragraphs, then tables) is deterministic but not visually interleaved — flagged in ADR-002 in case a later phase needs positional fidelity.
 - [ ] No real OCR engine — `document/ocr_routing.py` only makes the routing decision; a later phase must consume its `document_requires_ocr` checkpoint.
 
-## Aditya Phase 1 — Authentication, Case Access Control, Security Middleware, and Operational Foundation: In progress
+## Aditya Phase 1 — Authentication, Case Access Control, Security Middleware, and Operational Foundation: Complete
 
 Verification is complete as of 2026-09-10, including live PostgreSQL/Redis integration tests (see `docs/qa/test-results.md` for full command output). Marked **in progress**, not complete, pending the team-review items below.
 
@@ -85,9 +85,29 @@ Verification is complete as of 2026-09-10, including live PostgreSQL/Redis integ
 ### Outstanding for team review
 
 - [ ] `require_authenticated_user`'s per-request live session/user database read (so logout/deactivation take effect immediately) is untested at real load — see ADR-003, Decision 1.
-- [ ] The Starlette/`BaseHTTPMiddleware` exception-propagation interaction (ADR-003, `docs/architecture/security-boundaries-v1.md`) is worked around locally in this module's endpoints/dependencies, not fixed at the shared-middleware level — worth a team pass if it should be fixed once for the whole app instead.
+- [x] ~~The Starlette/`BaseHTTPMiddleware` exception-propagation interaction... worked around locally~~ — **resolved centrally**, see "Integration Hardening 1" below.
 - [ ] No case-management API exists yet for `require_case_*` dependencies to actually protect — they're ready for Nipun's later case/evidence endpoints to build against, but unexercised by any real endpoint in this repo.
 - [ ] CORS and browser cookie/CSRF policy are explicitly deferred until a browser frontend exists (see `docs/architecture/security-boundaries-v1.md`).
+
+## Integration Hardening 1 — Central Middleware and Exception Handling: Complete
+
+Owner: Aditya. Verification complete as of 2026-09-10 (see `docs/qa/test-results.md`). Re-investigated the "`BaseHTTPMiddleware` interaction" reported in the Aditya Phase 1 entry above from scratch, rather than trusting the original diagnosis — found it incorrect, found a different real gap in the same investigation, and replaced the local per-endpoint workaround with one central fix. Full writeup: `docs/architecture/security-boundaries-v1.md`'s "Integration Hardening 1" section, `docs/decisions/ADR-003-...md` Decision 10 (revised).
+
+### Delivered
+
+- [x] Corrected root-cause finding: the originally-reported symptom (an unhandled exception "escaping" the safe error envelope) was caused by httpx's `ASGITransport` test-only default (`raise_app_exceptions=True`), not by `BaseHTTPMiddleware` — verified by reproducing the identical symptom with zero custom middleware, and by confirming a real `uvicorn` process (with `BaseHTTPMiddleware`-based middleware in the stack) returns the correct safe response over real HTTP the whole time.
+- [x] A separate, previously-unknown real gap found during the same investigation and fixed: Starlette dispatches the bare-`Exception` handler from its outermost `ServerErrorMiddleware`, bypassing every user-added middleware's header injection for that one response path (no correlation ID, no security headers, regardless of `BaseHTTPMiddleware` vs. pure ASGI). Fixed by having all three `app/core/errors.py` exception handlers set their own safe headers directly (`_safe_error_headers`).
+- [x] `RequestIDMiddleware` (`app/core/errors.py`) and `SecurityHeadersMiddleware` (`app/modules/access_control/api.py`) rewritten as pure ASGI middleware — a well-justified simplification (both only ever needed to wrap `send`), not the fix for the reported bug.
+- [x] `app/modules/access_control/api.py`/`dependencies.py`'s `_internal_error` per-endpoint/per-dependency workaround removed outright; the module-local `structlog` warning it emitted is now emitted centrally from `unhandled_exception_handler` instead.
+- [x] `tests/conftest.py`'s shared `client` fixture and every access-control test file's own override now set `ASGITransport(..., raise_app_exceptions=False)`, matching real client/server behavior instead of the test-transport-only re-raise.
+- [x] `tests/unit/test_error_handling.py` (new, 18 tests) — a synthetic test app proving every required scenario: route/dependency `HTTPException`, request-validation failure, unexpected exception (route and dependency), no `ExceptionGroup`/traceback/secret ever reaches the client, correlation ID present on success and every error path (including the specific deep `ServerErrorMiddleware` path the original design missed), non-HTTP (`lifespan`) scope pass-through, and context cleanup with no cross-request leakage.
+- [x] `tests/unit/access_control/` + `tests/security/access_control/` (139 tests, including the one test specifically designed for this exact path) confirmed passing unchanged with the local workaround removed.
+- [x] QA entries `CORE-MIDDLEWARE-001`, `CORE-ERROR-ENVELOPE-001`, `CORE-REQUEST-CONTEXT-001`, `SECURITY-ERROR-SAFETY-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/security-boundaries-v1.md`, `docs/decisions/ADR-003-...md`, `docs/qa/known-limitations.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] Starlette's `ServerErrorMiddleware`-re-raises-after-sending behavior (documented, upstream, intentional) means any *new* test exercising a genuinely-unhandled-exception path must remember `ASGITransport(..., raise_app_exceptions=False)` — flagged at every fixture definition site, but not enforceable by tooling.
 
 ## Later phases (not started)
 
