@@ -62,11 +62,13 @@
 
 **Why**: Explicit in the phase brief — CSRF hardening is meaningless without a cookie to protect, and adding cookie support (plus the CSRF defenses it would require) with no browser frontend to consume it would be speculative scaffolding. Flagged for team review the moment a browser frontend adopts cookie-based storage.
 
-## Decision 10: security headers and `Cache-Control: no-store` applied at the middleware layer
+## Decision 10: security headers and `Cache-Control: no-store` applied at the middleware layer (later revised)
 
 **Decision**: `SecurityHeadersMiddleware` sets headers on every response by wrapping the whole request/response cycle, rather than each endpoint mutating an injected `Response` object.
 
 **Why**: An injected `Response` object's header mutations are discarded the instant the endpoint raises an exception instead of returning normally — the client receives whatever the registered exception handler built instead. A rate-limited (`429`) or credential-rejected (`401`) response is exactly the case where these headers matter most, so per-endpoint mutation would silently miss them on the paths that need them. Middleware sees the final response regardless of how it was produced.
+
+**Revised finding (Integration Hardening 1)**: the reasoning above turned out to be *incomplete*, not wrong — middleware sees the final response for every path *except one*. Starlette's outermost `ServerErrorMiddleware` dispatches a handler registered for the bare `Exception` key directly, bypassing every user-added middleware (including this one) for that specific response. This module's own per-endpoint/per-dependency `_internal_error` workaround (originally attributed, incorrectly, to a `BaseHTTPMiddleware`-specific bug — see below) happened to sidestep this gap as a side effect, without anyone having identified it as the real issue. The actual fix: `app/core/errors.py`'s exception handlers now set their own headers directly via a shared `_safe_error_headers()` helper, and the per-endpoint workaround was removed as redundant. Full investigation and fix in `docs/architecture/security-boundaries-v1.md`'s "Integration Hardening 1" section — including the correction that `BaseHTTPMiddleware` was never actually the cause of the originally-reported symptom (verified against Starlette's own source and a live `uvicorn` process). `RequestIDMiddleware` and `SecurityHeadersMiddleware` were still converted to pure ASGI middleware as part of this work, but as an independent, well-justified simplification -- not as the fix for the reported bug.
 
 ## Open questions for team review
 

@@ -10,9 +10,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import hash_ip
@@ -36,67 +36,55 @@ from app.modules.access_control.models import (
 )
 from app.modules.access_control.service import AuthService, RequestContext
 
-logger = structlog.get_logger(__name__)
-
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 _RATE_LIMIT_DETAIL = "too many attempts, try again later"
 _LOGIN_DENIED_DETAIL = "invalid email or password"
 _REFRESH_DENIED_DETAIL = "invalid or expired refresh token"
-_INTERNAL_ERROR_DETAIL = "an internal error occurred"
 
 #: Paths that carry credentials/tokens and must never be cached by a
 #: client, proxy, or browser history.
 _NO_STORE_PATH_PREFIX = "/api/v1/auth"
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Safe, static security headers on every response.
+class SecurityHeadersMiddleware:
+    """Pure ASGI middleware: safe, static security headers on every normal response.
 
-    Applied here, at the middleware layer, so it covers *every* response
-    path -- including ones built by FastAPI's own exception handlers for a
-    raised `HTTPException` -- not just the happy path a per-endpoint header
-    mutation would miss (an injected `Response` object's headers are
-    discarded once an exception is raised instead of returned).
+    Implemented as raw ASGI, not `starlette.middleware.base.BaseHTTPMiddleware`:
+    this only needs to mutate outgoing response headers, which a `send`
+    wrapper does directly. (Genuinely unexpected exceptions are handled
+    separately -- see `app.core.errors`'s module docstring for why *no*
+    user-added middleware, pure ASGI or otherwise, ever sees the response
+    Starlette's own generic-`Exception` handler builds, and why that
+    handler sets these same headers itself instead of relying on this
+    middleware.)
 
     Deliberately does not implement CORS: Phase 1 has no browser frontend
     consumer, so no `Access-Control-Allow-Origin` is set at all (never
     `*`) -- see `docs/architecture/security-boundaries-v1.md`.
     """
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path.startswith(_NO_STORE_PATH_PREFIX):
-            response.headers["Cache-Control"] = "no-store"
-        return response
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-def _internal_error(exc: Exception) -> HTTPException:
-    """Convert an unexpected failure (not one of this module's typed errors) into a safe 500.
+        path = scope.get("path", "")
 
-    This module's endpoints raise `HTTPException` deliberately for every
-    known outcome (see each `except` clause below); this is the backstop
-    for everything else -- a database/Redis outage, for example. Logs the
-    exception *type* only, via `structlog` -- never its message, which for
-    some drivers can itself contain a connection string or credential
-    (same rule already applied to `/readyz` in `app/api/health.py`).
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "no-referrer"
+                if path.startswith(_NO_STORE_PATH_PREFIX):
+                    headers["Cache-Control"] = "no-store"
+            await send(message)
 
-    Also works around a real Starlette/`BaseHTTPMiddleware` interaction on
-    the version pinned here: an exception that propagates all the way out
-    of a route handler can escape the app's registered generic-`Exception`
-    handler entirely instead of becoming a clean 500 (reproduced with only
-    Nipun's pre-existing `RequestIDMiddleware` in the stack, independent of
-    this module's own middleware) -- catching it here, inside the route
-    handler, means it is always a plain `HTTPException` by the time it
-    would reach that middleware layer, which is unaffected by the issue.
-    """
-    logger.warning("access_control_unhandled_error", exc_type=type(exc).__name__)
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=_INTERNAL_ERROR_DETAIL
-    )
+        await self.app(scope, receive, send_wrapper)
 
 
 def _build_context(request: Request) -> RequestContext:
@@ -118,8 +106,6 @@ async def register(
         return await auth_service.register(body, _build_context(request))
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except Exception as exc:
-        raise _internal_error(exc) from exc
 
 
 @router.post("/login", response_model=TokenPairResponse)
@@ -138,8 +124,6 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=_LOGIN_DENIED_DETAIL
         ) from exc
-    except Exception as exc:
-        raise _internal_error(exc) from exc
 
 
 @router.post("/refresh", response_model=TokenPairResponse)
@@ -158,8 +142,6 @@ async def refresh(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=_REFRESH_DENIED_DETAIL
         ) from exc
-    except Exception as exc:
-        raise _internal_error(exc) from exc
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -169,10 +151,7 @@ async def logout(
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> None:
     """Idempotent: an unknown or already-revoked refresh token is not an error."""
-    try:
-        await auth_service.logout(body, _build_context(request))
-    except Exception as exc:
-        raise _internal_error(exc) from exc
+    await auth_service.logout(body, _build_context(request))
 
 
 @router.get("/me", response_model=MeResponse)
@@ -186,5 +165,3 @@ async def me(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required"
         ) from exc
-    except Exception as exc:
-        raise _internal_error(exc) from exc
