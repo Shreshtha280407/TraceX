@@ -138,6 +138,24 @@ Like `tests/integration/test_readiness_live.py` and `tests/integration/graph/`, 
 
 For a multi-laptop LAN demo setup, see `docs/runbooks/lan-development.md`.
 
+## Audio, social/chat, alias, and communication-link processing
+
+`app/modules/communication_processing/` (see `docs/architecture/audio-social-and-communication-processing-v1.md`, `docs/architecture/multilingual-alias-candidates-v1.md`) needs no live infrastructure, Docker service, GPU, downloaded model, or network access at all — every test is a deterministic unit test against in-memory bytes/dataclasses:
+
+```bash
+uv run pytest tests/unit/communication_processing -v
+uv run pytest tests/integration/communication_processing -v   # multi-processor pipeline check, no external service
+```
+
+To try it interactively:
+
+```python
+from app.modules.communication_processing.models import AudioMetadataInput
+from app.modules.communication_processing.worker import process_job
+# construct a WorkerJobV1 (see tests/fixtures/communication_processing/factory.py),
+# then: process_job(job, AudioMetadataInput(filename="evidence.wav", data=your_wav_bytes))
+```
+
 ## Database migrations (Alembic)
 
 ```bash
