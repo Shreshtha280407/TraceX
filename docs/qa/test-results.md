@@ -2,6 +2,109 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-10 — Aditya — Authentication, Case Access Control, Security Middleware, and Operational Foundation build
+
+Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `aditya` was based on `main` after the Nipun/Shreshtha/Jasraj builds below were merged (`075e52b`, `a903d3a`, `85c55c4`, `67cd31c`) — confirmed via local `git log --oneline -5` before starting (`git fetch origin` itself failed with `fatal: could not read Username for 'https://github.com'` in this sandbox — no network credentials for GitHub specifically, unrelated to package registries, which worked fine for `uv add`). Additive edits only to shared files: `app/main.py`, `app/core/config.py`, `app/core/errors.py`, `tests/conftest.py`, `.env.example`, `compose.yaml` (new `AUTH_*` env passthrough for the `api` service only), plus `docs/qa/*`, `docs/progress/mvp-progress.md`, `docs/runbooks/local-development.md`. No file under `app/modules/graph/`, `app/modules/structured_processing/`, or `app/contracts/` was touched (confirmed by `git status` before finishing and by `tests/security/access_control/test_module_boundaries.py`).
+
+```bash
+$ uv add PyJWT "pwdlib[argon2]"
+Resolved 62 packages in 7.34s
+Installed 8 packages: et-xmlfile, lxml, openpyxl, pwdlib, pyjwt, pypdf, python-docx, (tracex rebuilt)
+```
+Result: **pass**. The only two additions allowed for this phase; `pyproject.toml`/`uv.lock` updated accordingly. Both ship `py.typed` markers, so no new `[[tool.mypy.overrides]]` entry was needed.
+
+```bash
+$ uv sync --all-groups
+Resolved 62 packages in 0.73ms
+Checked 61 packages in 0.38ms
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff format --check .
+143 files already formatted
+```
+Result: **pass**. (Note: this ruff version also formats fenced ` ```python ` code blocks inside `.md` files — two documentation files needed a pass through `ruff format .` for that reason, both whitespace-only.)
+
+```bash
+$ uv run ruff check .
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 61 source files
+```
+Result: **pass**. (47 files before this build, per Jasraj's entry below → 61 after adding `app/modules/access_control/`'s 13 files plus `app/modules/__init__.py` already existing.)
+
+```bash
+$ uv run pytest tests/unit/access_control -q
+105 passed in 2.92s
+```
+Result: **pass**.
+
+```bash
+$ uv run pytest tests/security/access_control -q
+34 passed in 0.56s
+```
+Result: **pass**.
+
+```bash
+$ uv run pytest
+443 passed, 6 skipped in 18.93s
+```
+Result: **pass**, run with PostgreSQL + Redis up (see below) — the 6 skips are `tests/integration/graph/` (4, Neo4j not started this session) and the `neo4j`/`minio` checks in `tests/integration/test_readiness_live.py` (2, same reason); `postgres`/`redis` in that same file, and this build's own 11 `tests/integration/access_control/` tests, all passed live. Without any infra running at all, the full suite is `430 passed, 19 skipped` (confirmed separately, after teardown below).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0).
+
+```bash
+$ docker compose up -d --wait postgres redis
+Container tracex-postgres-1 Healthy
+Container tracex-redis-1 Healthy
+```
+Result: **pass**. Both required infra services reached `healthy`. (Neo4j/MinIO were not started this session — not needed for this phase's own verification — so `/readyz` correctly reports them `"unavailable"` alongside `postgres`/`redis` `"ok"` in the live smoke test below.)
+
+```bash
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+```
+Result: **pass** (exit 0; already at head from the integration suite's own autouse migration fixture — see below). Verified table creation directly: `users`, `cases`, `case_memberships`, `auth_sessions`, `security_audit_events` all present in `information_schema.tables` with the exact expected constraint/index set from the migration.
+
+```bash
+$ uv run pytest tests/integration/access_control -q
+11 passed in 2.56s
+```
+Result: **pass** — all 11 live tests passed for real (not self-skipped): Alembic migration apply + idempotent re-apply, full register→login→refresh→logout round trip, wrong-password denial, refresh-token-hashed-not-raw, token-family revocation (including the still-active leaf session), live case-membership/clearance policy decisions (including a direct-SQL membership deactivation taking effect on the next read), and Redis-backed rate limiting (both the limit itself and independent keys). Confirmed via a direct row-count query afterward that `users`/`cases`/`case_memberships`/`auth_sessions` all returned to `0` (full cleanup); `security_audit_events` intentionally is not cleaned up per test by application design (see `docs/qa/test-data.md`) and was purged once, manually, as an end-of-session courtesy.
+
+### Live end-to-end HTTP smoke test (beyond the required command list)
+
+Ran a real `uv run uvicorn app.main:app` process against the live PostgreSQL/Redis containers and exercised the full API over real HTTP with `curl`:
+
+```bash
+$ curl .../healthz            # {"status":"ok",...}                                    200
+$ curl .../readyz              # postgres:ok, redis:ok, neo4j/minio:unavailable         503 (expected, not started)
+$ curl -X POST .../auth/register ...   # PublicUser body, no password/hash              201-equivalent
+$ curl -X POST .../auth/login ...      # access_token + refresh_token; headers below     200
+$ curl .../auth/me -H "Authorization: Bearer ..."   # correct identity + memberships     200
+$ curl -X POST .../auth/refresh ...    # new token pair, refresh_token rotated           200
+$ curl -X POST .../auth/refresh ... (old, now-rotated refresh_token replayed)            401
+$ curl -X POST .../auth/login ... (wrong password)  # {"error":{"code":"unauthorized","message":"invalid email or password",...}}   401
+```
+Login response headers confirmed present: `x-content-type-options: nosniff`, `x-frame-options: DENY`, `referrer-policy: no-referrer`, `cache-control: no-store`. The smoke-test user was deleted afterward (`DELETE FROM users WHERE email_normalized = 'livesmoke@example.test'`, 1 row).
+
+### One real bug caught and fixed during this build (before this record)
+
+- **`repository.rotate_session` violated a foreign-key constraint against real PostgreSQL.** The original implementation ran `UPDATE auth_sessions SET replaced_by_session_id = <new_id> ...` *before* inserting the new session row. `auth_sessions.replaced_by_session_id` has a foreign key onto `auth_sessions.session_id`, checked immediately (no `DEFERRABLE` constraints in this schema) — so the `UPDATE` failed with `ForeignKeyViolationError: Key (replaced_by_session_id)=(...) is not present in table "auth_sessions"` the first time it ran against a real database. Every unit test passed regardless, because `FakeAccessControlRepository` (the in-memory test double) doesn't enforce foreign keys — this is exactly the class of bug the task's live-integration-test requirement exists to catch. Fixed by swapping the statement order (insert the new session first, then revoke-and-point the old one at it) in the same transaction. Caught by `tests/integration/access_control/test_auth_lifecycle_live.py::test_register_login_refresh_logout_round_trip_against_live_db` and `::test_token_family_revocation_works_in_live_persistence`. See `docs/decisions/ADR-003-authentication-and-case-scoped-access-control.md`, Decision 7.
+- **A test-cleanup bug (not an application bug), also only caught live.** `tests/integration/access_control/conftest.py`'s `cleanup_user_ids`/`cleanup_case_ids` fixtures originally issued `DELETE FROM ... WHERE id = ANY(:ids)` via a raw `sa.text(...)` bind with a plain Python `list[UUID]` — which silently matched zero rows instead of raising (no type information to cast the array against), leaving real rows behind across test runs undetected until a manual row-count check after a full local run. Fixed by rebuilding the same deletes through the typed `users_table`/`cases_table` SQLAlchemy Core objects (`.where(col.in_(ids))`), which bind correctly through the column's own `UUID` type. Confirmed fixed via a before/after row-count check (`docs/qa/test-data.md`).
+- **A genuinely pre-existing (not introduced by this build) Starlette/`BaseHTTPMiddleware` interaction**, reproduced and worked around locally rather than fixed at the shared-middleware level — see `docs/architecture/security-boundaries-v1.md` and `docs/decisions/ADR-003-...md`, Decision 10, and `docs/qa/known-limitations.md`.
+
+Stack was stopped cleanly afterward: `docker compose down` (containers/network removed, named volumes preserved). Re-ran `uv run pytest -q` once more after teardown to confirm the suite returns to self-skipping (`430 passed, 19 skipped` — the 19 are the pre-existing 8 (`test_readiness_live.py` ×4, `tests/integration/graph/` ×4) plus this build's 11 `tests/integration/access_control/` tests, all skipping cleanly rather than fabricating a pass with no infra up).
+
 ## 2026-09-10 — Jasraj — Document and Structured-Data Processing build
 
 Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2. Branch `jasraj` was based on `main` after both the Nipun and Shreshtha builds below were merged (`075e52b`, `a903d3a`, `85c55c4`) — confirmed via `git log --oneline HEAD..origin/main` (empty) before starting, and re-confirmed no conflicts with `app/modules/graph/` or any shared doc after finishing (additive edits only to `docs/qa/*`, `docs/progress/mvp-progress.md`, `docs/runbooks/local-development.md`).

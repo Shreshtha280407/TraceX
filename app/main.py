@@ -12,6 +12,7 @@ import sys
 
 import structlog
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
@@ -19,8 +20,11 @@ from app.core.config import get_settings
 from app.core.errors import (
     RequestIDMiddleware,
     http_exception_handler,
+    request_validation_exception_handler,
     unhandled_exception_handler,
 )
+from app.modules.access_control.api import SecurityHeadersMiddleware
+from app.modules.access_control.api import router as auth_router
 
 
 def _configure_logging(log_level: str) -> None:
@@ -46,9 +50,12 @@ def create_app() -> FastAPI:
 
     application = FastAPI(title=settings.app_name, version="0.1.0")
     application.add_middleware(RequestIDMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(Exception, unhandled_exception_handler)
     application.include_router(health_router)
+    application.include_router(auth_router)
     return application
 
 
