@@ -45,6 +45,7 @@ _CLAIM_TOKEN_HEADER = "X-Claim-Token"
 _SHA256_HEADER = "X-TraceX-Evidence-SHA256"
 _CLAIM_PATH = "/api/v1/internal/worker-jobs/claim"
 _INPUT_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/input"
+_RENEW_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/renew"
 
 #: RFC 6266 `filename*=UTF-8''<percent-encoded>` -- preferred when present
 #: (correct for any non-ASCII original filename); `filename="..."` is the
@@ -169,6 +170,31 @@ class WorkerApiClient:
             observation_count=body["observation_count"],
             observation_ids=tuple(UUID(o) for o in body["observation_ids"]),
         )
+
+    def renew(self, job_id: UUID, *, claim_token: str) -> datetime:
+        """Extend this job's lease -- a heartbeat for processing that may outlast the
+        original lease window (see `worker.py`'s continuous-loop/long-running-analysis
+        heartbeat). Returns the new `lease_expires_at`.
+
+        Never logs the claim token; only `job_id` and the response status,
+        matching every other method here.
+        """
+        logger.info("worker.client.renew_attempted", job_id=str(job_id))
+        try:
+            response = self._client.post(
+                _RENEW_PATH_TEMPLATE.format(job_id=job_id),
+                headers={_CLAIM_TOKEN_HEADER: claim_token},
+            )
+        except httpx.HTTPError as exc:
+            raise WorkerApiError(f"renew request failed: {type(exc).__name__}") from exc
+        _raise_for_auth_failure(response)
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"renew request failed: HTTP {response.status_code}")
+        body = response.json()
+        lease_expires_at = _parse_optional_datetime(body.get("lease_expires_at"))
+        if lease_expires_at is None:  # pragma: no cover - defensive: API always sends a value
+            raise WorkerApiError("internal worker API returned a renewal with no lease_expires_at")
+        return lease_expires_at
 
     def fetch_input(self, job_id: UUID, *, claim_token: str) -> ResolvedMediaInput:
         """Fetch a claimed job's evidence bytes through Nipun's claim-token-bound input endpoint.

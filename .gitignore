@@ -24,3 +24,8 @@ htmlcov/
 
 # Docker volumes (bind-mounted data, if any)
 docker/**/data/
+
+# Bootstrapped local model assets (see
+# app/modules/media_processing/bootstrap_models.py) -- large, licensed,
+# third-party binaries, never committed to this repository.
+models/

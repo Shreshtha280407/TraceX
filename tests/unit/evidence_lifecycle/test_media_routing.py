@@ -1,16 +1,20 @@
 """Phase 2 completion: `image`/`video` upload routing to `media_processing`.
 
 Mirrors `test_communication_routing.py`'s pattern exactly (service-level +
-HTTP-layer, no shared conftest). Unlike the communication/structured
-routing fixes, `SourceType.IMAGE`/`SourceType.VIDEO` have routed to
-`media_metadata_v1` since Phase 1 (`evidence_lifecycle/routing.py` was
-never missing an entry) -- but no test anywhere in this repository had ever
-exercised that routing through a real upload before this file. Also covers
-the real gap this phase's live wiring found: `evidence_lifecycle/
-routing.py` has always accepted `video/x-matroska` for `SourceType.VIDEO`,
-but `media_processing`'s own `MediaKind` had no matching entry until this
-phase (see `app/modules/media_processing/source.py`) -- routing alone
-passing was never sufficient proof the worker could actually process it.
+HTTP-layer, no shared conftest). `SourceType.IMAGE`/`SourceType.VIDEO`
+routed to `media_metadata_v1` (metadata-only) from Phase 1 through the
+Phase 2 media-worker-foundation build; the Phase 2 closeout (real local
+detection/OCR/tracking) re-routed both to `media_detection_v1` instead --
+see `docs/architecture/phase-2-decisions.md`'s "Real local media inference
+closeout" -- since that processor's own worker always emits the identical
+metadata observation first regardless of which processor claimed the job,
+plus real detections/OCR/tracking on top when a detector is configured.
+Also covers the real gap the media-worker-foundation build's live wiring
+found: `evidence_lifecycle/routing.py` has always accepted
+`video/x-matroska` for `SourceType.VIDEO`, but `media_processing`'s own
+`MediaKind` had no matching entry until that phase (see
+`app/modules/media_processing/source.py`) -- routing alone passing was
+never sufficient proof the worker could actually process it.
 """
 
 from __future__ import annotations
@@ -54,17 +58,22 @@ DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 
 _VALID_ROUTES = [
     pytest.param(
-        SourceType.IMAGE, "image/jpeg", PNG_BYTES, "photo.jpg", "media_metadata_v1", id="image_jpeg"
+        SourceType.IMAGE,
+        "image/jpeg",
+        PNG_BYTES,
+        "photo.jpg",
+        "media_detection_v1",
+        id="image_jpeg",
     ),
     pytest.param(
-        SourceType.IMAGE, "image/png", PNG_BYTES, "photo.png", "media_metadata_v1", id="image_png"
+        SourceType.IMAGE, "image/png", PNG_BYTES, "photo.png", "media_detection_v1", id="image_png"
     ),
     pytest.param(
         SourceType.VIDEO,
         "video/mp4",
         FAKE_MP4_BYTES,
         "clip.mp4",
-        "media_metadata_v1",
+        "media_detection_v1",
         id="video_mp4",
     ),
     pytest.param(
@@ -72,7 +81,7 @@ _VALID_ROUTES = [
         "video/quicktime",
         FAKE_MP4_BYTES,
         "clip.mov",
-        "media_metadata_v1",
+        "media_detection_v1",
         id="video_quicktime",
     ),
     pytest.param(
@@ -80,7 +89,7 @@ _VALID_ROUTES = [
         "video/x-matroska",
         FAKE_MP4_BYTES,
         "clip.mkv",
-        "media_metadata_v1",
+        "media_detection_v1",
         id="video_matroska",
     ),
 ]
@@ -308,8 +317,8 @@ async def test_client_cannot_override_routed_processor_for_image(
     assert upload.status_code == 201, upload.text
     body = upload.json()
 
-    assert body["evidence"]["parser_profile"] == "media_metadata_v1"
-    assert body["job"]["processor_name"] == "media_metadata_v1"
+    assert body["evidence"]["parser_profile"] == "media_detection_v1"
+    assert body["job"]["processor_name"] == "media_detection_v1"
     assert body["job"]["processor_version"] == "1.0.0"
 
 
@@ -325,14 +334,14 @@ async def test_client_cannot_override_routed_processor_for_video(
         data={
             "source_type": "video",
             "classification": "unclassified",
-            "parser_profile": "media_detection_v1",
+            "parser_profile": "attacker_supplied_profile_v99",
         },
     )
     assert upload.status_code == 201, upload.text
     body = upload.json()
 
-    assert body["evidence"]["parser_profile"] == "media_metadata_v1"
-    assert body["job"]["processor_name"] == "media_metadata_v1"
+    assert body["evidence"]["parser_profile"] == "media_detection_v1"
+    assert body["job"]["processor_name"] == "media_detection_v1"
     assert body["job"]["processor_version"] == "1.0.0"
 
 

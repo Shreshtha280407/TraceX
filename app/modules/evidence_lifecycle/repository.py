@@ -430,6 +430,33 @@ class EvidenceLifecycleRepository:
             )
             return WorkerJobRecord.model_validate(updated), was_reclaim
 
+    async def renew_lease(
+        self, job_id: UUID, *, now: datetime, lease_seconds: int
+    ) -> datetime | None:
+        """Atomically extend a currently-`running`, unexpired-lease job's lease.
+
+        Returns the new `lease_expires_at`, or `None` if the job is not
+        `running` or its lease had already expired at `now` -- by the time
+        this is called, `service.renew_claim` has already verified the
+        caller's claim token and worker identity; this is a defensive,
+        atomic re-check so a lease can never be extended past its own
+        expiry (a legitimate reclaim by another worker, racing a slow
+        renewal, must always win -- never both hold a "valid" lease at
+        once).
+        """
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                sa.update(worker_jobs_table)
+                .where(
+                    worker_jobs_table.c.job_id == job_id,
+                    worker_jobs_table.c.status == WorkerStatus.RUNNING.value,
+                    worker_jobs_table.c.lease_expires_at >= now,
+                )
+                .values(lease_expires_at=lease_expires_at, updated_at=now)
+            )
+        return lease_expires_at if result.rowcount > 0 else None
+
     # --- worker result (single atomic write path) ---------------------------
 
     async def get_result_for_job(self, job_id: UUID) -> WorkerResultRecord | None:

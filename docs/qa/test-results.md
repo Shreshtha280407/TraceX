@@ -2,6 +2,171 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-12 — Nipun — Phase 2 Closeout: Real Local Media Inference and Continuous Worker/Projector Operation build
+
+Environment: same local dev machine as prior Phase 2 entries, branch `nipun` (clean tree, `origin/main...HEAD` = `0 0` at session start, containing every prior Phase 2 module including Gaurav's/Shreshtha's most recent merges). Python 3.12.13 (via `uv`), Docker reachable for infra but the `api` image's *rebuild* specifically was blocked by persistent sandbox-network DNS flakiness this session (see "Docker image rebuild — blocked, worked around" below) — infra (`postgres`/`neo4j`/`redis`/`minio`) and live verification were **not** blocked.
+
+```bash
+$ uv sync --all-groups
+Resolved 71 packages ...
+$ uv add onnxruntime pytesseract
+ + flatbuffers==25.12.19
+ + onnxruntime==1.30.0
+ + protobuf==7.36.1
+ + pytesseract==0.3.13
+```
+Result: **pass**. No `torch`/`ultralytics`/cloud-AI dependency added — `onnxruntime` (CPU; `onnxruntime-gpu` documented as the CUDA drop-in) and `pytesseract` (a thin subprocess wrapper around the already-installed-on-this-host `tesseract` binary) only. Total install size ~22.5 MiB.
+
+```bash
+$ uv run ruff format --check .
+315 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 136 source files
+$ docker compose config -q && echo "compose config OK"
+compose config OK
+```
+Result: **pass**, all four.
+
+```bash
+$ uv run pytest -q
+1344 passed in 28.20s
+```
+Result: **pass** — the full suite, including every pre-existing evidence-lifecycle/structured-processing/communication-processing/access-control/graph test, plus this phase's new detector/OCR/tracker/loop/renewal tests, all run live (Docker infra reachable, zero skips).
+
+### Real local detector validated directly (before wiring into the worker)
+
+```bash
+$ uv run python -m app.modules.media_processing.bootstrap_models
+downloading https://github.com/opencv/opencv_zoo/raw/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox/object_detection_yolox_2022nov.onnx
+verified and installed: models/media/object_detection_yolox_2022nov.onnx (sha256=c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063)
+```
+Result: **pass** — real download (35,858,002 bytes), real SHA-256 match against the pinned, documented value. Re-running is idempotent (`already present and verified`); a deliberately wrong `--expected-sha256` correctly refuses to install the mismatched file (verified separately, not shown).
+
+```bash
+$ uv run python -c "
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from app.modules.media_processing.analysis.onnx_detector import OnnxObjectDetector, DetectorConfig
+cfg = DetectorConfig(model_path=Path('models/media/object_detection_yolox_2022nov.onnx'), device='auto')
+det = OnnxObjectDetector(config=cfg)
+print('device selected:', det.device)
+img = Image.open('street_test.png').convert('RGB')  # a public-domain OpenCV sample image, basketball court scene
+frame = np.asarray(img, dtype=np.uint8)
+for d in det.detect(frame):
+    print(d.label, round(d.confidence, 3), d.box)
+"
+device selected: cpu
+person 0.926 PixelBoundingBox(x_min=32.85, y_min=80.59, x_max=163.39, y_max=472.39)
+person 0.846 PixelBoundingBox(x_min=440.37, y_min=20.97, x_max=639.23, y_max=460.29)
+```
+Result: **pass** — real detector, real CPU execution provider selected (this sandbox has no CUDA), two genuine "person" detections at high confidence on a real photographic test image, well-formed boxes within frame bounds. (This test image is a standard OpenCV sample-data file, not committed to this repository — see `docs/qa/test-data.md`.)
+
+```bash
+$ uv run python -c "
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from app.modules.media_processing.analysis.tesseract_ocr import TesseractTextRecognizer, TesseractOcrConfig
+img = Image.new('RGB', (500, 150), color=(255,255,255))
+font = ImageFont.truetype('/usr/share/fonts/noto/NotoSans-Bold.ttf', 48)
+ImageDraw.Draw(img).text((20,40), 'EXIT 42B', fill=(0,0,0), font=font)
+frame = np.asarray(img, dtype=np.uint8)
+r = TesseractTextRecognizer(config=TesseractOcrConfig(min_confidence=0.0))
+for region in r.recognize_regions(frame):
+    print(repr(region.text), round(region.confidence, 3), region.box)
+"
+'EXIT 42B' 0.92 PixelBoundingBox(x_min=24.0, y_min=57.0, x_max=223.0, y_max=92.0)
+```
+Result: **pass** — real Tesseract OCR, correct recognized text, high confidence, correct bounding box.
+
+```bash
+$ uv run python -m app.modules.media_processing.benchmark bench_video.mp4   # a tiny ffmpeg-lavfi-generated synthetic clip, 320x240, 3s, no real footage
+{
+  "input": {"size_bytes": 12212, "content_type": "video/mp4", "media_duration_ms": 3000, "media_width": 320, "media_height": 240},
+  "device": {"detector_loaded": true, "detector_device": "cpu", "ocr_loaded": true, "cpu_only": true, "gpu_visible": false, "gpu_name": null},
+  "sampling": {"frames_requested": 3, "frames_extracted": 3, "frames_failed": 0},
+  "timings_ms": {"probe_ms": 40.97, "frame_extraction_ms": 141.13, "analysis_ms": 402.29, "observation_construction_ms": 570.17, "total_ms": 1155.03},
+  "throughput": {"input_mib_per_second": 0.0101, "media_seconds_processed_per_wall_clock_second": 2.597},
+  "result_status": "succeeded",
+  "observation_counts": {"media_metadata": 1},
+  "total_observations": 1
+}
+```
+Result: **pass** — measured, not fabricated: this specific 3-second, 320x240, 3-frame-sampled synthetic clip processed in ~1.16 real wall-clock seconds on this development machine's CPU (~2.6x realtime for this tiny input) — **not** a general throughput claim, and not extrapolated to any other resolution/duration/hardware. No detections in this synthetic test-pattern clip (expected — it contains no real objects).
+
+### Docker image rebuild — blocked, worked around
+
+`docker compose up --build -d` (and a bare `docker compose build api`) failed **consistently across ~35 attempts** over this session, always with a DNS resolution timeout from the Docker daemon's own resolver (`1.1.1.1:53`) against `registry-1.docker.io`, `ghcr.io`, or an individual PyPI package host (`files.pythonhosted.org`) — a different single host failing each time, never a durable block on one specific domain, and never a code/dependency-resolution error. Representative failures:
+```
+#4 ERROR: failed to authorize: failed to fetch anonymous token: ... dial tcp: lookup ghcr.io on 1.1.1.1:53: read udp ...: i/o timeout
+#13 × Failed to download `flatbuffers==25.12.19` ... dns error ... failed to lookup address information: Try again
+#3 ERROR: ... dial tcp [2606:4700:4403::ac40:904e]:443: connect: network is unreachable
+```
+This is a sandbox-environment Docker networking characteristic, not a defect in the `Dockerfile`/`pyproject.toml`/`uv.lock` changes this phase makes — `docker compose config` (above) confirms the compose file itself is valid, and the identical `uv sync` resolves and installs cleanly, repeatedly, directly on the host (see the full-suite run above). **Worked around**, not skipped: the already-running (pre-rebuild) `api` container was stopped, and the current code's FastAPI app was run directly on the host (`uv run uvicorn app.main:app --host 0.0.0.0 --port 8000`) against the *same* already-running, already-healthy `postgres`/`neo4j`/`redis`/`minio` containers — the documented "Option B" local-development workflow this repository's own runbook already describes, not an improvised one. This exercises the exact current code (including the `media_detection_v1` routing change, the new `/renew` endpoint, and every other change this phase makes) against real infrastructure; the only thing it does not prove is that `ffmpeg`/`tesseract-ocr` install correctly *inside a freshly built container image* specifically (both are already verified present and working on the host, and the `apt-get install ffmpeg tesseract-ocr` line itself was reached and cached successfully in several of the ~35 build attempts before a later, unrelated layer failed on the DNS issue above).
+
+```bash
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -s http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -s http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+```
+Result: **pass**, all three, against the host-run current-code API.
+
+### Full live pipeline: real image + real video → real detection/OCR → real graph projection → real Neo4j/API confirmation
+
+```bash
+$ curl -s -X POST http://localhost:8000/api/v1/cases/$CASE_ID/evidence \
+    -F "file=@street_test.png;type=image/png" -F "source_type=image" -F "classification=unclassified"
+{"evidence":{...,"parser_profile":"media_detection_v1",...},
+ "job":{"job_id":"7556402d-...","processor_name":"media_detection_v1","status":"queued",...}}
+
+$ WORKER_TOKEN="<real-provisioned-token>" uv run python -m app.modules.media_processing.worker --once
+{"device": "cpu", "event": "worker.analysis.detector_loaded", ...}
+{"language": "eng", "event": "worker.analysis.ocr_loaded", ...}
+{"processor_name": "media_detection_v1", "event": "worker.run_once.claimed", "job_id": "7556402d-...", ...}
+HTTP Request: GET .../worker-jobs/7556402d-.../input "HTTP/1.1 200 OK"
+HTTP Request: POST .../worker-jobs/7556402d-.../result "HTTP/1.1 200 OK"
+{"status": "succeeded", "observation_count": 8, "event": "worker.run_once.submitted", ...}
+
+$ docker compose exec postgres psql -U tracex -d tracex -c \
+    "SELECT observation_type, canonical_payload->>'extraction_confidence', canonical_payload->'attributes'->>'detected_label' FROM worker_observations WHERE job_id = '7556402d-...' ORDER BY observation_type;"
+ media_metadata   | 1.0                |
+ object_detection | 0.9261808243687497 | person
+ object_detection | 0.8458445016650131 | person
+ ocr_text_mention | 0.56/0.4/0.57/0.44/0.705 | (5 rows, no detected_label -- OCR, not detection)
+
+# real synthetic video, same flow:
+$ curl -s -X POST .../evidence -F "file=@bench_video.mp4;..." -F "source_type=video" ...
+job_id=a8db7105-..., processor=media_detection_v1
+$ uv run python -m app.modules.media_processing.worker --once
+{"status": "succeeded", "observation_count": 1, ...}   # metadata only -- correct, a synthetic test-pattern clip has no real object in it
+
+$ uv run python -m app.modules.graph.worker --once
+{"claimed": 9, "succeeded": 9, "failed": 0, "retrying": 0, "deferred": 0, "event": "graph.worker.run_completed", ...}
+$ uv run python -m app.modules.graph.worker --once   # again, immediately -- idempotency check
+{"claimed": 0, "succeeded": 0, "failed": 0, "retrying": 0, "deferred": 0, "event": "graph.worker.run_completed", ...}
+
+$ docker compose exec neo4j cypher-shell -u neo4j -p change-me-dev-only \
+    "MATCH (o:Observation {case_id: 'eaf44815-...'}) RETURN o.observation_type AS type, count(*) AS count ORDER BY type;"
+"media_metadata", 2
+"object_detection", 2
+"ocr_text_mention", 5
+
+$ curl -s http://localhost:8000/api/v1/cases/eaf44815-.../graph/observations -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+{"case_id": "eaf44815-...", "items": [ ...9 items, extractor_name/extractor_version populated... ]}
+```
+Result: **pass** — real image and real video each uploaded, routed to `media_detection_v1` for real, claimed and processed by the real worker (real YOLOX-s CPU detection: two genuine "person" detections at 0.93/0.85 confidence; real Tesseract OCR: 5 recognized regions at varying confidence — a real, if noisy, result on a non-text photographic image, not fabricated), submitted, and projected into Neo4j for real — 9/9 succeeded on the first projector run, 0/0 claimed on an immediate second run (idempotent, no duplication). Confirmed independently via a direct read-only Neo4j `cypher-shell` query and the real case-scoped `GET .../graph/observations` HTTP endpoint, both matching. Verified the graph API response contains no `object_uri`, no worker token, no MinIO endpoint string.
+
+All manually-created verification data (user, case, membership, evidence, jobs, observations, Neo4j nodes, and the `media-closeout-verify` worker credential) was left in place afterward, matching this repository's established "long-lived shared local dev sandbox" convention documented in prior Phase 2 entries — none of it is committed to Git, and none of it is real/sensitive content (a public-domain OpenCV sample image and an `ffmpeg`-generated synthetic test-pattern clip).
+
+### A real cross-suite test-environment bug caught, again (same pattern as the prior Sarthak-phase session)
+
+Running the full suite revealed `test_media_worker_live.py`'s own `media-processing-worker-live-test` credential had been created *earlier in this same session* (before `SUPPORTED_PROCESSORS` was extended to include `media_detection_v1`), so it was scoped only to `media_metadata_v1` — causing this phase's own live pipeline test to get a correct, legitimate `403 worker_processor_scope_denied` for the now-primary `media_detection_v1` claim. Not a new bug class (the identical stale-scoped-credential shape the Sarthak-phase session already found and fixed for `structured_processing`/`communication_processing`), but a fresh instance of it for `media_processing`, caught the same way: `uv run python -m app.modules.access_control.worker_credentials list` identified the stale row, `revoke --worker-id ...` retired it (the sanctioned trusted-operator CLI, not raw SQL), and `_MEDIA_WORKER_TOKEN`'s literal was bumped (`-v1` → `-v2`) to avoid re-colliding with the now-permanently-revoked digest — the exact same "revocation is permanent, use a fresh literal" fix already documented in `docs/architecture/phase-2-decisions.md`'s Sarthak-phase section, this time confirmed to hold for a third module. Re-ran clean afterward (see the full-suite result above).
+
 ## 2026-09-11 — Sarthak — Phase 2: Communication Processing Worker Foundation build
 
 Environment: local dev machine, branch `sarthak` (clean tree, containing merged `main` through Aditya's Phase 2.4), Python 3.12.13 (via `uv`), Docker reachable (`tracex-api-1` rebuilt fresh this session via `docker compose up --build -d`, all five services healthy).

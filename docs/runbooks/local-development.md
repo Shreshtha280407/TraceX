@@ -33,6 +33,19 @@ docker compose down          # stop containers, keep volumes (data persists)
 docker compose down -v       # stop containers and remove volumes (fresh state)
 ```
 
+### Optional continuous workers (Phase 2 closeout — `workers` Compose profile)
+
+`media-worker` and `graph-projector` (running `--loop`) are **not** started by a plain `docker compose up` — they live under the `workers` Compose profile, opt-in only:
+
+```bash
+docker compose --profile workers run --rm media-model-bootstrap   # once, before starting media-worker
+docker compose --profile workers up -d media-worker graph-projector
+docker compose --profile workers logs -f media-worker graph-projector
+docker compose --profile workers down
+```
+
+Both wait for their real dependencies to be healthy (`api` — now with its own `/healthz`-based healthcheck — for `media-worker`; `postgres`/`neo4j` directly for `graph-projector`, which talks to them without going through the internal worker API, unchanged from before this phase) and `restart: unless-stopped`. `media-model-bootstrap` is a one-shot command (`docker compose run`, not `up` — nothing depends on it, so `up` never starts it on its own), writing the checksum-verified detector model into the shared `media-models-data` named volume `media-worker` mounts read-only. Neither service needs a `WORKER_TOKEN` provisioned specially — the existing `${WORKER_TOKEN:-}` passthrough (shared with `api`) is reused; provision a real credential via the trusted-operator CLI exactly as for a host-run worker (see "Media-processing worker CLI" below), and set `WORKER_TOKEN` in `.env` before starting these services.
+
 ## Verifying the API is up
 
 ```bash
@@ -91,7 +104,15 @@ See `docs/architecture/graph-projection.md` for the full design. After applying 
 uv run python -m app.modules.graph.worker --once
 ```
 
-Claims and attempts a bounded batch (`GRAPH_PROJECTION_BATCH_SIZE`, default 25), then exits — no daemon exists in this phase; run it again (or wire it into a cron/systemd timer) to process another batch. Exit code `1` means at least one job reached a terminal `failed` state (worth investigating); `0` covers "nothing to do" and "everything succeeded or was safely left retryable."
+Claims and attempts a bounded batch (`GRAPH_PROJECTION_BATCH_SIZE`, default 25), then exits — run it again (or wire it into a cron/systemd timer) to process another batch. Exit code `1` means at least one job reached a terminal `failed` state (worth investigating); `0` covers "nothing to do" and "everything succeeded or was safely left retryable."
+
+For continuous operation instead of a cron/systemd timer (Phase 2 closeout):
+
+```bash
+uv run python -m app.modules.graph.worker --loop
+```
+
+Runs continuously until `Ctrl-C` (SIGINT) or SIGTERM, with a configurable idle-poll interval (`GRAPH_PROJECTOR_POLL_INTERVAL_SECONDS`, default 5s), bounded exponential backoff on repeated failure (capped at `GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS`, default 60s), and a `GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES` (default 5) cutoff that stops the loop (exit `1`) rather than retrying a genuinely down Neo4j/PostgreSQL forever. Shutdown is graceful: whatever batch is already in flight finishes before the process exits. See `docs/architecture/graph-projection.md`'s "Continuous operation" section.
 
 Inspecting job state directly (`psql`, or any PostgreSQL client):
 
@@ -262,9 +283,17 @@ uv run pytest tests/unit/media_processing -v
 uv run pytest tests/integration/media_processing -v   # needs ffmpeg/ffprobe; self-skips otherwise
 ```
 
-See `docs/runbooks/media-development.md` for interactive usage, GPU/capability checks, and adding a real detector/tracker/OCR adapter later.
+See `docs/runbooks/media-development.md` for interactive usage, GPU/capability checks, and swapping in a different detector/tracker/OCR adapter.
 
-### Media-processing worker CLI (Phase 2 completion — Gaurav)
+**Benchmark** (Phase 2 closeout): measure real, actual processing performance on a local image/video file --
+
+```bash
+uv run python -m app.modules.media_processing.benchmark path/to/file.mp4
+```
+
+Reports measured media size/duration, sampled frame count, device used (`cpu`/`cuda`), per-stage timings, throughput, and observation counts — never a fabricated or extrapolated throughput claim. Uses the real detector/OCR if bootstrapped, metadata-only otherwise (same degradation as the worker CLI). See `docs/qa/test-results.md` for actual measured runs.
+
+### Media-processing worker CLI (Phase 2 completion — Gaurav; Phase 2 closeout — Nipun)
 
 See `docs/architecture/media-processing-worker.md` for the full design. Same pattern as the structured-processing/communication-processing worker CLIs above — a separate worker process, its own `WORKER_TOKEN`-bound credential:
 
@@ -272,14 +301,16 @@ See `docs/architecture/media-processing-worker.md` for the full design. Same pat
 docker compose up -d postgres redis minio
 uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
 uv run python -m app.modules.access_control.worker_credentials create \
-    --name media-worker --processor media_metadata_v1
-# copy the printed token into .env as WORKER_TOKEN=<token>, then:
-uv run python -m app.modules.media_processing.worker --once
+    --name media-worker --processor media_detection_v1 --processor media_metadata_v1
+# copy the printed token into .env as WORKER_TOKEN=<token>, then bootstrap the
+# real detector model asset (skip this to run metadata-only -- see below):
+uv run python -m app.modules.media_processing.bootstrap_models
+uv run python -m app.modules.media_processing.worker --once   # or --loop
 ```
 
-Both `image` (`image/jpeg`/`image/png`) and `video` (`video/mp4`/`video/quicktime`/`video/x-matroska`) source types route to `media_metadata_v1` — see `docs/architecture/evidence-lifecycle.md`'s routing table. `media_detection_v1` is fully implemented and unit-tested but is **not** claimed by this CLI (no real detector to inject, and no upload is ever routed to it either) — see `docs/architecture/media-processing-worker.md`'s "Supported processors" section.
+Both `image` (`image/jpeg`/`image/png`) and `video` (`video/mp4`/`video/quicktime`/`video/x-matroska`) source types now route to `media_detection_v1` — see `docs/architecture/evidence-lifecycle.md`'s routing table. Real detection/OCR/tracking run only if the model asset above was bootstrapped *and* `tesseract-ocr` is installed (already true inside this repo's Docker image; install it locally otherwise) — without either, the worker degrades to metadata-only processing automatically (a structured warning is logged, never a crash); pass `--require-analysis` to fail loudly at startup instead if you want to guarantee real detection is available.
 
-`--once` is the only supported mode — no daemon or polling loop; run it again to attempt another job.
+`--once` processes at most one job then exits; `--loop` (Phase 2 closeout) runs continuously until `Ctrl-C`/SIGTERM — see `docs/architecture/media-processing-worker.md`'s "Continuous operation" section for the poll/backoff/shutdown/lease-renewal policy and its `MEDIA_WORKER_*` settings.
 
 Running its test suites specifically:
 

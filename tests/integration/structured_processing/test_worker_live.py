@@ -104,12 +104,19 @@ def _live_settings() -> Settings:
 
 
 def _skip_unless_api_reachable(settings: Settings) -> None:
+    """`/healthz` alone only proves the API *process* is alive -- it says nothing about
+    whether its own dependencies are reachable. Checking `/readyz` too means a
+    dependency outage (e.g. Postgres/Neo4j/Redis/MinIO down while the API process
+    itself is still up) self-skips cleanly here, rather than surfacing as a raw
+    connection `OSError` deep inside this suite's own first real database call."""
     try:
         httpx.get(f"{settings.worker_api_base_url}/healthz", timeout=2.0).raise_for_status()
+        httpx.get(f"{settings.worker_api_base_url}/readyz", timeout=2.0).raise_for_status()
     except httpx.HTTPError as exc:
         pytest.skip(
-            f"live API server not reachable at {settings.worker_api_base_url}: "
-            f"{type(exc).__name__}; start it via `docker compose up --build -d` to run this test"
+            f"live API server or its dependencies not reachable at "
+            f"{settings.worker_api_base_url}: {type(exc).__name__}; start it via "
+            f"`docker compose up --build -d` to run this test"
         )
 
 

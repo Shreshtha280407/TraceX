@@ -104,3 +104,10 @@ class ResultAcknowledgement(_ResponseModel):
     result_id: UUID
     observation_count: int
     observation_ids: tuple[UUID, ...]
+
+
+class RenewLeaseResponse(_ResponseModel):
+    """Safe acknowledgement of a lease renewal -- the new expiry only, nothing else."""
+
+    job_id: UUID
+    lease_expires_at: datetime
