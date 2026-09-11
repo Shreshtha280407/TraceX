@@ -37,7 +37,12 @@ _CONTENT_TYPE_TO_KIND: dict[str, ContentKind] = {
 _KIND_TO_EXTENSIONS: dict[ContentKind, frozenset[str]] = {
     ContentKind.PDF: frozenset({"pdf"}),
     ContentKind.DOCX: frozenset({"docx"}),
-    ContentKind.TXT: frozenset({"txt"}),
+    # `.md` accepted alongside `.txt`: Markdown source is plain text (no
+    # separate parser or `ContentKind` needed) and `evidence_lifecycle`'s
+    # routing already only accepts `text/plain` for SourceType.DOCUMENT --
+    # a `.md` upload therefore always arrives as `text/plain` too. See
+    # docs/architecture/structured-processing-worker.md.
+    ContentKind.TXT: frozenset({"txt", "md"}),
     ContentKind.CSV: frozenset({"csv"}),
     ContentKind.XLSX: frozenset({"xlsx"}),
     ContentKind.JSON: frozenset({"json"}),

@@ -10,6 +10,16 @@ and is deliberately *not* caught here (see `worker.py`).
 OCR deferral (`document_requires_ocr`) is a normal, expected outcome for a
 scanned PDF, not a failure — it is represented as a `WorkerResultV1(status=
 DEFERRED)` return value, not an exception. See `document/ocr_routing.py`.
+
+The three errors at the bottom of this file (`WorkerAuthenticationError`,
+`InputResolutionUnavailableError`, `WorkerApiError`) are a distinct
+category: *orchestration*-level failures talking to Nipun's internal
+worker API (claim/submit/input-resolution), not source-parsing failures.
+`worker.py`'s CLI runner catches these separately from `ProcessingError` --
+see its module docstring. None of these three may ever be constructed with
+`WORKER_SHARED_SECRET`, a claim token, or a raw HTTP response body in the
+message, for the same reason `ProcessingError.message` may never carry
+extracted source content.
 """
 
 from __future__ import annotations
@@ -46,3 +56,39 @@ class ProcessingError(Exception):
         self.code = code
         self.message = message
         self.retryable = retryable
+
+
+class WorkerOrchestrationError(Exception):
+    """Base class for the worker CLI's own (non-parsing) safe, named failures."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class WorkerAuthenticationError(WorkerOrchestrationError):
+    """The internal worker API rejected the shared secret or a claim token.
+
+    Never constructed with the secret/token itself, or with the API's raw
+    response body (which could itself echo request details).
+    """
+
+
+class InputResolutionUnavailableError(WorkerOrchestrationError):
+    """The approved way to fetch a claimed job's evidence bytes/metadata is not available.
+
+    Raised by `input_resolver.LiveInputResolver` when Nipun's internal API
+    has no route matching the documented, proposed input-access endpoint
+    (see `docs/architecture/structured-processing-worker.md`, "Input-access
+    boundary") -- this is an honest, loud signal that the integration seam
+    is missing, never silently bypassed with direct MinIO access.
+    """
+
+
+class WorkerApiError(WorkerOrchestrationError):
+    """An unexpected (non-auth, non-4xx-validation) failure calling the internal worker API.
+
+    Never constructed with the raw response body or the underlying HTTP
+    client exception's text -- only a safe description (e.g. "claim
+    request failed: HTTP 503").
+    """
