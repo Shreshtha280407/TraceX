@@ -227,10 +227,10 @@ def test_run_once_submit_failure_propagates_without_leaking_claim_token() -> Non
 # --- main() -------------------------------------------------------------
 
 
-def test_main_returns_1_when_worker_shared_secret_unconfigured(
+def test_main_returns_1_when_worker_token_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WORKER_SHARED_SECRET", "")
+    monkeypatch.setenv("WORKER_TOKEN", "")
     assert main(["--once"]) == 1
 
 

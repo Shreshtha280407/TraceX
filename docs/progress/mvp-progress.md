@@ -171,7 +171,7 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 ### Outstanding for team review
 
 - [x] ~~No worker consumer... `worker_jobs.status` is always `queued`~~ — **claim/result submission delivered in Phase 2.1 below**; a real worker daemon still does not exist.
-- [ ] Denied-access-attempt auditing for case-scoped endpoints is not wired (a pre-existing gap in `require_case_action`, not introduced or fixed by this task).
+- [x] ~~Denied-access-attempt auditing for case-scoped endpoints is not wired~~ — **resolved in Phase 2.4 below**: `require_case_action` now records `case_access_denied`.
 - [ ] `source_type=other` has no registered processor and is rejected outright — a later phase must decide how (or whether) to support it.
 - [ ] `Idempotency-Key` conflict detection does not consider `classification`/`parser_profile` — see `docs/qa/known-limitations.md`.
 
@@ -195,11 +195,11 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 
 ### Outstanding for team review
 
-- [ ] No real per-worker credential system — `require_worker_principal` is a narrow shared-secret boundary only; see "Worker identity" in `docs/architecture/worker-job-lifecycle.md` for the explicit Aditya handoff this implies.
+- [x] ~~No real per-worker credential system — `require_worker_principal` is a narrow shared-secret boundary only~~ — **resolved in Phase 2.4 below**: per-worker `WorkerCredentialRecord`s replace the shared secret entirely.
 - [ ] No max-attempt cutoff on reclaiming — a job with a perpetually-expiring lease is reclaimable forever.
 - [ ] No lease renewal for a long-running worker.
 - [ ] No automatic redrive of `deferred`/`cancelled` jobs.
-- [ ] Denied worker actions (bad claim token, scope mismatch, conflict) are not audit-logged — mirrors the same pre-existing gap already noted for case-scoped user endpoints.
+- [x] ~~Denied worker actions (bad claim token, scope mismatch, conflict) are not audit-logged~~ — **resolved in Phase 2.4 below**: `worker_authentication_denied`/`worker_processor_scope_denied`/`worker_job_access_denied` are now recorded.
 - [ ] `evidence_records.processing_status` still doesn't reflect job completion once a result is submitted — deliberately out of this task's scope (see `docs/qa/known-limitations.md`).
 
 ## Jasraj Phase 2 — Structured-Processing Worker: Complete
@@ -264,6 +264,36 @@ Verification ran 2026-09-11, including a full live Docker pass (see `docs/qa/tes
 
 - None. This phase closes the one open question Phase 2.2 raised and introduces no new unresolved boundary.
 
+## Phase 2.4 — Aditya worker identity, authorization binding, and security audit completion: Complete
+
+Verification ran 2026-09-11, including a full `docker compose up --build -d` (all five services healthy on the first attempt), a real `alembic upgrade head` applying this phase's migration on top of the existing live chain, and the **entire** repository test suite run against fully-live infrastructure with zero skips: `uv run pytest -q` → 1084 passed. Two real bugs were found and fixed during that live testing — both in this phase's own test helpers, not in the application code being tested (the security-critical paths — digest verification, processor scoping, identity binding, audit recording — were all confirmed correct on the first live attempt via direct `curl`/CLI checks against the running container):
+
+1. **Test-environment pepper pollution.** `tests/conftest.py` sets a fixed test-only `WORKER_CREDENTIAL_PEPPER` in `os.environ` for the rest of the suite's sake. Both new live test files' `_live_settings()` helper built its `Settings` from `.env` values only for keys `.env` actually defined, so a `.env` that (correctly) leaves `WORKER_CREDENTIAL_PEPPER` unset let pydantic-settings silently fall back to conftest's fake value instead — diverging from what the live API container itself resolves (a real blank env var, normalized to `None`). This produced a genuine credential-digest mismatch between the test process and the live server (`401` on every claim). Fixed by explicitly forcing `worker_credential_pepper=None` into both helpers' kwargs so an explicit `.env`-derived value always wins over OS-env leakage.
+2. **`_ensure_worker_credential` bound the wrong token.** The helper called `worker_credentials.create_worker_credential()` to seed a live-test credential, but that function *always* mints its own fresh random token (correct behavior for the trusted-operator CLI, wrong for a helper trying to bind a credential to the developer's own already-configured `WORKER_TOKEN`) — so the stored digest could never match the token the test client actually presented. Fixed by constructing the `WorkerCredentialRecord` directly with `credential_digest = hash_worker_credential(token, pepper)` for the known token, exactly what the CLI does internally minus the random generation step.
+
+Both fixes are confirmed against the real running stack: `tests/integration/evidence_lifecycle/test_worker_identity_lifecycle_live.py` (the full provision → claim → stream → submit → cross-worker-denial → revoke → future-denial sequence) and all four tests in `tests/integration/structured_processing/test_worker_live.py` (including the complete claim→stream→parse→submit pipeline for all three processor types) now pass for real. A manual CLI smoke test against the live stack additionally confirmed: `create`/`rotate`/`revoke`/`list` all work against real PostgreSQL; an in-scope claim returns `200`, an out-of-scope one returns `403` with a real `worker_processor_scope_denied` row; a rotated-away token is immediately rejected `401`; and `worker_credential_rotated`/`worker_credential_revoked`/`worker_processor_scope_denied`/`worker_authentication_denied`/`worker_job_access_denied` all appear as real rows in `security_audit_events` — verified by querying PostgreSQL directly, not just trusting the HTTP response.
+
+### Delivered
+
+- [x] `WorkerCredentialRecord` (`app/modules/access_control/models.py`) — `worker_id`, `display_name`, `status` (`active`/`revoked`), `allowed_processor_names`, `credential_digest`, `created_at`/`rotated_at`/`revoked_at`. `migrations/versions/48e9e76153ca_worker_credentials_and_job_ownership.py` — the `worker_credentials` table plus a nullable `worker_jobs.claimed_by_worker_id` (FK `ON DELETE SET NULL`, indexed), applied cleanly on top of the existing live migration chain.
+- [x] `app/modules/access_control/worker_credentials.py` — the trusted-operator-only CLI (`create`/`rotate`/`revoke`/`list`), never a public HTTP API. `secrets.token_urlsafe(32)` tokens; `HMAC-SHA256(pepper, token)` digest with an unkeyed-SHA-256 fallback when no pepper is configured (`resolve_worker_pepper` fails closed `503` only in production when the pepper is missing); plaintext shown exactly once, to the local terminal only; `list` never prints a token or digest. `rotate_worker_credential`/`revoke_worker_credential` each record a `worker_credential_rotated`/`worker_credential_revoked` audit event via the plain (propagating, not denial-swallowing) `record_audit_event` — an accepted operator action, not a denial.
+- [x] `Settings.worker_shared_secret` removed outright (no fallback path); `Settings.worker_token` (client-side, what a worker process presents) and `Settings.worker_credential_pepper` (server-side) added, both blank-string-normalized to `None` by a shared validator (closing the exact `docker compose` `${VAR:-}`-resolves-to-empty-string class of bug Phase 2.1 already documented once for the old shared secret).
+- [x] `evidence_lifecycle.dependencies.require_worker_principal` rewritten to authenticate against a real `WorkerCredentialRecord` looked up by digest — `503` only for a missing production pepper, `401` (identical generic detail) for missing/malformed/unknown/revoked credentials. `WorkerPrincipal` now carries `worker_id`/`display_name`/`allowed_processor_names` from the real row, never self-declared.
+- [x] `POST /claim` enforces per-worker processor scoping (`403`, `worker_processor_scope_denied` audited) before the claim query ever runs. A successful claim persists `claimed_by_worker_id` for the authenticated worker. `POST /result` and `GET /input` both verify the authenticated worker **is** the identity bound to the job — checked immediately after claim-token-hash match and **before** the terminal-result replay/idempotency branch — before any lease/status check; a wrong worker with a right-shaped claim token is rejected `401` (`worker_job_access_denied` audited) whether the job is running or already terminal. A legitimate lease-expiry reclaim transfers ownership to the new claiming worker. `FOR UPDATE SKIP LOCKED`, attempt counting, claim-token hashing, and result idempotency are all unchanged from Phase 2.1.
+- [x] `access_control.dependencies.require_case_action` now records a `case_access_denied` audit event via `record_audit_event_safely` before raising `403` — closing the exact gap flagged since Phase 2.
+- [x] `record_audit_event_safely` (`access_control/audit.py`) — a denial-only wrapper that swallows a write failure (logs a warning) so a broken audit sink never turns a deny into a grant; every new denial call site in this phase uses it, while the two accepted-action events (`worker_credential_rotated`/`_revoked`) use the plain, propagating `record_audit_event`.
+- [x] `structured_processing.worker`/`.client`/`test_worker_live.py` updated to use `WORKER_TOKEN` (no shared-secret fallback anywhere); `.env.example`/`compose.yaml` updated to match.
+- [x] `tests/unit/access_control/test_worker_credentials.py` (19 tests), `tests/unit/access_control/test_case_access_audit.py` (4 tests), `tests/unit/evidence_lifecycle/test_worker_identity_service.py` (6 tests), `tests/unit/evidence_lifecycle/test_worker_identity_api.py` (14 tests) — all 19 required scenarios from the task brief covered, plus every pre-existing `evidence_lifecycle`/`structured_processing` test updated for the new signatures and passing unchanged in behavior.
+- [x] `tests/integration/evidence_lifecycle/test_worker_identity_lifecycle_live.py` (new, 1 test) — proves the complete lifecycle for real; verified passing live, not just self-skipping.
+- [x] QA entries `AUTH-WORKER-IDENTITY-001`, `WORKER-PROCESSOR-SCOPE-001`, `WORKER-JOB-OWNERSHIP-001`, `WORKER-DENIAL-AUDIT-001` added to `docs/qa/test-matrix.md`; `WORKER-INTERNAL-API-001`'s auth description and the two stale `WORKER_SHARED_SECRET` mentions in Jasraj's `SP-WORKER-ORCHESTRATION-001`/`SP-WORKER-LIVE-001` rows corrected.
+- [x] `docs/architecture/worker-identity-and-security.md` (new); `README.md`, `docs/architecture/evidence-lifecycle.md`, `docs/architecture/worker-job-lifecycle.md`, `docs/architecture/phase-2-decisions.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md` updated additively.
+
+### Outstanding for team review
+
+- [ ] Rotating or removing `WORKER_CREDENTIAL_PEPPER` invalidates every existing worker credential's digest at once — no per-credential pepper version exists; documented, not automated.
+- [ ] No maximum-attempt cutoff or fleet-size limit on worker credentials — an unbounded number may be provisioned, and no credential is auto-revoked after repeated authentication failures.
+- [ ] No lease renewal, no automatic redrive of `deferred`/`cancelled` jobs, no max-attempt cutoff on reclaiming — all pre-existing Phase 2.1 limitations, unchanged by this phase.
+
 ## Later phases (not started)
 
 Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, the document/structured-processing foundation, the access-control foundation, the audio/social/alias/communication foundation, and the video/image processing foundation above:
@@ -276,7 +306,6 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - Graph analytics (centrality, community detection, motifs).
 - Case CRUD API (evidence-lifecycle API itself is now delivered above, built against `access_control.dependencies.require_case_*`).
 - A worker daemon/consumer loop that actually calls `/api/v1/internal/worker-jobs/claim`, runs `structured_processing`/`communication_processing`/`media_processing`'s `process_job`, and submits the result via `/api/v1/internal/worker-jobs/{job_id}/result` (the claim/submit primitives themselves are delivered — see Phase 2.1 above).
-- A real per-worker credential-issuance system (Aditya-owned), replacing Phase 2.1's narrow shared-secret `require_worker_principal` stand-in.
 - MFA, SSO, external identity provider, production secret management.
 - Merkle checkpointing and signatures.
 - Frontend (including any future cookie/CSRF/CORS decisions).

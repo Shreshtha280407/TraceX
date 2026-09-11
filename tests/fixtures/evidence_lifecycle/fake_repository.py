@@ -112,6 +112,7 @@ class FakeEvidenceLifecycleRepository:
         now: datetime,
         lease_seconds: int,
         claim_token_hash: str,
+        claimed_by_worker_id: UUID | None = None,
     ) -> tuple[WorkerJobRecord, bool] | None:
         eligible = sorted(
             (
@@ -142,6 +143,7 @@ class FakeEvidenceLifecycleRepository:
                 "claimed_at": now,
                 "lease_expires_at": now + timedelta(seconds=lease_seconds),
                 "claimed_by": processor_name,
+                "claimed_by_worker_id": claimed_by_worker_id,
                 "claim_token_hash": claim_token_hash,
                 "updated_at": now,
             }

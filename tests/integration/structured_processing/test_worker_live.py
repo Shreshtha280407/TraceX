@@ -4,9 +4,19 @@ Self-skips (never fabricates success) whenever any of the following is
 true, each checked explicitly:
   - no `.env` at the repo root
   - the live API server isn't reachable at `WORKER_API_BASE_URL`
-  - `WORKER_SHARED_SECRET` isn't configured in that live environment
+  - `WORKER_TOKEN` isn't configured in that live environment
   - (pipeline tests only) PostgreSQL/MinIO specifically aren't reachable --
     needed to seed a real case/user/membership and a real evidence upload
+
+Since Aditya's Phase 2 worker-identity hardening, a configured `WORKER_TOKEN`
+alone is not sufficient -- it must also match a real, active
+`worker_credentials` row scoped to the processors this test needs. Rather
+than requiring a developer to have already run the trusted-operator CLI
+before this suite can run at all, `_ensure_worker_credential` provisions
+one directly (idempotently, by digest) the first time this file runs
+against a given database -- exactly the shape
+`uv run python -m app.modules.access_control.worker_credentials create`
+would produce, just inlined so a live run needs no separate manual step.
 
 `test_worker_client_against_real_running_api` proves the client reaches the
 real API for the "no work"/auth-rejection paths without needing any seeded
@@ -25,6 +35,7 @@ genuinely does.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +54,8 @@ from app.modules.access_control.models import (
     CaseRole,
     CaseStatus,
     ClearanceLevel,
+    WorkerCredentialRecord,
+    WorkerCredentialStatus,
 )
 from app.modules.access_control.repository import (
     AccessControlRepository,
@@ -51,6 +64,10 @@ from app.modules.access_control.repository import (
     users_table,
 )
 from app.modules.access_control.repository import create_engine as create_ac_engine
+from app.modules.access_control.worker_credentials import (
+    hash_worker_credential,
+    resolve_worker_pepper,
+)
 from app.modules.evidence_lifecycle.repository import (
     evidence_records_table,
     worker_jobs_table,
@@ -60,7 +77,7 @@ from app.modules.evidence_lifecycle.repository import (
 from app.modules.structured_processing.client import WorkerApiClient
 from app.modules.structured_processing.errors import WorkerAuthenticationError
 from app.modules.structured_processing.input_resolver import LiveInputResolver
-from app.modules.structured_processing.worker import run_once
+from app.modules.structured_processing.worker import SUPPORTED_PROCESSORS, run_once
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -74,6 +91,15 @@ pytestmark = pytest.mark.skipif(
 def _live_settings() -> Settings:
     values = dotenv_values(ENV_FILE)
     kwargs: dict[str, Any] = {k.lower(): v for k, v in values.items() if v is not None}
+    # tests/conftest.py sets a fixed test-only WORKER_CREDENTIAL_PEPPER in
+    # os.environ for the rest of the suite's sake. Without forcing this key
+    # into kwargs explicitly (even as None), pydantic-settings would fall
+    # back to that OS-env value instead of .env's real (here: absent) one
+    # -- diverging from what the live API container itself resolves via
+    # compose.yaml's own `${WORKER_CREDENTIAL_PEPPER:-}` passthrough, and
+    # causing `_ensure_worker_credential`'s digest to mismatch what the
+    # live server verifies against.
+    kwargs.setdefault("worker_credential_pepper", None)
     return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 
@@ -87,16 +113,54 @@ def _skip_unless_api_reachable(settings: Settings) -> None:
         )
 
 
+async def _ensure_worker_credential(settings: Settings, token: str) -> None:
+    """Idempotently provision a worker credential bound to the exact `token` given,
+    scoped to every processor `structured_processing.worker` supports.
+
+    Deliberately does *not* call `worker_credentials.create_worker_credential`
+    -- that function always mints its own fresh random token (the right
+    behavior for the trusted-operator CLI, which hands the plaintext back to
+    an operator) and has no way to bind a credential to an already-known
+    token. This helper instead builds the `WorkerCredentialRecord` directly
+    with `credential_digest = hash_worker_credential(token, pepper)`, so the
+    developer's own configured `WORKER_TOKEN` is what actually authenticates.
+    Safe to call repeatedly against the same database: a matching digest
+    already existing is a no-op, not an error.
+    """
+    repository = AccessControlRepository(create_ac_engine(settings))
+    try:
+        pepper = resolve_worker_pepper(settings)
+        digest = hash_worker_credential(token, pepper)
+        existing = await repository.get_worker_credential_by_digest(digest)
+        if existing is not None and existing.status is WorkerCredentialStatus.ACTIVE:
+            return
+        record = WorkerCredentialRecord(
+            worker_id=uuid4(),
+            display_name="structured-processing-worker-live-test",
+            status=WorkerCredentialStatus.ACTIVE,
+            allowed_processor_names=tuple(name for name, _version in SUPPORTED_PROCESSORS),
+            credential_digest=digest,
+            created_at=datetime.now(UTC),
+            rotated_at=None,
+            revoked_at=None,
+        )
+        await repository.create_worker_credential(record)
+    finally:
+        await repository.close()
+
+
 def test_worker_client_against_real_running_api() -> None:
     settings = _live_settings()
     _skip_unless_api_reachable(settings)
 
-    secret = settings.worker_shared_secret
+    secret = settings.worker_token
     if secret is None:
         pytest.skip(
-            "WORKER_SHARED_SECRET is not configured in the live .env; "
+            "WORKER_TOKEN is not configured in the live .env; "
             "the internal worker API fails closed without it"
         )
+
+    asyncio.run(_ensure_worker_credential(settings, secret.get_secret_value()))
 
     client = WorkerApiClient(
         base_url=settings.worker_api_base_url, shared_secret=secret.get_secret_value()
@@ -152,15 +216,17 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
     settings = _live_settings()
     _skip_unless_api_reachable(settings)
 
-    secret = settings.worker_shared_secret
+    secret = settings.worker_token
     if secret is None:
-        pytest.skip("WORKER_SHARED_SECRET is not configured in the live .env")
+        pytest.skip("WORKER_TOKEN is not configured in the live .env")
 
     try:
         await check_postgres(settings)
         await check_minio(settings)
     except Exception as exc:
         pytest.skip(f"live PostgreSQL/MinIO not reachable: {type(exc).__name__}")
+
+    await _ensure_worker_credential(settings, secret.get_secret_value())
 
     ac_engine = create_ac_engine(settings)
     repository = AccessControlRepository(ac_engine)

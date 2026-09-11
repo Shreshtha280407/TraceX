@@ -42,16 +42,18 @@ _TEST_ENV_DEFAULTS = {
     "AUTH_LOGIN_RATE_LIMIT": "5",
     "AUTH_REFRESH_RATE_LIMIT": "20",
     "MAX_EVIDENCE_BYTES": "209715200",
-    # Deliberately blank (not a placeholder secret): the default test suite
-    # must exercise `require_worker_principal`'s fail-closed-when-
-    # unconfigured path deterministically, regardless of whether a
-    # developer's own `.env` happens to define a real
-    # `WORKER_SHARED_SECRET` for live/manual testing. An empty value
-    # normalizes to `None` (`Settings._normalize_blank_worker_secret_to_none`),
-    # matching "unconfigured" exactly. Tests that need a configured secret
-    # set it explicitly via `monkeypatch`/`app.dependency_overrides`.
-    "WORKER_SHARED_SECRET": "",
     "WORKER_LEASE_SECONDS": "300",
+    # A fixed, non-secret test-only pepper: real worker-credential digest
+    # tests need `hash_worker_credential` to behave deterministically and
+    # identically between whatever created a test credential and whatever
+    # verifies it, without every test having to construct/override its own
+    # `Settings`. Never a real secret -- see
+    # docs/architecture/worker-identity-and-security.md. The
+    # production-fail-closed-when-missing path
+    # (`worker_credentials.resolve_worker_pepper`) is exercised by
+    # constructing a bespoke `Settings(app_env=AppEnv.PRODUCTION, ...)`
+    # directly in its own test, not through this shared environment.
+    "WORKER_CREDENTIAL_PEPPER": "test-only-worker-pepper-not-a-real-secret",
 }
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():

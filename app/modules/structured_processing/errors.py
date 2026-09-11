@@ -17,7 +17,7 @@ category: *orchestration*-level failures talking to Nipun's internal
 worker API (claim/submit/input-resolution), not source-parsing failures.
 `worker.py`'s CLI runner catches these separately from `ProcessingError` --
 see its module docstring. None of these three may ever be constructed with
-`WORKER_SHARED_SECRET`, a claim token, or a raw HTTP response body in the
+`WORKER_TOKEN`, a claim token, or a raw HTTP response body in the
 message, for the same reason `ProcessingError.message` may never carry
 extracted source content.
 """

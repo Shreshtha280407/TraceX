@@ -76,6 +76,7 @@ def make_job_record(**overrides: Any) -> WorkerJobRecord:
         "claimed_at": None,
         "lease_expires_at": None,
         "claimed_by": None,
+        "claimed_by_worker_id": None,
         "claim_token_hash": None,
         "last_error_code": None,
         "last_error_message": None,
