@@ -48,3 +48,8 @@ def test_classify_rejects_missing_extension() -> None:
     with pytest.raises(ProcessingError) as exc_info:
         classify("text/csv", "records")
     assert exc_info.value.code == ErrorCode.UNSUPPORTED_EXTENSION
+
+
+def test_classify_accepts_markdown_as_plain_text() -> None:
+    """`.md` is plain text -- no separate ContentKind, same path as `.txt`."""
+    assert classify("text/plain", "notes.md") is ContentKind.TXT

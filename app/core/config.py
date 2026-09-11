@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     # for another worker to reclaim (see "Lease and retry policy" in
     # docs/architecture/worker-job-lifecycle.md).
     worker_lease_seconds: int = Field(default=300, ge=1)
+    # The base URL a *worker process* (e.g. the structured-processing
+    # worker's `--once` CLI runner) uses to reach `/api/v1/internal/
+    # worker-jobs/*` over HTTP. Deliberately separate from `app_host`/
+    # `app_port` (the server's own bind address, `0.0.0.0` by default and
+    # not itself a dialable client URL) -- a worker may run in a different
+    # container/host than the API, so this is independently configurable.
+    worker_api_base_url: str = Field(default="http://localhost:8000")
 
     @field_validator("worker_shared_secret")
     @classmethod
