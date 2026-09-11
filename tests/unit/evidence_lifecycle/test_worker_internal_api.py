@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.contracts.evidence import SourceType
 from app.contracts.worker import WorkerStatus
+from app.core.config import AppEnv, get_settings
 from app.main import app
 from app.modules.access_control.dependencies import get_access_control_repository
 from app.modules.evidence_lifecycle.dependencies import (
@@ -48,6 +49,11 @@ def job_producer() -> FakeJobProducer:
     return FakeJobProducer()
 
 
+_TEST_WORKER_PRINCIPAL = WorkerPrincipal(
+    worker_id=uuid4(), display_name="test-worker", allowed_processor_names=("cdr_generic_v1",)
+)
+
+
 @pytest.fixture
 def _override_worker_dependencies(
     evidence_repository: FakeEvidenceLifecycleRepository, job_producer: FakeJobProducer
@@ -55,7 +61,7 @@ def _override_worker_dependencies(
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = lambda: FakeObjectStorage()
     app.dependency_overrides[get_job_producer] = lambda: job_producer
-    app.dependency_overrides[require_worker_principal] = lambda: WorkerPrincipal()
+    app.dependency_overrides[require_worker_principal] = lambda: _TEST_WORKER_PRINCIPAL
     app.dependency_overrides[get_access_control_repository] = FakeAccessControlRepository
     yield
     app.dependency_overrides.clear()
@@ -93,6 +99,7 @@ def _seed_queued_job(
         claimed_at=None,
         lease_expires_at=None,
         claimed_by=None,
+        claimed_by_worker_id=None,
         claim_token_hash=None,
         last_error_code=None,
         last_error_message=None,
@@ -203,11 +210,13 @@ async def test_claim_response_never_exposes_internal_details(
 # --- Fail-closed worker-principal boundary (real dependency, not overridden) --
 
 
-async def test_worker_endpoints_fail_closed_when_unconfigured() -> None:
+async def test_worker_claim_rejects_missing_authorization_header() -> None:
     """No override for `require_worker_principal`: exercises the real dependency.
 
-    `tests/conftest.py` sets no `WORKER_SHARED_SECRET`, so `Settings()`
-    resolves it to `None` -- the documented fail-closed default.
+    `tests/conftest.py` configures a real (test-only) `WORKER_CREDENTIAL_PEPPER`,
+    so per-worker authentication is genuinely active -- a missing
+    `Authorization` header is a `401`, not the old Phase 2.1 "entire
+    boundary unconfigured" `503`.
     """
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -215,4 +224,29 @@ async def test_worker_endpoints_fail_closed_when_unconfigured() -> None:
             "/api/v1/internal/worker-jobs/claim",
             json={"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"},
         )
+    assert response.status_code == 401
+
+
+async def test_worker_endpoints_fail_closed_when_pepper_missing_in_production() -> None:
+    """A production-like deployment with no `WORKER_CREDENTIAL_PEPPER` fails closed (`503`).
+
+    The new, narrower analog of Phase 2.1's "entire boundary unconfigured"
+    check: only a genuine deployment misconfiguration (production, no
+    pepper) fails closed this way now -- see
+    `docs/architecture/worker-identity-and-security.md`.
+    """
+    production_settings = get_settings().model_copy(
+        update={"app_env": AppEnv.PRODUCTION, "worker_credential_pepper": None}
+    )
+    app.dependency_overrides[get_settings] = lambda: production_settings
+    try:
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/api/v1/internal/worker-jobs/claim",
+                json={"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"},
+                headers={"Authorization": "Bearer whatever-token"},
+            )
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
     assert response.status_code == 503

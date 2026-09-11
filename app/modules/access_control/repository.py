@@ -30,6 +30,8 @@ from app.modules.access_control.models import (
     SecurityAuditEventRecord,
     SessionRecord,
     UserRecord,
+    WorkerCredentialRecord,
+    WorkerCredentialStatus,
 )
 
 
@@ -99,6 +101,19 @@ auth_sessions_table = sa.Table(
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
 )
 
+worker_credentials_table = sa.Table(
+    "worker_credentials",
+    metadata,
+    sa.Column("worker_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("display_name", sa.Text(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("allowed_processor_names", postgresql.JSONB(), nullable=False),
+    sa.Column("credential_digest", sa.Text(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("rotated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+)
+
 security_audit_events_table = sa.Table(
     "security_audit_events",
     metadata,
@@ -137,6 +152,10 @@ def _session_from_row(row: sa.RowMapping) -> SessionRecord:
 
 def _audit_event_from_row(row: sa.RowMapping) -> SecurityAuditEventRecord:
     return SecurityAuditEventRecord.model_validate(dict(row))
+
+
+def _worker_credential_from_row(row: sa.RowMapping) -> WorkerCredentialRecord:
+    return WorkerCredentialRecord.model_validate(dict(row))
 
 
 class AccessControlRepository:
@@ -360,3 +379,87 @@ class AccessControlRepository:
                 .first()
             )
         return _audit_event_from_row(row) if row is not None else None
+
+    # --- worker credentials --------------------------------------------------
+
+    async def create_worker_credential(self, credential: WorkerCredentialRecord) -> None:
+        values = _dump_for_insert(credential, ("status",))
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.insert(worker_credentials_table).values(**values))
+
+    async def get_worker_credential_by_id(self, worker_id: UUID) -> WorkerCredentialRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(worker_credentials_table).where(
+                            worker_credentials_table.c.worker_id == worker_id
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _worker_credential_from_row(row) if row is not None else None
+
+    async def get_worker_credential_by_digest(
+        self, credential_digest: str
+    ) -> WorkerCredentialRecord | None:
+        """Plain equality lookup on an already-indexed digest column.
+
+        No `hmac.compare_digest`-style constant-time comparison is needed
+        here: the digest is a lookup key into a database index, not a
+        caller-observable timing channel the way comparing a submitted
+        value directly against a stored secret would be -- the identical
+        reasoning `get_session_by_refresh_token_hash` already applies.
+        """
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(worker_credentials_table).where(
+                            worker_credentials_table.c.credential_digest == credential_digest
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _worker_credential_from_row(row) if row is not None else None
+
+    async def list_worker_credentials(self) -> list[WorkerCredentialRecord]:
+        """Trusted-operator inspection only -- never exposed through a public API."""
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(worker_credentials_table).order_by(
+                            worker_credentials_table.c.created_at.asc()
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_worker_credential_from_row(row) for row in rows]
+
+    async def rotate_worker_credential(
+        self, worker_id: UUID, *, credential_digest: str, rotated_at: datetime
+    ) -> None:
+        """Overwrite the stored digest -- the old token's digest no longer matches anything."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(worker_credentials_table)
+                .where(worker_credentials_table.c.worker_id == worker_id)
+                .values(credential_digest=credential_digest, rotated_at=rotated_at)
+            )
+
+    async def revoke_worker_credential(self, worker_id: UUID, revoked_at: datetime) -> None:
+        """Idempotent: revoking an already-revoked (or unknown) worker is not an error."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(worker_credentials_table)
+                .where(worker_credentials_table.c.worker_id == worker_id)
+                .where(worker_credentials_table.c.status != WorkerCredentialStatus.REVOKED.value)
+                .values(status=WorkerCredentialStatus.REVOKED.value, revoked_at=revoked_at)
+            )

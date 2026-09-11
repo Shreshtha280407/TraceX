@@ -61,3 +61,12 @@ class PolicyDeniedError(AccessControlError):
 
 class RetryNotAllowedError(AccessControlError):
     """A caller asked `retry.py` to retry an operation that must never be retried."""
+
+
+class WorkerSecurityConfigurationError(AccessControlError):
+    """The deployment environment requires `WORKER_CREDENTIAL_PEPPER` and it is missing.
+
+    Raised only in production-like environments (see
+    `worker_credentials.resolve_worker_pepper`) -- never carries the pepper
+    value itself (there isn't one to carry), and never any other secret.
+    """

@@ -1087,3 +1087,164 @@ Stack was stopped cleanly afterward: `docker compose down` (containers/network r
 - **Dockerfile build failed: `uv sync --locked --no-dev` (the second, post-`COPY app` sync) tried to editable-install the `tracex` project itself, which needs `README.md` — never copied into the build context, so `docker compose up --build` failed outright.** The fix (not a workaround) is that this second sync step was unnecessary: the first `uv sync --locked --no-install-project --no-dev` already installs every third-party dependency, and `uvicorn app.main:app` runs `app/` as a plain path-based package without needing the project itself pip-installed. Removed the second sync entirely.
 - **`check_postgres` used `asyncpg.connect()` directly against a `postgresql+asyncpg://` DSN.** `POSTGRES_DSN` uses the SQLAlchemy-style `+asyncpg` driver suffix everywhere else in this codebase (config, Alembic), but raw `asyncpg.connect()` doesn't understand that scheme and raised `ClientConfigurationError` on every call — silently reported as `"postgres": "unavailable"` in `/readyz` even though the real Postgres container was healthy. Only surfaced once the full stack was actually run (all unit/contract tests mock this check, by design). Fixed by switching `check_postgres` to SQLAlchemy's `create_async_engine`, consistent with the DSN format used everywhere else.
 - **(Environment, not a code bug) `neo4j:5-community` currently resolves to a broken build (5.26.30) whose entrypoint crash-loops (`su-exec` usage error) on this host, reproducing even with a bare `docker run` outside Compose.** Pinned `compose.yaml` to `neo4j:5.25-community`, a known-good build, and confirmed Neo4j starts and passes its health check.
+
+## 2026-09-11 — Aditya — Phase 2.4 worker identity, authorization binding, and security audit completion
+
+Environment: local dev machine, branch `aditya` rebased onto `origin/main` (Nipun's 2.2/2.3 and Jasraj's Phase 2 present), Python 3.12.13 (via `uv`), Docker reachable.
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 1ms
+Checked 65 packages in 0.60ms
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff format --check .
+```
+First run found 2 files needing reformatting (`app/modules/evidence_lifecycle/service.py`, `migrations/versions/48e9e76153ca_worker_credentials_and_job_ownership.py` — both this task's own edits, over the project's line-length limit). Fixed with `uv run ruff format <files>`. Re-run:
+```
+276 files already formatted
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff check .
+```
+First run found 1 error: `F821 Undefined name 'UUID'` in `tests/unit/evidence_lifecycle/test_worker_input_api.py` (used in a type annotation without importing it). Fixed the import. Re-run:
+```
+All checks passed!
+```
+Result: **pass**.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 121 source files
+```
+Result: **pass**.
+
+```bash
+$ uv run pytest -q       # before Docker was brought up
+1056 passed, 28 skipped in 22.44s
+```
+Result: **pass**. The 28 skips are every self-skipping live-infra test in the repo (no `.env`-backed running stack yet at this point).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0, full interpolated config printed, including the new `WORKER_TOKEN`/`WORKER_CREDENTIAL_PEPPER` env passthrough on the `api` service).
+
+```bash
+$ docker compose up --build -d
+```
+Result: **pass**. All five containers (`api`, `postgres`, `neo4j`, `redis`, `minio`) reached `healthy`/`running` on the first attempt — no rebuild retries needed this time.
+
+```bash
+$ curl http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+```
+Result: **pass** — all three endpoints correct against the live, fully-containerized stack.
+
+```bash
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade 7e8499f34f29 -> f2086e1e89f6, evidence lifecycle foundation
+INFO  [alembic.runtime.migration] Running upgrade f2086e1e89f6 -> 102857ca8d1d, worker job claim and result foundation
+INFO  [alembic.runtime.migration] Running upgrade 102857ca8d1d -> af5b05e61b08, structured source type routing
+INFO  [alembic.runtime.migration] Running upgrade af5b05e61b08 -> 48e9e76153ca, worker credentials and job ownership
+```
+Result: **pass** — the full migration chain, including this phase's new `worker_credentials` table + `worker_jobs.claimed_by_worker_id` column/FK/index, applies cleanly against real PostgreSQL.
+
+```bash
+$ uv run pytest -q       # first live run, full stack up, real .env present
+```
+Result: **1 failed, 1079 passed, 4 skipped** — `test_full_worker_identity_lifecycle_against_live_stack` failed with a genuine `401` on the worker's first `/claim` call. Diagnosed and fixed (see "Two real bugs" below); this is exactly the kind of gap self-skipping live tests are meant to catch, and this task's instructions to actually run them live rather than trust the self-skip caught it on the very first live attempt.
+
+```bash
+$ uv run pytest -q       # after fixing the pepper-pollution bug
+1080 passed, 4 skipped in ...
+```
+Result: **pass** — the identity-lifecycle test now passes for real. The 4 remaining skips are `tests/integration/structured_processing/test_worker_live.py`'s tests, self-skipping because `.env` didn't yet configure `WORKER_TOKEN`.
+
+A dev-only, git-ignored `WORKER_TOKEN` placeholder was then added to the local `.env` (documented, non-secret, never committed) and the `api` container restarted (`docker compose up -d api`) to pick it up, specifically so these 4 self-skipping tests could be exercised for real rather than left skipped:
+
+```bash
+$ uv run pytest tests/integration/structured_processing/test_worker_live.py -v
+```
+Result: **4 failed** — every test rejected `401` at the worker's `/claim` call, a second, different real bug (see below). Fixed `_ensure_worker_credential`; re-run:
+```bash
+$ uv run pytest tests/integration/structured_processing/test_worker_live.py -v
+test_worker_client_against_real_running_api PASSED
+test_full_claim_stream_parse_submit_live_pipeline[document-fir_report_text_v1] PASSED
+test_full_claim_stream_parse_submit_live_pipeline[structured_tabular-generic_tabular_v1] PASSED
+test_full_claim_stream_parse_submit_live_pipeline[structured_json-generic_json_v1] PASSED
+4 passed in 1.58s
+```
+Result: **pass** — all three processor types now complete the real `claim -> stream -> parse -> submit` pipeline end to end against the live stack, producing genuine `SUCCEEDED` results, not the `DEFERRED` fallback.
+
+```bash
+$ uv run pytest -q -rs       # entire suite, live stack, .env fully configured
+1084 passed in 17.32s
+```
+Result: **pass — zero skips.** Every self-skipping live test in the entire repository (evidence lifecycle, structured/communication/graph/access-control integration, worker identity, worker live pipelines) ran for real against genuine PostgreSQL/Neo4j/Redis/MinIO/the live API and passed. Re-ran `ruff format --check .`, `ruff check .`, and `mypy app` once more after these fixes — all still clean.
+
+```bash
+$ docker compose ps
+```
+All five containers `Up`/`healthy`. `docker compose config` re-confirmed valid.
+
+### Manual CLI smoke test against the live stack (beyond the automated suite)
+
+```bash
+$ uv run python -m app.modules.access_control.worker_credentials create --name smoke-test-worker --processor fir_report_text_v1 --processor cdr_generic_v1
+worker_id:                d273de9b-49c5-4f57-a069-c50fb0a57626
+display_name:             smoke-test-worker
+allowed_processor_names:  fir_report_text_v1, cdr_generic_v1
+token (shown once -- store it now, never in Git/.env.example/logs):
+  Ayfhtjfz4saQNkdVqUWfjCHkWOFQHcmWl6P1h9wlzEc
+```
+`list` afterward showed every provisioned credential with no plaintext token or digest ever printed.
+
+```bash
+$ curl -X POST .../internal/worker-jobs/claim -H "Authorization: Bearer <smoke token>" -d '{"processor_name": "fir_report_text_v1", ...}'
+{"job":null,"claim_token":null,"lease_expires_at":null}   # HTTP 200 — in-scope processor
+
+$ curl -X POST .../internal/worker-jobs/claim -H "Authorization: Bearer <smoke token>" -d '{"processor_name": "generic_json_v1", ...}'
+{"error":{"code":"forbidden","message":"this worker is not authorized for the requested processor", ...}}   # HTTP 403 — out of scope
+```
+Result: **pass** — per-worker processor scoping enforced live, not just in unit tests.
+
+```bash
+$ uv run python -m app.modules.access_control.worker_credentials rotate --worker-id d273de9b-...
+new token (shown once): IQeaXT26vMZoY4thonpNz8Qd2LIkZWS-6vodMjdO6aU
+
+$ curl -X POST .../internal/worker-jobs/claim -H "Authorization: Bearer <OLD smoke token>" ...
+{"error":{"code":"unauthorized","message":"worker authentication required", ...}}   # HTTP 401 — old token dead immediately
+
+$ uv run python -m app.modules.access_control.worker_credentials revoke --worker-id d273de9b-...
+worker_id d273de9b-...: revoked (idempotent)
+```
+Result: **pass** — rotation invalidates the old token immediately; revocation is idempotent.
+
+```bash
+$ docker compose exec postgres psql -U tracex -d tracex -c "SELECT event_type, outcome, count(*) FROM security_audit_events GROUP BY event_type, outcome ORDER BY event_type;"
+ worker_authentication_denied  | denied  |    16
+ worker_credential_revoked     | success |     5
+ worker_credential_rotated     | success |     1
+ worker_job_access_denied      | denied  |    10
+ worker_processor_scope_denied | denied  |     1
+ ... (plus every pre-existing access-control event type, all still present and unchanged)
+```
+Result: **pass** — every new audit event type this phase adds is a real row in `security_audit_events`, confirmed by querying PostgreSQL directly rather than trusting the HTTP response alone.
+
+### Two real bugs caught by live testing (both in this phase's own test helpers, not the application code under test)
+
+- **Test-environment pepper pollution leaked into both new live test files.** `tests/conftest.py` sets a fixed test-only `WORKER_CREDENTIAL_PEPPER` in `os.environ` for the rest of the suite's sake (needed so unit tests get deterministic digests). Both `test_worker_identity_lifecycle_live.py` and `test_worker_live.py`'s `_live_settings()` helper built `Settings` only from keys `.env` actually defined — so when `.env` (correctly) left `WORKER_CREDENTIAL_PEPPER` unset, pydantic-settings silently fell through to conftest's fake OS-env value instead of `None`, diverging from what the live API container itself resolves (a real blank env var, normalized to `None` by the same validator). The test process then computed a credential digest with one pepper while the live server verified with another, so every claim came back `401`. Fixed by explicitly forcing `worker_credential_pepper=None` into both helpers' `Settings` kwargs, so an absent `.env` value can never be silently overridden by test-suite environment leakage.
+- **`_ensure_worker_credential` bound the wrong token to the stored credential.** The helper called `worker_credentials.create_worker_credential()`, which *always* mints its own fresh random token internally (the correct, intentional behavior for the trusted-operator CLI, which hands that plaintext back to a human) — but the helper discarded the returned token and expected the row it just inserted to match the digest of the *developer's own* `WORKER_TOKEN`. Those two tokens are never the same value, so the stored digest could never match what the test client actually presented, and every claim came back `401` regardless of the pepper fix above. Fixed by constructing the `WorkerCredentialRecord` directly with `credential_digest = hash_worker_credential(token, pepper)` for the already-known token — the same computation the CLI does internally, minus the random-generation step this helper never needed.
+
+Both bugs were latent in test-only code paths that had never actually been exercised live before this session (the two live test files self-skip without a real `.env`/`WORKER_TOKEN`, so they had never run for real in prior CI or dev sessions) — confirming the value of this task's explicit instruction to run the real worker-security lifecycle against a running stack rather than trust the self-skip. The application code itself (`require_worker_principal`, `hash_worker_credential`, digest lookup, processor scoping, audit recording) was correct on the very first live check, verified independently via direct `curl`/CLI commands before either test-helper bug was even found.
+
+Docker stack was left running after this session (not torn down) so the live-verified state remains inspectable; `docker compose down` cleanly removes it when no longer needed (named volumes are preserved either way).

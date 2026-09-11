@@ -335,9 +335,22 @@ class EvidenceLifecycleService:
     # --- worker lifecycle: claim + result submission -----------------------
 
     async def claim_job(
-        self, *, processor_name: str, processor_version: str, context: UploadContext
+        self,
+        *,
+        processor_name: str,
+        processor_version: str,
+        context: UploadContext,
+        claimed_by_worker_id: UUID | None = None,
     ) -> ClaimOutcome:
         """Atomically claim one eligible job, generating a fresh one-time claim token.
+
+        `claimed_by_worker_id` (the authenticated worker's verified
+        identity) is persisted unconditionally on a successful claim --
+        including a reclaim, which is exactly how ownership legitimately
+        transfers after a lease expires. Optional and defaults to `None`
+        only so lower-level tests that don't care about worker identity
+        don't need to thread one through; `internal_api.py`'s real HTTP
+        endpoint always supplies a real value.
 
         Returns an empty `ClaimOutcome` (never raises) when nothing is
         eligible right now -- "no work" is a normal outcome, not an error.
@@ -356,6 +369,7 @@ class EvidenceLifecycleService:
             now=context.now,
             lease_seconds=self._worker_lease_seconds,
             claim_token_hash=claim_token_hash,
+            claimed_by_worker_id=claimed_by_worker_id,
         )
         if claimed is None:
             logger.info(
@@ -390,19 +404,26 @@ class EvidenceLifecycleService:
         claim_token: str,
         result: WorkerResultV1,
         context: UploadContext,
+        worker_id: UUID | None = None,
     ) -> ResultOutcome:
         """Validate and durably persist one worker result, transitioning the job to terminal.
 
-        Ordering matches `docs/architecture/worker-job-lifecycle.md`: the
-        claim token is verified *first, unconditionally* -- including
-        against an already-terminal job, so a wrong/unknown token can never
-        retrieve a cached result it was never entitled to, and never
-        distinguishes "wrong token" from "right token, different job" in
-        its response. Only once the token genuinely matches does the flow
+        Ordering matches `docs/architecture/worker-job-lifecycle.md`, now
+        extended with a worker-identity check: the claim token is verified
+        *first, unconditionally*, immediately followed by the worker-identity
+        check (when `worker_id` is supplied) -- both *before* the
+        already-terminal branch, so neither a wrong/unknown token nor the
+        wrong worker's valid token can ever retrieve a cached result it
+        wasn't entitled to. Only once both checks pass does the flow
         branch: an already-terminal job goes to idempotent-replay/conflict
         comparison; a `running` job is checked for lease expiry and then
         the submitted result's own scope/status is validated -- all before
         any write is attempted.
+
+        `worker_id` defaults to `None` (meaning "skip the identity check")
+        only so lower-level tests that don't care about worker identity
+        don't need to thread one through; `internal_api.py`'s real HTTP
+        endpoint always supplies the authenticated caller's real value.
         """
         logger.info(
             "worker.result.submit_attempted", request_id=context.request_id, job_id=str(job_id)
@@ -415,7 +436,7 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="unknown_or_unclaimed_job",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="unknown_or_unclaimed_job")
         if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
             logger.warning(
                 "worker.result.rejected",
@@ -423,7 +444,15 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="token_mismatch",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="token_mismatch")
+        if worker_id is not None and job.claimed_by_worker_id != worker_id:
+            logger.warning(
+                "worker.result.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="worker_identity_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="worker_identity_mismatch")
 
         if job.status in TERMINAL_WORKER_STATUSES:
             return await self._replay_or_conflict_result(job, result, context)
@@ -435,7 +464,7 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="not_claimed",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="not_claimed")
         if job.lease_expires_at is None or job.lease_expires_at < context.now:
             logger.warning(
                 "worker.result.rejected",
@@ -443,7 +472,7 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="lease_expired",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
 
         _validate_result_scope(job, result)
 
@@ -533,7 +562,7 @@ class EvidenceLifecycleService:
     ) -> ResultOutcome:
         existing = await self._repository.get_result_for_job(job.job_id)
         if existing is None:  # pragma: no cover - defensive: terminal implies a result exists
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="missing_terminal_result")
         if existing.payload_hash != canonical_sha256(result):
             logger.warning(
                 "worker.result.conflict", request_id=context.request_id, job_id=str(job.job_id)
@@ -558,7 +587,12 @@ class EvidenceLifecycleService:
     # --- worker lifecycle: claimed-job input delivery -----------------------
 
     async def get_claimed_evidence_input(
-        self, *, job_id: UUID, claim_token: str, context: UploadContext
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        context: UploadContext,
+        worker_id: UUID | None = None,
     ) -> ClaimedEvidenceInput:
         """Validate a claim token against a currently-*running* job; return its evidence metadata.
 
@@ -569,7 +603,9 @@ class EvidenceLifecycleService:
         `InvalidClaimTokenError` every other claim-token failure mode uses
         (see `docs/architecture/worker-job-lifecycle.md`'s "Worker
         identity"/"Claim tokens" sections) -- the caller is never told
-        *which* condition failed, or whether a different job exists.
+        *which* condition failed, or whether a different job exists. The
+        worker-identity check (`worker_id`, when supplied) runs immediately
+        after the claim-token check, exactly like `submit_result`.
         """
         logger.info(
             "worker.input.stream_attempted", request_id=context.request_id, job_id=str(job_id)
@@ -582,7 +618,7 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="unknown_or_unclaimed_job",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="unknown_or_unclaimed_job")
         if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
             logger.warning(
                 "worker.input.rejected",
@@ -590,7 +626,15 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="token_mismatch",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="token_mismatch")
+        if worker_id is not None and job.claimed_by_worker_id != worker_id:
+            logger.warning(
+                "worker.input.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="worker_identity_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="worker_identity_mismatch")
         if job.status is not WorkerStatus.RUNNING:
             logger.warning(
                 "worker.input.rejected",
@@ -598,7 +642,7 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="not_claimed",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="not_claimed")
         if job.lease_expires_at is None or job.lease_expires_at < context.now:
             logger.warning(
                 "worker.input.rejected",
@@ -606,11 +650,11 @@ class EvidenceLifecycleService:
                 job_id=str(job_id),
                 reason="lease_expired",
             )
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
 
         evidence = await self._repository.get_evidence(job.case_id, job.evidence_id)
         if evidence is None:  # pragma: no cover - defensive: evidence+job always created together
-            raise InvalidClaimTokenError("invalid claim token")
+            raise InvalidClaimTokenError("invalid claim token", reason="evidence_missing")
 
         logger.info(
             "worker.input.stream_authorized",
@@ -657,6 +701,7 @@ def _build_job(
         claimed_at=None,
         lease_expires_at=None,
         claimed_by=None,
+        claimed_by_worker_id=None,
         claim_token_hash=None,
         last_error_code=None,
         last_error_message=None,

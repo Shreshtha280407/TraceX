@@ -55,12 +55,25 @@ class StorageError(EvidenceLifecycleError):
 class InvalidClaimTokenError(EvidenceLifecycleError):
     """A claim token is missing, malformed, doesn't match, expired, or names an unknown job.
 
-    Deliberately generic -- covers "job not found," "wrong job," "expired
-    lease," and "token doesn't match" uniformly (see
+    Also covers a worker-identity mismatch (a valid claim token presented
+    by a worker other than the one currently bound to the job via
+    `WorkerJobRecord.claimed_by_worker_id`) -- deliberately the same
+    generic exception as every other reason, uniformly: "job not found,"
+    "wrong job," "expired lease," "token doesn't match," and "wrong worker
+    identity" are all indistinguishable to the caller (see
     `docs/architecture/worker-job-lifecycle.md`'s "Worker identity"
     section), the same default-deny philosophy `access_control.errors
     .AuthenticationError` already applies to login.
+
+    `reason` is a safe, internal-only classifier (never included in the
+    HTTP response body/detail) -- callers that audit a denial (e.g.
+    `internal_api.py`) read it to record a precise, safe reason code
+    without changing what the client is told.
     """
+
+    def __init__(self, message: str, *, reason: str = "invalid_claim_token") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ResultValidationError(EvidenceLifecycleError):

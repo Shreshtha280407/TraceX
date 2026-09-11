@@ -103,11 +103,15 @@ from app.modules.structured_processing.worker import process_job
 
 ### Structured-processing worker CLI (Phase 2 — Jasraj)
 
-See `docs/architecture/structured-processing-worker.md` for the full design. The worker needs the API's internal endpoints reachable and `WORKER_SHARED_SECRET` configured (same variable Phase 2.1's internal API already requires):
+See `docs/architecture/structured-processing-worker.md` for the full design. The worker needs the API's internal endpoints reachable and a `WORKER_TOKEN` configured (Phase 2.4 replaced the old shared secret — see "Provisioning a worker credential" below to get one):
 
 ```bash
 docker compose up -d postgres redis minio
 uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
+uv run python -m app.modules.access_control.worker_credentials create \
+    --name structured-worker --processor fir_report_text_v1 --processor cdr_generic_v1 \
+    --processor financial_transaction_generic_v1 --processor generic_tabular_v1 --processor generic_json_v1
+# copy the printed token into .env as WORKER_TOKEN=<token>, then:
 uv run python -m app.modules.structured_processing.worker --once
 ```
 
@@ -120,7 +124,7 @@ uv run pytest tests/unit/structured_processing -v         # no live infra needed
 uv run pytest tests/integration/structured_processing -v  # local-file pipeline test, plus a self-skipping live-API check
 ```
 
-`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_SHARED_SECRET` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
+`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_TOKEN` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When `WORKER_TOKEN` *is* set, this suite provisions a matching `worker_credentials` row itself (idempotently, by digest) the first time it runs against a given database, so no separate manual CLI step is required just to run the tests. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
 
 ## Authentication and case-scoped access control
 
@@ -251,14 +255,39 @@ A successful upload also pushes the job's canonical JSON onto a Redis list, insp
 docker compose exec redis redis-cli LRANGE tracex:jobs:document 0 -1
 ```
 
-### Worker job claim and result submission (Phase 2.1)
+### Provisioning a worker credential (Phase 2.4)
 
-See `docs/architecture/worker-job-lifecycle.md` for the full design. The internal worker endpoints (`/api/v1/internal/worker-jobs/*`) need a shared secret configured first — set `WORKER_SHARED_SECRET` in `.env` (see `.env.example`); with it unset, these endpoints fail closed with `503` by design.
+See `docs/architecture/worker-identity-and-security.md` for the full design. There is deliberately no public API for this — a trusted-operator-only CLI is the *only* way a worker credential is ever created, rotated, listed, or revoked:
 
 ```bash
-# claim one eligible job for a given processor
+# create -- prints the plaintext token exactly once, to this terminal only
+uv run python -m app.modules.access_control.worker_credentials create \
+    --name my-local-worker --processor fir_report_text_v1 --processor cdr_generic_v1
+# worker_id: ...
+# token (shown once -- store it now, never in Git/.env.example/logs):
+#   <copy this into .env as WORKER_TOKEN=...>
+
+# list -- never prints a token or digest, safe to run/share
+uv run python -m app.modules.access_control.worker_credentials list
+
+# rotate -- issues a fresh token, immediately invalidating the old one
+uv run python -m app.modules.access_control.worker_credentials rotate --worker-id <worker_id>
+
+# revoke -- immediately and permanently denies the credential; idempotent
+uv run python -m app.modules.access_control.worker_credentials revoke --worker-id <worker_id>
+```
+
+This CLI runs only where the server's own PostgreSQL configuration is already available (the same trust level as running `alembic upgrade head`) — never expose it as a network-reachable endpoint. **The printed token goes only into a local, git-ignored `.env` or a real deployment secret store — never into Git, `.env.example`, a log line, a test report, a screenshot, or an API response.** Optionally set `WORKER_CREDENTIAL_PEPPER` in `.env` for an extra server-side peppering layer on the stored digest (falls back to an unkeyed SHA-256 digest if unset — accepted in local/dev, required in production, where a missing pepper fails closed `503`).
+
+### Worker job claim and result submission (Phase 2.1 / 2.4)
+
+See `docs/architecture/worker-job-lifecycle.md` for the full design. The internal worker endpoints (`/api/v1/internal/worker-jobs/*`) need a real worker credential — provision one above, then set `WORKER_TOKEN` in `.env` (see `.env.example`) to that credential's token. With no worker credential resolvable at all, these endpoints fail closed with `401`; with `APP_ENV=production` and no `WORKER_CREDENTIAL_PEPPER` configured, they fail closed with `503`.
+
+```bash
+# claim one eligible job for a processor this worker is scoped to
+# (a processor_name outside --processor at creation time is rejected 403)
 curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/claim \
-  -H "Authorization: Bearer <WORKER_SHARED_SECRET>" \
+  -H "Authorization: Bearer <WORKER_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"}'
 # -> {"job": {...WorkerJobV1...}, "claim_token": "...", "lease_expires_at": "..."} or
@@ -266,15 +295,16 @@ curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/claim \
 
 # stream the claimed job's evidence bytes (Phase 2.2 -- see "Worker evidence
 # delivery" in docs/architecture/evidence-lifecycle.md); only works while the
-# job is still `running` with an unexpired lease
+# job is still `running`, has an unexpired lease, AND this is the same worker
+# identity that claimed it
 curl http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/input \
-  -H "Authorization: Bearer <WORKER_SHARED_SECRET>" \
+  -H "Authorization: Bearer <WORKER_TOKEN>" \
   -H "X-Claim-Token: <claim_token from the claim response>" \
   -o downloaded_evidence
 
 # submit a result for the claimed job (a WorkerResultV1 JSON body, the claim token in a header)
 curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/result \
-  -H "Authorization: Bearer <WORKER_SHARED_SECRET>" \
+  -H "Authorization: Bearer <WORKER_TOKEN>" \
   -H "X-Claim-Token: <claim_token from the claim response>" \
   -H "Content-Type: application/json" \
   -d '{"schema_version": "v1", "job_id": "<job_id>", "case_id": "<case_id>", "evidence_id": "<evidence_id>", "status": "succeeded", "observations": [], "derived_artifacts": [], "checkpoint": null, "error": null, "completed_at": "2026-01-01T12:00:00Z"}'

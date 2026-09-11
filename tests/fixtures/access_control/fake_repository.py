@@ -17,6 +17,8 @@ from app.modules.access_control.models import (
     SecurityAuditEventRecord,
     SessionRecord,
     UserRecord,
+    WorkerCredentialRecord,
+    WorkerCredentialStatus,
 )
 
 
@@ -27,6 +29,7 @@ class FakeAccessControlRepository:
         self.memberships: dict[UUID, CaseMembershipRecord] = {}
         self.sessions: dict[UUID, SessionRecord] = {}
         self.audit_events: list[SecurityAuditEventRecord] = []
+        self.worker_credentials: dict[UUID, WorkerCredentialRecord] = {}
 
     async def close(self) -> None:
         pass
@@ -121,3 +124,42 @@ class FakeAccessControlRepository:
 
     async def get_audit_event_by_id(self, event_id: UUID) -> SecurityAuditEventRecord | None:
         return next((e for e in self.audit_events if e.event_id == event_id), None)
+
+    # --- worker credentials --------------------------------------------------
+
+    async def create_worker_credential(self, credential: WorkerCredentialRecord) -> None:
+        self.worker_credentials[credential.worker_id] = credential
+
+    async def get_worker_credential_by_id(self, worker_id: UUID) -> WorkerCredentialRecord | None:
+        return self.worker_credentials.get(worker_id)
+
+    async def get_worker_credential_by_digest(
+        self, credential_digest: str
+    ) -> WorkerCredentialRecord | None:
+        return next(
+            (
+                c
+                for c in self.worker_credentials.values()
+                if c.credential_digest == credential_digest
+            ),
+            None,
+        )
+
+    async def list_worker_credentials(self) -> list[WorkerCredentialRecord]:
+        return sorted(self.worker_credentials.values(), key=lambda c: c.created_at)
+
+    async def rotate_worker_credential(
+        self, worker_id: UUID, *, credential_digest: str, rotated_at: datetime
+    ) -> None:
+        credential = self.worker_credentials.get(worker_id)
+        if credential is not None:
+            self.worker_credentials[worker_id] = credential.model_copy(
+                update={"credential_digest": credential_digest, "rotated_at": rotated_at}
+            )
+
+    async def revoke_worker_credential(self, worker_id: UUID, revoked_at: datetime) -> None:
+        credential = self.worker_credentials.get(worker_id)
+        if credential is not None and credential.status is not WorkerCredentialStatus.REVOKED:
+            self.worker_credentials[worker_id] = credential.model_copy(
+                update={"status": WorkerCredentialStatus.REVOKED, "revoked_at": revoked_at}
+            )

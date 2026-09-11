@@ -222,6 +222,35 @@ class SessionRecord(AccessControlModel):
     last_used_at: datetime | None
 
 
+class WorkerCredentialStatus(StrEnum):
+    """Lifecycle state of a provisioned per-worker service credential."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+class WorkerCredentialRecord(AccessControlModel):
+    """A full `worker_credentials` row -- never the plaintext token.
+
+    `credential_digest` is `HMAC-SHA256(pepper, token)` (or a plain SHA-256
+    digest when no pepper is configured -- see `worker_credentials.py`);
+    the raw token exists only transiently, in the process memory of the CLI
+    that generated it and the worker process it was handed to. Rotation
+    never mutates `worker_id` -- only `credential_digest`/`rotated_at`
+    change, so a job already bound to this `worker_id`
+    (`worker_jobs.claimed_by_worker_id`) stays bound across a rotation.
+    """
+
+    worker_id: UUID
+    display_name: str
+    status: WorkerCredentialStatus
+    allowed_processor_names: tuple[str, ...]
+    credential_digest: str
+    created_at: datetime
+    rotated_at: datetime | None
+    revoked_at: datetime | None
+
+
 class SecurityAuditEventRecord(AccessControlModel):
     """A full `security_audit_events` row -- safe security telemetry only.
 

@@ -16,6 +16,7 @@ endpoints depend on.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -24,8 +25,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
+from app.core.errors import get_request_id
+from app.modules.access_control.audit import record_audit_event_safely
 from app.modules.access_control.errors import InvalidTokenError
 from app.modules.access_control.models import (
+    AuditOutcome,
     AuthenticatedPrincipal,
     AuthorizedCasePrincipal,
     CaseAction,
@@ -163,6 +167,16 @@ def require_case_action(
             case=case,
         )
         if not allowed or membership is None:
+            await record_audit_event_safely(
+                repository,
+                event_type="case_access_denied",
+                outcome=AuditOutcome.DENIED,
+                now=datetime.now(UTC),
+                request_id=get_request_id() or None,
+                user_id=principal.user_id,
+                case_id=case_id,
+                metadata={"action": action.value},
+            )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
         return AuthorizedCasePrincipal(principal=principal, case_id=case_id, membership=membership)
 
