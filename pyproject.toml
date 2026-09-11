@@ -28,7 +28,22 @@ dependencies = [
     "numpy>=2.5.3",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
+    "onnxruntime>=1.30.0",
+    "pytesseract>=0.3.13",
 ]
+
+# Swap the base "onnxruntime" dependency above for "onnxruntime-gpu" (same
+# Python import name, mutually exclusive installs) on a host with a CUDA
+# toolkit + compatible driver to enable GPU-accelerated detection -- see
+# docs/architecture/media-processing-worker.md's "CPU/GPU behavior".
+# `uv sync --extra gpu` alone does not swap onnxruntime for onnxruntime-gpu
+# (both would install and Python would keep whichever wins import
+# resolution); an operator wanting GPU support installs onnxruntime-gpu
+# explicitly instead, e.g. `uv pip install onnxruntime-gpu`. This extra
+# exists to document the package name and pin, not to be relied on as a
+# drop-in `--extra` toggle.
+[project.optional-dependencies]
+gpu = ["onnxruntime-gpu>=1.20.0"]
 
 [dependency-groups]
 dev = [
@@ -81,7 +96,7 @@ no_implicit_reexport = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["neo4j.*", "minio.*", "asyncpg.*", "openpyxl.*"]
+module = ["neo4j.*", "minio.*", "asyncpg.*", "openpyxl.*", "onnxruntime.*", "pytesseract.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

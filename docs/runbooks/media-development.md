@@ -91,7 +91,9 @@ print(detect_capability())
 
 Safe to call with no GPU present — `cpu_only=True`/`gpu_visible=False` is the expected, normal result in this phase (no GPU-backed analysis code exists yet).
 
-## Adding a new detector/tracker/OCR adapter later
+## Adding a *different* detector/tracker/OCR adapter
+
+A real detector (`analysis/onnx_detector.py`, YOLOX-s via `onnxruntime`), OCR engine (`analysis/tesseract_ocr.py`, local `tesseract` via `pytesseract`), and tracker (`analysis/iou_tracker.py`) already exist and are what `worker._build_analysis_components` wires into the CLI by default — see `docs/architecture/media-processing-worker.md` for the full design, and `uv run python -m app.modules.media_processing.bootstrap_models` to fetch the detector's model asset. The guidance below is for swapping in a *different* model behind the same interfaces (e.g. a fine-tuned or specialized detector) — nothing else in the module needs to change for that either.
 
 Implement the relevant protocol in `app/modules/media_processing/analysis/interfaces.py` (`ObjectDetector`/`ObjectTracker`/`TextRecognizer`) — nothing else in the module needs to change. Pass your instance explicitly as `worker.process_job`'s `detector`/`tracker`/`ocr` keyword; never make it a new default, per `docs/decisions/ADR-004-media-provenance-and-anonymous-tracking.md`, Decision 5. Self-report your adapter's version string in each result's `attributes["model_interface_version"]` (see `analysis/fake_detector.py` for the pattern) so it flows through to `Extractor.model_version` automatically.
 

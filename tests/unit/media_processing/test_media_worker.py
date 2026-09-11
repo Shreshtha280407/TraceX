@@ -412,7 +412,12 @@ def test_video_ocr_on_text_region_produces_ocr_text_mention(
     )
     _assert_valid_result(result)
     ocr_mentions = [o for o in result.observations if o.observation_type == "ocr_text_mention"]
-    assert len(ocr_mentions) == 2
+    # 2 from the detector's own `text_region`-labelled crops (the gated
+    # pathway this test targets) + 2 from the independent whole-frame
+    # `recognize_regions` pass every configured `ocr` component now also
+    # gets per frame (see `worker.py`'s `_process_video_analysis`) -- both
+    # pathways fire whenever a detector happens to emit that label.
+    assert len(ocr_mentions) == 4
     for mention in ocr_mentions:
         assert len(mention.extracted_entities) == 1
         assert mention.source_locator.frame_number is not None

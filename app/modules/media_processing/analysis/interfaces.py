@@ -98,7 +98,23 @@ class RecognizedText:
 
 @runtime_checkable
 class TextRecognizer(Protocol):
-    """Recognizes text in one explicitly-selected crop. No real OCR engine
-    is implemented in this phase -- see `fake_ocr.py`."""
+    """Recognizes text in one explicitly-selected crop, or scans a whole
+    frame/image for every text region it can find.
+
+    `recognize` answers "is there text in this specific box" (used when a
+    detector has already found a text-shaped region -- e.g. a
+    `text_region`-labelled detection, or a future number-plate-focused
+    detector). `recognize_regions` is the independent, self-sufficient
+    entry point that needs no prior detection step at all: a real OCR
+    engine's own layout analysis finds text blocks *and* their bounding
+    boxes *and* recognizes them in one pass -- exactly what
+    `pytesseract.image_to_data` (see `tesseract_ocr.py`) returns. This is
+    what `worker.py` calls whenever an OCR component is configured, so OCR
+    output does not depend on the general object detector emitting a
+    `text_region` label it may never produce (a COCO-class detector has no
+    such class).
+    """
 
     def recognize(self, crop: Frame) -> RecognizedText | None: ...
+
+    def recognize_regions(self, image: Frame) -> list[RecognizedText]: ...

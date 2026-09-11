@@ -91,11 +91,28 @@ Migration: `migrations/versions/a204a94ccd49_graph_projection_jobs.py`.
 
 ```bash
 uv run python -m app.modules.graph.worker --once
+uv run python -m app.modules.graph.worker --loop     # Phase 2 closeout
 ```
 
-Claims up to `GRAPH_PROJECTION_BATCH_SIZE` (default 25) eligible jobs and attempts each one, then exits. **No continuous projector daemon exists in this phase** — same non-goal every other worker CLI in this repository already documents (`structured_processing.worker`, `communication_processing.worker`, `media_processing.worker`). A cron/systemd timer, or an operator invoking it manually, is expected to run it repeatedly. Exit code `0` if every claimed job either succeeded or was left safely retryable/deferred; `1` if any job reached a terminal `failed` state (so a scheduler can alert on it without treating an ordinary "Neo4j was briefly down, will retry next run" as an error).
+`--once` claims up to `GRAPH_PROJECTION_BATCH_SIZE` (default 25) eligible jobs and attempts each one, then exits — a cron/systemd timer, or an operator invoking it manually, can run it repeatedly. Exit code `0` if every claimed job either succeeded or was left safely retryable/deferred; `1` if any job reached a terminal `failed` state (so a scheduler can alert on it without treating an ordinary "Neo4j was briefly down, will retry next run" as an error).
+
+**`--loop` (Phase 2 closeout)** runs that same batch logic continuously in-process instead of exiting after one batch — see "Continuous operation" below. Both modes share the identical `run_batch` claim/project/mark-outcome logic; `--loop` only adds the outer continuous-operation wrapper.
 
 For each attempt, evidence is re-projected unconditionally (a cheap, safe `MERGE` no-op if it's already correct) rather than tracked separately as "already done" — this keeps each attempt fully self-sufficient and avoids a spurious `DEFERRED` if a different job for the same evidence hasn't run yet.
+
+### Continuous operation (`--loop`)
+
+`worker.run_loop` builds its PostgreSQL engine and Neo4j driver **once** and reuses them for the whole loop's lifetime (unlike `--once`'s fresh-connection-per-invocation), appropriate for a long-running process:
+
+- **Idle polling**: an empty batch (`claimed == 0`) sleeps `GRAPH_PROJECTOR_POLL_INTERVAL_SECONDS` (default 5s) before trying again — interruptible, so a shutdown request wakes it immediately.
+- **Immediate retry when work was claimed**: a batch that claimed at least one job loops again right away (more work may be queued).
+- **Bounded exponential backoff on failure**: an exception escaping `run_batch` itself (a Neo4j/PostgreSQL connection-level failure, not a per-job outcome — those are all handled inside `run_batch`) sleeps `min(poll_interval * 2**consecutive_failures, GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS)`; `GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES` (default 5) stops the loop entirely — exit code `1`, an operator-visible problem to page on.
+- **Graceful SIGINT/SIGTERM shutdown**: real `asyncio`-native signal handlers (`loop.add_signal_handler`, not raw `signal.signal`, since `run_loop` is itself a coroutine) set an `asyncio.Event` checked before every batch claim, never mid-batch — whatever batch is already in flight always finishes (every claimed job terminates in `mark_succeeded`/`mark_retryable_failure`/`mark_failed`, `run_batch`'s own unconditional contract) before the loop returns. Exit code `0` on a clean shutdown.
+- **Multiple projector instances are safe by construction**: unchanged — the existing atomic `FOR UPDATE SKIP LOCKED` `claim_batch` already guarantees two concurrent projector runs (any mix of `--once`/`--loop`) never claim the same row twice.
+
+### Lease-renewal heartbeat (Phase 2 closeout)
+
+A batch whose *cumulative* processing time approaches `GRAPH_PROJECTION_LEASE_SECONDS` risks a not-yet-attempted job later in the same batch looking lease-expired to a different concurrent projector (every job claimed together in one `claim_batch` call shares the same `lease_expires_at`) — which could then legitimately reclaim and duplicate it. `run_batch`'s optional `renew_interval_seconds` (wired to `GRAPH_PROJECTION_RENEW_INTERVAL_SECONDS`, default 40s, by `--loop`; `None` — unchanged behavior — for `--once`) renews every *not-yet-attempted* job's lease whenever that much wall-clock time has elapsed since the last renewal, via `GraphProjectionOutboxRepository.renew_lease` — an atomic `UPDATE ... WHERE status='RUNNING' AND lease_expires_at >= now`, so a lease can never be extended past its own expiry (a legitimate reclaim by another projector always wins).
 
 ## Minimal graph read API
 
@@ -114,11 +131,15 @@ Three new, narrowly-scoped settings (`app/core/config.py`, `.env.example`, `comp
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `GRAPH_PROJECTION_BATCH_SIZE` | 25 | Jobs claimed per `--once` invocation |
+| `GRAPH_PROJECTION_BATCH_SIZE` | 25 | Jobs claimed per `--once`/`--loop` batch |
 | `GRAPH_PROJECTION_LEASE_SECONDS` | 120 | How long a claimed job is exclusively held before its lease expires |
 | `GRAPH_PROJECTION_MAX_ATTEMPTS` | 5 | Retries before a job is left durably `failed` |
+| `GRAPH_PROJECTION_RENEW_INTERVAL_SECONDS` | 40 | `--loop` only: how often a long batch's remaining leases are renewed |
+| `GRAPH_PROJECTOR_POLL_INTERVAL_SECONDS` | 5 | `--loop` only: sleep between empty batches |
+| `GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS` | 60 | `--loop` only: exponential-backoff ceiling on repeated failure |
+| `GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES` | 5 | `--loop` only: consecutive failures before the loop stops itself |
 
-No new Compose service, no new exposed port, no credential ever handed to an external worker — the projector is invoked the same way every other one-shot worker CLI in this repository already is.
+An optional `graph-projector` Compose service (Phase 2 closeout, `profiles: ["workers"]` — not started by a plain `docker compose up`) runs `--loop` continuously; see `docs/runbooks/local-development.md`. No new exposed port, no credential ever handed to an external worker — this module remains the one backend-owned exception to "workers never hold direct PostgreSQL/Neo4j credentials" (see `worker.py`'s module docstring), unchanged by adding `--loop`.
 
 ## Testing
 
@@ -129,13 +150,15 @@ No new Compose service, no new exposed port, no credential ever handed to an ext
 - `tests/security/graph/test_graph_module_boundaries.py` — no object-storage/worker-credential/OCR/ML library imports; the read API's response models never declare a forbidden field.
 - `tests/integration/graph/test_outbox_repository_live.py` — real `FOR UPDATE SKIP LOCKED` concurrency safety (two genuinely concurrent claims never double-claim), real lease-expiry reclaim, real retry exhaustion, the crash-recovery sweep — none of which an in-memory fake can meaningfully prove.
 - `tests/integration/graph/test_full_pipeline_live.py` — the complete, real path: upload → authenticated worker claim → secure evidence stream → worker result → durable `graph_projection_jobs` row → projector run → real Neo4j query and the real case-scoped HTTP endpoint both confirm the projected `Observation`/`EntityMention`.
-- `tests/integration/media_processing/test_media_worker_live.py` (Gaurav's Phase 2 completion) — the same complete real path, exercised for the first time by a source-processing module other than the one this pipeline was originally built and proven against: a real image and a real synthetic video, each claimed and processed by the real `media_processing` worker, project cleanly with no duplication on a second projector run. Confirms this pipeline is genuinely generic across processing modules, not implicitly coupled to `structured_processing`'s or `communication_processing`'s output shape.
+- `tests/integration/media_processing/test_media_worker_live.py` (Gaurav's Phase 2 completion; updated for the Phase 2 closeout's `media_detection_v1` routing and real analysis components) — the same complete real path, exercised by a source-processing module other than the one this pipeline was originally built and proven against: a real image and a real synthetic video, each claimed and processed by the real `media_processing` worker (real detector/OCR when a model asset is locally bootstrapped, metadata-only otherwise — never a fabricated pass either way), project cleanly with no duplication on a second projector run.
+- `tests/unit/graph/test_worker_loop.py` (Phase 2 closeout) — `run_loop`'s poll/backoff/shutdown control flow, with `run_batch` monkeypatched (no real PostgreSQL/Neo4j connection needed — `create_engine`/`create_driver` build lazy client objects that only connect on first real use).
+- `tests/unit/graph/test_projector.py`'s renewal tests (Phase 2 closeout) — `renew_interval_seconds`/injectable `monotonic` prove only *not-yet-attempted* jobs in a batch get their leases renewed, never a job already completed, and that `renew_interval_seconds=None` (the `--once` default) never renews at all.
 
 ## Known limitations and intentionally deferred work
 
-- **No continuous projector daemon.** `--once` only; a cron/systemd timer or manual invocation must run it repeatedly. Same situation every other worker CLI in this repository is already in.
-- **No lease renewal.** A projector holding a job past `GRAPH_PROJECTION_LEASE_SECONDS` has no way to extend it mid-attempt — acceptable for a foundation phase with fast, bounded Neo4j writes.
-- **No re-projection/rebuild-from-scratch CLI.** Recovering from a full graph loss today means manually resetting every `graph_projection_jobs` row's `status` back to `queued` (a direct SQL operation) and re-running `--once` until the queue drains; a dedicated "rebuild the whole graph for this case" maintenance command is future work.
+- **Resolved (Phase 2 closeout): a continuous `--loop` mode now exists.** `--once` remains available and unchanged (a cron/systemd timer or manual invocation can still run it repeatedly); `--loop` is the production-style alternative — see "Continuous operation" above.
+- **Resolved (Phase 2 closeout): lease renewal now exists for `--loop`.** `GraphProjectionOutboxRepository.renew_lease` extends a still-`RUNNING` job's lease; `--once` still doesn't renew mid-attempt (a single bounded batch is expected to finish well within `GRAPH_PROJECTION_LEASE_SECONDS`), by design.
+- **No re-projection/rebuild-from-scratch CLI.** Recovering from a full graph loss today means manually resetting every `graph_projection_jobs` row's `status` back to `queued` (a direct SQL operation) and re-running `--once`/`--loop` until the queue drains; a dedicated "rebuild the whole graph for this case" maintenance command is future work.
 - **No pepper/rotation-equivalent concern here** (this module holds no credentials of its own), but **no operator-facing dashboard or alerting** exists for jobs sitting `failed` — `last_error_code`/`last_error_message` are queryable directly in PostgreSQL only.
 - **Entity resolution, candidate identity links, cross-modal correlation, and the hypothesis engine remain entirely out of scope**, exactly as `docs/architecture/graph-taxonomy-v1.md` already documented for Phase 1 — an `EntityMention` is never promoted to an `EntityV1` by anything in this phase.
 - **`project_entity`/`project_event` remain unwired** (Phase 1's own limitation, unchanged): nothing in this repository constructs a real `EntityV1`/`EventV1` yet, so those two projection functions still have no real caller. Only `project_evidence`/`project_observation`/`project_observation_mentions` are wired to a durable pipeline by this phase.

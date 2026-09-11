@@ -36,11 +36,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import signal
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from uuid import UUID, uuid4
 
 import structlog
@@ -60,13 +64,22 @@ from app.modules.media_processing.analysis.interfaces import (
     ObjectDetection,
     ObjectDetector,
     ObjectTracker,
+    RecognizedText,
     TextRecognizer,
     TrackSegment,
+)
+from app.modules.media_processing.analysis.iou_tracker import IoUTracker
+from app.modules.media_processing.analysis.onnx_detector import DetectorConfig, OnnxObjectDetector
+from app.modules.media_processing.analysis.tesseract_ocr import (
+    TesseractOcrConfig,
+    TesseractTextRecognizer,
 )
 from app.modules.media_processing.client import WorkerApiClient
 from app.modules.media_processing.errors import (
     ErrorCode,
     InputResolutionUnavailableError,
+    ModelAssetError,
+    OcrRuntimeError,
     ProcessingError,
     WorkerApiError,
     WorkerAuthenticationError,
@@ -261,6 +274,32 @@ def _process(
                     )
                     if ocr_observation is not None:
                         observations.append(ocr_observation)
+        if ocr is not None:
+            observations.extend(
+                _whole_image_ocr_observations(job, ocr, image, image_metadata, sw, completed_at)
+            )
+    return observations
+
+
+def _whole_image_ocr_observations(
+    job: WorkerJobV1,
+    ocr: TextRecognizer,
+    image: Frame,
+    metadata: ImageMetadata,
+    sw: Stopwatch,
+    completed_at: datetime,
+) -> list[ObservationV1]:
+    """OCR the whole image directly -- independent of the general object
+    detector's own output (see `interfaces.TextRecognizer`'s docstring for
+    why: a COCO-class detector has no "text region" class to gate on)."""
+    with sw.stage("analysis_ms"):
+        regions = [r for r in ocr.recognize_regions(image) if is_valid_confidence(r.confidence)]
+    observations: list[ObservationV1] = []
+    with sw.stage("observation_construction_ms"):
+        for region in regions:
+            observation = _ocr_region_observation_image(job, region, metadata, completed_at)
+            if observation is not None:
+                observations.append(observation)
     return observations
 
 
@@ -507,6 +546,81 @@ def _ocr_observation_video(
     )
 
 
+def _ocr_region_observation_image(
+    job: WorkerJobV1, region: RecognizedText, metadata: ImageMetadata, completed_at: datetime
+) -> ObservationV1 | None:
+    """Build an observation from a whole-image `recognize_regions` result.
+
+    Unlike `_ocr_observation_image` (which locates its observation using
+    the *detection's* box, since `recognize`'s returned box is relative to
+    the crop it was given), `region.box` here is already in full-image
+    pixel coordinates -- `recognize_regions` operates on the whole image.
+    """
+    try:
+        normalized = to_normalized(
+            region.box, image_width=metadata.width, image_height=metadata.height
+        )
+    except ProcessingError:
+        return None
+    draft = MediaObservationDraft(
+        observation_type=OBSERVATION_OCR_TEXT_MENTION,
+        locator=SourceLocator(bbox_xyxy_normalized=normalized),
+        confidence=region.confidence,
+        entity_text=region.text,
+        entity_type_hint="ocr_text",
+        attributes={"media_width": metadata.width, "media_height": metadata.height},
+    )
+    return draft_to_observation(
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        draft=draft,
+        extractor=_analysis_extractor(_model_interface_version(dict(region.attributes))),
+        created_at=completed_at,
+    )
+
+
+def _ocr_region_observation_video(
+    job: WorkerJobV1,
+    region: RecognizedText,
+    frame: ExtractedFrame,
+    metadata: VideoMetadata,
+    sampling: SamplingRequest,
+    completed_at: datetime,
+) -> ObservationV1 | None:
+    """Video counterpart of `_ocr_region_observation_image` -- `region.box` is
+    already in the full sampled frame's pixel coordinates."""
+    try:
+        normalized = to_normalized(
+            region.box, image_width=metadata.width, image_height=metadata.height
+        )
+    except ProcessingError:
+        return None
+    draft = MediaObservationDraft(
+        observation_type=OBSERVATION_OCR_TEXT_MENTION,
+        locator=SourceLocator(
+            frame_number=frame.frame_number,
+            time_start_ms=frame.time_start_ms,
+            time_end_ms=frame.time_end_ms,
+            bbox_xyxy_normalized=normalized,
+        ),
+        confidence=region.confidence,
+        entity_text=region.text,
+        entity_type_hint="ocr_text",
+        attributes={
+            "media_width": metadata.width,
+            "media_height": metadata.height,
+            "sampling_strategy": sampling.strategy.value,
+        },
+    )
+    return draft_to_observation(
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        draft=draft,
+        extractor=_analysis_extractor(_model_interface_version(dict(region.attributes))),
+        created_at=completed_at,
+    )
+
+
 def _track_observation(
     job: WorkerJobV1,
     segment: TrackSegment,
@@ -599,21 +713,53 @@ def _process_video_analysis(
                         _track_observation(job, segment, metadata, sampling, completed_at)
                     )
 
+        if ocr is not None:
+            for frame in frames:
+                regions = [
+                    r
+                    for r in ocr.recognize_regions(frame.image)
+                    if is_valid_confidence(r.confidence)
+                ]
+                for region in regions:
+                    region_observation = _ocr_region_observation_video(
+                        job, region, frame, metadata, sampling, completed_at
+                    )
+                    if region_observation is not None:
+                        observations.append(region_observation)
+
     return observations
 
 
 #: Every `(processor_name, processor_version)` this worker's live claim loop
-#: tries. Deliberately **only** `media_metadata_v1`: `media_detection_v1`
-#: requires a real `ObjectDetector` to be injected, and no real local
-#: detector is approved/available in this phase (see
-#: `analysis/interfaces.py`, `analysis/fake_*.py`, and
-#: `docs/qa/known-limitations.md`) -- `evidence_lifecycle/routing.py` never
-#: routes a real upload to `media_detection_v1` either, so trying to claim
-#: it here would only ever return "no work available." `process_job` itself
-#: still supports `media_detection_v1` fully (for direct/test invocation,
-#: and for a future phase that wires in a real detector); this CLI simply
-#: doesn't claim jobs for it yet.
-SUPPORTED_PROCESSORS: tuple[tuple[str, str], ...] = ((PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),)
+#: tries, in order, when real analysis components are available.
+#: `evidence_lifecycle/routing.py` now routes real IMAGE/VIDEO uploads to
+#: `media_detection_v1` (see `docs/architecture/phase-2-decisions.md`'s
+#: "Real local media inference closeout" for why) -- tried first so a real
+#: upload is claimed as a detection job, matching how it was routed.
+#: `media_metadata_v1` is tried second: no longer reachable via a real
+#: upload (routing sends every IMAGE/VIDEO source type to
+#: `media_detection_v1` now), but still fully supported for a directly
+#: constructed/legacy job. See `_effective_processors`: when no real
+#: detector could be loaded (`_build_analysis_components`), `main`/`run_loop`
+#: use only the `media_metadata_v1` entry instead of this full tuple, so a
+#: worker instance with no model asset bootstrapped never claims -- and
+#: then fails -- a detection job another, properly-configured instance
+#: could have handled.
+SUPPORTED_PROCESSORS: tuple[tuple[str, str], ...] = (
+    (PROCESSOR_NAME_DETECTION, PROCESSOR_VERSION),
+    (PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),
+)
+
+#: The claim set a worker instance falls back to when no real detector
+#: could be loaded -- see `SUPPORTED_PROCESSORS`'s docstring.
+_METADATA_ONLY_PROCESSORS: tuple[tuple[str, str], ...] = (
+    (PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),
+)
+
+
+def _effective_processors(detector: ObjectDetector | None) -> tuple[tuple[str, str], ...]:
+    return SUPPORTED_PROCESSORS if detector is not None else _METADATA_ONLY_PROCESSORS
+
 
 #: A safe, non-secret checkpoint recorded on a `DEFERRED` result when the
 #: claimed job's evidence couldn't be resolved because the input-access
@@ -639,12 +785,51 @@ class RunOnceOutcome:
     deferred_reason: str | None = None
 
 
+@contextmanager
+def _lease_heartbeat(
+    client: WorkerApiClient, job_id: UUID, claim_token: str, interval_seconds: float
+) -> Iterator[None]:
+    """Renew this job's lease on a background thread every `interval_seconds`
+    while the wrapped block (real analysis -- sampling, detection, OCR) runs.
+
+    A missed or failed renewal is logged and swallowed, never raised into
+    the foreground work already in progress -- if the lease genuinely
+    expires despite best-effort renewal, the eventual `submit_result` call
+    fails loudly and honestly on its own (a reclaimed job's claim token no
+    longer matches), which is the correct outcome; a heartbeat's job is to
+    make that the rare case, not to guarantee it can never happen. The
+    thread is a daemon (never blocks process exit) and is always signaled
+    to stop and joined (bounded wait) before this context manager returns,
+    whether the wrapped block succeeded or raised.
+    """
+    stop = threading.Event()
+
+    def _renew_periodically() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                client.renew(job_id, claim_token=claim_token)
+            except (WorkerApiError, WorkerAuthenticationError) as exc:
+                logger.warning("worker.lease.renew_failed", reason=str(exc))
+
+    thread = threading.Thread(target=_renew_periodically, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=5.0)
+
+
 def run_once(
     *,
     client: WorkerApiClient,
     input_resolver: WorkerInputResolver,
     clock: Clock = _default_clock,
     processors: Sequence[tuple[str, str]] = SUPPORTED_PROCESSORS,
+    detector: ObjectDetector | None = None,
+    tracker: ObjectTracker | None = None,
+    ocr: TextRecognizer | None = None,
+    renew_interval_seconds: float | None = None,
 ) -> RunOnceOutcome:
     """Claim at most one job, process it, submit its result, and return what happened.
 
@@ -655,6 +840,14 @@ def run_once(
     returns a terminal `WorkerResultV1`, and the input-resolution-gap and
     integrity-mismatch paths below both submit a terminal result too,
     never fabricating `SUCCEEDED`.
+
+    `detector`/`tracker`/`ocr` are threaded straight through to
+    `process_job` unchanged -- `None` (the default) means metadata-only
+    processing, exactly as before this phase. `renew_interval_seconds`
+    (`None` by default -- unchanged behavior), when set, wraps the
+    `process_job` call in a background lease-heartbeat (`_lease_heartbeat`)
+    for real analysis that may outlast the lease window it was claimed
+    under (a large video's sampling + detection + OCR).
     """
     run_id = str(uuid4())
     structlog.contextvars.bind_contextvars(run_id=run_id)
@@ -704,7 +897,20 @@ def run_once(
                 return RunOnceOutcome(claimed=True, job_id=job.job_id, result_status=ack.status)
 
         evidence = _shim_evidence_record(job, resolved)
-        result = process_job(job, evidence, StaticBytesResolver(payload=resolved.data))
+        heartbeat = (
+            _lease_heartbeat(client, job.job_id, claim_token, renew_interval_seconds)
+            if renew_interval_seconds is not None
+            else nullcontext()
+        )
+        with heartbeat:
+            result = process_job(
+                job,
+                evidence,
+                StaticBytesResolver(payload=resolved.data),
+                detector=detector,
+                tracker=tracker,
+                ocr=ocr,
+            )
         ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=result)
         logger.info(
             "worker.run_once.submitted",
@@ -823,22 +1029,199 @@ def _build_client(settings: Settings) -> WorkerApiClient:
     )
 
 
+@dataclass(frozen=True)
+class AnalysisComponents:
+    """The real local analysis components this worker process could load, if any."""
+
+    detector: ObjectDetector | None
+    tracker: ObjectTracker | None
+    ocr: TextRecognizer | None
+
+
+def _build_analysis_components(settings: Settings) -> AnalysisComponents:
+    """Build the real local detector/tracker/OCR components from configuration.
+
+    Never crashes the CLI on its own: a missing/invalid model asset or an
+    unusable OCR runtime is logged as a clear, structured warning, and the
+    corresponding component is simply `None` -- this worker then falls
+    back to metadata-only claiming (`_effective_processors`) for this run,
+    an honest degraded mode, never a silent fabrication and never a hard
+    crash that would also stop metadata-only jobs (which need no analysis
+    component at all) from being processed. `main`'s `--require-analysis`
+    flag turns a missing detector into a hard startup failure instead, for
+    a deployment that wants to guarantee real detection is available
+    before it will run at all. The tracker has no asset/runtime of its own
+    to fail on (`IoUTracker` is pure Python) -- it is only ever built
+    alongside a successfully-loaded detector, since tracking without
+    detections to track is meaningless.
+    """
+    detector: ObjectDetector | None = None
+    tracker: ObjectTracker | None = None
+    ocr: TextRecognizer | None = None
+    try:
+        detector = OnnxObjectDetector(
+            config=DetectorConfig(
+                model_path=settings.media_detector_model_path,
+                expected_sha256=settings.media_detector_model_sha256,
+                device=settings.media_detector_device,
+                confidence_threshold=settings.media_detector_confidence_threshold,
+                nms_threshold=settings.media_detector_nms_threshold,
+            )
+        )
+        tracker = IoUTracker()
+        logger.info("worker.analysis.detector_loaded", device=detector.device)
+    except ModelAssetError as exc:
+        logger.warning("worker.analysis.detector_unavailable", reason=str(exc))
+    try:
+        ocr = TesseractTextRecognizer(
+            config=TesseractOcrConfig(
+                language=settings.media_ocr_language,
+                min_confidence=settings.media_ocr_min_confidence,
+            )
+        )
+        logger.info("worker.analysis.ocr_loaded", language=settings.media_ocr_language)
+    except OcrRuntimeError as exc:
+        logger.warning("worker.analysis.ocr_unavailable", reason=str(exc))
+    return AnalysisComponents(detector=detector, tracker=tracker, ocr=ocr)
+
+
+@dataclass(frozen=True)
+class RunLoopSummary:
+    """What one `run_loop` call did before stopping -- for the CLI's exit code and for tests."""
+
+    iterations: int
+    jobs_processed: int
+    consecutive_failures: int
+    #: `"shutdown_requested"` (a clean stop, exit `0`) or
+    #: `"max_consecutive_failures"` (a worsening problem, exit `1`).
+    stopped_reason: str
+
+
+def _install_signal_handlers(shutdown_event: threading.Event) -> None:
+    """SIGINT/SIGTERM both request the same graceful shutdown: stop claiming new
+    jobs, let whatever `run_once` iteration is already in flight finish and
+    submit its terminal result normally, then return. Never force-kills or
+    interrupts an in-progress `process_job` call."""
+
+    def _handle(signum: int, _frame: FrameType | None) -> None:
+        logger.info("worker.loop.shutdown_signal_received", signal=signal.Signals(signum).name)
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+
+
+def run_loop(
+    *,
+    client: WorkerApiClient,
+    input_resolver: WorkerInputResolver,
+    shutdown_event: threading.Event,
+    clock: Clock = _default_clock,
+    processors: Sequence[tuple[str, str]] = SUPPORTED_PROCESSORS,
+    detector: ObjectDetector | None = None,
+    tracker: ObjectTracker | None = None,
+    ocr: TextRecognizer | None = None,
+    poll_interval_seconds: float = 5.0,
+    max_backoff_seconds: float = 60.0,
+    max_consecutive_failures: int = 5,
+    renew_interval_seconds: float | None = None,
+) -> RunLoopSummary:
+    """Continuously claim-process-submit (via `run_once`) until `shutdown_event` is
+    set or too many consecutive failures occur.
+
+    `shutdown_event` is checked *before* every `run_once` call, never
+    mid-call -- once it is set, this loop claims no further jobs; whatever
+    iteration is already running (there is at most one, this loop is not
+    concurrent) always finishes to a submitted terminal/deferred result or
+    a clean "no work" return first, since that is `run_once`'s own
+    unconditional contract -- there is no partial claim this loop could
+    ever abandon. A successful "no work available" outcome resets the
+    failure counter and sleeps `poll_interval_seconds` (via
+    `shutdown_event.wait`, so a shutdown request wakes it immediately
+    rather than after the full interval); a job actually processed also
+    resets the counter but loops again immediately (more work may be
+    queued). An exception from `run_once` (API unreachable, auth rejected)
+    increments a consecutive-failure counter and sleeps a bounded
+    exponential backoff (`poll_interval_seconds * 2**consecutive_failures`,
+    capped at `max_backoff_seconds`); reaching `max_consecutive_failures`
+    stops the loop entirely -- a real, worsening problem, not something to
+    retry forever silently (see `main`'s exit-code mapping).
+    """
+    iterations = 0
+    jobs_processed = 0
+    consecutive_failures = 0
+    while not shutdown_event.is_set():
+        iterations += 1
+        try:
+            outcome = run_once(
+                client=client,
+                input_resolver=input_resolver,
+                clock=clock,
+                processors=processors,
+                detector=detector,
+                tracker=tracker,
+                ocr=ocr,
+                renew_interval_seconds=renew_interval_seconds,
+            )
+        except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
+            consecutive_failures += 1
+            logger.error(
+                "worker.loop.iteration_failed",
+                reason=str(exc),
+                consecutive_failures=consecutive_failures,
+            )
+            if consecutive_failures >= max_consecutive_failures:
+                return RunLoopSummary(
+                    iterations, jobs_processed, consecutive_failures, "max_consecutive_failures"
+                )
+            backoff = min(poll_interval_seconds * (2**consecutive_failures), max_backoff_seconds)
+            shutdown_event.wait(backoff)
+            continue
+
+        consecutive_failures = 0
+        if outcome.claimed:
+            jobs_processed += 1
+            logger.info(
+                "worker.loop.job_processed",
+                job_id=str(outcome.job_id),
+                status=outcome.result_status,
+            )
+            continue
+        shutdown_event.wait(poll_interval_seconds)
+
+    return RunLoopSummary(iterations, jobs_processed, consecutive_failures, "shutdown_requested")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point: `uv run python -m app.modules.media_processing.worker --once`."""
+    """CLI entry point:
+
+    uv run python -m app.modules.media_processing.worker --once
+    uv run python -m app.modules.media_processing.worker --loop
+    """
     parser = argparse.ArgumentParser(
         prog="python -m app.modules.media_processing.worker",
         description=(
-            "Claim and process at most one compatible media-processing job, then exit. "
-            "No daemon or polling mode exists in this phase."
+            "Claim and process compatible media-processing jobs against the internal "
+            "worker API. --once processes at most one job then exits; --loop runs "
+            "continuously until SIGINT/SIGTERM."
         ),
     )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        required=True,
-        help="Run exactly one claim-process-submit cycle, then exit.",
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--once", action="store_true", help="Run exactly one claim-process-submit cycle, then exit."
     )
-    parser.parse_args(argv)
+    mode.add_argument(
+        "--loop", action="store_true", help="Run continuously until SIGINT/SIGTERM, then exit."
+    )
+    parser.add_argument(
+        "--require-analysis",
+        action="store_true",
+        help=(
+            "Fail at startup (exit 1) instead of silently degrading to metadata-only "
+            "claiming if the configured detector model asset cannot be loaded."
+        ),
+    )
+    args = parser.parse_args(argv)
 
     _configure_logging()
     settings = get_settings()
@@ -848,20 +1231,66 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("worker.cli.failed", reason=str(exc))
         return 1
 
-    try:
-        outcome = run_once(client=client, input_resolver=LiveInputResolver(client))
-    except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
-        logger.error("worker.cli.failed", reason=str(exc))
+    components = _build_analysis_components(settings)
+    if args.require_analysis and components.detector is None:
+        logger.error(
+            "worker.cli.failed",
+            reason="--require-analysis was set but no detector model asset could be loaded",
+        )
+        client.close()
         return 1
+    processors = _effective_processors(components.detector)
+
+    if args.once:
+        try:
+            outcome = run_once(
+                client=client,
+                input_resolver=LiveInputResolver(client),
+                processors=processors,
+                detector=components.detector,
+                tracker=components.tracker,
+                ocr=components.ocr,
+                renew_interval_seconds=settings.media_worker_renew_interval_seconds,
+            )
+        except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
+            logger.error("worker.cli.failed", reason=str(exc))
+            return 1
+        finally:
+            client.close()
+
+        logger.info(
+            "worker.cli.done",
+            job_id=str(outcome.job_id) if outcome.job_id else None,
+            status=outcome.result_status or "no_job_available",
+        )
+        return 0
+
+    shutdown_event = threading.Event()
+    _install_signal_handlers(shutdown_event)
+    try:
+        summary = run_loop(
+            client=client,
+            input_resolver=LiveInputResolver(client),
+            shutdown_event=shutdown_event,
+            processors=processors,
+            detector=components.detector,
+            tracker=components.tracker,
+            ocr=components.ocr,
+            poll_interval_seconds=settings.media_worker_poll_interval_seconds,
+            max_backoff_seconds=settings.media_worker_max_backoff_seconds,
+            max_consecutive_failures=settings.media_worker_max_consecutive_failures,
+            renew_interval_seconds=settings.media_worker_renew_interval_seconds,
+        )
     finally:
         client.close()
 
     logger.info(
-        "worker.cli.done",
-        job_id=str(outcome.job_id) if outcome.job_id else None,
-        status=outcome.result_status or "no_job_available",
+        "worker.cli.loop_done",
+        iterations=summary.iterations,
+        jobs_processed=summary.jobs_processed,
+        stopped_reason=summary.stopped_reason,
     )
-    return 0
+    return 0 if summary.stopped_reason == "shutdown_requested" else 1
 
 
 if __name__ == "__main__":
@@ -874,8 +1303,11 @@ __all__ = [
     "PROCESSOR_NAME_METADATA",
     "PROCESSOR_VERSION",
     "SUPPORTED_PROCESSORS",
+    "AnalysisComponents",
+    "RunLoopSummary",
     "RunOnceOutcome",
     "main",
     "process_job",
+    "run_loop",
     "run_once",
 ]

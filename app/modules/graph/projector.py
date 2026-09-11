@@ -36,8 +36,10 @@ stack trace (see `app.modules.graph.errors`).
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.modules.graph.errors import GraphConnectionError
 from app.modules.graph.models import (
@@ -144,17 +146,43 @@ async def run_batch(
     now: datetime,
     lease_seconds: int,
     batch_size: int,
+    renew_interval_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> ProjectorRunSummary:
     """Claim up to `batch_size` eligible jobs and attempt each one, once.
 
     Never raises on a single job's failure -- every attempt terminates in
     one of `mark_succeeded`/`mark_retryable_failure`/`mark_failed`, so one
     bad observation can never abort the rest of the batch.
+
+    `renew_interval_seconds` (used by `graph.worker --loop`; `None` by
+    default, unchanged behavior for the bounded `--once` CLI) is a
+    heartbeat: every claimed job in one `claim_batch` call shares the same
+    `lease_expires_at` set at claim time, so a batch whose *cumulative*
+    processing time approaches that window risks a not-yet-reached job
+    later in the batch looking lease-expired to another concurrent
+    projector, which could then legitimately reclaim and duplicate it. When
+    set, this renews every *not-yet-attempted* job's lease (extending it
+    another `lease_seconds` from that moment) whenever more than
+    `renew_interval_seconds` of wall-clock time has elapsed since the last
+    renewal -- `monotonic` is injectable so tests can drive this
+    deterministically without a real clock.
     """
     jobs = await outbox.claim_batch(now=now, lease_seconds=lease_seconds, batch_size=batch_size)
     counts = {"succeeded": 0, "failed": 0, "retrying": 0, "deferred": 0}
     attempts: list[ProjectorAttemptResult] = []
-    for job in jobs:
+    last_renewal = monotonic()
+    for index, job in enumerate(jobs):
+        if (
+            renew_interval_seconds is not None
+            and monotonic() - last_renewal >= renew_interval_seconds
+        ):
+            renewal_now = datetime.now(UTC)
+            for remaining_job in jobs[index:]:
+                await outbox.renew_lease(
+                    remaining_job.projection_id, now=renewal_now, lease_seconds=lease_seconds
+                )
+            last_renewal = monotonic()
         outcome = await _project_one(job, outbox, graph, now)
         attempts.append(ProjectorAttemptResult(job=job, outcome=outcome))
         counts[outcome] += 1

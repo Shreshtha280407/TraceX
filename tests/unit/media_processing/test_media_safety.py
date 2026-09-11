@@ -29,9 +29,18 @@ _FORBIDDEN_SIBLING_MODULE_PATHS = {
     "app.modules.access_control",
 }
 
-#: Infrastructure clients and ML/model libraries this module must never
-#: import -- a worker's only contract is WorkerJobV1 in, WorkerResultV1
-#: out, and no real detector/tracker/OCR model is implemented in this phase.
+#: Infrastructure clients and heavyweight/cloud ML libraries this module
+#: must never import -- a worker's only contract is WorkerJobV1 in,
+#: WorkerResultV1 out, and only local, CPU-capable-by-default inference
+#: libraries are approved (see `docs/architecture/media-processing-worker.md`'s
+#: "Model asset bootstrap"/"OCR runtime setup"). `pytesseract` (a thin
+#: subprocess wrapper around the local `tesseract` binary -- no bundled
+#: weights, no network access) and `onnxruntime`/`cv2` (already-approved
+#: local-only inference/vision runtimes -- `opencv-python-headless` was
+#: already a dependency before this phase) are deliberately *not* forbidden;
+#: `torch`/`tensorflow`/`sklearn`/`ultralytics`/`paddleocr` remain forbidden
+#: as the heavyweight/GPU-oriented toolchains this phase's real local
+#: detector/OCR adapters were built specifically to avoid.
 _FORBIDDEN_INFRA_AND_ML_IMPORTS = {
     "psycopg2",
     "psycopg",
@@ -48,7 +57,6 @@ _FORBIDDEN_INFRA_AND_ML_IMPORTS = {
     "sklearn",
     "ultralytics",
     "paddleocr",
-    "pytesseract",
 }
 
 #: This module never resolves detections/tracks into identities or graph objects.

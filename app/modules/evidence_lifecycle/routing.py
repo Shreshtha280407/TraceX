@@ -94,8 +94,18 @@ ROUTING: dict[SourceType, ProcessorRoute] = {
     SourceType.FINANCIAL: ProcessorRoute("financial_transaction_generic_v1", "1.0.0"),
     SourceType.AUDIO: ProcessorRoute("audio_metadata_v1", "1.0.0"),
     SourceType.CHAT: ProcessorRoute("generic_social_json_v1", "1.0.0"),
-    SourceType.VIDEO: ProcessorRoute("media_metadata_v1", "1.0.0"),
-    SourceType.IMAGE: ProcessorRoute("media_metadata_v1", "1.0.0"),
+    # Phase 2 closeout: routed to media_processing's real local detection
+    # pipeline (`media_detection_v1`), not the metadata-only fallback --
+    # `_process` always emits the metadata observation first regardless of
+    # which processor claimed the job, so this is strictly additive real
+    # intelligence, never a loss of the prior metadata-only behavior. See
+    # docs/architecture/phase-2-decisions.md's "Real local media inference
+    # closeout" and docs/architecture/media-processing-worker.md.
+    # `media_metadata_v1` remains fully supported by that worker for a
+    # directly-constructed/legacy job; it is simply no longer what a real
+    # upload is routed to.
+    SourceType.VIDEO: ProcessorRoute("media_detection_v1", "1.0.0"),
+    SourceType.IMAGE: ProcessorRoute("media_detection_v1", "1.0.0"),
     # Phase 2.3: reaches structured_processing's existing generic fallback
     # profiles (previously only constructible via a direct/test job, never
     # a real upload -- see docs/architecture/structured-processing-worker.md).

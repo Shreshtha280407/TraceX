@@ -19,15 +19,18 @@ from uuid import UUID, uuid4
 
 from app.contracts.evidence import SourceType
 from app.contracts.worker import WorkerStatus
+from app.modules.media_processing.analysis.fake_detector import FakeObjectDetector
 from app.modules.media_processing.client import ClaimResult, SubmitResultAck
 from app.modules.media_processing.errors import InputResolutionUnavailableError
 from app.modules.media_processing.input_resolver import ResolvedMediaInput, StaticInputResolver
 from app.modules.media_processing.worker import (
     CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE,
+    PROCESSOR_NAME_DETECTION,
     PROCESSOR_NAME_METADATA,
     PROCESSOR_VERSION,
     SUPPORTED_PROCESSORS,
     RunOnceOutcome,
+    _effective_processors,
     run_once,
 )
 from tests.fixtures.media_processing.factory import make_evidence_and_job
@@ -77,10 +80,26 @@ def _ack(job_id: UUID, *, status: str = "succeeded") -> SubmitResultAck:
 # --- supported processors ------------------------------------------------------
 
 
-def test_supported_processors_only_claims_metadata_live() -> None:
-    """`media_detection_v1` needs a real detector this CLI never injects -- see the
-    docstring on `SUPPORTED_PROCESSORS` in `worker.py`."""
-    assert SUPPORTED_PROCESSORS == ((PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),)
+def test_supported_processors_tries_detection_then_metadata() -> None:
+    """Real IMAGE/VIDEO uploads now route to `media_detection_v1` -- see
+    `docs/architecture/phase-2-decisions.md`'s "Real local media inference
+    closeout" -- so the live claim loop tries it first; `media_metadata_v1`
+    remains tried second for a directly-constructed/legacy job."""
+    assert SUPPORTED_PROCESSORS == (
+        (PROCESSOR_NAME_DETECTION, PROCESSOR_VERSION),
+        (PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),
+    )
+
+
+def test_effective_processors_falls_back_to_metadata_only_without_a_detector() -> None:
+    """A worker instance with no detector model asset loaded must never claim
+    (and then inevitably fail) a `media_detection_v1` job another,
+    properly-configured instance could have handled."""
+    assert _effective_processors(detector=None) == ((PROCESSOR_NAME_METADATA, PROCESSOR_VERSION),)
+
+
+def test_effective_processors_uses_full_set_with_a_detector() -> None:
+    assert _effective_processors(detector=FakeObjectDetector()) == SUPPORTED_PROCESSORS
 
 
 # --- happy path ----------------------------------------------------------------
@@ -147,7 +166,10 @@ def test_run_once_skips_sha_verification_when_resolver_supplies_none() -> None:
 
 def test_run_once_no_job_available() -> None:
     client = _FakeClient(
-        claim_responses=[ClaimResult(job=None, claim_token=None, lease_expires_at=None)]
+        claim_responses=[
+            ClaimResult(job=None, claim_token=None, lease_expires_at=None)
+            for _ in SUPPORTED_PROCESSORS
+        ]
     )
     outcome = run_once(
         client=client,

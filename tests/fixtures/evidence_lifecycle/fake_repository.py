@@ -172,6 +172,23 @@ class FakeEvidenceLifecycleRepository:
         self.jobs[claimed.job_id] = claimed
         return claimed, was_reclaim
 
+    async def renew_lease(
+        self, job_id: UUID, *, now: datetime, lease_seconds: int
+    ) -> datetime | None:
+        job = self.jobs.get(job_id)
+        if (
+            job is None
+            or job.status is not WorkerStatus.RUNNING
+            or job.lease_expires_at is None
+            or job.lease_expires_at < now
+        ):
+            return None
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        self.jobs[job_id] = job.model_copy(
+            update={"lease_expires_at": lease_expires_at, "updated_at": now}
+        )
+        return lease_expires_at
+
     # --- worker result -------------------------------------------------------
 
     async def get_result_for_job(self, job_id: UUID) -> WorkerResultRecord | None:

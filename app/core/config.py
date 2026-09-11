@@ -9,6 +9,8 @@ process startup rather than surfacing as confusing runtime errors later.
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -160,6 +162,51 @@ class Settings(BaseSettings):
     # being left `failed` for operator inspection rather than retried
     # forever -- see "Bounded retries" in docs/architecture/graph-projection.md.
     graph_projection_max_attempts: int = Field(default=5, ge=1)
+    # How often (seconds) `graph.worker --loop` renews a claimed batch's
+    # projection-job leases while a long batch is still being worked, and
+    # how long a graph-projector loop sleeps between empty poll attempts.
+    # Independent settings from `graph_projection_lease_seconds` (the lease
+    # *duration* itself) -- see docs/architecture/graph-projection.md.
+    graph_projection_renew_interval_seconds: int = Field(default=40, ge=1)
+    graph_projector_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    graph_projector_max_backoff_seconds: float = Field(default=60.0, gt=0)
+    graph_projector_max_consecutive_failures: int = Field(default=5, ge=1)
+
+    # --- Media detection/OCR (Phase 2 closeout -- Nipun) ---
+    # Typed, explicit local-model configuration -- see
+    # docs/architecture/media-processing-worker.md's "Model asset bootstrap".
+    # No model weights are bundled in this repository or downloaded at
+    # import time; this path must point at a real local file an operator
+    # placed there via `uv run python -m
+    # app.modules.media_processing.bootstrap_models`. The default path is
+    # exactly where that command writes it, so the common case ("I ran the
+    # documented bootstrap command") needs no override.
+    media_detector_model_path: Path = Field(
+        default=Path("models/media/object_detection_yolox_2022nov.onnx")
+    )
+    # Pinned to the exact asset `bootstrap_models.py` downloads and verifies
+    # -- see that module and `analysis/onnx_detector.py`'s "Model
+    # provenance" for the source URL, license, and commit this was built
+    # from. Overridable only for a deliberately different, equally-pinned
+    # model asset; never intended to disable verification.
+    media_detector_model_sha256: str = Field(
+        default="c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063"
+    )
+    media_detector_device: Literal["auto", "cpu", "cuda"] = Field(default="auto")
+    media_detector_confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    media_detector_nms_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # `eng` (English) is the only tesseract language pack this repository's
+    # Dockerfile installs by default -- see docs/architecture/media-
+    # processing-worker.md's "OCR runtime setup" for adding others.
+    media_ocr_language: str = Field(default="eng")
+    media_ocr_min_confidence: float = Field(default=0.3, ge=0.0, le=1.0)
+    # How often (seconds) `media.worker --loop` renews a claimed job's lease
+    # while a long-running video analysis is still in progress -- see
+    # docs/architecture/media-processing-worker.md's "Continuous operation".
+    media_worker_renew_interval_seconds: int = Field(default=60, ge=1)
+    media_worker_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    media_worker_max_backoff_seconds: float = Field(default=60.0, gt=0)
+    media_worker_max_consecutive_failures: int = Field(default=5, ge=1)
 
     @field_validator("worker_token", "worker_credential_pepper")
     @classmethod

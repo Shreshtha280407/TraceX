@@ -34,3 +34,12 @@ class FakeTextRecognizer:
             box=PixelBoundingBox(x_min=0, y_min=0, x_max=width, y_max=height),
             attributes={"model_interface_version": FAKE_OCR_VERSION},
         )
+
+    def recognize_regions(self, image: Frame) -> list[RecognizedText]:
+        """Deterministic, test-only: one fixed region covering the whole image.
+
+        Depends only on image dimensions, never pixel content -- mirrors
+        `recognize`'s determinism guarantee.
+        """
+        single = self.recognize(image)
+        return [single] if single is not None else []

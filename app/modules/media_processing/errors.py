@@ -34,6 +34,16 @@ class ErrorCode:
     INVALID_BOUNDING_BOX = "invalid_bounding_box"
     SAMPLING_LIMIT_EXCEEDED = "sampling_limit_exceeded"
     ANALYSIS_NOT_CONFIGURED = "analysis_not_configured"
+    #: A configured local model asset (detector weights) is missing,
+    #: unreadable, or fails its pinned SHA-256 verification -- see
+    #: `analysis/onnx_detector.py` and `bootstrap_models.py`. Never raised
+    #: mid-job for a *transient* reason; this is always a deployment/
+    #: configuration problem, caught at component construction time.
+    MODEL_ASSET_UNAVAILABLE = "model_asset_unavailable"
+    #: The local OCR runtime (the `tesseract` binary, or a requested
+    #: language pack) is missing or not usable -- see
+    #: `analysis/tesseract_ocr.py`.
+    OCR_RUNTIME_UNAVAILABLE = "ocr_runtime_unavailable"
 
 
 class ProcessingError(Exception):
@@ -83,4 +93,24 @@ class WorkerApiError(WorkerOrchestrationError):
     Never constructed with the raw response body or the underlying HTTP
     client exception's text -- only a safe description (e.g. "claim
     request failed: HTTP 503").
+    """
+
+
+class ModelAssetError(WorkerOrchestrationError):
+    """A configured local detector model asset is missing, unreadable, or fails checksum
+    verification -- a startup/configuration problem, not a per-job outcome.
+
+    Raised by `_build_analysis_components` (`worker.py`) before any job is
+    ever claimed, so a misconfigured deployment fails loudly and immediately
+    (CLI exit `1`) rather than claiming and failing every detection job one
+    at a time. Never constructed with the local filesystem path -- only a
+    safe description of what's wrong (missing / checksum mismatch / unreadable).
+    """
+
+
+class OcrRuntimeError(WorkerOrchestrationError):
+    """The local OCR runtime (the `tesseract` binary, or a requested language pack) is
+    missing or unusable -- a startup/configuration problem, not a per-job outcome.
+
+    Never constructed with raw subprocess output.
     """

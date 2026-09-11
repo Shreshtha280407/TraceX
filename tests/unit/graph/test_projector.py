@@ -56,9 +56,14 @@ class _FakeOutbox:
         self.succeeded: list[UUID] = []
         self.retryable: list[tuple[UUID, str, GraphProjectionJobStatus]] = []
         self.failed: list[tuple[UUID, str]] = []
+        self.renewed: list[UUID] = []
 
     async def claim_batch(self, *, now, lease_seconds, batch_size):
         return self._jobs[:batch_size]
+
+    async def renew_lease(self, projection_id, *, now, lease_seconds):
+        self.renewed.append(projection_id)
+        return now
 
     async def get_observation(self, observation_id):
         return self.observations.get(observation_id)
@@ -310,3 +315,77 @@ async def test_multi_mention_observation_projects_in_one_write_call() -> None:
 
     assert summary.succeeded == 1
     assert len(graph.write_calls) == 3  # evidence, observation, mentions -- one call each
+
+
+# --- lease-renewal heartbeat (`renew_interval_seconds`) -----------------------
+
+
+def _successful_write_queue(evidence_id: UUID, observation_id: UUID) -> list[Any]:
+    return [
+        [{"evidence_id": str(evidence_id)}],
+        [{"observation_id": str(observation_id)}],
+        [{"mention_count": 0}],
+    ]
+
+
+async def test_renew_interval_none_never_renews_any_lease() -> None:
+    """Default behavior (`--once`, unchanged from before this phase): no renewal
+    happens at all when `renew_interval_seconds` isn't set."""
+    case_id, evidence_id = uuid4(), uuid4()
+    evidence = make_evidence_record(case_id=case_id, evidence_id=evidence_id)
+    observation = make_observation(case_id=case_id, evidence_id=evidence_id)
+    job = _job(observation.observation_id, case_id=case_id, evidence_id=evidence_id)
+    outbox = _FakeOutbox(
+        jobs=[job],
+        observations={observation.observation_id: observation},
+        evidence={(case_id, evidence_id): evidence},
+    )
+    graph = _FakeGraph(write_queue=_successful_write_queue(evidence_id, observation.observation_id))
+
+    await run_batch(outbox, graph, now=_NOW, lease_seconds=120, batch_size=10)
+
+    assert outbox.renewed == []
+
+
+async def test_renewal_extends_leases_of_not_yet_attempted_jobs_when_interval_elapses() -> None:
+    """3 claimed jobs; simulated wall-clock time crosses `renew_interval_seconds`
+    right before the 2nd job is attempted -- only the *not-yet-attempted* jobs
+    (indices 1, 2) get their leases renewed, never the already-completed job 0."""
+    case_id = uuid4()
+    jobs = []
+    observations = {}
+    evidence_map = {}
+    write_queue: list[Any] = []
+    for _ in range(3):
+        evidence_id = uuid4()
+        evidence = make_evidence_record(case_id=case_id, evidence_id=evidence_id)
+        observation = make_observation(case_id=case_id, evidence_id=evidence_id)
+        job = _job(observation.observation_id, case_id=case_id, evidence_id=evidence_id)
+        jobs.append(job)
+        observations[observation.observation_id] = observation
+        evidence_map[(case_id, evidence_id)] = evidence
+        write_queue.extend(_successful_write_queue(evidence_id, observation.observation_id))
+
+    outbox = _FakeOutbox(jobs=jobs, observations=observations, evidence=evidence_map)
+    graph = _FakeGraph(write_queue=write_queue)
+
+    # monotonic(): called once for `last_renewal`, then once per loop
+    # iteration's elapsed-time check. Elapsed exceeds the 10s interval
+    # starting on the check before job index 1.
+    monotonic_values = iter([0.0, 0.0, 15.0, 15.0])
+
+    def _fake_monotonic() -> float:
+        return next(monotonic_values, 15.0)
+
+    summary = await run_batch(
+        outbox,
+        graph,
+        now=_NOW,
+        lease_seconds=120,
+        batch_size=10,
+        renew_interval_seconds=10.0,
+        monotonic=_fake_monotonic,
+    )
+
+    assert summary.succeeded == 3
+    assert outbox.renewed == [jobs[1].projection_id, jobs[2].projection_id]

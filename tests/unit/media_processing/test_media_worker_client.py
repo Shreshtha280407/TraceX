@@ -217,6 +217,53 @@ def test_fetch_input_raises_unavailable_when_endpoint_missing() -> None:
         _client(handler).fetch_input(uuid4(), claim_token="tok-123")
 
 
+# --- renew (lease heartbeat) ------------------------------------------------------
+
+
+def test_renew_success_returns_new_lease_expiry() -> None:
+    job_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == f"/api/v1/internal/worker-jobs/{job_id}/renew"
+        assert request.headers["x-claim-token"] == "tok-123"
+        return httpx.Response(
+            200,
+            json={"job_id": str(job_id), "lease_expires_at": "2026-01-01T13:00:00+00:00"},
+        )
+
+    new_lease = _client(handler).renew(job_id, claim_token="tok-123")
+    assert new_lease.isoformat() == "2026-01-01T13:00:00+00:00"
+
+
+def test_renew_raises_auth_error_on_401() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(401, json={"detail": "invalid claim token"})
+
+    with pytest.raises(WorkerAuthenticationError):
+        _client(handler).renew(uuid4(), claim_token="wrong-token")
+
+
+def test_renew_raises_api_error_on_unexpected_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(500, json={"detail": "internal error"})
+
+    with pytest.raises(WorkerApiError):
+        _client(handler).renew(uuid4(), claim_token="tok-123")
+
+
+def test_renew_never_logs_the_claim_token(caplog: pytest.LogCaptureFixture) -> None:
+    job_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(
+            200, json={"job_id": str(job_id), "lease_expires_at": "2026-01-01T13:00:00+00:00"}
+        )
+
+    _client(handler).renew(job_id, claim_token="super-secret-claim-token")
+    assert "super-secret-claim-token" not in caplog.text
+
+
 # --- secret safety ---------------------------------------------------------------
 
 
