@@ -13,7 +13,7 @@ uv run python -m app.modules.structured_processing.worker --once
   -> exit 0
 ```
 
-A run that finds no eligible job for any supported processor, a run that successfully submits a `SUCCEEDED`/`FAILED`/`DEFERRED` result, and a run that submits a `DEFERRED` result because the input-access boundary below isn't available yet are all *successful* CLI exits (`0`) — only a genuine auth/transport/API failure exits `1`. See `worker.main`'s docstring.
+A run that finds no eligible job for any supported processor, a run that successfully submits a `SUCCEEDED`/`FAILED`/`DEFERRED` result, and a run that submits a `DEFERRED` result because the live input-stream endpoint genuinely isn't reachable (see "Input-access boundary" below) are all *successful* CLI exits (`0`) — only a genuine auth/transport/API failure exits `1`. See `worker.main`'s docstring.
 
 ## Supported processors
 
@@ -55,27 +55,28 @@ These names/versions and their parsing logic are all **Phase 1, unchanged** (`ap
 
 - **Unsupported format, malformed input, encrypted PDF, invalid time range**: `process_job` catches `ProcessingError` and returns `WorkerStatus.FAILED` with a safe, non-secret `WorkerError` (code + message only — never a raw file path, object URI, or the offending value). See `tests/unit/structured_processing/test_safety.py` and the module's existing error codes.
 - **Scanned/image-only PDF**: `WorkerStatus.DEFERRED` with checkpoint `document_requires_ocr` — OCR is explicitly out of scope for this phase (`CLAUDE.md`); this worker never invents text from a scanned page. Unchanged Phase 1 behavior (`document/ocr_routing.py`).
-- **Input resolution unavailable** (the job was claimed, but this worker has no authenticated way to fetch its evidence bytes — see the next section): `WorkerStatus.DEFERRED` with checkpoint `input_resolution_unavailable` (`worker.CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE`). This is this phase's own addition, not a Phase 1 behavior — an honest "not yet possible" outcome, never a fabricated `SUCCEEDED`.
-- `queued`/`running` are never submitted as a final result — `process_job` only ever returns a terminal status, and the input-resolution-gap path above always submits `DEFERRED` (also terminal).
+- **Input resolution unavailable** (the claimed job's input-stream request genuinely fails, e.g. the endpoint is unreachable against an older API build — see "Input-access boundary" below): `WorkerStatus.DEFERRED` with checkpoint `input_resolution_unavailable` (`worker.CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE`). An honest "not yet possible" outcome, never a fabricated `SUCCEEDED`.
+- **Resolved bytes fail SHA-256 verification** (the stream succeeded, but the received bytes don't hash to the value the API reported for this evidence — see "Input-access boundary"): `WorkerStatus.FAILED` with `WorkerError(code="evidence_integrity_mismatch", retryable=True)`. A genuine data-integrity signal, not a "not yet possible" one — `FAILED`, not `DEFERRED`.
+- `queued`/`running` are never submitted as a final result — `process_job` only ever returns a terminal status, and both gap-handling paths above always submit a terminal outcome too.
 
 ## What this worker emits — and what it never does
 
 Every emitted item is a canonical `ObservationV1` — a raw, unresolved statement about the source, carrying its own provenance. This worker **never** creates an `EntityV1`, `EventV1`, a graph node/relationship, an entity-resolution decision, or a guilt/suspicion score — see `CLAUDE.md`'s "No automatic identity merge, guilt conclusion" rule. A parsed FIR complainant/accused name, for example, is emitted as `extracted_entities` (`ExtractedEntityMention`, unresolved text + a type hint) on a `document_text_mention` observation, never as a resolved `EntityV1`.
 
-## Input-access boundary — a documented integration gap, not a bug
+## Input-access boundary — closed in Phase 2.2, history kept for context
 
 `process_job(job, evidence, resolver)` needs two things a `WorkerJobV1` (the only thing `/claim` returns) does not carry: the raw evidence **bytes**, and `EvidenceRecordV1.content_type`/`.original_filename` (used by `document.classifier.classify` to pick the right parsing path — `WorkerJobV1.source_type` is too coarse for this, e.g. `document` alone doesn't distinguish PDF from DOCX from TXT).
 
-**Inspected before writing this worker**: `app/modules/evidence_lifecycle/` (Nipun's Phase 2/2.1) exposes no authenticated way for a claimed worker to retrieve either. `internal_api.py` has exactly two routes, `/claim` and `/{job_id}/result` — no third route for evidence bytes or metadata. `MinioSourceResolver` is an *internal*, credentialed Python object used only inside `evidence_lifecycle`'s own process, never exposed as an HTTP endpoint. The case-scoped `GET /api/v1/cases/{case_id}/evidence/{evidence_id}` endpoint exists but requires human case-membership JWT auth (`require_evidence_read`), which a worker authenticating via `WORKER_SHARED_SECRET` does not have and should not be given — granting it would mean issuing workers a human-auth-equivalent credential, a much larger boundary change than this task's scope.
+**As originally written (this phase's first pass)**: `app/modules/evidence_lifecycle/` (Nipun's Phase 2/2.1) exposed no authenticated way for a claimed worker to retrieve either — `internal_api.py` had exactly two routes, `/claim` and `/{job_id}/result`. Per this task's explicit instruction not to bypass the boundary (no direct MinIO reads, no storage credentials on the worker, no unilateral endpoint added to another contributor's module), this worker was built against a typed `WorkerInputResolver` Protocol and a *proposed* (not-yet-implemented) endpoint shape, so it was fully testable end to end via an injected in-memory resolver even without the live capability.
 
-**What this worker does about it, per this task's explicit instruction**: it does **not** bypass the boundary by reading MinIO directly, does not add storage credentials to the worker, and does not add an insecure endpoint unilaterally into Nipun's module. Instead:
+**As of Phase 2.2 (Nipun)**: that proposed endpoint is now implemented — `GET /api/v1/internal/worker-jobs/{job_id}/input`, documented in full in `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery" section and `docs/architecture/phase-2-decisions.md`'s "Phase 2.2 Decisions". The architecture this worker was built with anticipated exactly this shape, so closing the gap required **zero changes to `input_resolver.py`'s Protocol** and only small, additive changes to this module:
 
-- `input_resolver.py` defines a typed `WorkerInputResolver` Protocol (`resolve(job, *, claim_token) -> ResolvedInput`) that isolates `worker.py`'s orchestration from *how* bytes/metadata actually arrive.
-- `StaticInputResolver` is an in-memory implementation used by every unit test — the worker is fully testable end to end without the live capability existing (`tests/unit/structured_processing/test_worker_orchestration.py`).
-- `LiveInputResolver` delegates to `client.WorkerApiClient.fetch_input`, which calls the **proposed** endpoint below and raises `InputResolutionUnavailableError` if it 404s — loudly and safely, never silently falling back to a direct object-storage read.
-- When that happens after a real claim, `run_once` submits a `DEFERRED` result (checkpoint `input_resolution_unavailable`, see above) rather than crashing or fabricating success.
+- `client.WorkerApiClient.fetch_input` now parses the real response: filename from a standard `Content-Disposition` header (RFC 6266, not the originally-proposed bespoke `X-Original-Filename`), and the evidence's recorded SHA-256 from `X-TraceX-Evidence-SHA256` into `ResolvedInput.expected_sha256`. A worker-side size bound (`MAX_INPUT_BYTES`, 50 MiB) is enforced on the response before it's handed anywhere else, independent of `process_job`'s own check.
+- `run_once` verifies `expected_sha256` against the actually-received bytes (`hashlib.sha256(resolved.data).hexdigest()`) **before** calling `process_job` — a mismatch submits `FAILED`/`evidence_integrity_mismatch` (see "Failure and defer policy" above), never silently parsing bytes that don't match what the API reported.
+- `InputResolutionUnavailableError`/`CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE` are retained (not removed) as defensive fallback behavior — e.g. against an older API build without this route, or a genuine transient `404` — so a real claimed job still degrades to an honest `DEFERRED` rather than crashing if the endpoint is ever unreachable for any reason.
+- `StaticInputResolver` (unit tests) and `LiveInputResolver` (the real client) are both unchanged in shape — this is exactly what "testable with an injected in-memory input resolver even if the live input-stream capability is not currently available" was designed to make possible, and it held up without modification once the capability arrived.
 
-**Proposed endpoint** (not implemented in this repository — an explicit integration decision for team/Nipun review, not something this task unilaterally added to another contributor's module):
+**The endpoint itself**, for reference (see the evidence-lifecycle doc for the authoritative version):
 
 ```
 GET /api/v1/internal/worker-jobs/{job_id}/input
@@ -84,11 +85,12 @@ X-Claim-Token: <claim_token from /claim>
 
 200 OK
 Content-Type: <evidence.content_type>
-X-Original-Filename: <url-encoded evidence.original_filename>
-<raw evidence bytes as the response body>
+Content-Disposition: attachment; filename="..."; filename*=UTF-8''...
+X-TraceX-Evidence-SHA256: <evidence.sha256>
+<raw evidence bytes, streamed>
 ```
 
-Authenticated identically to `/result` (shared secret + claim-token-bound), scoped to exactly the job the caller holds a valid claim token for, and returning nothing beyond what a worker already implicitly needs to do its job (the bytes it was dispatched to process, plus the two metadata fields `process_job` already reads). `client.WorkerApiClient.fetch_input`/`input_resolver.LiveInputResolver` are already written against this exact shape and are ready to use unchanged the moment it exists — only `evidence_lifecycle/internal_api.py` needs a new route.
+Authenticated identically to `/result` (shared secret + the same claim-token header, reused rather than a second header name), scoped to exactly the job the caller holds a valid, currently-`running`, unexpired-lease claim token for — never an object key, bucket, endpoint, or credential.
 
 ## Shimming `EvidenceRecordV1` for `process_job`
 

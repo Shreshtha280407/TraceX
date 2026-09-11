@@ -8,24 +8,46 @@ a thread. The bucket it writes to is never made public and no method here
 ever returns a presigned or permanent URL -- see
 `docs/architecture/evidence-lifecycle.md`.
 
-`MinioSourceResolver` is the internal storage-resolver abstraction later-
-phase worker orchestration uses instead of an HTTP download endpoint (see
-"no unrestricted raw-evidence-download APIs" in the same doc). It
-structurally implements the `SourceResolver` protocol every processing
-module already defines (`read_bytes(object_uri) -> bytes`) without
-importing any of those sibling modules.
+`MinioSourceResolver` is the internal storage-resolver abstraction
+trusted, credentialed orchestration code uses (`read_bytes(object_uri) ->
+bytes`). `open_stream` (below) is the *other* sanctioned way evidence bytes
+leave this module: a bounded, chunked read used exclusively by
+`internal_api.py`'s claim-token-bound worker-input endpoint (see
+"Worker evidence delivery" in `docs/architecture/evidence-lifecycle.md`) --
+the API remains the only credential holder and streams the exact object
+through itself; MinIO credentials, the object key, the bucket name, and the
+MinIO endpoint never reach the HTTP caller.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import BinaryIO, Protocol
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, BinaryIO, Protocol
 from uuid import UUID
 
 from minio import Minio
 
 from app.core.config import Settings
 from app.modules.evidence_lifecycle.errors import StorageError
+
+#: Bounded chunk size for `open_stream` -- the object is never fully
+#: buffered in API memory regardless of its size.
+STREAM_CHUNK_BYTES = 256 * 1024  # 256 KiB
+
+
+@dataclass
+class ObjectStream:
+    """An open, bounded read handle to one object -- not the whole object in memory.
+
+    `content_length` is `None` when the underlying storage response didn't
+    report a size (defensive; MinIO always does for a `GetObject`, but
+    nothing here should hard-depend on that).
+    """
+
+    content_length: int | None
+    chunks: AsyncIterator[bytes]
 
 
 def object_key_for(case_id: UUID, evidence_id: UUID) -> str:
@@ -51,6 +73,14 @@ class ObjectStorage(Protocol):
 
     def read_bytes(self, object_uri: str) -> bytes:
         """Synchronous -- satisfies every processing module's `SourceResolver` protocol."""
+        ...
+
+    async def open_stream(self, object_key: str) -> ObjectStream:
+        """Open a bounded, chunked read handle -- never reads the whole object at once.
+
+        Raises `StorageError` (never the underlying driver exception's
+        text) if the object can't be opened, including "doesn't exist."
+        """
         ...
 
 
@@ -103,6 +133,40 @@ class MinioObjectStorage:
             response.close()
             response.release_conn()
 
+    async def open_stream(self, object_key: str) -> ObjectStream:
+        try:
+            response = await asyncio.to_thread(self._client.get_object, self._bucket, object_key)
+        except Exception as exc:
+            raise StorageError("failed to read evidence from object storage") from exc
+        content_length: int | None = None
+        header_value = response.headers.get("Content-Length") if response.headers else None
+        if header_value is not None:
+            try:
+                content_length = int(header_value)
+            except ValueError:  # pragma: no cover - defensive: MinIO always sends a valid integer
+                content_length = None
+        return ObjectStream(content_length=content_length, chunks=_stream_response(response))
+
+
+async def _stream_response(response: Any) -> AsyncIterator[bytes]:
+    """Bridge minio-py's synchronous chunk iterator to an async one, via a thread per chunk.
+
+    Mirrors this module's existing `asyncio.to_thread`-per-blocking-call
+    convention (see `MinioObjectStorage`'s other methods) rather than
+    reading the whole response synchronously first.
+    """
+    try:
+        iterator = response.stream(STREAM_CHUNK_BYTES)
+        sentinel = object()
+        while True:
+            chunk = await asyncio.to_thread(next, iterator, sentinel)
+            if chunk is sentinel:
+                break
+            yield chunk  # type: ignore[misc]
+    finally:
+        await asyncio.to_thread(response.close)
+        await asyncio.to_thread(response.release_conn)
+
 
 class FakeObjectStorage:
     """In-memory `ObjectStorage` stand-in for unit tests.
@@ -136,6 +200,16 @@ class FakeObjectStorage:
 
     def read_bytes(self, object_uri: str) -> bytes:
         return self.objects[object_uri]
+
+    async def open_stream(self, object_key: str) -> ObjectStream:
+        if object_key not in self.objects:
+            raise StorageError("simulated missing object")
+        data = self.objects[object_key]
+        return ObjectStream(content_length=len(data), chunks=_single_chunk(data))
+
+
+async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:
+    yield data
 
 
 class MinioSourceResolver:

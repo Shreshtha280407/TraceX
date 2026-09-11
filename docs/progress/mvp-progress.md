@@ -202,9 +202,9 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 - [ ] Denied worker actions (bad claim token, scope mismatch, conflict) are not audit-logged — mirrors the same pre-existing gap already noted for case-scoped user endpoints.
 - [ ] `evidence_records.processing_status` still doesn't reflect job completion once a result is submitted — deliberately out of this task's scope (see `docs/qa/known-limitations.md`).
 
-## Jasraj Phase 2 — Structured-Processing Worker: In progress
+## Jasraj Phase 2 — Structured-Processing Worker: Complete
 
-Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output): `uv sync`/`ruff format --check`/`ruff check`/`mypy app`/`pytest -q` (979 passed, 24 skipped) and `docker compose config` all passed. `docker compose up --build -d` and the full live claim/parse/submit path could **not** be run this session — Docker itself was unavailable in this sandbox (no reachable daemon socket, systemd service inactive, no passwordless `sudo`) — see "Any blockers" below. Marked **in progress**, not complete, pending that live verification and the input-access-boundary decision below.
+Initial verification ran 2026-09-11 (`uv sync`/`ruff format --check`/`ruff check`/`mypy app`/`pytest -q`, `docker compose config` all passed) with Docker itself unavailable in that session's sandbox, so the full live claim/parse/submit path couldn't be run then. Docker became available later the same day (Phase 2.2 below); the full live path was verified for real in that session (`docs/qa/test-results.md`'s "Live smoke test" entry) using this worker's unmodified code — `client.py`/`input_resolver.py`/`worker.py` required no changes to consume the real endpoint once it existed, exactly as this build's Protocol-based design anticipated. Marked **Complete** now that both blockers below are resolved.
 
 ### Delivered
 
@@ -220,9 +220,30 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 
 ### Outstanding for team review
 
-- [ ] **The input-access boundary is unresolved.** This worker cannot fetch a claimed job's evidence bytes/metadata through any existing authenticated API — every real claimed job ends in `DEFERRED`/`input_resolution_unavailable` until Nipun's module adds the proposed `GET /api/v1/internal/worker-jobs/{job_id}/input` endpoint (exact shape in `docs/architecture/structured-processing-worker.md`). This is the primary integration decision this build needs from the team.
-- [ ] **Full Docker/live verification did not run this session** — Docker was unavailable in this sandbox (see `docs/qa/test-results.md`). Whoever next has Docker available should run `docker compose up --build -d` and `uv run python -m app.modules.structured_processing.worker --once` against the running stack; expected outcome (until the endpoint above exists) is a claimed-then-`DEFERRED` result, not `SUCCEEDED`.
-- [ ] `generic_tabular_v1`/`generic_json_v1` remain unreachable through the live upload path (Nipun's `routing.py` doesn't route to them) — unchanged from the Phase 1 known limitation, just restated here since this worker is the first thing that could actually claim such a job if one existed.
+- [x] ~~The input-access boundary is unresolved~~ — **closed in Phase 2.2 below**: `GET /api/v1/internal/worker-jobs/{job_id}/input` now exists, and `client.py`/`input_resolver.py` consume it for real (including worker-side SHA-256 verification before parsing) with no change to their originally-designed shape.
+- [ ] `generic_tabular_v1`/`generic_json_v1` remain unreachable through the live upload path (Nipun's `routing.py` doesn't route to them) — investigated in Phase 2.2 and deliberately left as a team decision rather than worked around; see that section below.
+
+## Phase 2.2 — Nipun secure worker evidence delivery: Complete
+
+Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output), including a full `docker compose up --build -d` (succeeded on the fifth attempt after transient sandbox DNS flakiness on the first four — see that entry) and a genuine live smoke test: a real case/user/evidence upload followed by a real, unmodified `structured_processing` worker `--once` run completed the full `claim -> GET .../input (200 OK, real streamed bytes) -> parse -> submit` path end to end, producing a real `SUCCEEDED` result with `observation_count: 2` — not the `DEFERRED` fallback every prior live attempt in this repository produced. That same live pipeline was then turned into a permanent, self-skipping automated test (`tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline`), and the **entire** repository test suite ran against fully-live infrastructure with zero skips: `uv run pytest -q` → 1022 passed. Marked **Complete**.
+
+### Delivered
+
+- [x] `ObjectStorage.open_stream`/`ObjectStream` (`storage.py`) — a bounded, chunked read handle; `MinioObjectStorage`'s implementation bridges minio-py's synchronous `.stream()` generator to an async one via `asyncio.to_thread` per chunk (never fully buffering the object in API memory), with a matching `FakeObjectStorage.open_stream` test double.
+- [x] `EvidenceLifecycleService.get_claimed_evidence_input`/`ClaimedEvidenceInput` (`service.py`) — validates a claim token against a currently-`running`, unexpired-lease job (deliberately narrower than `submit_result`'s branching: no terminal-job replay case for input delivery), reusing the existing `_hash_claim_token`/`get_evidence` helpers unchanged.
+- [x] `GET /api/v1/internal/worker-jobs/{job_id}/input` (`internal_api.py`) — streams a claimed job's evidence bytes via `StreamingResponse`; safe headers only (`Cache-Control: no-store`, a sanitized RFC 6266 `Content-Disposition`, `X-TraceX-Evidence-Id`/`-SHA256`/`-Source-Type`/`-Parser-Profile`) — never an object key, bucket, MinIO endpoint, or credential. Reuses the existing `X-Claim-Token` header rather than introducing a second one.
+- [x] `evidence-lifecycle.md`'s "No raw-evidence-download API" boundary revised in place (not violated): the API remains the sole MinIO credential holder and streams the object itself; a worker still never receives an object key/bucket/endpoint/credential, only the bytes of the job it actively holds a live claim token for.
+- [x] `structured_processing/client.py`'s `fetch_input` updated to consume the real response (`Content-Disposition` filename parsing, `X-TraceX-Evidence-SHA256`, a worker-side `MAX_INPUT_BYTES` bound applied before the bytes go anywhere else); `worker.run_once` verifies the resolved bytes' SHA-256 before ever calling `process_job`, submitting `FAILED`/`evidence_integrity_mismatch` on a mismatch. `input_resolver.py`'s `WorkerInputResolver` Protocol required **zero changes** — the seam Jasraj's Phase 2 build left was sufficient as designed.
+- [x] `generic_tabular_v1`/`generic_json_v1` routing reachability investigated and deliberately left unresolved (not worked around): making them reachable would require either a new `source_type` (a frozen-contract change) or upload-time content-shape-sniffing inside `evidence_lifecycle` (contradicting its own documented "coarse routing only" boundary) — see `docs/architecture/phase-2-decisions.md`'s "Phase 2.2 Decisions".
+- [x] `tests/unit/evidence_lifecycle/test_worker_input_api.py` (14 tests), `tests/unit/evidence_lifecycle/test_object_storage.py` (4 new tests: lazy-chunk-pull proof, round-trip, missing-object safety), `tests/unit/structured_processing/test_worker_orchestration.py` (1 new SHA-256-mismatch test), `tests/unit/structured_processing/test_worker_client.py` (`fetch_input` tests updated for the real header contract, plus an oversized-response test) — all scenarios from the task brief covered.
+- [x] QA entries `WORKER-INPUT-STREAM-001`, `WORKER-INPUT-STREAM-002` added to `docs/qa/test-matrix.md`; `SP-WORKER-CLIENT-001`/`SP-WORKER-ORCHESTRATION-001`/`SP-WORKER-LIVE-001` updated to reflect the real (not proposed) endpoint.
+- [x] `docs/architecture/evidence-lifecycle.md`, `docs/architecture/worker-job-lifecycle.md`, `docs/architecture/structured-processing-worker.md`, `docs/architecture/phase-2-decisions.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- [ ] `generic_tabular_v1`/`generic_json_v1` routing reachability needs a team decision: a new `source_type`, or accept they remain reachable only via direct/test job construction.
+- [ ] A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around.
+- [ ] No lease-renewal exists yet (unchanged from Phase 2.1) — a very large evidence stream close to its lease boundary could have the lease expire before the subsequent `/result` submission, which would then be rejected as `lease_expired`.
 
 ## Later phases (not started)
 

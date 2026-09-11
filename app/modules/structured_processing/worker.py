@@ -367,6 +367,16 @@ def run_once(
                 deferred_reason=str(exc),
             )
 
+        if resolved.expected_sha256 is not None:
+            actual_sha256 = hashlib.sha256(resolved.data).hexdigest()
+            if actual_sha256 != resolved.expected_sha256:
+                logger.error("worker.run_once.integrity_mismatch")
+                mismatch = _failed_result_for_integrity_mismatch(job, clock())
+                ack = client.submit_result(
+                    job_id=job.job_id, claim_token=claim_token, result=mismatch
+                )
+                return RunOnceOutcome(claimed=True, job_id=job.job_id, result_status=ack.status)
+
         evidence = _shim_evidence_record(job, resolved)
         result = process_job(job, evidence, StaticBytesResolver(payload=resolved.data))
         ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=result)
@@ -390,6 +400,32 @@ def _deferred_result_for_missing_input(job: WorkerJobV1, completed_at: datetime)
         derived_artifacts=[],
         checkpoint=CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE,
         error=None,
+        completed_at=completed_at,
+    )
+
+
+def _failed_result_for_integrity_mismatch(
+    job: WorkerJobV1, completed_at: datetime
+) -> WorkerResultV1:
+    """A genuine data-integrity problem (not "not yet possible") -- `FAILED`, not `DEFERRED`.
+
+    `retryable=True`: a fresh claim/re-stream could plausibly succeed if
+    the mismatch was caused by a one-off transport issue rather than a
+    persistently corrupt stored object.
+    """
+    return WorkerResultV1(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        status=WorkerStatus.FAILED,
+        observations=[],
+        derived_artifacts=[],
+        checkpoint=None,
+        error=WorkerError(
+            code="evidence_integrity_mismatch",
+            message="resolved evidence bytes do not match the expected SHA-256",
+            retryable=True,
+        ),
         completed_at=completed_at,
     )
 

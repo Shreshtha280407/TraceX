@@ -154,6 +154,7 @@ def test_submit_result_wrong_claim_token_raises_auth_error() -> None:
 
 def test_fetch_input_success_when_endpoint_exists() -> None:
     job_id = uuid4()
+    sha256 = "b" * 64
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == f"/api/v1/internal/worker-jobs/{job_id}/input"
@@ -161,13 +162,31 @@ def test_fetch_input_success_when_endpoint_exists() -> None:
         return httpx.Response(
             200,
             content=b"hello world",
-            headers={"content-type": "text/plain", "x-original-filename": "notes.txt"},
+            headers={
+                "content-type": "text/plain",
+                "content-disposition": (
+                    "attachment; filename=\"notes.txt\"; filename*=UTF-8''notes.txt"
+                ),
+                "x-tracex-evidence-sha256": sha256,
+            },
         )
 
     resolved = _client(handler).fetch_input(job_id, claim_token="tok-123")
     assert resolved.data == b"hello world"
     assert resolved.content_type == "text/plain"
     assert resolved.original_filename == "notes.txt"
+    assert resolved.expected_sha256 == sha256
+
+
+def test_fetch_input_rejects_oversized_response() -> None:
+    job_id = uuid4()
+    oversized = b"x" * (50 * 1024 * 1024 + 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(200, content=oversized, headers={"content-type": "text/plain"})
+
+    with pytest.raises(WorkerApiError):
+        _client(handler).fetch_input(job_id, claim_token="tok-123")
 
 
 def test_fetch_input_raises_unavailable_when_endpoint_missing() -> None:
