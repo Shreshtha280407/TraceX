@@ -43,17 +43,22 @@ from app.contracts.worker import WorkerJobV1
 class ResolvedInput:
     """Everything `process_job` needs from a claimed job's evidence, beyond `WorkerJobV1` itself.
 
-    Deliberately minimal: `process_job` only ever reads
-    `EvidenceRecordV1.content_type`/`.original_filename` -- this is exactly
-    those two fields plus the raw bytes, not a full `EvidenceRecordV1`
-    (which this module has no authenticated way to fully reconstruct --
-    e.g. `uploaded_by`/`classification` are never given to a worker at all;
-    see `worker.py::_shim_evidence_record`).
+    `content_type`/`original_filename`/`data` are exactly what
+    `process_job` reads (via `_shim_evidence_record`) -- not a full
+    `EvidenceRecordV1` (which this module has no authenticated way to fully
+    reconstruct -- e.g. `uploaded_by`/`classification` are never given to a
+    worker at all). `expected_sha256` is additional: the evidence's
+    recorded hash, when the resolver can supply one, so `worker.run_once`
+    can verify the bytes it actually received before ever parsing them
+    (`None` for a resolver that can't provide it, e.g. a bare
+    `StaticInputResolver` built without one -- verification is then simply
+    skipped, never treated as a mismatch).
     """
 
     content_type: str
     original_filename: str
     data: bytes
+    expected_sha256: str | None = None
 
 
 @runtime_checkable

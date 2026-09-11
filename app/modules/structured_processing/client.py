@@ -17,6 +17,7 @@ codes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import unquote
@@ -32,17 +33,35 @@ from app.modules.structured_processing.errors import (
     WorkerAuthenticationError,
 )
 from app.modules.structured_processing.input_resolver import ResolvedInput
+from app.modules.structured_processing.limits import MAX_INPUT_BYTES
 
 logger = structlog.get_logger(__name__)
 
 _CLAIM_TOKEN_HEADER = "X-Claim-Token"
-_ORIGINAL_FILENAME_HEADER = "X-Original-Filename"
+_SHA256_HEADER = "X-TraceX-Evidence-SHA256"
 _CLAIM_PATH = "/api/v1/internal/worker-jobs/claim"
-#: The proposed (not-yet-implemented -- see
-#: docs/architecture/structured-processing-worker.md) endpoint a worker
-#: would call to retrieve a claimed job's evidence bytes + content_type/
-#: filename.
+#: Nipun's claim-token-bound worker-input endpoint (Phase 2.2) -- streams a
+#: claimed job's evidence bytes; see docs/architecture/evidence-lifecycle.md
+#: ("Worker evidence delivery") and
+#: docs/architecture/structured-processing-worker.md ("Input-access
+#: boundary") for the full history of this endpoint.
 _INPUT_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/input"
+
+#: RFC 6266 `filename*=UTF-8''<percent-encoded>` -- preferred when present
+#: (correct for any non-ASCII original filename); `filename="..."` is the
+#: ASCII-safe fallback always sent alongside it.
+_FILENAME_STAR_RE = re.compile(r"filename\*=UTF-8''([^;]+)", re.IGNORECASE)
+_FILENAME_RE = re.compile(r'filename="([^"]*)"')
+
+
+def _parse_content_disposition_filename(header_value: str) -> str:
+    star_match = _FILENAME_STAR_RE.search(header_value)
+    if star_match:
+        return unquote(star_match.group(1))
+    plain_match = _FILENAME_RE.search(header_value)
+    if plain_match:
+        return plain_match.group(1)
+    return ""
 
 
 def _result_path(job_id: UUID) -> str:
@@ -153,11 +172,14 @@ class WorkerApiClient:
         )
 
     def fetch_input(self, job_id: UUID, *, claim_token: str) -> ResolvedInput:
-        """Call the *proposed* input-access endpoint; raise if it doesn't exist yet.
+        """Fetch a claimed job's evidence bytes through Nipun's claim-token-bound input endpoint.
 
-        See `docs/architecture/structured-processing-worker.md`'s
-        "Input-access boundary" section for the exact endpoint shape this
-        expects, and why it is not implemented in this repository yet.
+        `InputResolutionUnavailableError` on a `404` is retained defensively
+        (e.g. against an older API build without this route) even though
+        the endpoint is implemented as of Phase 2.2 -- see
+        docs/architecture/evidence-lifecycle.md's "Worker evidence
+        delivery" and docs/architecture/structured-processing-worker.md's
+        "Input-access boundary" for the full history.
         """
         try:
             response = self._client.get(
@@ -174,10 +196,26 @@ class WorkerApiClient:
         _raise_for_auth_failure(response)
         if response.status_code != httpx.codes.OK:
             raise WorkerApiError(f"input request failed: HTTP {response.status_code}")
+
+        if len(response.content) > MAX_INPUT_BYTES:
+            # A worker-side bound independent of `process_job`'s own check
+            # (which only runs after this call returns): closes the gap
+            # where an oversized response would otherwise sit fully
+            # buffered in this process before ever reaching that check.
+            raise WorkerApiError(
+                f"resolved evidence exceeds the {MAX_INPUT_BYTES}-byte worker-side limit"
+            )
+
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-        filename = unquote(response.headers.get(_ORIGINAL_FILENAME_HEADER, ""))
+        filename = _parse_content_disposition_filename(
+            response.headers.get("content-disposition", "")
+        )
+        expected_sha256 = response.headers.get(_SHA256_HEADER) or None
         return ResolvedInput(
-            content_type=content_type, original_filename=filename, data=response.content
+            content_type=content_type,
+            original_filename=filename,
+            data=response.content,
+            expected_sha256=expected_sha256,
         )
 
     def _post_safely(self, path: str, **kwargs: object) -> httpx.Response:

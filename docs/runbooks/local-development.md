@@ -103,7 +103,7 @@ from app.modules.structured_processing.worker import process_job
 
 ### Structured-processing worker CLI (Phase 2 — Jasraj)
 
-See `docs/architecture/structured-processing-worker.md` for the full design, including the documented input-access boundary this worker currently defers on. The worker needs the API's internal endpoints reachable and `WORKER_SHARED_SECRET` configured (same variable Phase 2.1's internal API already requires):
+See `docs/architecture/structured-processing-worker.md` for the full design. The worker needs the API's internal endpoints reachable and `WORKER_SHARED_SECRET` configured (same variable Phase 2.1's internal API already requires):
 
 ```bash
 docker compose up -d postgres redis minio
@@ -111,7 +111,7 @@ uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
 uv run python -m app.modules.structured_processing.worker --once
 ```
 
-`--once` is the only supported mode — it claims at most one compatible queued job, processes it, submits the result, and exits. There is no daemon or polling loop; run it again to attempt another job. Against today's stack, a real claimed job always ends in a `DEFERRED` result with checkpoint `input_resolution_unavailable`, since no endpoint yet exists for a worker to fetch a claimed job's evidence bytes — this is expected, documented behavior, not a bug (see the architecture doc's "Input-access boundary" section).
+`--once` is the only supported mode — it claims at most one compatible queued job, processes it, submits the result, and exits. There is no daemon or polling loop; run it again to attempt another job. As of Phase 2.2 (Nipun), a real claimed job's evidence is fetched through `GET /api/v1/internal/worker-jobs/{job_id}/input` and processed for real — see the architecture doc's "Input-access boundary" section for the full history. A `DEFERRED`/`input_resolution_unavailable` result is still possible (e.g. against an older API build, or a genuine transient failure) but is no longer the expected outcome against this repository's current API.
 
 Running its test suites specifically:
 
@@ -120,7 +120,7 @@ uv run pytest tests/unit/structured_processing -v         # no live infra needed
 uv run pytest tests/integration/structured_processing -v  # local-file pipeline test, plus a self-skipping live-API check
 ```
 
-`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_SHARED_SECRET` isn't configured — same pattern as every other `tests/integration/*` suite in this repo.
+`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_SHARED_SECRET` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
 
 ## Authentication and case-scoped access control
 
@@ -247,6 +247,14 @@ curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/claim \
   -d '{"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"}'
 # -> {"job": {...WorkerJobV1...}, "claim_token": "...", "lease_expires_at": "..."} or
 #    {"job": null, "claim_token": null, "lease_expires_at": null} if nothing is eligible
+
+# stream the claimed job's evidence bytes (Phase 2.2 -- see "Worker evidence
+# delivery" in docs/architecture/evidence-lifecycle.md); only works while the
+# job is still `running` with an unexpired lease
+curl http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/input \
+  -H "Authorization: Bearer <WORKER_SHARED_SECRET>" \
+  -H "X-Claim-Token: <claim_token from the claim response>" \
+  -o downloaded_evidence
 
 # submit a result for the claimed job (a WorkerResultV1 JSON body, the claim token in a header)
 curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/result \

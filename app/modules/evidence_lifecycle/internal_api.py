@@ -5,19 +5,32 @@ Distinct from `api.py`'s case-scoped, human-authenticated
 here is a worker (or worker test harness), not a case member; authorization
 is `require_worker_principal` (a narrow, fail-closed shared-secret gate --
 see `docs/architecture/worker-job-lifecycle.md`) plus, for result
-submission, a per-job one-time claim token -- never case membership. These
-endpoints never expose a raw-evidence-download path; a worker gets exactly
-`WorkerJobV1.input_object_uri` (already part of the frozen contract), never
-a credential or a presigned URL.
+submission and input delivery, a per-job one-time claim token -- never case
+membership.
+
+**Revised policy (Phase 2.2)**: TraceX never exposes raw evidence to users,
+public clients, or generic internal callers, and never through an
+object-storage URL or credential -- that boundary is unchanged. A worker
+that has *actively claimed* a job may now receive that job's evidence bytes
+through exactly one narrow, authenticated, claim-token-bound, job-specific
+stream this module itself owns and serves (`GET /{job_id}/input`, below) --
+the API remains the sole MinIO credential holder and streams the object
+itself; a worker never receives an object key, bucket name, MinIO endpoint,
+presigned URL, or storage credential. This is not a public download API: it
+is valid only for the exact job a caller holds a live claim token for,
+only while that job's lease is still active. See "Worker evidence
+delivery" in `docs/architecture/evidence-lifecycle.md`.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.contracts.worker import WorkerResultV1
 from app.core.errors import get_request_id
@@ -28,6 +41,7 @@ from app.modules.access_control.repository import AccessControlRepository
 from app.modules.evidence_lifecycle.dependencies import (
     WorkerPrincipal,
     get_evidence_lifecycle_service,
+    get_object_storage,
     require_worker_principal,
 )
 from app.modules.evidence_lifecycle.errors import (
@@ -41,6 +55,7 @@ from app.modules.evidence_lifecycle.schemas import (
     ResultAcknowledgement,
 )
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
+from app.modules.evidence_lifecycle.storage import ObjectStorage
 
 router = APIRouter(prefix="/api/v1/internal/worker-jobs", tags=["worker-internal"])
 
@@ -129,3 +144,71 @@ async def submit_result(
         observation_count=len(outcome.observation_ids),
         observation_ids=outcome.observation_ids,
     )
+
+
+@router.get("/{job_id}/input")
+async def get_worker_job_input(
+    job_id: UUID,
+    _principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> StreamingResponse:
+    """Stream a currently-claimed job's evidence bytes to the worker that claimed it.
+
+    Requires both `require_worker_principal` (the shared-secret boundary
+    every internal endpoint requires) and the exact claim token returned
+    when *this* job was claimed -- rejects a wrong job's token, a
+    never-claimed job, an already-terminal job, and an expired lease
+    uniformly via `InvalidClaimTokenError` (never distinguishing which).
+    Streamed in bounded chunks (`storage.open_stream`), never fully
+    buffered in API memory. Response headers carry only the safe metadata
+    a worker genuinely needs to parse and verify its input -- never an
+    object key, bucket name, MinIO endpoint, presigned URL, or credential.
+    """
+    if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+
+    context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    try:
+        claimed_input = await service.get_claimed_evidence_input(
+            job_id=job_id, claim_token=claim_token, context=context
+        )
+    except InvalidClaimTokenError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    # A storage failure (including "object missing") propagates uncaught
+    # to `app/core/errors.py`'s central handler -- the same safe-generic-500
+    # path every other `StorageError` in this module already takes; never a
+    # bespoke error here that might leak more than that handler already
+    # guarantees not to.
+    stream = await storage.open_stream(claimed_input.object_uri)
+
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Disposition": _safe_content_disposition(claimed_input.original_filename),
+        "X-TraceX-Evidence-Id": str(claimed_input.evidence_id),
+        "X-TraceX-Evidence-SHA256": claimed_input.sha256,
+        "X-TraceX-Source-Type": claimed_input.source_type.value,
+    }
+    if claimed_input.parser_profile:
+        headers["X-TraceX-Parser-Profile"] = claimed_input.parser_profile
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+
+    return StreamingResponse(stream.chunks, media_type=claimed_input.content_type, headers=headers)
+
+
+def _safe_content_disposition(filename: str) -> str:
+    """RFC 6266 `Content-Disposition`, safe against header injection and non-ASCII names.
+
+    `original_filename` is caller-supplied display metadata (see
+    `service._safe_filename`) -- trimmed and length-capped at upload time,
+    but never sanitized against quotes or control characters, since it was
+    never previously placed into a response header. Stripped/escaped here,
+    at the one place that changes.
+    """
+    sanitized = filename.replace("\r", "").replace("\n", "").replace('"', "'")
+    ascii_fallback = sanitized.encode("ascii", errors="replace").decode("ascii")
+    encoded = quote(sanitized, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"

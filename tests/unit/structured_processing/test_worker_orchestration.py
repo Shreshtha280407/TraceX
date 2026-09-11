@@ -173,6 +173,36 @@ def test_run_once_submits_deferred_when_input_resolution_unavailable() -> None:
     assert submitted_result.observations == []  # type: ignore[attr-defined]
 
 
+def test_run_once_submits_failed_when_resolved_bytes_fail_sha256_check() -> None:
+    """Scenario 12: a wrong SHA-256 is detected safely before parsing ever runs."""
+    job = make_worker_job(
+        source_type=SourceType.DOCUMENT,
+        processor_name=FIR_REPORT_TEXT_V1.name,
+        processor_version=FIR_REPORT_TEXT_V1.version,
+    )
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-x", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id, status="failed"),
+    )
+    resolver = StaticInputResolver(
+        ResolvedInput(
+            content_type="text/plain",
+            original_filename="notes.txt",
+            data=b"text that does not match the claimed hash",
+            expected_sha256="0" * 64,  # deliberately wrong
+        )
+    )
+
+    outcome = run_once(client=client, input_resolver=resolver)
+
+    assert outcome.result_status == "failed"
+    assert len(client.submit_calls) == 1
+    _, _, submitted_result = client.submit_calls[0]
+    assert submitted_result.status is WorkerStatus.FAILED  # type: ignore[attr-defined]
+    assert submitted_result.error.code == "evidence_integrity_mismatch"  # type: ignore[attr-defined]
+    assert submitted_result.observations == []  # type: ignore[attr-defined]
+
+
 def test_run_once_submit_failure_propagates_without_leaking_claim_token() -> None:
     job = make_worker_job(
         source_type=SourceType.DOCUMENT,

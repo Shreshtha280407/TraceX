@@ -18,7 +18,9 @@ Phase 2 (`app/modules/evidence_lifecycle/`) adds the real, case-scoped **evidenc
 
 Phase 2.1 (in progress, same module) adds the **worker claim and result-submission** half of the lifecycle: a fail-closed internal API for a future worker to claim exactly one queued job (via `FOR UPDATE SKIP LOCKED` + a one-time claim token) and durably submit its `WorkerResultV1`/`ObservationV1`s, atomically transitioning the job to a terminal state. See `docs/architecture/worker-job-lifecycle.md`.
 
-Jasraj's Phase 2 structured-processing worker (`app/modules/structured_processing/worker.py`) is the first real consumer of that internal API: a one-shot CLI (`uv run python -m app.modules.structured_processing.worker --once`) that claims a compatible job, parses it (FIR/document text, CDR, financial, generic tabular/JSON), and submits a canonical `WorkerResultV1` — still not a daemon, and still deferring on a documented gap in fetching a claimed job's evidence bytes. See `docs/architecture/structured-processing-worker.md`.
+Jasraj's Phase 2 structured-processing worker (`app/modules/structured_processing/worker.py`) is the first real consumer of that internal API: a one-shot CLI (`uv run python -m app.modules.structured_processing.worker --once`) that claims a compatible job, streams its evidence through Phase 2.2's claim-token-bound worker-input endpoint, parses it (FIR/document text, CDR, financial, generic tabular/JSON), and submits a canonical `WorkerResultV1` — still not a daemon. See `docs/architecture/structured-processing-worker.md`.
+
+Phase 2.2 (Nipun, same module) adds the **worker evidence-delivery** endpoint that closes the gap the paragraph above used to defer on: `GET /api/v1/internal/worker-jobs/{job_id}/input` streams a claimed job's evidence bytes through the API itself — never an object key, bucket, MinIO endpoint, or credential — scoped to the exact job and claim token a worker holds. See `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery" section.
 
 Explicitly **not** implemented anywhere in this repository yet: an actual worker daemon/consumer loop, real OCR/ASR/entity resolution/graph-projection wiring, cross-modal correlation, a human-review workflow, Merkle checkpointing or signatures, case CRUD, a real per-worker credential system, MFA/SSO, or any frontend. See `CLAUDE.md`, `docs/architecture/phase-1-decisions.md`, `docs/architecture/phase-2-decisions.md`, `docs/architecture/worker-job-lifecycle.md`, and `docs/qa/known-limitations.md` for the full non-goal list.
 
@@ -63,7 +65,7 @@ Once running, the API is available at:
 - `GET http://localhost:8000/readyz` — readiness (checks PostgreSQL, Neo4j, Redis, MinIO)
 - `GET http://localhost:8000/api/v1/meta/contracts` — supported contract versions
 - `POST/GET http://localhost:8000/api/v1/cases/{case_id}/evidence`, `GET .../evidence/{evidence_id}`, `GET .../jobs/{job_id}` — case-scoped evidence upload/status (see `docs/architecture/evidence-lifecycle.md`)
-- `POST http://localhost:8000/api/v1/internal/worker-jobs/claim`, `POST .../worker-jobs/{job_id}/result` — internal worker claim/result endpoints, gated by `WORKER_SHARED_SECRET` (see `docs/architecture/worker-job-lifecycle.md`)
+- `POST http://localhost:8000/api/v1/internal/worker-jobs/claim`, `GET .../worker-jobs/{job_id}/input`, `POST .../worker-jobs/{job_id}/result` — internal worker claim/input-stream/result endpoints, gated by `WORKER_SHARED_SECRET` + a per-job claim token (see `docs/architecture/worker-job-lifecycle.md`, `docs/architecture/evidence-lifecycle.md`)
 - `GET http://localhost:8000/docs` — interactive OpenAPI docs
 
 Exposed development ports: API `8000`, PostgreSQL `5432`, Neo4j `7474` (HTTP browser) / `7687` (Bolt), Redis `6379`, MinIO `9000` (API) / `9001` (console).
