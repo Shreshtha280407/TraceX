@@ -27,18 +27,37 @@ from app.modules.media_processing.errors import ErrorCode, ProcessingError
 
 
 class MediaKind(StrEnum):
-    """The Phase 1 supported media content types."""
+    """The Phase 1 supported media content types.
+
+    `VIDEO_MATROSKA` (Phase 2 completion) is an additive addition: Nipun's
+    `evidence_lifecycle/routing.py` has always listed `video/x-matroska` in
+    `SourceType.VIDEO`'s accepted content types, but this module had no
+    matching `MediaKind` for it -- a real `.mkv` upload would pass routing's
+    content-type check and then fail here with `unsupported_content_type`,
+    discoverable only by actually wiring this worker to a real upload (see
+    `docs/architecture/media-processing-worker.md`). `ffprobe`/`ffmpeg`
+    (this module's only container-reading tools) are container-agnostic, so
+    no other code needed to change.
+    """
 
     VIDEO_MP4 = "video/mp4"
     VIDEO_QUICKTIME = "video/quicktime"
     VIDEO_X_MSVIDEO = "video/x-msvideo"
+    VIDEO_MATROSKA = "video/x-matroska"
     IMAGE_JPEG = "image/jpeg"
     IMAGE_PNG = "image/png"
     IMAGE_WEBP = "image/webp"
 
 
 #: Video kinds this module treats as video (probe + sample + extract).
-VIDEO_KINDS = frozenset({MediaKind.VIDEO_MP4, MediaKind.VIDEO_QUICKTIME, MediaKind.VIDEO_X_MSVIDEO})
+VIDEO_KINDS = frozenset(
+    {
+        MediaKind.VIDEO_MP4,
+        MediaKind.VIDEO_QUICKTIME,
+        MediaKind.VIDEO_X_MSVIDEO,
+        MediaKind.VIDEO_MATROSKA,
+    }
+)
 
 #: Image kinds this module treats as image (decode only).
 IMAGE_KINDS = frozenset({MediaKind.IMAGE_JPEG, MediaKind.IMAGE_PNG, MediaKind.IMAGE_WEBP})
@@ -47,6 +66,7 @@ _KIND_TO_EXTENSIONS: dict[MediaKind, frozenset[str]] = {
     MediaKind.VIDEO_MP4: frozenset({"mp4", "m4v"}),
     MediaKind.VIDEO_QUICKTIME: frozenset({"mov"}),
     MediaKind.VIDEO_X_MSVIDEO: frozenset({"avi"}),
+    MediaKind.VIDEO_MATROSKA: frozenset({"mkv"}),
     MediaKind.IMAGE_JPEG: frozenset({"jpg", "jpeg"}),
     MediaKind.IMAGE_PNG: frozenset({"png"}),
     MediaKind.IMAGE_WEBP: frozenset({"webp"}),

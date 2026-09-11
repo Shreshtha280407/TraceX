@@ -20,6 +20,7 @@ from app.modules.media_processing.source import (
         ("video/mp4", "clip.mp4", MediaKind.VIDEO_MP4),
         ("video/quicktime", "clip.mov", MediaKind.VIDEO_QUICKTIME),
         ("video/x-msvideo", "clip.avi", MediaKind.VIDEO_X_MSVIDEO),
+        ("video/x-matroska", "clip.mkv", MediaKind.VIDEO_MATROSKA),
         ("image/jpeg", "photo.jpg", MediaKind.IMAGE_JPEG),
         ("image/jpeg", "photo.jpeg", MediaKind.IMAGE_JPEG),
         ("image/png", "photo.png", MediaKind.IMAGE_PNG),
@@ -45,6 +46,12 @@ def test_classify_media_rejects_extension_mismatch() -> None:
     assert excinfo.value.code == ErrorCode.UNSUPPORTED_CONTENT_TYPE
 
 
+def test_classify_media_rejects_matroska_mime_with_mismatched_extension() -> None:
+    with pytest.raises(ProcessingError) as excinfo:
+        classify_media("video/x-matroska", "clip.mp4")
+    assert excinfo.value.code == ErrorCode.UNSUPPORTED_CONTENT_TYPE
+
+
 def test_classify_media_rejects_extensionless_filename() -> None:
     with pytest.raises(ProcessingError):
         classify_media("image/png", "photo")
@@ -56,6 +63,7 @@ def test_classify_media_rejects_extensionless_filename() -> None:
         (MediaKind.VIDEO_MP4, True),
         (MediaKind.VIDEO_QUICKTIME, True),
         (MediaKind.VIDEO_X_MSVIDEO, True),
+        (MediaKind.VIDEO_MATROSKA, True),
         (MediaKind.IMAGE_JPEG, False),
         (MediaKind.IMAGE_PNG, False),
         (MediaKind.IMAGE_WEBP, False),

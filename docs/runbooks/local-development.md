@@ -255,7 +255,7 @@ All seven `communication_processing` processor profiles are reachable through a 
 
 ## Video/image processing
 
-`app/modules/media_processing/` (see `docs/runbooks/media-development.md`, `docs/architecture/media-processing-v1.md`) needs no Docker service at all — unit tests need no `ffmpeg`/`ffprobe` either (they monkeypatch `subprocess`); only the integration suite needs real `ffmpeg`/`ffprobe` on `PATH`, and self-skips cleanly if they're absent:
+`app/modules/media_processing/` (see `docs/runbooks/media-development.md`, `docs/architecture/media-processing-v1.md`) needs no Docker service at all for its own pure-function unit tests — they need no `ffmpeg`/`ffprobe` either (they monkeypatch `subprocess`); only the integration suite needs real `ffmpeg`/`ffprobe` on `PATH`, and self-skips cleanly if they're absent:
 
 ```bash
 uv run pytest tests/unit/media_processing -v
@@ -263,6 +263,32 @@ uv run pytest tests/integration/media_processing -v   # needs ffmpeg/ffprobe; se
 ```
 
 See `docs/runbooks/media-development.md` for interactive usage, GPU/capability checks, and adding a real detector/tracker/OCR adapter later.
+
+### Media-processing worker CLI (Phase 2 completion — Gaurav)
+
+See `docs/architecture/media-processing-worker.md` for the full design. Same pattern as the structured-processing/communication-processing worker CLIs above — a separate worker process, its own `WORKER_TOKEN`-bound credential:
+
+```bash
+docker compose up -d postgres redis minio
+uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
+uv run python -m app.modules.access_control.worker_credentials create \
+    --name media-worker --processor media_metadata_v1
+# copy the printed token into .env as WORKER_TOKEN=<token>, then:
+uv run python -m app.modules.media_processing.worker --once
+```
+
+Both `image` (`image/jpeg`/`image/png`) and `video` (`video/mp4`/`video/quicktime`/`video/x-matroska`) source types route to `media_metadata_v1` — see `docs/architecture/evidence-lifecycle.md`'s routing table. `media_detection_v1` is fully implemented and unit-tested but is **not** claimed by this CLI (no real detector to inject, and no upload is ever routed to it either) — see `docs/architecture/media-processing-worker.md`'s "Supported processors" section.
+
+`--once` is the only supported mode — no daemon or polling loop; run it again to attempt another job.
+
+Running its test suites specifically:
+
+```bash
+uv run pytest tests/unit/media_processing -v                 # no live infra needed
+uv run pytest tests/integration/media_processing -v          # ffmpeg/ffprobe pipeline test, plus a self-skipping live-API check
+```
+
+`tests/integration/media_processing/test_media_worker_live.py` self-skips (never fabricates a pass) under the same conditions as the structured/communication-processing live tests, and provisions its own dedicated worker-credential token, decoupled from the shared `.env` `WORKER_TOKEN` value's scope the same way those two do.
 
 ## Evidence lifecycle (upload, storage, durable job foundation)
 

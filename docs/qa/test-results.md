@@ -1543,3 +1543,103 @@ $ uv run pytest -q               # 1226 passed
 (One transient failure was observed on a single full-suite run — `tests/integration/media_processing/test_video_pipeline.py::test_temporary_artifacts_are_cleaned_up`, asserting no stray files under `tempfile.gettempdir()` — caused by an unrelated `/tmp/runc-process*` file dropped by the container runtime itself during a full-suite run, not by any code touched in this session. It passed in isolation and on an immediate full-suite re-run; flagged here for completeness, not treated as a regression.)
 
 `git status --short` at the end of this session shows only working-tree modifications (no staged files, no commits, no branch switch) — HEAD is at `0bf0ff2` (the fast-forwarded `origin/main` tip) plus this session's uncommitted changes, still on branch `shreshtha`. Docker stack left running, all test data removed.
+
+## 2026-09-12 — Gaurav — Phase 2 Media-Processing Worker Foundation
+
+Branch `gaurav`, HEAD confirmed equal to the last locally-known `origin/main` (`git rev-list --left-right --count origin/main...HEAD` → `0	0`) at `1d3d885` ("Completed shreshtha/phase-2 (#18)"), which already includes Shreshtha's graph-projection work. Note: `git fetch origin --prune` failed in this sandbox (`fatal: could not read Username for 'https://github.com'` — no HTTPS credentials configured here), so this is based on the last cached remote-tracking state, not a fresh fetch; flagged rather than silently assumed current.
+
+### What was built
+
+Gaurav's Phase 1 `app/modules/media_processing/` already had a complete `process_job` (image decode, video probe/sample/extract, geometry validation, detection/tracking/OCR adapter protocols with deterministic fakes) but no real caller. This phase adds: `client.py`, `input_resolver.py`, and `run_once`/`main`/`SUPPORTED_PROCESSORS`/`_shim_evidence_record` in `worker.py` — mirroring `communication_processing`'s/`structured_processing`'s identical orchestration layer exactly. Full design in `docs/architecture/media-processing-worker.md`.
+
+### Two real design/bug findings during this build
+
+1. **`MediaKind` didn't recognize `video/x-matroska`.** `evidence_lifecycle/routing.py` has accepted it for `SourceType.VIDEO` since Phase 1, but `media_processing/source.py` had no matching classification — a real `.mkv` upload would pass routing and fail inside the worker with `unsupported_content_type`. Found only by cross-checking routing's content-type set against the worker's own `MediaKind` enum while wiring the live path — no prior test compared the two. Fixed additively (`MediaKind.VIDEO_MATROSKA`); `ffprobe`/`ffmpeg` are container-agnostic, so no other code changed.
+2. **Design pivot, caught and corrected before finalizing**: an initial draft changed `process_job`'s signature to accept a new, leaner `MediaEvidenceMetadata` type instead of a full `EvidenceRecordV1`, reasoning that a live run cannot honestly know `classification`/`uploaded_by`/`processing_status`. On reviewing `structured_processing.worker._shim_evidence_record` (which already solved the *identical* problem via a shimmed `EvidenceRecordV1` with clearly-commented unused placeholders), the draft was reverted in favor of that established pattern instead — avoiding two different, independently-invented answers to the same question across sibling modules. See `docs/architecture/phase-2-decisions.md`'s "Media-Processing Worker Completion" section for the full reasoning.
+
+### Commands run and results
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 2ms
+Checked 65 packages in 0.88ms
+
+$ uv run ruff format --check .
+303 files already formatted
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 131 source files
+
+$ uv run pytest -q
+1272 passed in ~30-44s (run repeatedly; stable)
+
+$ docker compose config
+(valid — no output on success)
+```
+
+### New tests added (all passing)
+
+- `tests/unit/evidence_lifecycle/test_media_routing.py` (12 tests) — image/video routing incl. matroska, cross-MIME rejection, client-cannot-override-processor, idempotent replay, cross-case isolation.
+- `tests/unit/media_processing/test_media_worker_client.py` (14 tests) — `WorkerApiClient` wire-format proof against `httpx.MockTransport`; no token/claim-token ever logged.
+- `tests/unit/media_processing/test_media_worker_orchestration.py` (8 tests) — `run_once` sequencing, SHA-256-mismatch-before-decode, input-resolution-gap deferral, no-job-available, multi-processor claim loop, idempotent resubmission at the client layer.
+- `tests/unit/media_processing/test_source.py` — extended with matroska classification cases.
+- `tests/integration/media_processing/test_media_worker_live.py` (3 tests, self-skipping) — see below.
+
+### Docker/live verification
+
+```bash
+$ docker compose up --build -d
+... Container tracex-api-1 Started (rebuilt image, all 5 services healthy)
+
+$ uv run alembic upgrade head
+(no output — already at head)
+
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -s http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -s http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+```
+
+**Pytest live integration test** (`tests/integration/media_processing/test_media_worker_live.py`), run against the live stack — real upload, real worker `run_once()`, real graph projector `run_batch()` (twice), real Neo4j query, real HTTP graph-read endpoint, for both image and video:
+
+```bash
+$ uv run pytest tests/integration/media_processing/test_media_worker_live.py -v
+test_worker_client_against_real_running_api PASSED
+test_full_upload_claim_stream_verify_process_submit_project_live_pipeline[image-media_metadata_v1] PASSED
+test_full_upload_claim_stream_verify_process_submit_project_live_pipeline[video-media_metadata_v1] PASSED
+3 passed in 2.38s
+```
+Re-run to confirm stability: 3 passed again.
+
+**Real subprocess CLI verification** (not the in-process pytest call above) — a standalone script uploaded a real PNG and a real `ffmpeg`-generated synthetic MP4, then invoked the actual worker and projector CLIs as genuine child processes:
+
+```text
+UPLOAD  image    -> job 0b78fc69-... processor=media_metadata_v1
+UPLOAD  video    -> job 8290657b-... processor=media_metadata_v1
+WORKER  image    -> exit=0 status=succeeded   (real `uv run python -m app.modules.media_processing.worker --once` subprocess)
+WORKER  video    -> exit=0 status=succeeded   (same, second subprocess invocation)
+RESULT  image    -> job_status=succeeded observations=1
+RESULT  video    -> job_status=succeeded observations=1
+PROJECTOR run 1 -> {"claimed": 8, "succeeded": 2, "failed": 6, ...}   (real `uv run python -m app.modules.graph.worker --once` subprocess)
+PROJECTOR run 2 -> {"claimed": 0, "succeeded": 0, "failed": 0, ...}   (second run: this test's 2 jobs already terminal, no re-claim, no duplicate)
+GRAPH   image    observation_id=c7013bf5-... projected=True   (via real GET /api/v1/cases/{case_id}/graph/observations)
+GRAPH   video    observation_id=6aeaa58e-... projected=True
+NEO4J   image    observation_id=c7013bf5-... present=True     (via direct Neo4j query)
+NEO4J   video    observation_id=6aeaa58e-... present=True
+
+ALL 2 MEDIA SOURCE TYPES VERIFIED END-TO-END VIA REAL SUBPROCESS WORKER
+```
+The graph-read HTTP response was also confirmed free of `object_uri` and the worker token. The 6 `failed` projector attempts in run 1 were pre-existing orphaned `graph_projection_jobs` rows from this same session's earlier full-suite `pytest -q` run (`observation_not_found` — other integration tests' own teardown had already deleted their observations before this run's projector swept them up; same documented cross-test-pollution pattern as Shreshtha's Phase 2.5 session), unrelated to either of this script's own 2 jobs, which both succeeded and projected cleanly on the first pass. Swept up as part of this session's cleanup.
+
+### Cleanup and final state
+
+All data created by both the pytest live suite and the manual subprocess script was removed: cases, users, worker credentials created solely for this verification, evidence, jobs, results, observations, and their Neo4j nodes. One further pre-existing orphaned case/user (`LIVE-FULL-PIPELINE-...`, from `tests/integration/graph/test_full_pipeline_live.py`, predating this session) was also found and cleaned up while auditing database state — unrelated to media_processing, flagged here for transparency rather than silently left. Final state confirmed directly: `0` cases, `0` failed `graph_projection_jobs` rows, `0` Neo4j nodes.
+
+Persistent, intentionally-kept rows (matching the established live-test convention every sibling module's own live suite already follows — `structured-processing-worker-live-test`/`communication-processing-worker-live-test` credentials also persist across runs): the `media-processing-worker-live-test` worker credential provisioned by `test_media_worker_live.py`'s `_ensure_worker_credential` helper.
+
+`git status --short` at the end of this session shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `gaurav`, HEAD unchanged at `1d3d885` plus this session's uncommitted changes. Docker stack left running; `docker compose down` removes it cleanly whenever wanted.
