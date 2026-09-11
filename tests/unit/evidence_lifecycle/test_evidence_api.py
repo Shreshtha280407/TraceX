@@ -12,7 +12,8 @@ the same fake access-control repository instance the app is using.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -33,6 +34,7 @@ from app.modules.evidence_lifecycle.dependencies import (
     get_object_storage,
 )
 from app.modules.evidence_lifecycle.jobs import FakeJobProducer
+from app.modules.evidence_lifecycle.models import ObservationRecord, WorkerResultRecord
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
 from tests.fixtures.access_control.factories import make_case_record, make_membership_record
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
@@ -158,6 +160,82 @@ async def test_full_upload_get_list_round_trip(
     listing = await client.get(f"/api/v1/cases/{case_id}/evidence", headers=headers)
     assert listing.status_code == 200
     assert len(listing.json()["items"]) == 1
+
+
+# --- Scenario 13: user-facing job status is case-scoped and leaks nothing ---
+
+
+async def test_completed_job_status_exposes_safe_fields_only(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    """Simulates a worker having claimed + completed the job, then checks the user-facing view."""
+    token, case_id = await _authenticated_member(client, ac_repository)
+    headers = {"Authorization": f"Bearer {token}"}
+    upload = await client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        headers=headers,
+        files=_upload_files(),
+        data={"source_type": "document", "classification": "unclassified"},
+    )
+    job_id = upload.json()["job"]["job_id"]
+    evidence_id = upload.json()["evidence"]["evidence_id"]
+    now = datetime.now(UTC)
+
+    job = evidence_repository.jobs[UUID(job_id)]
+    evidence_repository.jobs[UUID(job_id)] = job.model_copy(
+        update={
+            "status": "succeeded",
+            "claimed_at": now,
+            "lease_expires_at": now,
+            "claimed_by": "fir_report_text_v1",
+            "claim_token_hash": "a" * 64,
+        }
+    )
+    result_id = uuid4()
+    observation_id = uuid4()
+    evidence_repository.results[result_id] = WorkerResultRecord(
+        result_id=result_id,
+        job_id=UUID(job_id),
+        case_id=case_id,
+        evidence_id=UUID(evidence_id),
+        attempt=1,
+        status="succeeded",
+        derived_artifacts=[],
+        checkpoint=None,
+        error_code=None,
+        error_message=None,
+        error_retryable=None,
+        canonical_payload={},
+        payload_hash="b" * 64,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    evidence_repository.observations[observation_id] = ObservationRecord(
+        observation_id=observation_id,
+        result_id=result_id,
+        job_id=UUID(job_id),
+        case_id=case_id,
+        evidence_id=UUID(evidence_id),
+        observation_type="document_text_mention",
+        canonical_payload={},
+        created_at=now,
+    )
+
+    response = await client.get(f"/api/v1/cases/{case_id}/jobs/{job_id}", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["observation_count"] == 1
+    assert body["completed_at"] is not None
+    assert body["claimed_at"] is not None
+    # Never leaked, regardless of what's stored internally.
+    assert "claim_token" not in response.text
+    assert "claim_token_hash" not in response.text
+    assert "object_uri" not in response.text
+    assert "a" * 64 not in response.text  # the claim_token_hash value itself
 
 
 # --- Idempotency-Key header behavior -----------------------------------------

@@ -14,9 +14,11 @@ Phase 1 (**Foundation and Frozen Contracts**) delivered the backend skeleton:
 - Document/structured-data, audio/social/chat, and video/image processing foundations (`structured_processing`/`communication_processing`/`media_processing`) — deterministic extraction logic, not yet wired to a real ingestion pipeline.
 - Graph projection and case-scoped query foundation (`app/modules/graph/`) — built, not yet wired to a real ingestion pipeline.
 
-Phase 2 (in progress, `app/modules/evidence_lifecycle/`) adds the real, case-scoped **evidence lifecycle**: authenticated upload → streamed SHA-256 hashing → private MinIO storage → immutable PostgreSQL metadata → a durable `WorkerJobV1` job record → best-effort Redis dispatch. See `docs/architecture/evidence-lifecycle.md`.
+Phase 2 (`app/modules/evidence_lifecycle/`) adds the real, case-scoped **evidence lifecycle**: authenticated upload → streamed SHA-256 hashing → private MinIO storage → immutable PostgreSQL metadata → a durable `WorkerJobV1` job record → best-effort Redis dispatch. See `docs/architecture/evidence-lifecycle.md`.
 
-Explicitly **not** implemented anywhere in this repository yet: a worker consumer that actually processes queued jobs, real OCR/ASR/entity resolution/graph-projection wiring, cross-modal correlation, a human-review workflow, Merkle checkpointing or signatures, case CRUD, MFA/SSO, or any frontend. See `CLAUDE.md`, `docs/architecture/phase-1-decisions.md`, `docs/architecture/phase-2-decisions.md`, and `docs/qa/known-limitations.md` for the full non-goal list.
+Phase 2.1 (in progress, same module) adds the **worker claim and result-submission** half of the lifecycle: a fail-closed internal API for a future worker to claim exactly one queued job (via `FOR UPDATE SKIP LOCKED` + a one-time claim token) and durably submit its `WorkerResultV1`/`ObservationV1`s, atomically transitioning the job to a terminal state. See `docs/architecture/worker-job-lifecycle.md`.
+
+Explicitly **not** implemented anywhere in this repository yet: an actual worker daemon/consumer loop, real OCR/ASR/entity resolution/graph-projection wiring, cross-modal correlation, a human-review workflow, Merkle checkpointing or signatures, case CRUD, a real per-worker credential system, MFA/SSO, or any frontend. See `CLAUDE.md`, `docs/architecture/phase-1-decisions.md`, `docs/architecture/phase-2-decisions.md`, `docs/architecture/worker-job-lifecycle.md`, and `docs/qa/known-limitations.md` for the full non-goal list.
 
 **No sensitive or real production evidence is used anywhere in this repository.** All fixtures and test data are synthetic (see `docs/qa/test-data.md`).
 
@@ -59,6 +61,7 @@ Once running, the API is available at:
 - `GET http://localhost:8000/readyz` — readiness (checks PostgreSQL, Neo4j, Redis, MinIO)
 - `GET http://localhost:8000/api/v1/meta/contracts` — supported contract versions
 - `POST/GET http://localhost:8000/api/v1/cases/{case_id}/evidence`, `GET .../evidence/{evidence_id}`, `GET .../jobs/{job_id}` — case-scoped evidence upload/status (see `docs/architecture/evidence-lifecycle.md`)
+- `POST http://localhost:8000/api/v1/internal/worker-jobs/claim`, `POST .../worker-jobs/{job_id}/result` — internal worker claim/result endpoints, gated by `WORKER_SHARED_SECRET` (see `docs/architecture/worker-job-lifecycle.md`)
 - `GET http://localhost:8000/docs` — interactive OpenAPI docs
 
 Exposed development ports: API `8000`, PostgreSQL `5432`, Neo4j `7474` (HTTP browser) / `7687` (Bolt), Redis `6379`, MinIO `9000` (API) / `9001` (console).
@@ -79,7 +82,7 @@ docker compose config         # validate compose syntax
 - `app/` — FastAPI application: API routes, core infra (config, errors, IDs, canonical serialization), versioned contracts, and `app/modules/` (access control, evidence lifecycle, graph, structured/communication/media processing).
 - `tests/` — unit, contract, integration, security, and e2e tests, plus shared fixtures.
 - `docs/` — architecture decisions, contract reference, QA tracking, progress log, and runbooks.
-- `migrations/` — Alembic baseline plus additive domain migrations (`access_control`, `evidence_lifecycle`).
+- `migrations/` — Alembic baseline plus additive domain migrations (`access_control`, `evidence_lifecycle`, worker job claim/result).
 - `compose.yaml`, `Dockerfile` — local reproducible infrastructure.
 
 ## Contributing

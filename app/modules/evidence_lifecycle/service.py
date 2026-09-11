@@ -18,6 +18,8 @@ has actually committed.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -27,19 +29,29 @@ import structlog
 from fastapi import UploadFile
 
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
-from app.contracts.worker import WorkerStatus
+from app.contracts.worker import WorkerResultV1, WorkerStatus
+from app.core.canonical import canonical_sha256
 from app.modules.evidence_lifecycle.errors import (
     EmptyUploadError,
     EvidenceNotFoundError,
     IdempotencyConflictError,
+    InvalidClaimTokenError,
     JobNotFoundError,
     MissingFilenameError,
     PayloadTooLargeError,
+    ResultConflictError,
+    ResultValidationError,
     UnsupportedContentTypeError,
     UnsupportedSourceTypeError,
 )
 from app.modules.evidence_lifecycle.jobs import JobProducer
-from app.modules.evidence_lifecycle.models import EvidenceRecord, WorkerJobRecord
+from app.modules.evidence_lifecycle.models import (
+    TERMINAL_WORKER_STATUSES,
+    EvidenceRecord,
+    ObservationRecord,
+    WorkerJobRecord,
+    WorkerResultRecord,
+)
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
 from app.modules.evidence_lifecycle.routing import accepted_content_types, route_for
 from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
@@ -50,6 +62,9 @@ logger = structlog.get_logger(__name__)
 #: in memory at once regardless of the declared/actual upload size.
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1 MiB
 _MAX_FILENAME_LENGTH = 255
+#: Bytes of entropy for a generated claim token (256 bits) -- mirrors
+#: `access_control.tokens.REFRESH_TOKEN_BYTES`'s reasoning exactly.
+CLAIM_TOKEN_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,29 @@ class UploadOutcome:
     created: bool
 
 
+@dataclass(frozen=True)
+class ClaimOutcome:
+    """A claimed job plus its one-time claim token, or nothing eligible right now.
+
+    `claim_token` is transport metadata only -- never part of `WorkerJobV1`,
+    never persisted raw (see `docs/architecture/worker-job-lifecycle.md`).
+    """
+
+    job: WorkerJobRecord | None
+    claim_token: str | None
+    lease_expires_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ResultOutcome:
+    job_id: UUID
+    status: WorkerStatus
+    result_id: UUID
+    observation_ids: tuple[UUID, ...]
+    #: False when this call returned the cached outcome of an identical, already-accepted replay.
+    created: bool
+
+
 class EvidenceLifecycleService:
     def __init__(
         self,
@@ -75,11 +113,13 @@ class EvidenceLifecycleService:
         storage: ObjectStorage,
         job_producer: JobProducer,
         max_evidence_bytes: int,
+        worker_lease_seconds: int = 300,
     ) -> None:
         self._repository = repository
         self._storage = storage
         self._job_producer = job_producer
         self._max_evidence_bytes = max_evidence_bytes
+        self._worker_lease_seconds = worker_lease_seconds
 
     async def upload_evidence(
         self,
@@ -258,6 +298,235 @@ class EvidenceLifecycleService:
             raise JobNotFoundError("job not found")
         return record
 
+    async def get_job_result_summary(self, job_id: UUID) -> tuple[WorkerResultRecord | None, int]:
+        """`(latest result row or None, observation count)` for the safe job-status view."""
+        result = await self._repository.get_result_for_job(job_id)
+        count = await self._repository.count_observations_for_job(job_id)
+        return result, count
+
+    # --- worker lifecycle: claim + result submission -----------------------
+
+    async def claim_job(
+        self, *, processor_name: str, processor_version: str, context: UploadContext
+    ) -> ClaimOutcome:
+        """Atomically claim one eligible job, generating a fresh one-time claim token.
+
+        Returns an empty `ClaimOutcome` (never raises) when nothing is
+        eligible right now -- "no work" is a normal outcome, not an error.
+        """
+        logger.info(
+            "worker.job.claim_attempted",
+            request_id=context.request_id,
+            processor_name=processor_name,
+            processor_version=processor_version,
+        )
+        claim_token = secrets.token_urlsafe(CLAIM_TOKEN_BYTES)
+        claim_token_hash = _hash_claim_token(claim_token)
+        claimed = await self._repository.claim_job(
+            processor_name=processor_name,
+            processor_version=processor_version,
+            now=context.now,
+            lease_seconds=self._worker_lease_seconds,
+            claim_token_hash=claim_token_hash,
+        )
+        if claimed is None:
+            logger.info(
+                "worker.job.no_eligible_job",
+                request_id=context.request_id,
+                processor_name=processor_name,
+                processor_version=processor_version,
+            )
+            return ClaimOutcome(job=None, claim_token=None, lease_expires_at=None)
+
+        job, was_reclaim = claimed
+        if was_reclaim:
+            logger.warning(
+                "worker.job.lease_expired_requeued",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                attempt=job.attempt,
+            )
+        logger.info(
+            "worker.job.claimed",
+            request_id=context.request_id,
+            job_id=str(job.job_id),
+            processor_name=processor_name,
+            attempt=job.attempt,
+        )
+        return ClaimOutcome(job=job, claim_token=claim_token, lease_expires_at=job.lease_expires_at)
+
+    async def submit_result(
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        result: WorkerResultV1,
+        context: UploadContext,
+    ) -> ResultOutcome:
+        """Validate and durably persist one worker result, transitioning the job to terminal.
+
+        Ordering matches `docs/architecture/worker-job-lifecycle.md`: the
+        claim token is verified *first, unconditionally* -- including
+        against an already-terminal job, so a wrong/unknown token can never
+        retrieve a cached result it was never entitled to, and never
+        distinguishes "wrong token" from "right token, different job" in
+        its response. Only once the token genuinely matches does the flow
+        branch: an already-terminal job goes to idempotent-replay/conflict
+        comparison; a `running` job is checked for lease expiry and then
+        the submitted result's own scope/status is validated -- all before
+        any write is attempted.
+        """
+        logger.info(
+            "worker.result.submit_attempted", request_id=context.request_id, job_id=str(job_id)
+        )
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.claim_token_hash is None:
+            logger.warning(
+                "worker.result.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="unknown_or_unclaimed_job",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+        if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
+            logger.warning(
+                "worker.result.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="token_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+
+        if job.status in TERMINAL_WORKER_STATUSES:
+            return await self._replay_or_conflict_result(job, result, context)
+
+        if job.status is not WorkerStatus.RUNNING:
+            logger.warning(
+                "worker.result.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="not_claimed",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+        if job.lease_expires_at is None or job.lease_expires_at < context.now:
+            logger.warning(
+                "worker.result.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="lease_expired",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+
+        _validate_result_scope(job, result)
+
+        result_id = uuid4()
+        payload = result.model_dump(mode="json")
+        payload_hash = canonical_sha256(result)
+        result_record = WorkerResultRecord(
+            result_id=result_id,
+            job_id=job.job_id,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            attempt=job.attempt,
+            status=result.status,
+            derived_artifacts=[a.model_dump(mode="json") for a in result.derived_artifacts],
+            checkpoint=result.checkpoint,
+            error_code=result.error.code if result.error else None,
+            error_message=result.error.message if result.error else None,
+            error_retryable=result.error.retryable if result.error else None,
+            canonical_payload=payload,
+            payload_hash=payload_hash,
+            completed_at=result.completed_at,
+            created_at=context.now,
+            updated_at=context.now,
+        )
+        observation_records = [
+            ObservationRecord(
+                observation_id=observation.observation_id,
+                result_id=result_id,
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                observation_type=observation.observation_type,
+                canonical_payload=observation.model_dump(mode="json"),
+                created_at=context.now,
+            )
+            for observation in result.observations
+        ]
+
+        claim_token_hash = _hash_claim_token(claim_token)
+        try:
+            await self._repository.submit_result(
+                job_id=job.job_id,
+                expected_claim_token_hash=claim_token_hash,
+                result=result_record,
+                observations=observation_records,
+            )
+        except sqlalchemy.exc.IntegrityError:
+            refreshed = await self._repository.get_job_by_id(job.job_id)
+            if refreshed is not None and refreshed.status in TERMINAL_WORKER_STATUSES:
+                return await self._replay_or_conflict_result(refreshed, result, context)
+            logger.error(
+                "worker.result.persistence_failed",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+            )
+            raise
+        except Exception:
+            logger.error(
+                "worker.result.persistence_failed",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+            )
+            raise
+
+        logger.info(
+            "worker.result.accepted",
+            request_id=context.request_id,
+            job_id=str(job.job_id),
+            status=result.status.value,
+        )
+        logger.info(
+            "worker.job.marked_terminal",
+            request_id=context.request_id,
+            job_id=str(job.job_id),
+            status=result.status.value,
+        )
+        return ResultOutcome(
+            job_id=job.job_id,
+            status=result.status,
+            result_id=result_id,
+            observation_ids=tuple(o.observation_id for o in result.observations),
+            created=True,
+        )
+
+    async def _replay_or_conflict_result(
+        self, job: WorkerJobRecord, result: WorkerResultV1, context: UploadContext
+    ) -> ResultOutcome:
+        existing = await self._repository.get_result_for_job(job.job_id)
+        if existing is None:  # pragma: no cover - defensive: terminal implies a result exists
+            raise InvalidClaimTokenError("invalid claim token")
+        if existing.payload_hash != canonical_sha256(result):
+            logger.warning(
+                "worker.result.conflict", request_id=context.request_id, job_id=str(job.job_id)
+            )
+            raise ResultConflictError("a different result was already submitted for this job")
+        logger.info(
+            "worker.result.accepted",
+            request_id=context.request_id,
+            job_id=str(job.job_id),
+            status=existing.status.value,
+            idempotent_replay=True,
+        )
+        observations = await self._repository.list_observations_for_result(existing.result_id)
+        return ResultOutcome(
+            job_id=job.job_id,
+            status=existing.status,
+            result_id=existing.result_id,
+            observation_ids=tuple(o.observation_id for o in observations),
+            created=False,
+        )
+
 
 def _build_job(
     *,
@@ -284,6 +553,10 @@ def _build_job(
         status=WorkerStatus.QUEUED,
         queued_at=now,
         dispatched_at=None,
+        claimed_at=None,
+        lease_expires_at=None,
+        claimed_by=None,
+        claim_token_hash=None,
         last_error_code=None,
         last_error_message=None,
         last_error_retryable=None,
@@ -331,3 +604,31 @@ async def _safe_delete(storage: ObjectStorage, object_key: str, request_id: str 
             request_id=request_id,
             object_key=object_key,
         )
+
+
+def _hash_claim_token(claim_token: str) -> str:
+    """SHA-256 hex digest of a claim token, for storage/comparison.
+
+    Same reasoning as `access_control.tokens.hash_refresh_token`: the input
+    is already a 256-bit-entropy random secret, so a plain fast hash is
+    the right tool, not a slow password KDF.
+    """
+    return hashlib.sha256(claim_token.encode("utf-8")).hexdigest()
+
+
+def _validate_result_scope(job: WorkerJobRecord, result: WorkerResultV1) -> None:
+    if (
+        result.job_id != job.job_id
+        or result.case_id != job.case_id
+        or result.evidence_id != job.evidence_id
+    ):
+        raise ResultValidationError(
+            "result job_id/case_id/evidence_id does not match the claimed job"
+        )
+    if result.status not in TERMINAL_WORKER_STATUSES:
+        raise ResultValidationError("result status must be a terminal outcome")
+    for observation in result.observations:
+        if observation.case_id != job.case_id or observation.evidence_id != job.evidence_id:
+            raise ResultValidationError(
+                "an observation does not belong to the claimed job's case/evidence"
+            )

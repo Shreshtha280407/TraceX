@@ -1,6 +1,6 @@
 # Evidence Lifecycle (Phase 2 — Nipun)
 
-`app/modules/evidence_lifecycle/` implements the real, case-scoped evidence ingestion foundation: authorized upload → streamed SHA-256 hashing → private object storage → immutable metadata persistence → a durable worker-job record → best-effort dispatch. It is the common foundation every later source-processing module (Jasraj's `structured_processing`, Sarthak's `communication_processing`, Gaurav's `media_processing`) will eventually consume jobs from, and that Shreshtha's `graph` module will eventually see reviewed observations flow past. This module does not implement any of those consumers, entity resolution, correlation, review workflows, or Merkle/signature chains — see "Non-goals" below.
+`app/modules/evidence_lifecycle/` implements the real, case-scoped evidence ingestion foundation: authorized upload → streamed SHA-256 hashing → private object storage → immutable metadata persistence → a durable worker-job record → best-effort dispatch. As of Phase 2.1, this module also implements the job **claim** and **result-submission** half of the lifecycle — see `docs/architecture/worker-job-lifecycle.md` for that part in full; this document covers upload through durable job creation. It is the common foundation every later source-processing module (Jasraj's `structured_processing`, Sarthak's `communication_processing`, Gaurav's `media_processing`) will eventually consume jobs from, and that Shreshtha's `graph` module will eventually see reviewed observations flow past. This module does not implement any actual worker execution, entity resolution, correlation, review workflows, or Merkle/signature chains — see "Non-goals" below.
 
 ## Lifecycle, end to end
 
@@ -14,7 +14,7 @@ authorized case member
   -> return safe evidence + job metadata (never object_uri, never a credential)
 ```
 
-A later-phase worker's only contract is `WorkerJobV1` in, `WorkerResultV1` out — unchanged from Phase 1. This module produces `WorkerJobV1`; it never produces `ObservationV1`, `WorkerResultV1`, `EntityV1`, or `EventV1`.
+A later-phase worker's only contract is `WorkerJobV1` in, `WorkerResultV1` out — unchanged from Phase 1. This module produces `WorkerJobV1` and (Phase 2.1) validates and durably persists a worker-*submitted* `WorkerResultV1`/`ObservationV1` — it never fabricates either from raw evidence content itself, and it never produces `EntityV1` or `EventV1`.
 
 ## PostgreSQL vs. MinIO ownership
 
@@ -83,7 +83,7 @@ No endpoint in this module returns a working URL to the underlying bytes, a pres
 
 ## Intentional deferrals (this phase only; see `docs/qa/known-limitations.md` for the full list)
 
-- No worker consumer, no `BLPOP` loop, no automatic redrive of undispatched jobs.
+- No worker daemon/consumer loop — Phase 2.1 adds the claim/submit primitives a future worker would call, not the worker itself. See `docs/architecture/worker-job-lifecycle.md`.
 - No document/OCR/ASR/video/CDR/financial extraction, no entity resolution, no graph projection, no correlation/scoring/hypothesis engine, no human-review workflow, no Merkle roots or signatures.
 - No case CRUD API — cases/memberships are seeded via `app.modules.access_control.repository` directly (the existing minimal access-control anchor), exactly as every other integration test in this repository already does.
-- `EvidenceRecordV1.processing_status` starts directly at `queued`, never `uploaded`, because evidence and its job are created in one atomic transaction — there is no separately observable intermediate state in this phase.
+- `EvidenceRecordV1.processing_status` starts directly at `queued`, never `uploaded`, because evidence and its job are created in one atomic transaction — there is no separately observable intermediate state in this phase. It also does not yet reflect job completion (`processed`/`failed`) once a worker result comes in — see `docs/qa/known-limitations.md`.

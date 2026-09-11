@@ -13,10 +13,10 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
-from app.contracts.worker import WorkerStatus
+from app.contracts.worker import WorkerJobV1, WorkerStatus
 
 
 class _ResponseModel(BaseModel):
@@ -41,7 +41,7 @@ class EvidenceView(_ResponseModel):
 
 
 class JobView(_ResponseModel):
-    """Safe job status -- never the queue/broker connection details."""
+    """Safe job status -- never queue/broker details, a claim token, or an object URI."""
 
     job_id: UUID
     case_id: UUID
@@ -53,6 +53,9 @@ class JobView(_ResponseModel):
     status: WorkerStatus
     requested_at: datetime
     dispatched_at: datetime | None
+    claimed_at: datetime | None
+    completed_at: datetime | None
+    observation_count: int
     last_error_code: str | None
     last_error_message: str | None
 
@@ -64,3 +67,40 @@ class EvidenceUploadResponse(_ResponseModel):
 
 class EvidenceListResponse(_ResponseModel):
     items: tuple[EvidenceView, ...]
+
+
+# --- Internal worker-lifecycle shapes (never returned from a user-facing endpoint) ---
+
+
+class ClaimRequest(_ResponseModel):
+    """A worker's self-declaration of what it can process.
+
+    Not a verified per-worker identity -- see
+    `docs/architecture/worker-job-lifecycle.md`'s "Worker identity" section.
+    """
+
+    processor_name: str = Field(min_length=1)
+    processor_version: str = Field(min_length=1)
+
+
+class ClaimResponse(_ResponseModel):
+    """The full `WorkerJobV1` a worker needs to process it, plus its one-time claim token.
+
+    `job`/`claim_token`/`lease_expires_at` are all `None` when nothing is
+    eligible right now -- a safe "no work" response, never an error.
+    `claim_token` is transport metadata only, never part of `WorkerJobV1`.
+    """
+
+    job: WorkerJobV1 | None
+    claim_token: str | None
+    lease_expires_at: datetime | None
+
+
+class ResultAcknowledgement(_ResponseModel):
+    """Safe acknowledgement of an accepted worker result -- never an object URI or credential."""
+
+    job_id: UUID
+    status: WorkerStatus
+    result_id: UUID
+    observation_count: int
+    observation_ids: tuple[UUID, ...]
