@@ -7,6 +7,67 @@ volumes:
   postgres-data:
   neo4j-data:
   minio-data:
+  # Bootstrapped detector model weights (see `media-model-bootstrap` below
+  # and docs/architecture/media-processing-worker.md's "Model asset
+  # bootstrap") -- persisted here, not baked into any image, so `api`/
+  # `media-worker` share one already-downloaded, checksum-verified file
+  # across rebuilds without re-downloading it.
+  media-models-data:
+
+# Shared application configuration for every TraceX-built service (`api`,
+# `media-worker`, `graph-projector`, `media-model-bootstrap`) -- all of them
+# construct the same global `Settings` (app/core/config.py), which requires
+# the full set below regardless of which fields a given process actually
+# reads, so every one of them needs it, not just `api`. A single YAML anchor
+# avoids repeating ~35 lines four times and drifting out of sync.
+x-tracex-app-env: &tracex-app-env
+  APP_NAME: ${APP_NAME:-tracex-api}
+  APP_ENV: ${APP_ENV:-local}
+  APP_HOST: 0.0.0.0
+  APP_PORT: 8000
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  POSTGRES_DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USERNAME: ${NEO4J_USERNAME}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+  REDIS_URL: redis://redis:6379/0
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  MINIO_SECURE: "false"
+  MINIO_BUCKET: ${MINIO_BUCKET:-tracex-evidence}
+  CONTRACT_VERSION: ${CONTRACT_VERSION:-v1}
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+  AUTH_JWT_ALGORITHM: ${AUTH_JWT_ALGORITHM:-HS256}
+  AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-tracex-api}
+  AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-tracex-clients}
+  AUTH_ACCESS_TOKEN_TTL_SECONDS: ${AUTH_ACCESS_TOKEN_TTL_SECONDS:-900}
+  AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-1209600}
+  AUTH_LOGIN_RATE_LIMIT: ${AUTH_LOGIN_RATE_LIMIT:-5}
+  AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-20}
+  MAX_EVIDENCE_BYTES: ${MAX_EVIDENCE_BYTES:-209715200}
+  WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-300}
+  WORKER_API_BASE_URL: http://api:8000
+  WORKER_TOKEN: ${WORKER_TOKEN:-}
+  WORKER_CREDENTIAL_PEPPER: ${WORKER_CREDENTIAL_PEPPER:-}
+  GRAPH_PROJECTION_BATCH_SIZE: ${GRAPH_PROJECTION_BATCH_SIZE:-25}
+  GRAPH_PROJECTION_LEASE_SECONDS: ${GRAPH_PROJECTION_LEASE_SECONDS:-120}
+  GRAPH_PROJECTION_MAX_ATTEMPTS: ${GRAPH_PROJECTION_MAX_ATTEMPTS:-5}
+  GRAPH_PROJECTION_RENEW_INTERVAL_SECONDS: ${GRAPH_PROJECTION_RENEW_INTERVAL_SECONDS:-40}
+  GRAPH_PROJECTOR_POLL_INTERVAL_SECONDS: ${GRAPH_PROJECTOR_POLL_INTERVAL_SECONDS:-5}
+  GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS: ${GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS:-60}
+  GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES: ${GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES:-5}
+  MEDIA_DETECTOR_MODEL_PATH: ${MEDIA_DETECTOR_MODEL_PATH:-/app/models/media/object_detection_yolox_2022nov.onnx}
+  MEDIA_DETECTOR_MODEL_SHA256: ${MEDIA_DETECTOR_MODEL_SHA256:-c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063}
+  MEDIA_DETECTOR_DEVICE: ${MEDIA_DETECTOR_DEVICE:-auto}
+  MEDIA_DETECTOR_CONFIDENCE_THRESHOLD: ${MEDIA_DETECTOR_CONFIDENCE_THRESHOLD:-0.5}
+  MEDIA_DETECTOR_NMS_THRESHOLD: ${MEDIA_DETECTOR_NMS_THRESHOLD:-0.5}
+  MEDIA_OCR_LANGUAGE: ${MEDIA_OCR_LANGUAGE:-eng}
+  MEDIA_OCR_MIN_CONFIDENCE: ${MEDIA_OCR_MIN_CONFIDENCE:-0.3}
+  MEDIA_WORKER_RENEW_INTERVAL_SECONDS: ${MEDIA_WORKER_RENEW_INTERVAL_SECONDS:-60}
+  MEDIA_WORKER_POLL_INTERVAL_SECONDS: ${MEDIA_WORKER_POLL_INTERVAL_SECONDS:-5}
+  MEDIA_WORKER_MAX_BACKOFF_SECONDS: ${MEDIA_WORKER_MAX_BACKOFF_SECONDS:-60}
+  MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES: ${MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES:-5}
 
 services:
   postgres:
@@ -85,38 +146,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      APP_NAME: ${APP_NAME:-tracex-api}
-      APP_ENV: ${APP_ENV:-local}
-      APP_HOST: 0.0.0.0
-      APP_PORT: 8000
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      POSTGRES_DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USERNAME: ${NEO4J_USERNAME}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
-      REDIS_URL: redis://redis:6379/0
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      MINIO_SECURE: "false"
-      MINIO_BUCKET: ${MINIO_BUCKET:-tracex-evidence}
-      CONTRACT_VERSION: ${CONTRACT_VERSION:-v1}
-      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
-      AUTH_JWT_ALGORITHM: ${AUTH_JWT_ALGORITHM:-HS256}
-      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-tracex-api}
-      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-tracex-clients}
-      AUTH_ACCESS_TOKEN_TTL_SECONDS: ${AUTH_ACCESS_TOKEN_TTL_SECONDS:-900}
-      AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-1209600}
-      AUTH_LOGIN_RATE_LIMIT: ${AUTH_LOGIN_RATE_LIMIT:-5}
-      AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-20}
-      MAX_EVIDENCE_BYTES: ${MAX_EVIDENCE_BYTES:-209715200}
-      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-300}
-      WORKER_API_BASE_URL: ${WORKER_API_BASE_URL:-http://localhost:8000}
-      WORKER_TOKEN: ${WORKER_TOKEN:-}
-      WORKER_CREDENTIAL_PEPPER: ${WORKER_CREDENTIAL_PEPPER:-}
-      GRAPH_PROJECTION_BATCH_SIZE: ${GRAPH_PROJECTION_BATCH_SIZE:-25}
-      GRAPH_PROJECTION_LEASE_SECONDS: ${GRAPH_PROJECTION_LEASE_SECONDS:-120}
-      GRAPH_PROJECTION_MAX_ATTEMPTS: ${GRAPH_PROJECTION_MAX_ATTEMPTS:-5}
+      <<: *tracex-app-env
     ports:
       - "${APP_PORT:-8000}:8000"
     networks:
@@ -130,3 +160,77 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # Optional continuous workers -- both under the "workers" Compose profile
+  # (`docker compose --profile workers up -d`), so a plain `docker compose
+  # up` (the documented default in docs/runbooks/local-development.md)
+  # keeps behaving exactly as before this phase: API + infra only, no
+  # worker running until an operator explicitly asks for one. Both use the
+  # existing internal-worker-API / WORKER_TOKEN security boundary
+  # unchanged -- no direct MinIO/PostgreSQL/Neo4j credentials for
+  # `media-worker` (`graph-projector` is the one backend-owned exception
+  # that already talks to PostgreSQL/Neo4j directly, matching how it
+  # behaves outside Docker -- see app/modules/graph/worker.py's module
+  # docstring).
+
+  media-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["workers"]
+    command: ["python", "-m", "app.modules.media_processing.worker", "--loop"]
+    environment:
+      <<: *tracex-app-env
+    volumes:
+      # Read-only: this service only ever reads the model `media-model-
+      # bootstrap` already downloaded and verified -- it never writes here.
+      - media-models-data:/app/models:ro
+    networks:
+      - tracex-internal
+    depends_on:
+      api:
+        condition: service_healthy
+
+  graph-projector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["workers"]
+    command: ["python", "-m", "app.modules.graph.worker", "--loop"]
+    environment:
+      <<: *tracex-app-env
+    networks:
+      - tracex-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  # One-shot, not a long-running service: `docker compose run --rm
+  # media-model-bootstrap` downloads and checksum-verifies the pinned
+  # detector model into the shared `media-models-data` volume before
+  # `media-worker` needs it -- see
+  # app/modules/media_processing/bootstrap_models.py. Never started by
+  # `docker compose up` (no `restart` policy, and `up` only starts
+  # services other services depend on -- nothing depends on this one).
+  media-model-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["workers"]
+    command: ["python", "-m", "app.modules.media_processing.bootstrap_models"]
+    environment:
+      <<: *tracex-app-env
+    volumes:
+      - media-models-data:/app/models
+    networks:
+      - tracex-internal

@@ -52,6 +52,7 @@ from app.modules.evidence_lifecycle.errors import (
 from app.modules.evidence_lifecycle.schemas import (
     ClaimRequest,
     ClaimResponse,
+    RenewLeaseResponse,
     ResultAcknowledgement,
 )
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
@@ -192,6 +193,56 @@ async def submit_result(
         observation_count=len(outcome.observation_ids),
         observation_ids=outcome.observation_ids,
     )
+
+
+@router.post("/{job_id}/renew", response_model=RenewLeaseResponse)
+async def renew_job_lease(
+    job_id: UUID,
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> RenewLeaseResponse:
+    """Extend a currently-claimed, still-`running` job's lease -- a heartbeat for a worker
+    whose real processing may outlast the lease window it was claimed under.
+
+    Same authorization shape as `/result`/`/input`: a real per-worker
+    credential plus this exact job's claim token, and the caller must be
+    the worker identity currently bound to the job. Renewing an unknown,
+    wrong-token, wrong-worker, non-running, or already-lease-expired job is
+    rejected uniformly via `InvalidClaimTokenError` -> generic `401`
+    (audited as `worker_job_access_denied`, same as `/result`/`/input`'s
+    denials) -- never distinguishing which condition failed, and never
+    reviving a lease that has already expired (a legitimate reclaim by
+    another worker always wins; see `service.renew_claim`).
+    """
+    if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+
+    context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    try:
+        new_lease_expires_at = await service.renew_claim(
+            job_id=job_id,
+            claim_token=claim_token,
+            context=context,
+            worker_id=principal.worker_id,
+        )
+    except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    return RenewLeaseResponse(job_id=job_id, lease_expires_at=new_lease_expires_at)
 
 
 @router.get("/{job_id}/input")

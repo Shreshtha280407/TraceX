@@ -675,6 +675,97 @@ class EvidenceLifecycleService:
             object_uri=evidence.object_uri,
         )
 
+    async def renew_claim(
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        context: UploadContext,
+        worker_id: UUID | None = None,
+    ) -> datetime:
+        """Extend a currently-claimed, still-`running` job's lease -- a heartbeat for a
+        worker whose real processing (e.g. sampling and analyzing a long video, or a
+        graph-projection batch) may outlast the lease window it was claimed under.
+
+        Verification ordering matches `get_claimed_evidence_input`/`submit_result`
+        exactly (unknown/unclaimed job -> token mismatch -> worker-identity
+        mismatch -> not currently running -> lease already expired), all via
+        the same generic `InvalidClaimTokenError` -- a caller attempting to
+        renew a job it does not legitimately hold learns nothing about
+        *why* renewal was refused. `worker_id` defaults to `None` (skip the
+        identity check) for the same lower-level-test convenience every
+        other method here already documents; `internal_api.py`'s real HTTP
+        endpoint always supplies the authenticated caller's real value.
+        """
+        logger.info(
+            "worker.lease.renew_attempted", request_id=context.request_id, job_id=str(job_id)
+        )
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.claim_token_hash is None:
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="unknown_or_unclaimed_job",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="unknown_or_unclaimed_job")
+        if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="token_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="token_mismatch")
+        if worker_id is not None and job.claimed_by_worker_id != worker_id:
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="worker_identity_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="worker_identity_mismatch")
+        if job.status is not WorkerStatus.RUNNING:
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="not_claimed",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="not_claimed")
+        if job.lease_expires_at is None or job.lease_expires_at < context.now:
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="lease_expired",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
+
+        new_lease_expires_at = await self._repository.renew_lease(
+            job_id, now=context.now, lease_seconds=self._worker_lease_seconds
+        )
+        if new_lease_expires_at is None:
+            # Lost a race with a lease-expiry reclaim between the check above
+            # and the atomic update itself -- vanishingly unlikely (the
+            # window is microseconds), but the repository's own re-check is
+            # unconditional, so this is still a real, honest possibility.
+            logger.warning(
+                "worker.lease.renew_rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="lease_expired",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
+
+        logger.info(
+            "worker.lease.renewed",
+            request_id=context.request_id,
+            job_id=str(job_id),
+            lease_expires_at=new_lease_expires_at.isoformat(),
+        )
+        return new_lease_expires_at
+
 
 def _build_job(
     *,

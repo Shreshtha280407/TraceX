@@ -382,15 +382,44 @@ Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full c
 
 ### Outstanding for team review
 
-- [ ] No real object-detection/tracking/OCR model exists — same limitation Phase 1 already documented, unchanged by this phase's orchestration work.
-- [ ] `media_detection_v1` is fully implemented and unit-tested but never claimed live — a future phase wiring in a real, local detector needs only a change to how `main()` constructs and injects one, not to `process_job`.
+- [x] ~~No real object-detection/tracking/OCR model exists~~ — **resolved in the Phase 2 closeout below.**
+- [x] ~~`media_detection_v1` is fully implemented and unit-tested but never claimed live~~ — **resolved in the Phase 2 closeout below.**
 - [ ] No object-storage-backed `SourceResolver` for a human-facing evidence-download path (same situation `structured_processing`/`communication_processing` are in) — the worker fetches bytes through the existing claim-token-bound input endpoint, never MinIO directly, by design.
+
+## Phase 2 Closeout — Nipun Real Local Media Inference and Continuous Worker/Projector Operation: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Closes the two remaining Phase 2 prototype gaps: real local image/video detection/OCR/tracking (replacing the fake-only analysis components), and continuous, graceful `--loop` operation with lease renewal for both the media worker and the graph projector. See `docs/architecture/media-processing-worker.md`, `docs/architecture/graph-projection.md`, and `docs/architecture/phase-2-decisions.md`'s "Real Local Media Inference and Continuous Worker/Projector Operation" section.
+
+### Delivered
+
+- [x] `analysis/onnx_detector.py` — real YOLOX-s object detector via `onnxruntime`; checksum-verified before load; CPU by default, CUDA auto-detected when genuinely available (`onnxruntime-gpu`); deterministic; emits real COCO class labels, never a face/identity.
+- [x] `analysis/tesseract_ocr.py` — real local OCR via the `tesseract` binary (`pytesseract`); runtime/language-pack availability checked at construction; a new `recognize_regions` entry point OCRs the whole frame directly, independent of the general object detector's own (COCO-only, no `text_region` class) output.
+- [x] `analysis/iou_tracker.py` — the same deterministic greedy class-aware IoU algorithm `fake_tracker.py` always used, promoted to a named, versioned, configurable production component (`fake_tracker.py` itself is unchanged, kept for existing CI tests).
+- [x] `bootstrap_models.py` — explicit, operator-invoked, checksum-verified model-asset download; never run automatically; never bundled in Git.
+- [x] `benchmark.py` — reproducible local image/video processing benchmark; reports only measured results, never a fabricated/extrapolated throughput claim.
+- [x] `worker.py`: `_build_analysis_components` (graceful degradation to metadata-only on a missing model/OCR runtime, never a crash; `--require-analysis` for a hard-fail alternative), `_effective_processors`, whole-frame OCR wiring, `_lease_heartbeat`, `run_loop`/`RunLoopSummary`, `--loop` CLI mode.
+- [x] `evidence_lifecycle/routing.py`: `SourceType.IMAGE`/`SourceType.VIDEO` re-routed from `media_metadata_v1` to `media_detection_v1` — inspection proved the required real-detection pipeline was otherwise unreachable via any real upload; strictly additive (the metadata observation is still always emitted first).
+- [x] New internal endpoint `POST /api/v1/internal/worker-jobs/{job_id}/renew` (`evidence_lifecycle` `repository.renew_lease`/`service.renew_claim`/`schemas.RenewLeaseResponse`) — same claim-token + worker-identity authorization as `/result`/`/input`; a lease can never be renewed past its own expiry.
+- [x] `graph/outbox_repository.renew_lease`; `graph/projector.run_batch`'s `renew_interval_seconds`/injectable `monotonic`; `graph/worker.py`'s `run_loop`/`RunLoopSummary`/`--loop` (asyncio-native SIGINT/SIGTERM handling).
+- [x] Dockerfile: `ffmpeg`/`tesseract-ocr` system packages. `compose.yaml`: `media-worker`/`graph-projector`/`media-model-bootstrap` services under an opt-in `workers` profile, a shared `x-tracex-app-env` YAML anchor, a new `api` healthcheck, a `media-models-data` named volume. `.gitignore`: `models/`.
+- [x] New dependencies: `onnxruntime` (CPU; `onnxruntime-gpu` documented as the CUDA drop-in), `pytesseract` — no `ultralytics`/`torch`/cloud AI API.
+- [x] 15 new/extended test files (`test_onnx_detector.py`, `test_tesseract_ocr.py`, `test_iou_tracker.py`, `test_media_worker_loop.py`, `test_worker_lease_renewal.py`, `test_worker_loop.py` (graph), extended `test_media_worker.py`/`test_media_worker_orchestration.py`/`test_media_worker_client.py`/`test_projector.py`/`test_media_routing.py`/`test_media_worker_live.py`) — all required scenarios from the task brief covered; failure-mode/mechanics tests always run, real-model/real-OCR-quality scenarios self-skip without a locally bootstrapped model/suitable font (never downloaded by the test suite itself).
+- [x] QA entries `MEDIA-DETECTOR-001`, `MEDIA-OCR-001`, `MEDIA-TRACKER-001`, `MEDIA-WHOLE-FRAME-OCR-001`, `MEDIA-WORKER-LOOP-001`, `MEDIA-LEASE-RENEWAL-001`, `GRAPH-WORKER-LOOP-001`, `GRAPH-LEASE-RENEWAL-001` added; `MEDIA-ROUTING-001`/`MEDIA-WORKER-ORCHESTRATION-001`/`MEDIA-GRAPH-LIVE-001` updated for the `media_detection_v1` re-route.
+- [x] `docs/architecture/{media-processing-worker,contracts,phase-2-decisions,graph-projection}.md`, `docs/qa/{test-matrix,test-data,known-limitations}.md`, `docs/runbooks/{local-development,media-development}.md`, `README.md`, `.env.example` updated additively.
+- [x] Full repository regression and live Docker verification — see "Commands run and results" in the session's final report; real bootstrap → real detector run on a real photographic test image (correct "person" detections) → real OCR run on rendered text → real `--once` CLI subprocess claim→stream→parse→submit against the live stack, confirmed via direct PostgreSQL query.
+
+### Outstanding for team review
+
+- [ ] The real detector is a general 80-class COCO model, not fine-tuned for investigative-evidence-specific classes (weapons, specific vehicle types, license plates as a dedicated class) — see `docs/architecture/phase-2-decisions.md`'s open questions.
+- [ ] `onnxruntime-gpu`/real CUDA execution has not been verified against actual GPU hardware in this development environment (CPU-only sandbox) — documented (`pyproject.toml`'s `gpu` extra), not hardware-tested.
+- [ ] `structured_processing.worker`/`communication_processing.worker` still have `--once` only — no `--loop` mode was added to either in this phase (out of scope for this task; the underlying atomic-claim/durable-dispatch mechanisms they already build on are unchanged and would support the identical pattern).
+- [ ] `media-worker`/`graph-projector`'s Compose services are opt-in (`workers` profile) rather than default-on — a deliberate choice so local development's default `docker compose up` stays exactly as fast and side-effect-free as before this phase; revisit once a real deployment target is chosen.
 
 ## Later phases (not started)
 
 Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, the document/structured-processing foundation, the access-control foundation, the audio/social/alias/communication foundation, and the video/image processing foundation above:
 
-- Real OCR (Tesseract/cloud/model) consuming `document_requires_ocr` checkpoints; real ASR/diarization consuming `deferred_requires_asr`/`deferred_requires_diarization` checkpoints; real YOLO/ByteTrack/PaddleOCR model adapters behind `media_processing.analysis.interfaces` (the adapter boundary and deterministic test doubles are ready; no real model is invoked anywhere in this repository).
+- Real OCR (Tesseract/cloud/model) consuming `document_requires_ocr` checkpoints for scanned documents (unrelated to `media_processing`'s own now-real Tesseract OCR — that consumes video/image frames, not scanned PDF pages); real ASR/diarization consuming `deferred_requires_asr`/`deferred_requires_diarization` checkpoints. A real local object detector/tracker/OCR engine now exists for `media_processing` (Phase 2 closeout, above) — a fine-tuned/specialized detector variant, or real GPU-hardware verification, remain open (see that section's "Outstanding for team review").
 - A MinIO-backed `SourceResolver` for a human-facing authorized evidence-download path (`structured_processing.worker.process_job`/`communication_processing.worker.process_job`/`media_processing.worker.process_job` are all now callable via their own one-shot `--once` CLIs, each fetching evidence bytes through the existing claim-token-bound worker-input endpoint, not a direct MinIO read; `graph.projection`'s `Evidence`/`Observation`/`EntityMention` path is now wired via its own `--once` CLI too — see Phase 2.5 below; `project_entity`/`project_event` remain unwired).
 - Entity resolution and merge review workflow; candidate identity links; a review workflow consuming `CommunicationLinkCandidate`s and alias/transliteration candidates.
 - Cross-modal correlation, candidate scoring, hypothesis engine.

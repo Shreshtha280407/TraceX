@@ -210,6 +210,34 @@ class GraphProjectionOutboxRepository:
                 )
             return claimed
 
+    async def renew_lease(
+        self, projection_id: UUID, *, now: datetime, lease_seconds: int
+    ) -> datetime | None:
+        """Atomically extend a currently-`RUNNING`, unexpired-lease job's lease.
+
+        A heartbeat for a projector batch still in progress when a single
+        job's Neo4j writes (or a large batch's cumulative time) risk
+        outlasting the lease window it was claimed under -- see
+        `app.modules.graph.worker --loop`. Returns the new
+        `lease_expires_at`, or `None` if the job is not `RUNNING` or its
+        lease had already expired at `now` -- mirrors
+        `evidence_lifecycle.repository.renew_lease`'s identical reasoning:
+        a lease can never be extended past its own expiry, so a legitimate
+        reclaim by another projector run always wins.
+        """
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                sa.update(graph_projection_jobs_table)
+                .where(
+                    graph_projection_jobs_table.c.projection_id == projection_id,
+                    graph_projection_jobs_table.c.status == GraphProjectionJobStatus.RUNNING.value,
+                    graph_projection_jobs_table.c.lease_expires_at >= now,
+                )
+                .values(lease_expires_at=lease_expires_at, updated_at=now)
+            )
+        return lease_expires_at if result.rowcount > 0 else None
+
     async def get_job(self, projection_id: UUID) -> GraphProjectionJobRecord | None:
         async with self._engine.connect() as conn:
             row = (

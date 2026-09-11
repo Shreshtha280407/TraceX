@@ -18,10 +18,18 @@ Self-skips (never fabricates a pass) whenever any of the following is true:
   - (video case only) `ffmpeg`/`ffprobe` are not on `PATH` -- needed to
     build a real synthetic MP4 fixture and to probe it
 
-Only `media_metadata_v1` is exercised here: it is the only processor
-`evidence_lifecycle/routing.py` ever routes a real image/video upload to
-(see `worker.SUPPORTED_PROCESSORS`'s docstring for why `media_detection_v1`
-is proven at the unit level only, via `StaticInputResolver`, not here).
+`evidence_lifecycle/routing.py` routes every real image/video upload to
+`media_detection_v1` (Phase 2 closeout -- see
+`docs/architecture/phase-2-decisions.md`'s "Real local media inference
+closeout"), so that is what this suite claims and asserts on throughout.
+The real detector/OCR components are built exactly as `worker.main` would
+(`_build_analysis_components`) -- when a detector model asset has been
+bootstrapped locally (`bootstrap_models.py`) *and* the live API happens to
+route it to this test process, real detections/OCR observations are
+produced on top of the always-present metadata observation; when it
+hasn't, this degrades to the same metadata-only behavior the pre-closeout
+suite always proved, never a fabricated pass either way. This suite never
+downloads the model itself.
 """
 
 from __future__ import annotations
@@ -75,7 +83,11 @@ from app.modules.graph.repository import Neo4jGraphRepository, create_driver
 from app.modules.media_processing.client import WorkerApiClient
 from app.modules.media_processing.errors import WorkerAuthenticationError
 from app.modules.media_processing.input_resolver import LiveInputResolver
-from app.modules.media_processing.worker import SUPPORTED_PROCESSORS, run_once
+from app.modules.media_processing.worker import (
+    SUPPORTED_PROCESSORS,
+    _build_analysis_components,
+    run_once,
+)
 from tests.fixtures.media_processing.synthetic import (
     ffmpeg_available,
     make_png_bytes,
@@ -89,7 +101,7 @@ ENV_FILE = REPO_ROOT / ".env"
 #: token -- see `test_communication_worker_live.py`'s identical constant
 #: for the full reasoning (this repo's shared dev credential table would
 #: otherwise let whichever suite runs first "win" the scope).
-_MEDIA_WORKER_TOKEN = "dev-only-media-worker-token-change-me-v1"  # noqa: S105
+_MEDIA_WORKER_TOKEN = "dev-only-media-worker-token-change-me-v2"  # noqa: S105
 
 pytestmark = pytest.mark.skipif(
     not ENV_FILE.exists(),
@@ -105,12 +117,20 @@ def _live_settings() -> Settings:
 
 
 def _skip_unless_api_reachable(settings: Settings) -> None:
+    """`/healthz` alone only proves the API *process* is alive -- it says nothing about
+    whether its own dependencies are reachable (e.g. this API process running fine on
+    the host while the Postgres/Neo4j/Redis/MinIO containers it depends on have gone
+    down separately). Checking `/readyz` too means a dependency outage self-skips
+    cleanly here, rather than surfacing as a raw, unhelpful connection `OSError` deep
+    inside this suite's own first real database call."""
     try:
         httpx.get(f"{settings.worker_api_base_url}/healthz", timeout=2.0).raise_for_status()
+        httpx.get(f"{settings.worker_api_base_url}/readyz", timeout=2.0).raise_for_status()
     except httpx.HTTPError as exc:
         pytest.skip(
-            f"live API server not reachable at {settings.worker_api_base_url}: "
-            f"{type(exc).__name__}; start it via `docker compose up --build -d` to run this test"
+            f"live API server or its dependencies not reachable at "
+            f"{settings.worker_api_base_url}: {type(exc).__name__}; start it via "
+            f"`docker compose up --build -d` to run this test"
         )
 
 
@@ -163,7 +183,7 @@ def test_worker_client_against_real_running_api() -> None:
         base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
     )
     try:
-        claim = client.claim(processor_name="media_metadata_v1", processor_version="1.0.0")
+        claim = client.claim(processor_name="media_detection_v1", processor_version="1.0.0")
         assert claim.job is None  # nothing seeded a queued job for this specific check
 
         with pytest.raises(WorkerAuthenticationError):
@@ -174,7 +194,7 @@ def test_worker_client_against_real_running_api() -> None:
 
 def _image_case() -> Any:
     return pytest.param(
-        "image", "image/png", "photo_live_test.png", make_png_bytes(), id="image-media_metadata_v1"
+        "image", "image/png", "photo_live_test.png", make_png_bytes(), id="image-media_detection_v1"
     )
 
 
@@ -185,7 +205,7 @@ def _video_case() -> Any:
             "video/mp4",
             "clip_live_test.mp4",
             b"",
-            id="video-media_metadata_v1",
+            id="video-media_detection_v1",
             marks=pytest.mark.skip(reason="ffmpeg/ffprobe not on PATH; cannot build synthetic mp4"),
         )
     return pytest.param(
@@ -193,7 +213,7 @@ def _video_case() -> Any:
         "video/mp4",
         "clip_live_test.mp4",
         make_synthetic_mp4_bytes(duration_seconds=1.0),
-        id="video-media_metadata_v1",
+        id="video-media_detection_v1",
     )
 
 
@@ -235,7 +255,7 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
         async with ac_engine.begin() as conn:
             await conn.execute(
                 sa.delete(worker_jobs_table).where(
-                    worker_jobs_table.c.processor_name == "media_metadata_v1",
+                    worker_jobs_table.c.processor_name == "media_detection_v1",
                     worker_jobs_table.c.status == "queued",
                 )
             )
@@ -285,14 +305,25 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
             )
             assert upload.status_code == 201, upload.text
             job_id = upload.json()["job"]["job_id"]
-            assert upload.json()["job"]["processor_name"] == "media_metadata_v1"
+            assert upload.json()["job"]["processor_name"] == "media_detection_v1"
 
             # --- real worker: claim -> stream -> SHA-256 verify -> decode/probe -> submit ---
+            # Real analysis components, built exactly as `worker.main` would --
+            # degrades to metadata-only if no detector model asset has been
+            # bootstrapped locally (see the module docstring); never fabricates
+            # detections/OCR either way.
+            components = _build_analysis_components(settings)
             client = WorkerApiClient(
                 base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
             )
             try:
-                outcome = run_once(client=client, input_resolver=LiveInputResolver(client))
+                outcome = run_once(
+                    client=client,
+                    input_resolver=LiveInputResolver(client),
+                    detector=components.detector,
+                    tracker=components.tracker,
+                    ocr=components.ocr,
+                )
             finally:
                 client.close()
 
@@ -306,7 +337,7 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
             assert status_response.status_code == 200
             job_status = status_response.json()
             assert job_status["status"] == "succeeded"
-            assert job_status["processor_name"] == "media_metadata_v1"
+            assert job_status["processor_name"] == "media_detection_v1"
             assert job_status["observation_count"] > 0
 
             # No raw media bytes, object storage URI, or credential ever
@@ -316,9 +347,15 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
             assert "object_uri" not in status_text
             assert settings.worker_token.get_secret_value() not in status_text  # type: ignore[union-attr]
 
-        # --- durable graph-projection job was enqueued exactly once ---
+        # --- durable graph-projection job was enqueued exactly once (per observation) ---
+        # `media_detection_v1` always emits the metadata observation first,
+        # regardless of whether a detector was configured, plus real
+        # detection/OCR/tracking observations on top of it when one was --
+        # this test follows the metadata observation specifically through
+        # projection (proven independent of whether analysis components were
+        # available in this run), not "whichever row sorts first."
         async with ac_engine.begin() as conn:
-            obs_row = (
+            obs_rows = (
                 (
                     await conn.execute(
                         sa.select(worker_observations_table).where(
@@ -327,11 +364,12 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
                     )
                 )
                 .mappings()
-                .first()
+                .all()
             )
-            assert obs_row is not None, "no worker_observations row was persisted"
-            observation_id = obs_row["observation_id"]
-            assert obs_row["observation_type"] == "media_metadata"
+            assert obs_rows, "no worker_observations row was persisted"
+            metadata_rows = [r for r in obs_rows if r["observation_type"] == "media_metadata"]
+            assert len(metadata_rows) == 1, "expected exactly one media_metadata observation"
+            observation_id = metadata_rows[0]["observation_id"]
 
             proj_rows = (
                 (
