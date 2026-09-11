@@ -83,6 +83,14 @@ CONSTRAINT_STATEMENTS: tuple[SchemaStatement, ...] = (
             "FOR (v:Event) REQUIRE (v.case_id, v.event_id) IS UNIQUE"
         ),
     ),
+    SchemaStatement(
+        name="entity_mention_case_mention_unique",
+        kind="constraint",
+        cypher=(
+            "CREATE CONSTRAINT entity_mention_case_mention_unique IF NOT EXISTS "
+            "FOR (m:EntityMention) REQUIRE (m.case_id, m.mention_id) IS UNIQUE"
+        ),
+    ),
 )
 
 INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
@@ -121,6 +129,14 @@ INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
         kind="index",
         cypher=(
             "CREATE INDEX entity_entity_type_idx IF NOT EXISTS FOR (n:Entity) ON (n.entity_type)"
+        ),
+    ),
+    SchemaStatement(
+        name="entity_mention_case_id_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX entity_mention_case_id_idx IF NOT EXISTS "
+            "FOR (m:EntityMention) ON (m.case_id)"
         ),
     ),
 )

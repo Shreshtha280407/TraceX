@@ -83,6 +83,48 @@ uv run pytest tests/integration/graph -v
 
 Like `tests/integration/test_readiness_live.py`, this suite self-skips (never fabricates a pass) if there's no `.env` at the repo root, or if Neo4j specifically isn't reachable through it.
 
+## Graph projection (Phase 2.5 — durable observation-to-Neo4j pipeline)
+
+See `docs/architecture/graph-projection.md` for the full design. After applying the graph schema above and running the usual migration (`uv run alembic upgrade head` — includes `graph_projection_jobs`), accepted worker results automatically enqueue durable projection jobs; nothing further is needed to *create* them. To actually project queued jobs into Neo4j:
+
+```bash
+uv run python -m app.modules.graph.worker --once
+```
+
+Claims and attempts a bounded batch (`GRAPH_PROJECTION_BATCH_SIZE`, default 25), then exits — no daemon exists in this phase; run it again (or wire it into a cron/systemd timer) to process another batch. Exit code `1` means at least one job reached a terminal `failed` state (worth investigating); `0` covers "nothing to do" and "everything succeeded or was safely left retryable."
+
+Inspecting job state directly (`psql`, or any PostgreSQL client):
+
+```sql
+SELECT projection_id, case_id, status, attempt, max_attempts, last_error_code, last_error_message
+FROM graph_projection_jobs
+WHERE status = 'failed'
+ORDER BY updated_at DESC;
+```
+
+Retrying a job that's exhausted its attempts (an operator decision, not automatic): reset it back to `queued` and it becomes claimable on the next `--once` run —
+
+```sql
+UPDATE graph_projection_jobs
+SET status = 'queued', attempt = 0, last_error_code = NULL, last_error_message = NULL
+WHERE projection_id = '<uuid>';
+```
+
+Reading the projected graph safely (never raw Cypher, never an object URI):
+
+```bash
+curl http://localhost:8000/api/v1/cases/<case_id>/graph/observations \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Running the graph-projection test suites specifically:
+
+```bash
+uv run pytest tests/unit/graph tests/security/graph -v                       # no live infra needed
+uv run pytest tests/integration/graph/test_outbox_repository_live.py -v      # needs postgres; self-skips otherwise
+uv run pytest tests/integration/graph/test_full_pipeline_live.py -v          # needs postgres + minio + neo4j + a running API server
+```
+
 ## Document/structured-data processing
 
 `app/modules/structured_processing/` (see `docs/architecture/document-and-structured-processing-v1.md`, `docs/architecture/parser-profiles-v1.md`) needs no live infrastructure at all — every test is a deterministic unit test against in-memory or local-file bytes:
@@ -208,6 +250,8 @@ from app.modules.communication_processing.worker import process_job
 # construct a WorkerJobV1 (see tests/fixtures/communication_processing/factory.py),
 # then: process_job(job, AudioMetadataInput(filename="evidence.wav", data=your_wav_bytes))
 ```
+
+All seven `communication_processing` processor profiles are reachable through a real `POST /api/v1/cases/{case_id}/evidence` upload: `source_type=audio` → `audio_metadata_v1`, `chat` → `generic_social_json_v1` (both since Phase 1), and (Phase 2 routing fix) `audio_transcript` → `transcript_import_v1`, `audio_diarization` → `diarization_import_v1`, `whatsapp_chat` → `whatsapp_export_v1`, `telegram_chat` → `telegram_export_v1`, `instagram_chat` → `instagram_export_v1` — see `docs/architecture/evidence-lifecycle.md`'s routing table. This repository has no worker CLI that claims and processes these jobs yet (see `docs/qa/known-limitations.md`); the routing fix only makes the job itself creatable with the correct `processor_name`.
 
 ## Video/image processing
 

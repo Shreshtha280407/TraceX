@@ -23,7 +23,9 @@ from uuid import UUID
 from app.modules.graph.errors import GraphNotFoundError, GraphValidationError
 from app.modules.graph.models import (
     CaseGraphSummary,
+    CaseObservationsPage,
     EntityEventsPage,
+    EntityMentionNode,
     EntityNode,
     EventNode,
     EventWithParticipants,
@@ -31,6 +33,7 @@ from app.modules.graph.models import (
     EvidenceProvenance,
     ObservationNode,
     ObservationProvenance,
+    ObservationWithMentions,
     SourceLocatorRef,
 )
 from app.modules.graph.repository import Neo4jGraphRepository
@@ -126,6 +129,17 @@ def _observation_node_from_props(props: Mapping[str, Any]) -> ObservationNode:
         extractor_version=props["extractor_version"],
         extractor_config_hash=props["extractor_config_hash"],
         extractor_model_version=props["extractor_model_version"],
+    )
+
+
+def _entity_mention_node_from_props(props: Mapping[str, Any], ordinal: int) -> EntityMentionNode:
+    return EntityMentionNode(
+        mention_id=UUID(props["mention_id"]),
+        case_id=UUID(props["case_id"]),
+        observation_id=UUID(props["observation_id"]),
+        mention_type=props.get("mention_type"),
+        display_label=props["display_label"],
+        ordinal=ordinal,
     )
 
 
@@ -315,4 +329,71 @@ async def get_entity_events(
         limit=limit,
         offset=offset,
         has_more=len(rows) > limit,
+    )
+
+
+async def list_case_observations(
+    repository: Neo4jGraphRepository,
+    case_id: UUID,
+    limit: int = DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> CaseObservationsPage:
+    """One bounded, stable-ordered page of a case's `Observation`s, each with its mentions.
+
+    The backing read view for `GET /api/v1/cases/{case_id}/graph/observations`
+    -- returns only the safe projected graph view (allow-listed `Observation`
+    properties plus evidence-local `EntityMention`s, ordinal-ordered); never
+    an object URI, raw evidence body, or anything not already subject to
+    `projection.py`'s own allow-lists. Ordered by `observation_id` (stable,
+    not insertion-order-dependent) so repeated pagination never skips or
+    duplicates a row even if new observations are projected between pages.
+    """
+    case_id = _ensure_case_id(case_id)
+    limit = _ensure_limit(limit)
+    offset = _ensure_offset(offset)
+
+    page_query = (
+        "MATCH (o:Observation {case_id: $case_id}) "
+        "RETURN o AS observation "
+        "ORDER BY o.observation_id "
+        "SKIP $offset LIMIT $fetch_limit"
+    )
+    rows = await repository.read(
+        page_query, {"case_id": str(case_id), "offset": offset, "fetch_limit": limit + 1}
+    )
+    page_rows = rows[:limit]
+    has_more = len(rows) > limit
+
+    observation_ids = [row["observation"]["observation_id"] for row in page_rows]
+    mentions_by_observation: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
+    if observation_ids:
+        mentions_query = (
+            "MATCH (o:Observation {case_id: $case_id})"
+            "-[r:MENTIONS]->(m:EntityMention {case_id: $case_id}) "
+            "WHERE o.observation_id IN $observation_ids "
+            "RETURN o.observation_id AS observation_id, m AS mention, r.ordinal AS ordinal "
+            "ORDER BY o.observation_id, r.ordinal"
+        )
+        mention_rows = await repository.read(
+            mentions_query, {"case_id": str(case_id), "observation_ids": observation_ids}
+        )
+        for mention_row in mention_rows:
+            mentions_by_observation.setdefault(mention_row["observation_id"], []).append(
+                (mention_row["ordinal"], mention_row["mention"])
+            )
+
+    items = tuple(
+        ObservationWithMentions(
+            observation=_observation_node_from_props(row["observation"]),
+            mentions=tuple(
+                _entity_mention_node_from_props(props, ordinal)
+                for ordinal, props in mentions_by_observation.get(
+                    row["observation"]["observation_id"], []
+                )
+            ),
+        )
+        for row in page_rows
+    )
+    return CaseObservationsPage(
+        case_id=case_id, items=items, limit=limit, offset=offset, has_more=has_more
     )

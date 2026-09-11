@@ -43,3 +43,20 @@ def test_evidence_record_accepts_phase_2_3_structured_source_types(
 ) -> None:
     """Phase 2.3: additive enum values -- every pre-existing value stays valid too."""
     assert_roundtrips(make_evidence_record(source_type=source_type))
+
+
+@pytest.mark.parametrize(
+    "source_type",
+    [
+        SourceType.AUDIO_TRANSCRIPT,
+        SourceType.AUDIO_DIARIZATION,
+        SourceType.WHATSAPP_CHAT,
+        SourceType.TELEGRAM_CHAT,
+        SourceType.INSTAGRAM_CHAT,
+    ],
+)
+def test_evidence_record_accepts_phase_2_communication_routing_source_types(
+    source_type: SourceType,
+) -> None:
+    """Phase 2 routing fix: additive enum values -- every pre-existing value stays valid too."""
+    assert_roundtrips(make_evidence_record(source_type=source_type))

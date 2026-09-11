@@ -124,11 +124,20 @@ def test_every_processor_succeeds_end_to_end() -> None:
         ),
     ]
 
-    audio_processors = {"audio_metadata_v1", "transcript_import_v1", "diarization_import_v1"}
+    source_types_by_processor = {
+        "audio_metadata_v1": SourceType.AUDIO,
+        "transcript_import_v1": SourceType.AUDIO_TRANSCRIPT,
+        "diarization_import_v1": SourceType.AUDIO_DIARIZATION,
+        "whatsapp_export_v1": SourceType.WHATSAPP_CHAT,
+        "telegram_export_v1": SourceType.TELEGRAM_CHAT,
+        "instagram_export_v1": SourceType.INSTAGRAM_CHAT,
+        "generic_social_json_v1": SourceType.CHAT,
+    }
 
     for processor_name, payload in cases:
-        source_type = SourceType.AUDIO if processor_name in audio_processors else SourceType.CHAT
-        job = make_job(processor_name=processor_name, source_type=source_type)
+        job = make_job(
+            processor_name=processor_name, source_type=source_types_by_processor[processor_name]
+        )
         result = process_job(job, payload)  # type: ignore[arg-type]
         assert result.status == WorkerStatus.SUCCEEDED, (processor_name, result.error)
         assert result.observations, processor_name

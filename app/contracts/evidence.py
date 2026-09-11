@@ -32,6 +32,24 @@ class SourceType(StrEnum):
     `structured_processing`'s existing `generic_tabular_v1`/
     `generic_json_v1` fallback profiles — see
     `docs/architecture/evidence-lifecycle.md`.
+
+    `AUDIO_TRANSCRIPT`/`AUDIO_DIARIZATION`/`WHATSAPP_CHAT`/`TELEGRAM_CHAT`/
+    `INSTAGRAM_CHAT` (Phase 2 routing fix) are the same kind of additive,
+    backward-compatible extension, for the same reason: `AUDIO` and `CHAT`
+    each map to exactly one processor (`audio_metadata_v1`/
+    `generic_social_json_v1`), and `communication_processing`'s other five
+    profiles (`transcript_import_v1`, `diarization_import_v1`,
+    `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1`) —
+    fully implemented and unit-tested since Phase 1 — had no `source_type`
+    a real upload could ever route to. Three of the five (`telegram`/
+    `instagram`/generic chat) all consume `application/json`, so they
+    cannot share one source type's content-type set unambiguously the way
+    `STRUCTURED_TABULAR`/`STRUCTURED_JSON` could — each gets its own
+    explicit, disjoint `source_type` instead of a client-supplied "which
+    parser" hint, consistent with this codebase's existing rule that a
+    client never gets to choose its own processor/profile. See
+    `docs/architecture/evidence-lifecycle.md`'s routing table and
+    `docs/architecture/phase-2-decisions.md`.
     """
 
     DOCUMENT = "document"
@@ -43,6 +61,11 @@ class SourceType(StrEnum):
     CHAT = "chat"
     STRUCTURED_TABULAR = "structured_tabular"
     STRUCTURED_JSON = "structured_json"
+    AUDIO_TRANSCRIPT = "audio_transcript"
+    AUDIO_DIARIZATION = "audio_diarization"
+    WHATSAPP_CHAT = "whatsapp_chat"
+    TELEGRAM_CHAT = "telegram_chat"
+    INSTAGRAM_CHAT = "instagram_chat"
     OTHER = "other"
 
 

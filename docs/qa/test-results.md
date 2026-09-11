@@ -1345,3 +1345,201 @@ Result: **pass** — every new audit event type this phase adds is a real row in
 Both bugs were latent in test-only code paths that had never actually been exercised live before this session (the two live test files self-skip without a real `.env`/`WORKER_TOKEN`, so they had never run for real in prior CI or dev sessions) — confirming the value of this task's explicit instruction to run the real worker-security lifecycle against a running stack rather than trust the self-skip. The application code itself (`require_worker_principal`, `hash_worker_credential`, digest lookup, processor scoping, audit recording) was correct on the very first live check, verified independently via direct `curl`/CLI commands before either test-helper bug was even found.
 
 Docker stack was left running after this session (not torn down) so the live-verified state remains inspectable; `docker compose down` cleanly removes it when no longer needed (named volumes are preserved either way).
+
+## 2026-09-11 — Shreshtha — Phase 2.5 canonical observation-to-Neo4j graph projection, plus a communication-processing routing fix
+
+Environment: local dev machine, branch `shreshtha` (based on `05897b0`, the tip shared with `origin/main` before Aditya's Phase 2.4 and Sarthak's Phase 2 diverged further). Docker reachable; the stack from a prior session in this same environment was already running and was reused/rebuilt in place.
+
+```bash
+$ uv run ruff format --check .
+276 files already formatted
+```
+Result: **pass** (baseline, before this task's edits).
+
+Throughout implementation, `ruff format`/`ruff check`/`mypy app` were re-run after every file group; two real, minor issues were caught and fixed immediately:
+- `F821 Undefined name 'UUID'` in a test file that used `UUID` in a type annotation without importing it (fixed: added the import).
+- A regex-based Cypher-relationship-token test (`_RELATIONSHIP_TOKEN_PATTERN`) didn't match `[r:MENTIONS]` (a *bound* relationship variable, needed only because `MENTIONS.ordinal` is set after the `MERGE`) — every other relationship in this module is unbound (`[:HAS_EVIDENCE]`). Fixed by widening the pattern to `\[\w*:([A-Z_]+)\]`, which still exhaustively covers both valid forms.
+
+```bash
+$ uv run mypy app
+Success: no issues found in 127 source files
+```
+Result: **pass** (final, after all edits).
+
+```bash
+$ uv run alembic heads
+a204a94ccd49 (head)          # after adding the graph_projection_jobs migration
+ed593db47d8c (head)          # after adding the communication-routing migration
+```
+Result: **pass** — both new migrations chain correctly on top of the existing live chain, applied cleanly against real PostgreSQL (`uv run alembic upgrade head`, confirmed via `\d graph_projection_jobs` and `\d evidence_records`'s widened `ck_evidence_records_source_type` showing all five new values).
+
+```bash
+$ uv run pytest -q
+1173 passed in 26.88s
+```
+Result: **pass** — full suite, live infrastructure, zero skips. Stable across three consecutive full-suite runs (1157 passed before the routing-fix tests were added; 1173 after).
+
+### Graph-projection-specific test runs
+
+```bash
+$ uv run pytest tests/unit/graph/ -q
+94 passed in 0.09s
+```
+
+```bash
+$ uv run pytest tests/integration/graph/test_outbox_repository_live.py -v
+9 passed in 5.33s
+```
+Result: **pass (live)** — real `FOR UPDATE SKIP LOCKED` concurrency safety (two genuinely concurrent `claim_batch` calls via `asyncio.gather` never double-claimed any of 4 seeded jobs), real lease-expiry reclaim with `attempt` incremented, real retry exhaustion leaving a job durably `failed`, and the crash-recovery sweep for a `running` row whose lease expired with no attempts remaining — all against genuine PostgreSQL, not fakes.
+
+```bash
+$ uv run pytest tests/integration/graph/test_full_pipeline_live.py -v
+1 passed in 0.59s
+```
+Result: **pass (live)** — the complete real path: upload → authenticated worker claim → secure evidence stream (`GET .../input`, byte-identical) → worker result with a canonical `ObservationV1` (including one `ExtractedEntityMention`) → a real, queued `graph_projection_jobs` row confirmed by direct SQL query → `app.modules.graph.projector.run_batch` (the `--once` CLI's own function, called in-process) → both a real Neo4j query (`list_case_observations`) and the real `GET /api/v1/cases/{case_id}/graph/observations` HTTP endpoint confirmed the projected `Observation` and its `EntityMention` (`display_label="Alpha Corp"`, `mention_type="organisation"`).
+
+### Two real bugs caught during this session's live testing (both in this task's own new code, fixed before this record)
+
+- **The API container was still running the pre-Phase-2.5 image.** The first live run of the full pipeline test found `no durable graph_projection_jobs row was enqueued` after a genuine `200` result submission — not a code bug, but a stale container: `docker compose up --build -d` had not yet been re-run since this session's code changes, so the live server was still executing the old `submit_result` (no enqueue logic). Rebuilding (`docker compose up --build -d`) resolved it immediately; all 5 services came back healthy on the first attempt.
+- **Cross-test orphaned-row pollution.** Once the container was rebuilt, `run_batch`'s `claim_batch` call in the full-pipeline test picked up *other* live tests' `graph_projection_jobs` rows (every accepted worker result across the whole suite now enqueues one, unconditionally) whose own `worker_observations`/`evidence_records` rows those other tests had already cleaned up in their own `finally` blocks — a genuine but harmless side effect of adding an unconditional enqueue to a shared code path, not a defect in the enqueue/claim/projector logic itself. Fixed in the test (not the application) two ways: (1) the full-pipeline test's own assertions were narrowed to check only its own job's outcome rather than the whole batch's aggregate counts, since a shared live database legitimately holds other tests' state; (2) the test now sweeps orphaned `graph_projection_jobs` rows (rows whose `observation_id` has no matching `worker_observations` row) before running its own batch, so its own freshly-enqueued job is reliably reached within the bounded `claim_batch` batch size. Verified stable across three consecutive full-suite runs after the fix.
+
+### Manual smoke test: the graph projector CLI itself
+
+```bash
+$ uv run python -m app.modules.graph.worker --help
+usage: python -m app.modules.graph.worker [-h] --once
+...
+```
+Result: **pass** — CLI wiring/argument parsing confirmed independent of the automated test suite.
+
+### Communication-processing routing fix: live verification
+
+```bash
+$ docker compose exec postgres psql -U tracex -d tracex -c "\d evidence_records" | grep ck_evidence_records_source_type
+"ck_evidence_records_source_type" CHECK (source_type = ANY (ARRAY['document'::text, 'cdr'::text, 'financial'::text, 'video'::text, 'image'::text, 'audio'::text, 'chat'::text, 'structured_tabular'::text, 'structured_json'::text, 'audio_transcript'::text, 'audio_diarization'::text, 'whatsapp_chat'::text, 'telegram_chat'::text, 'instagram_chat'::text, 'other'::text]))
+```
+Result: **pass** — the widened constraint is live.
+
+A real script (register user, login, create case+membership, upload once per new `source_type` via the real running API) produced, for every one of the five new source types, a real `HTTP 201` and a real `worker_jobs` row with the exact expected `processor_name`:
+
+```text
+audio_transcript     -> HTTP 201, processor='transcript_import_v1'    OK
+audio_diarization    -> HTTP 201, processor='diarization_import_v1'   OK
+whatsapp_chat        -> HTTP 201, processor='whatsapp_export_v1'      OK
+telegram_chat        -> HTTP 201, processor='telegram_export_v1'      OK
+instagram_chat       -> HTTP 201, processor='instagram_export_v1'     OK
+```
+
+All test/case/evidence/job rows created by this manual script were cleaned up directly afterward via the same script.
+
+```bash
+$ uv run pytest tests/unit/evidence_lifecycle/test_communication_routing.py -v
+11 passed in 0.70s
+```
+Result: **pass** — valid routing for all 5 new source types, cross-MIME rejection for 3 of them, idempotent replay, client-cannot-override-processor, and cross-case isolation.
+
+```bash
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -s http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+```
+Result: **pass** — both confirmed against the fully rebuilt, fully containerized stack, after all of this session's changes.
+
+### Final live smoke: the actual `--once` CLI subprocess, not the in-process test function
+
+```bash
+$ uv run python -m app.modules.graph.worker --once
+```
+Run as a genuine subprocess (not the in-process `run_batch` call the automated tests use) against a freshly submitted worker result on the live stack:
+```json
+{"claimed": 7, "succeeded": 1, "failed": 6, "retrying": 0, "deferred": 0, "event": "graph.worker.run_completed", ...}
+```
+Result: **pass** — the CLI's own job succeeded (confirmed by name via the read API below); the 6 `failed` were pre-existing orphaned rows from this session's own earlier manual smoke scripts (not from the automated suite, which self-cleans), cleaned up afterward with `DELETE FROM graph_projection_jobs WHERE status = 'failed'`.
+
+```bash
+$ curl http://localhost:8000/api/v1/cases/<case_id>/graph/observations -H "Authorization: Bearer <token>"
+```
+Returned the real projected observation with its mention: `{"mention_id": "39a8ac7a-...", "mention_type": "organisation", "display_label": "CLI Smoke Corp", "ordinal": 0}` — confirmed via both this HTTP call and a direct Neo4j query.
+
+Final full-suite re-run after this cleanup: `uv run pytest -q` → **1173 passed**, zero skips. `git status --short` confirms only file modifications (46 files touched/added), no commits, still on branch `shreshtha`.
+
+Docker stack left running after this session (not torn down); `docker compose down` removes it cleanly whenever wanted.
+
+## 2026-09-11 — Shreshtha — Origin/main integration and real end-to-end verification of the communication-processing routing fix
+
+The previous section's "Communication-processing routing fix: live verification" proved that a real upload reached the correct `processor_name` — it did **not** run the real `communication_processing` worker, because `shreshtha`'s branch tip at that time predated `origin/main`'s merge of Sarthak's Phase 2 `communication_processing` worker build. Per explicit instruction, that gap was closed rather than left implied: HEAD was verified to lack the worker (`git log --oneline -- app/modules/communication_processing` on the pre-integration tip showed nothing), `origin/main` (`0bf0ff2`) was confirmed to be a fast-forward from the then-current tip (`git merge-base --is-ancestor HEAD origin/main`), local uncommitted work was `git stash push -u`'d, the fast-forward was applied (`git merge origin/main`, no merge commit), and the stash was popped back — with four documentation files' overlapping edits resolved manually. See `docs/progress/mvp-progress.md`'s "Origin/main integration" section for the full git-safety writeup.
+
+### A second, deeper bug found only by running the real worker
+
+Running the real `communication_processing` worker `--once` CLI against a real uploaded job (not just checking `processor_name` on the upload response) immediately failed all five new source types with `unsupported_source_type`:
+
+```text
+code='unsupported_source_type' message="profile 'transcript_import_v1' requires source_type=audio"
+```
+
+Cause: `communication_processing/worker.py`'s own `_validate_source_type` function performed a second, independent source-type check, still written against the old group-based scheme (`SourceType.AUDIO` for all three audio profiles, `SourceType.CHAT` for all four chat profiles) that predated the routing fix's five new, disjoint source types. The routing table (`evidence_lifecycle/routing.py`) was already correctly selecting the right processor — the worker's own internal gate was the problem, and it could only be found by actually running the worker end to end.
+
+Fixed with an exact `_PROFILE_REQUIRED_SOURCE_TYPES: dict[str, SourceType]` mapping (one entry per processor profile), replacing the two group checks. No parsing logic, dispatch table, or other worker behavior was touched. This is a real, narrow change to Sarthak's `communication_processing/worker.py`, made only because real end-to-end verification required it.
+
+Eleven pre-existing tests in that module had fixtures built against the old group-based assumption and needed their `source_type` arguments corrected to match the profile under test:
+
+```bash
+$ uv run pytest tests/unit/communication_processing/ tests/integration/communication_processing/ -q
+# before the fix: 11 failed, 258 passed
+# after fixing worker.py and the 11 tests' source_type fixtures:
+269 passed in 1.33s
+```
+
+### Full real end-to-end run, live, all five new source types
+
+A script (register user, login, create case+membership, create a worker credential scoped to all 7 processor names, upload once per new source type via the real running API, run the real `communication_processing.worker --once` CLI as a genuine subprocess once per job, run the real `graph.worker --once` CLI, then confirm via both a direct Postgres/Neo4j query and the real `GET /api/v1/cases/{case_id}/graph/observations` HTTP endpoint) produced:
+
+```text
+UPLOAD  audio_transcript     -> job c6f1c750-... processor=transcript_import_v1
+UPLOAD  audio_diarization    -> job ddbf7cab-... processor=diarization_import_v1
+UPLOAD  whatsapp_chat        -> job 4d9f5cb6-... processor=whatsapp_export_v1
+UPLOAD  telegram_chat        -> job 73748f68-... processor=telegram_export_v1
+UPLOAD  instagram_chat       -> job 7f6d5801-... processor=instagram_export_v1
+
+WORKER  audio_transcript     -> exit=0, status=succeeded
+WORKER  audio_diarization    -> exit=0, status=succeeded
+WORKER  whatsapp_chat        -> exit=0, status=succeeded
+WORKER  telegram_chat        -> exit=0, status=succeeded
+WORKER  instagram_chat       -> exit=0, status=succeeded
+
+RESULT  audio_transcript     -> job_status=succeeded observations=1
+RESULT  audio_diarization    -> job_status=succeeded observations=1
+RESULT  whatsapp_chat        -> job_status=succeeded observations=1
+RESULT  telegram_chat        -> job_status=succeeded observations=1
+RESULT  instagram_chat       -> job_status=succeeded observations=1
+
+GRAPH   audio_transcript     observation_id=98123665-... projected=True
+GRAPH   audio_diarization    observation_id=028493dc-... projected=True
+GRAPH   whatsapp_chat        observation_id=fc21f7df-... projected=True
+GRAPH   telegram_chat        observation_id=5225a90a-... projected=True
+GRAPH   instagram_chat       observation_id=091daec1-... projected=True
+
+ALL 5 SOURCE TYPES VERIFIED END-TO-END SUCCESSFULLY
+```
+
+Result: **pass** — every one of the five new source types was proven, live, through the complete real chain: upload → server-selected processor → real worker claim/input/result → persisted `ObservationV1` → real graph projection, confirmed by both direct database/graph queries and the real HTTP read API.
+
+The graph-projector run surfaced 6 unrelated `failed` rows (`observation_not_found`) from a full `uv run pytest -q` run performed earlier in this same session — pre-existing cross-test pollution (documented in the Phase 2.5 section above: an accepted result unconditionally enqueues a projection job, and another integration test's own teardown had already deleted the underlying observation before this run's projector swept it up). Not related to this session's 5 verified jobs, which projected cleanly on the first pass. Swept up as part of this session's cleanup.
+
+### Cleanup and final state
+
+All data created by this verification run was removed afterward: the case, user, worker credential, 5 evidence records, 5 worker jobs, 5 worker results, and their Neo4j nodes (confirmed via direct query: `MATCH (n) RETURN count(n)` → `0` in the case-scoped subgraph). One further orphaned case (from an earlier run of the same debug script, made before the `_validate_source_type` fix, whose script had exited before reaching its own cleanup step) was found and removed in the same pass, along with the 6 unrelated orphaned `graph_projection_jobs` rows described above.
+
+Full re-verification after all fixes:
+
+```bash
+$ uv run ruff format --check .   # 297 files already formatted
+$ uv run ruff check .            # All checks passed!
+$ uv run mypy app                # Success: no issues found in 129 source files
+$ uv run pytest -q               # 1226 passed
+```
+
+(One transient failure was observed on a single full-suite run — `tests/integration/media_processing/test_video_pipeline.py::test_temporary_artifacts_are_cleaned_up`, asserting no stray files under `tempfile.gettempdir()` — caused by an unrelated `/tmp/runc-process*` file dropped by the container runtime itself during a full-suite run, not by any code touched in this session. It passed in isolation and on an immediate full-suite re-run; flagged here for completeness, not treated as a regression.)
+
+`git status --short` at the end of this session shows only working-tree modifications (no staged files, no commits, no branch switch) — HEAD is at `0bf0ff2` (the fast-forwarded `origin/main` tip) plus this session's uncommitted changes, still on branch `shreshtha`. Docker stack left running, all test data removed.

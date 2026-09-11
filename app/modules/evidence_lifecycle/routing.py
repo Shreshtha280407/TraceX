@@ -69,6 +69,16 @@ SOURCE_TYPE_CONTENT_TYPES: dict[SourceType, frozenset[str]] = {
         {"text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
     ),
     SourceType.STRUCTURED_JSON: frozenset({"application/json"}),
+    # Phase 2 routing fix: `communication_processing`'s five other profiles,
+    # fully implemented since Phase 1 but previously unreachable via a real
+    # upload -- see the `SourceType` docstring. `AUDIO`/`CHAT` above are
+    # unchanged; these are new, disjoint source types, not new content
+    # types layered onto the existing ones.
+    SourceType.AUDIO_TRANSCRIPT: frozenset({"application/json"}),
+    SourceType.AUDIO_DIARIZATION: frozenset({"application/json"}),
+    SourceType.WHATSAPP_CHAT: frozenset({"text/plain"}),
+    SourceType.TELEGRAM_CHAT: frozenset({"application/json"}),
+    SourceType.INSTAGRAM_CHAT: frozenset({"application/json"}),
 }
 
 #: `source_type` -> the processor a durable `WorkerJobV1` is routed to. One
@@ -91,6 +101,15 @@ ROUTING: dict[SourceType, ProcessorRoute] = {
     # a real upload -- see docs/architecture/structured-processing-worker.md).
     SourceType.STRUCTURED_TABULAR: ProcessorRoute("generic_tabular_v1", "1.0.0"),
     SourceType.STRUCTURED_JSON: ProcessorRoute("generic_json_v1", "1.0.0"),
+    # Phase 2 routing fix: reaches communication_processing's existing
+    # (Phase 1, unit-tested, previously upload-unreachable) profiles -- see
+    # docs/architecture/audio-social-and-communication-processing-v1.md and
+    # docs/architecture/phase-2-decisions.md.
+    SourceType.AUDIO_TRANSCRIPT: ProcessorRoute("transcript_import_v1", "1.0.0"),
+    SourceType.AUDIO_DIARIZATION: ProcessorRoute("diarization_import_v1", "1.0.0"),
+    SourceType.WHATSAPP_CHAT: ProcessorRoute("whatsapp_export_v1", "1.0.0"),
+    SourceType.TELEGRAM_CHAT: ProcessorRoute("telegram_export_v1", "1.0.0"),
+    SourceType.INSTAGRAM_CHAT: ProcessorRoute("instagram_export_v1", "1.0.0"),
 }
 
 

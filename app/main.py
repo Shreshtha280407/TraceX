@@ -30,6 +30,7 @@ from app.modules.access_control.api import router as auth_router
 from app.modules.evidence_lifecycle.api import router as evidence_router
 from app.modules.evidence_lifecycle.dependencies import get_object_storage
 from app.modules.evidence_lifecycle.internal_api import router as worker_jobs_router
+from app.modules.graph.api import router as graph_router
 
 logger = structlog.get_logger(__name__)
 
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(evidence_router)
     application.include_router(worker_jobs_router)
+    application.include_router(graph_router)
     return application
 
 
