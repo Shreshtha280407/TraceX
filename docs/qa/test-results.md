@@ -2,6 +2,65 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Jasraj — Phase 2: Structured-Processing Worker build
+
+Environment: same sandbox as the Nipun Phase 2.1 build below, Python 3.12.13 (via `uv`). Branch `jasraj`, working tree already matched `origin/main` (no rebase needed). Inspected the merged `evidence_lifecycle` internal worker API (`internal_api.py`, `schemas.py`, `routing.py`), `structured_processing`'s existing Phase 1 `process_job`/`models.py`/`provenance.py`/`structured/profiles.py`, and `docs/architecture/worker-job-lifecycle.md` before designing anything. Confirmed via inspection (not assumption) that no endpoint exists for a worker to fetch a claimed job's evidence bytes/metadata — the "Input-access boundary" documented in `docs/architecture/structured-processing-worker.md`.
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 1ms
+Checked 65 packages in 0.56ms
+```
+Result: **pass**. One new runtime dependency: `httpx` (`uv add httpx`), promoted from dev-only to a runtime dependency of `pyproject.toml`'s `[project.dependencies]` — a production worker process needs an HTTP client at runtime, not just in tests. Removed the now-redundant `httpx>=0.27.2` pin from `[dependency-groups.dev]`.
+
+```bash
+$ uv run ruff format --check .
+265 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 120 source files
+```
+Result: **pass**, all three.
+
+```bash
+$ uv run pytest -q
+979 passed, 24 skipped in 19.59s
+```
+Result: **pass**, no regressions. New this build: `tests/unit/structured_processing/test_worker_client.py` (12), `tests/unit/structured_processing/test_worker_orchestration.py` (8), one new Markdown-classification test in `test_classifier.py`, and `tests/integration/structured_processing/test_worker_live.py` (1, self-skips without a live server — see below). The 24 skips are every self-skipping `tests/integration/*` suite in this repository (no live PostgreSQL/Neo4j/Redis/MinIO/API server reachable this session — see the Docker section below).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0) — validates the new `WORKER_API_BASE_URL` passthrough on the `api` service; no other service definition changed.
+
+```bash
+$ docker context ls
+$ docker info
+$ sudo -n systemctl start docker
+sudo: a password is required
+```
+Result: **blocked, not fabricated**. Docker itself is unavailable in this sandbox session: the active `desktop-linux` context's socket (`/home/nipun/.docker/desktop/docker.sock`) does not exist, the systemd `docker.service` is `inactive`, and starting it requires an interactive `sudo` password this session does not have. `docker compose up --build -d` — the required next verification command — could not be run as a result. This is an environment property of this particular sandbox run, not a code or configuration problem (`docker compose config` above proves the compose file itself is valid); a prior session in this same repository (see the Phase 2 entry above) *did* have Docker available. Per this task's explicit "do not fabricate live integration success" instruction, no Docker/live-stack verification is claimed below — only what was actually run.
+
+```bash
+$ uv run pytest tests/integration/structured_processing/test_worker_live.py -v -rs
+tests/integration/structured_processing/test_worker_live.py::test_worker_client_against_real_running_api SKIPPED
+SKIPPED [1] tests/integration/structured_processing/test_worker_live.py:68: live API server not reachable at http://localhost:8000: ConnectError; start it via `docker compose up --build -d` to run this test
+1 skipped in 0.04s
+```
+Result: **pass (correct self-skip)** — proves the test's own honesty mechanism works: given a real `.env` (present in this sandbox) but no reachable server, it skips with a precise, actionable reason rather than reporting a false pass. This is the exact scenario 19 outcome the task anticipated for a session where "the approved input-stream capability is absent or Docker unavailable."
+
+```bash
+$ uv run python -m app.modules.structured_processing.worker --once
+{"event": "worker.run_once.started", "run_id": "e60671e8-...", "level": "info", "timestamp": "..."}
+{"processor_name": "fir_report_text_v1", "processor_version": "1.0.0", "event": "worker.client.claim_attempted", "run_id": "e60671e8-...", "level": "info", "timestamp": "..."}
+{"reason": "request to /api/v1/internal/worker-jobs/claim failed: ConnectError", "event": "worker.cli.failed", "level": "error", "timestamp": "..."}
+EXIT:1
+```
+Result: **pass (correct safe failure)** — a real, unmocked run of the CLI entry point (argument parsing, structlog configuration, settings loading, client construction, the real claim attempt) against the genuinely-unreachable API. Exits `1` cleanly with a safe, structured, secret-free error — no raw traceback, no `WORKER_SHARED_SECRET`, no stack trace. This is not a substitute for the blocked full Docker/live run above; it is real evidence the CLI's own error handling is correct under the one failure mode this sandbox could actually exercise.
+
+**Blocked verification, stated explicitly**: `docker compose up --build -d` and the full claim -> resolve -> parse -> submit live path against a real running stack (the final required-verification step, and integration scenario 19's "complete path" variant) could not be attempted this session because Docker itself is unavailable in this sandbox (see above) — not because of anything in this worker's code. Whoever next has Docker available in this environment should run: `docker compose up --build -d`, wait for all five services healthy, then `uv run python -m app.modules.structured_processing.worker --once` against the running stack — expected outcome is a claimed-then-`DEFERRED` result (checkpoint `input_resolution_unavailable`) for any real queued job, since the proposed input-access endpoint (`docs/architecture/structured-processing-worker.md`) still does not exist; a `SUCCEEDED` parse is not achievable until that endpoint is added.
+
 ## 2026-09-11 — Nipun — Phase 2.1: Worker Job Claim and Result-Submission Integration build
 
 Environment: same sandbox as the build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3. Branch `nipun`; working tree was clean and `git log` showed the local `nipun` branch (`95023e3 Completed nipun/phase-2`) and `origin/main` (`fac9f54 Completed nipun/phase-2 (#10)`) had each independently advanced by one equivalent commit past their common ancestor — the same Phase 2 work, committed on both sides separately; not touched further, per instruction to work only on `nipun` without altering history. Inspected the merged Phase 2 evidence-lifecycle code, `access_control`'s token-generation/hashing pattern, and the frozen `WorkerJobV1`/`WorkerResultV1`/`ObservationV1` contracts before designing anything.

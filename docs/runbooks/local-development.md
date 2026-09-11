@@ -101,6 +101,27 @@ from app.modules.structured_processing.worker import process_job
 # then: process_job(job, evidence, StaticBytesResolver(payload=your_bytes))
 ```
 
+### Structured-processing worker CLI (Phase 2 — Jasraj)
+
+See `docs/architecture/structured-processing-worker.md` for the full design, including the documented input-access boundary this worker currently defers on. The worker needs the API's internal endpoints reachable and `WORKER_SHARED_SECRET` configured (same variable Phase 2.1's internal API already requires):
+
+```bash
+docker compose up -d postgres redis minio
+uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
+uv run python -m app.modules.structured_processing.worker --once
+```
+
+`--once` is the only supported mode — it claims at most one compatible queued job, processes it, submits the result, and exits. There is no daemon or polling loop; run it again to attempt another job. Against today's stack, a real claimed job always ends in a `DEFERRED` result with checkpoint `input_resolution_unavailable`, since no endpoint yet exists for a worker to fetch a claimed job's evidence bytes — this is expected, documented behavior, not a bug (see the architecture doc's "Input-access boundary" section).
+
+Running its test suites specifically:
+
+```bash
+uv run pytest tests/unit/structured_processing -v         # no live infra needed
+uv run pytest tests/integration/structured_processing -v  # local-file pipeline test, plus a self-skipping live-API check
+```
+
+`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_SHARED_SECRET` isn't configured — same pattern as every other `tests/integration/*` suite in this repo.
+
 ## Authentication and case-scoped access control
 
 `app/modules/access_control/` (see `docs/architecture/access-control-v1.md`, `docs/architecture/security-boundaries-v1.md`) needs PostgreSQL (users/sessions/case data) and Redis (login/refresh rate limiting):

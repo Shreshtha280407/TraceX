@@ -18,6 +18,8 @@ Phase 2 (`app/modules/evidence_lifecycle/`) adds the real, case-scoped **evidenc
 
 Phase 2.1 (in progress, same module) adds the **worker claim and result-submission** half of the lifecycle: a fail-closed internal API for a future worker to claim exactly one queued job (via `FOR UPDATE SKIP LOCKED` + a one-time claim token) and durably submit its `WorkerResultV1`/`ObservationV1`s, atomically transitioning the job to a terminal state. See `docs/architecture/worker-job-lifecycle.md`.
 
+Jasraj's Phase 2 structured-processing worker (`app/modules/structured_processing/worker.py`) is the first real consumer of that internal API: a one-shot CLI (`uv run python -m app.modules.structured_processing.worker --once`) that claims a compatible job, parses it (FIR/document text, CDR, financial, generic tabular/JSON), and submits a canonical `WorkerResultV1` — still not a daemon, and still deferring on a documented gap in fetching a claimed job's evidence bytes. See `docs/architecture/structured-processing-worker.md`.
+
 Explicitly **not** implemented anywhere in this repository yet: an actual worker daemon/consumer loop, real OCR/ASR/entity resolution/graph-projection wiring, cross-modal correlation, a human-review workflow, Merkle checkpointing or signatures, case CRUD, a real per-worker credential system, MFA/SSO, or any frontend. See `CLAUDE.md`, `docs/architecture/phase-1-decisions.md`, `docs/architecture/phase-2-decisions.md`, `docs/architecture/worker-job-lifecycle.md`, and `docs/qa/known-limitations.md` for the full non-goal list.
 
 **No sensitive or real production evidence is used anywhere in this repository.** All fixtures and test data are synthetic (see `docs/qa/test-data.md`).
