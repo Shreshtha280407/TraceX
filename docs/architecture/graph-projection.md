@@ -129,6 +129,7 @@ No new Compose service, no new exposed port, no credential ever handed to an ext
 - `tests/security/graph/test_graph_module_boundaries.py` — no object-storage/worker-credential/OCR/ML library imports; the read API's response models never declare a forbidden field.
 - `tests/integration/graph/test_outbox_repository_live.py` — real `FOR UPDATE SKIP LOCKED` concurrency safety (two genuinely concurrent claims never double-claim), real lease-expiry reclaim, real retry exhaustion, the crash-recovery sweep — none of which an in-memory fake can meaningfully prove.
 - `tests/integration/graph/test_full_pipeline_live.py` — the complete, real path: upload → authenticated worker claim → secure evidence stream → worker result → durable `graph_projection_jobs` row → projector run → real Neo4j query and the real case-scoped HTTP endpoint both confirm the projected `Observation`/`EntityMention`.
+- `tests/integration/media_processing/test_media_worker_live.py` (Gaurav's Phase 2 completion) — the same complete real path, exercised for the first time by a source-processing module other than the one this pipeline was originally built and proven against: a real image and a real synthetic video, each claimed and processed by the real `media_processing` worker, project cleanly with no duplication on a second projector run. Confirms this pipeline is genuinely generic across processing modules, not implicitly coupled to `structured_processing`'s or `communication_processing`'s output shape.
 
 ## Known limitations and intentionally deferred work
 

@@ -146,8 +146,7 @@ Verification is complete as of 2026-09-10 (see `docs/qa/test-results.md` for ful
 
 ### Outstanding for team review
 
-- [ ] No real object-detection/tracking/OCR model exists — `analysis/interfaces.py`'s protocols are ready for a later phase's YOLO/ByteTrack/PaddleOCR adapter, but nothing in this repo calls a real model yet.
-- [ ] No orchestration calls `media_processing.worker.process_job` yet — same "built but not yet wired up" situation `structured_processing`/`communication_processing`/`graph` are in.
+- [ ] No real object-detection/tracking/OCR model exists — `analysis/interfaces.py`'s protocols are ready for a later phase's YOLO/ByteTrack/PaddleOCR adapter, but nothing in this repo calls a real model yet. (Orchestration itself is now wired — see "Phase 2 — Gaurav Media-Processing Worker Foundation" below — this bullet is specifically about the missing real model.)
 - [ ] `video/frames.py` extracts each sampled timestamp via its own `ffmpeg` subprocess invocation (correct and simple, bounded by `max_sampled_frames`, but not the fastest possible approach for a very large sample plan) — see ADR-004's open questions.
 - [ ] GPU visibility detection is `nvidia-smi`-only, no AMD/Apple-Silicon-equivalent check — acceptable until a real GPU-backed model adapter exists to make the distinction matter.
 
@@ -361,12 +360,38 @@ A team-requested fix: `evidence_lifecycle/routing.py` only ever routed `SourceTy
 
 `shreshtha`'s local branch tip was fast-forwarded to `origin/main` (`0bf0ff2`, "Completed sarthak/phase-2") mid-task, at the requester's explicit direction, so the routing fix above could be verified end to end against the real `communication_processing` worker rather than routing-only. `shreshtha`'s prior tip (`05897b0`) was itself an ancestor of `origin/main`, so this was a clean fast-forward at the commit level (`git merge origin/main`, no new merge commit created — the branch pointer simply advanced to the existing `0bf0ff2` commit). Local uncommitted work was `git stash`ed first, the fast-forward applied to a clean tree, then the stash was popped back on top; four documentation files (`README.md`, `phase-2-decisions.md`, `mvp-progress.md`, `known-limitations.md`) had overlapping edits and required manual conflict resolution (content from both sides preserved, stale cross-references updated) — no application code required manual merging. No new commit was authored, nothing was pushed, and no branch switch occurred — this only moved `shreshtha`'s own local tip forward to an already-existing commit.
 
+## Phase 2 — Gaurav Media-Processing Worker Foundation: Complete
+
+Verification complete as of 2026-09-12 (see `docs/qa/test-results.md` for full command output and live results). Builds a one-shot worker CLI on top of Gaurav's Phase 1 `process_job` pure function, following the exact orchestration pattern Jasraj's/Sarthak's Phase 2 workers established — see `docs/architecture/media-processing-worker.md`.
+
+### Delivered
+
+- [x] `app/modules/media_processing/{client,input_resolver}.py` (new) — `WorkerApiClient`, `ResolvedMediaInput`, `StaticInputResolver`/`LiveInputResolver`, mirroring `communication_processing`'s identical modules exactly.
+- [x] `run_once`/`main`/`RunOnceOutcome`/`SUPPORTED_PROCESSORS`/`_shim_evidence_record` added to `worker.py` — real claim → claim-token-bound input stream → SHA-256 verification (before any decode) → `process_job` (unchanged) → result submission. `uv run python -m app.modules.media_processing.worker --once`.
+- [x] `errors.py` extended with `WorkerOrchestrationError`/`WorkerAuthenticationError`/`InputResolutionUnavailableError`/`WorkerApiError`, mirroring `communication_processing.errors` exactly.
+- [x] `_shim_evidence_record` reconstructs the minimal `EvidenceRecordV1` `process_job` needs from what a live run genuinely knows, with clearly-commented unused placeholders for the rest — the exact same pattern `structured_processing.worker._shim_evidence_record` already established, deliberately reused rather than inventing a new metadata type (an earlier draft of this work did introduce one, then was reverted for consistency — see `docs/architecture/phase-2-decisions.md`).
+- [x] Second real gap found only by live wiring, fixed: `MediaKind.VIDEO_MATROSKA` added to `source.py` — `evidence_lifecycle/routing.py` had accepted `video/x-matroska` since Phase 1, but `media_processing` itself had no matching classification, so a real `.mkv` upload would have failed inside the worker despite passing routing.
+- [x] `SUPPORTED_PROCESSORS` deliberately claims only `media_metadata_v1` live — `media_detection_v1` needs a real detector this phase does not add (none approved/available), and no real upload is ever routed to it anyway; documented, not silently omitted.
+- [x] `tests/unit/evidence_lifecycle/test_media_routing.py` (new, 12 tests) — image/video routing including matroska, cross-MIME rejection, client-cannot-override-processor, idempotent replay, cross-case isolation.
+- [x] `tests/unit/media_processing/{test_media_worker_client,test_media_worker_orchestration}.py` (new, 22 tests) — wire-format proof against a fake transport, `run_once` sequencing, SHA-mismatch-before-decode, input-resolution-gap deferral, no-secret-leakage.
+- [x] `tests/integration/media_processing/test_media_worker_live.py` (new) — self-skipping live pipeline test proving the complete real path (upload → claim → SHA-verified stream → `process_job` → result → durable graph-projection job → real Neo4j projection, twice, confirming no duplication → real HTTP graph-read confirmation → no leaked `object_uri`/credential) for both image and video.
+- [x] QA entries `MEDIA-ROUTING-001`, `MEDIA-WORKER-CLIENT-001`, `MEDIA-WORKER-ORCHESTRATION-001`, `MEDIA-GRAPH-LIVE-001` added to `docs/qa/test-matrix.md`; `MEDIA-CLASSIFY-001` updated for matroska.
+- [x] `docs/architecture/media-processing-worker.md` (new); `docs/architecture/{media-processing-v1,contracts,phase-2-decisions,graph-projection,evidence-lifecycle}.md`, `docs/qa/{test-data,known-limitations}.md`, `docs/runbooks/local-development.md`, `README.md` updated additively.
+- [x] Full repository regression: `uv run pytest -q` → 1272 passed (0 failed, 0 skipped-unexpectedly); `ruff format --check`/`ruff check`/`mypy app` all clean; `docker compose config` valid.
+- [x] Real Docker-backed end-to-end verification: `docker compose up --build -d`, `/healthz`/`/readyz`/`/api/v1/meta/contracts` all healthy, a real image upload and a real synthetic-video upload each processed by a genuine `subprocess`-invoked `uv run python -m app.modules.media_processing.worker --once` (not only a mocked or in-process test wrapper), projected into Neo4j by a genuine `subprocess`-invoked `uv run python -m app.modules.graph.worker --once` (run twice, confirming no duplicate node/relationship), confirmed via both a direct Neo4j query and the real HTTP graph-read endpoint. All test data cleaned up afterward.
+
+### Outstanding for team review
+
+- [ ] No real object-detection/tracking/OCR model exists — same limitation Phase 1 already documented, unchanged by this phase's orchestration work.
+- [ ] `media_detection_v1` is fully implemented and unit-tested but never claimed live — a future phase wiring in a real, local detector needs only a change to how `main()` constructs and injects one, not to `process_job`.
+- [ ] No object-storage-backed `SourceResolver` for a human-facing evidence-download path (same situation `structured_processing`/`communication_processing` are in) — the worker fetches bytes through the existing claim-token-bound input endpoint, never MinIO directly, by design.
+
 ## Later phases (not started)
 
 Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, the document/structured-processing foundation, the access-control foundation, the audio/social/alias/communication foundation, and the video/image processing foundation above:
 
-- Real OCR (Tesseract/cloud/model) consuming `document_requires_ocr` checkpoints; real ASR/diarization consuming `deferred_requires_asr`/`deferred_requires_diarization` checkpoints; real YOLO/ByteTrack/PaddleOCR model adapters behind `media_processing.analysis.interfaces`.
-- Worker orchestration invoking `media_processing.worker.process_job` from a real ingestion pipeline; a MinIO-backed `SourceResolver` (`structured_processing.worker.process_job`/`communication_processing.worker.process_job` are both now callable via their own one-shot `--once` CLIs; `graph.projection`'s `Evidence`/`Observation`/`EntityMention` path is now wired via its own `--once` CLI too — see Phase 2.5 below; `project_entity`/`project_event` remain unwired).
+- Real OCR (Tesseract/cloud/model) consuming `document_requires_ocr` checkpoints; real ASR/diarization consuming `deferred_requires_asr`/`deferred_requires_diarization` checkpoints; real YOLO/ByteTrack/PaddleOCR model adapters behind `media_processing.analysis.interfaces` (the adapter boundary and deterministic test doubles are ready; no real model is invoked anywhere in this repository).
+- A MinIO-backed `SourceResolver` for a human-facing authorized evidence-download path (`structured_processing.worker.process_job`/`communication_processing.worker.process_job`/`media_processing.worker.process_job` are all now callable via their own one-shot `--once` CLIs, each fetching evidence bytes through the existing claim-token-bound worker-input endpoint, not a direct MinIO read; `graph.projection`'s `Evidence`/`Observation`/`EntityMention` path is now wired via its own `--once` CLI too — see Phase 2.5 below; `project_entity`/`project_event` remain unwired).
 - Entity resolution and merge review workflow; candidate identity links; a review workflow consuming `CommunicationLinkCandidate`s and alias/transliteration candidates.
 - Cross-modal correlation, candidate scoring, hypothesis engine.
 - Face recognition, person re-identification, biometric identification, and cross-camera `local_track_id` correlation — explicit non-goals for `media_processing` in every phase, not just this one (see `CLAUDE.md`).

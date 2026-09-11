@@ -17,7 +17,7 @@ Unlike `structured_processing` (which parses bytes directly in memory), `ffprobe
 
 ## Media classification: content-type + extension, cross-checked
 
-`source.classify_media(content_type, filename)` accepts six Phase 1 formats: `video/mp4`, `video/quicktime`, `video/x-msvideo` (video), `image/jpeg`, `image/png`, `image/webp` (image). Neither signal is trusted alone — a mismatch between them is `unsupported_content_type`, the same anti-spoofing posture `structured_processing.document.classifier` takes. `worker._check_source_type` additionally cross-checks the classified modality against `EvidenceRecordV1.source_type` (`SourceType.VIDEO`/`SourceType.IMAGE`), rejecting a mismatch the same way.
+`source.classify_media(content_type, filename)` accepts seven formats: `video/mp4`, `video/quicktime`, `video/x-msvideo`, `video/x-matroska` (video — the last added in the Phase 2 completion worker build to match `evidence_lifecycle/routing.py`'s content-type set, see `docs/architecture/media-processing-worker.md`), `image/jpeg`, `image/png`, `image/webp` (image). Neither signal is trusted alone — a mismatch between them is `unsupported_content_type`, the same anti-spoofing posture `structured_processing.document.classifier` takes. `worker._check_source_type` additionally cross-checks the classified modality against `EvidenceRecordV1.source_type` (`SourceType.VIDEO`/`SourceType.IMAGE`), rejecting a mismatch the same way.
 
 ## Video: probe, sample, extract
 
