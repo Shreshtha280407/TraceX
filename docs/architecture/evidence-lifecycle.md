@@ -18,7 +18,7 @@ A later-phase worker's only contract is `WorkerJobV1` in, `WorkerResultV1` out �
 
 ## PostgreSQL vs. MinIO ownership
 
-- **PostgreSQL** (`evidence_records`, `worker_jobs`, migration `f2086e1e89f6_evidence_lifecycle_foundation`) owns all *metadata*: who uploaded what, when, its hash, its case, its processing/job status. This is the durable source of truth for "does this evidence exist and what state is it in."
+- **PostgreSQL** (`evidence_records`, `worker_jobs`, migration `f2086e1e89f6_evidence_lifecycle_foundation`, `source_type` widened for Phase 2.3 by `af5b05e61b08_structured_source_type_routing`) owns all *metadata*: who uploaded what, when, its hash, its case, its processing/job status. This is the durable source of truth for "does this evidence exist and what state is it in." Both `evidence_records.source_type`/`worker_jobs.source_type` are enforced by a `CHECK` constraint independent of (but kept in sync with) the Pydantic `SourceType` enum — a new `SourceType` value needs a migration widening that constraint, not just a contract change.
 - **MinIO** owns the *bytes only*, addressed by an internal object key (`object_uri` in the persisted row). The private bucket (`Settings.minio_bucket`) is never made public, and no API response ever contains a working URL to the bytes — see "No raw-evidence-download API" below.
 - Retrieving the bytes later (for a future worker) goes through `MinioSourceResolver`/`ObjectStorage.read_bytes`, never a direct MinIO credential handed to a caller or worker.
 
@@ -63,9 +63,17 @@ A small, explicit, independently-maintained registry — not derived from any pr
 | `chat` | `application/json` | `generic_social_json_v1` / `1.0.0` |
 | `image` | `image/jpeg`, `image/png` | `media_metadata_v1` / `1.0.0` |
 | `video` | `video/mp4`, `video/quicktime`, `video/x-matroska` | `media_metadata_v1` / `1.0.0` |
+| `structured_tabular` | `text/csv`, XLSX | `generic_tabular_v1` / `1.0.0` |
+| `structured_json` | `application/json` | `generic_json_v1` / `1.0.0` |
 | `other` | *(none registered yet)* | *(no processor — upload rejected)* |
 
 `source_type` is always declared explicitly by the client, never inferred from content — the same "never guess ambiguous input" rule applied everywhere else in this codebase (FIR extraction, CDR/financial normalization, audio routing). Selecting the *specific* profile within a source type (e.g. FIR-report vs. a fallback tabular profile for `document`) remains each processing module's own job once it actually reads the bytes; this registry only makes the coarse routing decision needed to construct a valid `WorkerJobV1`.
+
+**`structured_tabular`/`structured_json` (Phase 2.3)**: general CSV/XLSX/JSON evidence that isn't specifically CDR- or financial-shaped now has its own explicit source type, reaching `structured_processing`'s existing `generic_tabular_v1`/`generic_json_v1` fallback profiles (previously constructible only via a direct/test job, never a real upload — see `docs/architecture/structured-processing-worker.md`). Each new source type's accepted content types are disjoint from the other's (CSV/XLSX only for `structured_tabular`, JSON only for `structured_json`) — a request can never be ambiguous about which of the two it means. `parser_profile` is server-controlled for *every* source type as of this phase (see "Server-controlled parser profile" below), not only these two.
+
+### Server-controlled parser profile (Phase 2.3)
+
+`EvidenceRecordV1.parser_profile` is always the canonical routed processor's name (`route.processor_name`), computed server-side from `source_type` alone — never a client-supplied value, even though `POST .../evidence` still accepts an (now-ignored) `parser_profile` form field for backward request-shape compatibility. Before this phase, a client could set this field to an arbitrary string with no relationship to the evidence's real routing; `EvidenceLifecycleService.upload_evidence` now always overwrites it with `route.processor_name`, the same value already used to construct the job's `processor_name`. This closes a latent inconsistency between "what this evidence record claims was used to parse it" and "what actually will," for every source type, not only the two new ones.
 
 ## Durable job dispatch (`jobs.py`)
 
