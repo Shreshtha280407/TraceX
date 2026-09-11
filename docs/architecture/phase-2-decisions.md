@@ -234,3 +234,40 @@ Rotation and revocation are already durably recorded as first-class, queryable s
 - Whether `worker_credential_rotated`/`worker_credential_revoked` should also emit a `security_audit_events` row (currently: state changes are captured on the `worker_credentials` row itself, not duplicated into the audit table).
 - Rotating `WORKER_CREDENTIAL_PEPPER` in an already-provisioned deployment invalidates every existing worker credential's digest match at once (documented, not automated) — a later phase might want a dual-pepper transition window if this becomes operationally painful.
 - No maximum number of processor names or worker credentials is enforced — not expected to matter at this project's scale, but worth noting if a very large worker fleet is ever provisioned.
+
+# Phase 2 Decisions — Sarthak Communication Processing Worker Foundation
+
+Full design lives in `docs/architecture/communication-processing-worker.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated
+
+- **Worker orchestration pattern**: `client.py`/`input_resolver.py`/`run_once`/`main` mirror `structured_processing`'s Phase 2/2.2/2.4 equivalents almost exactly (claim loop over supported processors, claim-token-bound `GET .../input`, SHA-256 verification before parsing, structured JSON logging via `structlog.contextvars`) — a second, independent implementation of the same established pattern, not a shared abstraction, matching how `structured_processing` and `communication_processing` were already two independent modules in Phase 1.
+- **Worker identity and authentication**: Aditya's Phase 2.4 per-worker-credential system, entirely unchanged. This worker presents `WORKER_TOKEN` exactly like any other worker process; no new authentication path, no shared-secret fallback.
+- **`process_job`'s pure-function contract, `_PROFILES`, `SUPPORTED_PROCESSORS`' name/version pairs, all seven `ProcessorProfile`s, and every existing parser** (`social/*.py`, `audio/metadata.py`, `audio/routing.py`): all Phase 1, unchanged. This phase adds orchestration and two new JSON-interchange deserializers around them, not new parsing logic for the five profiles that already had one.
+- **Deterministic observation IDs and canonical serialization**: `provenance.py`'s pre-existing `observation_id()`/`build_extractor()`/`mention_to_observation()`, unchanged.
+
+## Genuinely new
+
+- `app/modules/communication_processing/input_resolver.py`, `client.py` — this module's own `WorkerApiClient`/`WorkerInputResolver` pair, a second implementation of `structured_processing`'s pattern (not imported from it — cross-module reuse of orchestration internals was judged not worth coupling two otherwise-independent modules together for what is, per-module, under 200 lines).
+- `audio/transcript_import.py::parse_transcript_import_payload`, `audio/diarization_import.py::parse_diarization_import_payload` — JSON-interchange deserializers for the two profiles that previously only accepted pre-built dataclasses.
+- `worker.py`: `run_once`, `main`, `RunOnceOutcome`, `_build_input_payload`, `CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE`, `SUPPORTED_PROCESSORS`.
+- `errors.py`: `WorkerOrchestrationError`/`WorkerAuthenticationError`/`InputResolutionUnavailableError`/`WorkerApiError` (mirroring `structured_processing.errors`'s identical four), `ErrorCode.MALFORMED_JSON_PAYLOAD`.
+- `limits.py`: `MAX_INPUT_BYTES` (client-level transport bound, distinct from the pre-existing `MAX_AUDIO_BYTES`/`MAX_CHAT_EXPORT_BYTES` source-level bounds).
+- No new dependency: `httpx` was already an approved, installed dependency (used by `structured_processing.client` and the FastAPI app itself); no ASR/diarization/LLM/embedding/cloud-AI package was added.
+
+## Why the two JSON-interchange deserializers live in their existing files, not a new `parsers/` package
+
+The task brief's suggested file tree (`parsers/social_export.py`/`parsers/audio_transcript.py`) predates inspection of the actual Phase 1 module layout, which already dedicates one file per profile family (`audio/transcript_import.py` already owned `TranscriptSegmentInput`/`transcript_segments_to_mentions`; `audio/diarization_import.py` already owned the diarization equivalent). Adding the new `parse_*_payload` functions to those same files keeps each profile's full lifecycle (deserialize → validate → mention) in one place and avoids introducing a package boundary that would immediately need to re-import back across it. The social-export parsers already lived under `social/`; nothing about them needed to move.
+
+## Why the routing gap (five of seven profiles unreachable via live upload) is reported, not fixed
+
+Unlike Phase 2.3's `structured_tabular`/`structured_json` (which had explicit prior team approval to add), no such approval exists yet for new `SourceType`s or a `parser_profile` hint covering `transcript_import_v1`/`diarization_import_v1`/`whatsapp_export_v1`/`telegram_export_v1`/`instagram_export_v1`. `evidence_lifecycle/routing.py` is a shared contract this task's brief explicitly forbade changing without that approval ("do not add/modify a SourceType... unless clearly within an already-approved, additive route"). See `communication-processing-worker.md`'s "Routing boundary" section for the recommended additive decision, left for team review rather than implemented unilaterally.
+
+## Why `_ensure_worker_credential`'s test helper now fails loudly instead of silently retrying on a revoked digest
+
+Both this module's and `structured_processing`'s live-test helper originally treated "an active credential with a matching digest exists" as the only no-op case, and fell through to an `INSERT` otherwise. Since `credential_digest` is unique per row *regardless of status* (a revoked credential's digest is never freed for reuse — this is intentional: revocation must be permanent, or a leaked-then-revoked token could be silently reactivated by anything that re-provisions it), a revoked row with a matching digest made that fallthrough `INSERT` hit the unique constraint and crash with a raw `IntegrityError`, discovered when this module's own live test and `structured_processing`'s live test collided over the *same* shared local-dev `WORKER_TOKEN` digest in a single full-suite run (see `docs/qa/known-limitations.md`). Fixed in both files' identical helper: a matching-but-revoked row now fails the test immediately with an actionable message ("revocation is permanent — change the token literal, then rerun") instead of surfacing a confusing SQL error. No change to `access_control`'s production repository or CLI — revocation-permanence as a real security property was deliberately preserved, not routed around.
+
+## Open questions for team review
+
+- The routing gap above: which of the two proposed shapes (server-validated `parser_profile` hint vs. new `SourceType`s per platform) `evidence_lifecycle/routing.py`'s owner prefers, if/when these five profiles need to be reachable via a real upload.
+- Whether a future phase wants `transcript_import_v1`/`diarization_import_v1` to also accept a raw-audio input that this worker itself defers (current behavior: `audio_metadata_v1`-shaped input routed to either import profile returns `DEFERRED`/`DEFERRED_REQUIRES_ASR`/`DEFERRED_REQUIRES_DIARIZATION`, unchanged from Phase 1) once a real ASR/diarization adapter is ever approved.

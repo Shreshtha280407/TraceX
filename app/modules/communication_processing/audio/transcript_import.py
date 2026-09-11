@@ -7,9 +7,20 @@ approved external transcript-generation process entirely out of scope for
 this phase — into deterministic `ObservationV1`-ready `RawMention`s. Text,
 timestamps, and confidence are never invented, only validated and passed
 through unchanged.
+
+`parse_transcript_import_payload` (Phase 2) is the on-the-wire counterpart
+to the in-process `TranscriptImportInput` the rest of this file already
+handled: the documented `transcript_import_v1` JSON interchange shape a
+`worker.py --once` run resolves from a claimed job's evidence bytes (see
+`docs/architecture/communication-processing-worker.md`). It performs only
+safe decoding and field-presence/type validation — timing/bounds
+validation remains `validate_transcript_segments`'s job, called exactly
+once, unchanged, from `transcript_segments_to_mentions`.
 """
 
 from __future__ import annotations
+
+import json
 
 from app.contracts.common import SourceLocator
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
@@ -18,9 +29,20 @@ from app.modules.communication_processing.limits import (
     MAX_TRANSCRIPT_SEGMENT_TEXT_LENGTH,
     MAX_TRANSCRIPT_SEGMENTS,
 )
-from app.modules.communication_processing.models import RawMention, TranscriptSegmentInput
+from app.modules.communication_processing.models import (
+    RawMention,
+    TranscriptImportInput,
+    TranscriptSegmentInput,
+)
 
 OBSERVATION_TYPE = "transcript_segment"
+
+#: The documented `transcript_import_v1` JSON interchange shape:
+#: `{"segments": [{"start_ms": int, "end_ms": int, "text": str,
+#: "language_hint": str | null, "confidence": float,
+#: "source_segment_id": str}, ...]}`. Every field is required except
+#: `language_hint`.
+_REQUIRED_SEGMENT_FIELDS = ("start_ms", "end_ms", "text", "confidence", "source_segment_id")
 
 
 def _normalize_language_hint(raw: str | None) -> str | None:
@@ -126,3 +148,76 @@ def transcript_segments_to_mentions(
             )
         )
     return mentions
+
+
+def parse_transcript_import_payload(data: bytes) -> TranscriptImportInput:
+    """Deserialize the `transcript_import_v1` JSON interchange payload.
+
+    Safe UTF-8 decode + JSON parse + field-presence/type validation only —
+    never timing/bounds validation (that's `validate_transcript_segments`'s
+    job, run later by `transcript_segments_to_mentions`). Raises
+    `malformed_json_payload` for anything not matching the documented
+    shape, mirroring `social/telegram.py::parse_telegram_export`'s exact
+    style for parsing untrusted JSON bytes.
+    """
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProcessingError(
+            ErrorCode.MALFORMED_JSON_PAYLOAD, "payload is not valid UTF-8 JSON"
+        ) from exc
+
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("segments"), list):
+        raise ProcessingError(
+            ErrorCode.MALFORMED_JSON_PAYLOAD,
+            "expected a top-level object with a 'segments' array",
+        )
+
+    raw_segments: list[object] = parsed["segments"]
+    if len(raw_segments) > MAX_TRANSCRIPT_SEGMENTS:
+        raise ProcessingError(
+            ErrorCode.INPUT_LIMIT_EXCEEDED,
+            f"payload exceeds the {MAX_TRANSCRIPT_SEGMENTS}-segment limit",
+        )
+
+    segments = tuple(_segment_from_json(entry, index) for index, entry in enumerate(raw_segments))
+    return TranscriptImportInput(segments=segments)
+
+
+def _segment_from_json(entry: object, index: int) -> TranscriptSegmentInput:
+    if not isinstance(entry, dict):
+        raise ProcessingError(ErrorCode.MALFORMED_JSON_PAYLOAD, f"segment {index} is not an object")
+    missing = [field for field in _REQUIRED_SEGMENT_FIELDS if field not in entry]
+    if missing:
+        raise ProcessingError(
+            ErrorCode.MALFORMED_JSON_PAYLOAD, f"segment {index} is missing required field(s)"
+        )
+
+    start_ms, end_ms = entry["start_ms"], entry["end_ms"]
+    text, confidence = entry["text"], entry["confidence"]
+    source_segment_id = entry["source_segment_id"]
+    language_hint = entry.get("language_hint")
+
+    if (
+        not isinstance(start_ms, int)
+        or isinstance(start_ms, bool)
+        or not isinstance(end_ms, int)
+        or isinstance(end_ms, bool)
+        or not isinstance(text, str)
+        or not isinstance(confidence, int | float)
+        or isinstance(confidence, bool)
+        or not isinstance(source_segment_id, str)
+        or (language_hint is not None and not isinstance(language_hint, str))
+    ):
+        raise ProcessingError(
+            ErrorCode.MALFORMED_JSON_PAYLOAD, f"segment {index} has a field of the wrong type"
+        )
+
+    return TranscriptSegmentInput(
+        start_ms=start_ms,
+        end_ms=end_ms,
+        text=text,
+        language_hint=language_hint,
+        confidence=float(confidence),
+        source_segment_id=source_segment_id,
+    )

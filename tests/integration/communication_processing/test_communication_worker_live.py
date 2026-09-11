@@ -1,36 +1,34 @@
-"""Scenario 19: the worker's HTTP client against a real running API server.
+"""The communication worker's HTTP client against a real running API server.
 
-Self-skips (never fabricates success) whenever any of the following is
-true, each checked explicitly:
+Mirrors `tests/integration/structured_processing/test_worker_live.py`
+exactly (same self-skip conditions, same `_ensure_worker_credential`
+pattern for Aditya's Phase 2 worker-identity hardening). Self-skips (never
+fabricates success) whenever any of the following is true, each checked
+explicitly:
   - no `.env` at the repo root
   - the live API server isn't reachable at `WORKER_API_BASE_URL`
   - `WORKER_TOKEN` isn't configured in that live environment
-  - (pipeline tests only) PostgreSQL/MinIO specifically aren't reachable --
+  - (pipeline test only) PostgreSQL/MinIO specifically aren't reachable --
     needed to seed a real case/user/membership and a real evidence upload
-
-Since Aditya's Phase 2 worker-identity hardening, a configured `WORKER_TOKEN`
-alone is not sufficient -- it must also match a real, active
-`worker_credentials` row scoped to the processors this test needs. Rather
-than requiring a developer to have already run the trusted-operator CLI
-before this suite can run at all, `_ensure_worker_credential` provisions
-one directly (idempotently, by digest) the first time this file runs
-against a given database -- exactly the shape
-`uv run python -m app.modules.access_control.worker_credentials create`
-would produce, just inlined so a live run needs no separate manual step.
 
 `test_worker_client_against_real_running_api` proves the client reaches the
 real API for the "no work"/auth-rejection paths without needing any seeded
-data. `test_full_claim_stream_parse_submit_live_pipeline` (parametrized over
-`document`/`fir_report_text_v1`, `structured_tabular`/`generic_tabular_v1`,
-and `structured_json`/`generic_json_v1` -- Phase 2.3's new routing) proves
-the *complete* path end to end for each: a real case/user/evidence upload,
-followed by a real `run_once()` claiming it, streaming its bytes through
-`GET /api/v1/internal/worker-jobs/{job_id}/input` (Phase 2.2 -- see
-`docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery"),
-parsing, and submitting a genuine `SUCCEEDED` result -- not a `DEFERRED`
-fallback. Before Phase 2.2 that endpoint didn't exist, so this couldn't have
-been written honestly before; it exists now because the capability
-genuinely does.
+data. `test_full_claim_stream_parse_submit_live_pipeline` (parametrized
+over `audio`/`audio_metadata_v1` and `chat`/`generic_social_json_v1` -- the
+only two source types `evidence_lifecycle/routing.py` currently routes to
+this module, see `docs/architecture/communication-processing-worker.md`'s
+"Routing boundary" section) proves the *complete* path end to end for
+each: a real case/user/evidence upload, followed by a real `run_once()`
+claiming it, streaming its bytes through
+`GET /api/v1/internal/worker-jobs/{job_id}/input`, building the correct
+typed `InputPayload`, parsing, and submitting a genuine `SUCCEEDED` result.
+
+`transcript_import_v1`/`diarization_import_v1`/`whatsapp_export_v1`/
+`telegram_export_v1`/`instagram_export_v1` are proven instead at the unit
+level (`tests/unit/communication_processing/test_worker_orchestration.py`,
+via `StaticInputResolver`) since no live `source_type` routes a real
+upload to them today -- this test never fabricates a live pass for a path
+that cannot actually occur through the real upload endpoint.
 """
 
 from __future__ import annotations
@@ -68,19 +66,39 @@ from app.modules.access_control.worker_credentials import (
     hash_worker_credential,
     resolve_worker_pepper,
 )
+from app.modules.communication_processing.client import WorkerApiClient
+from app.modules.communication_processing.errors import WorkerAuthenticationError
+from app.modules.communication_processing.input_resolver import LiveInputResolver
+from app.modules.communication_processing.worker import SUPPORTED_PROCESSORS, run_once
 from app.modules.evidence_lifecycle.repository import (
     evidence_records_table,
     worker_jobs_table,
     worker_observations_table,
     worker_results_table,
 )
-from app.modules.structured_processing.client import WorkerApiClient
-from app.modules.structured_processing.errors import WorkerAuthenticationError
-from app.modules.structured_processing.input_resolver import LiveInputResolver
-from app.modules.structured_processing.worker import SUPPORTED_PROCESSORS, run_once
+from tests.fixtures.communication_processing.builders import (
+    build_generic_json_export,
+    build_wav_bytes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
+
+#: A fixed literal, *not* the configured `WORKER_TOKEN` value: this repo's
+#: local dev `.env` carries exactly one shared `WORKER_TOKEN`, and Aditya's
+#: Phase 2 worker-identity hardening scopes a credential's
+#: `allowed_processor_names` to whichever module provisions it first (see
+#: `_ensure_worker_credential`, which is a no-op once a matching-digest
+#: credential already exists). Reusing `settings.worker_token` verbatim
+#: here -- the same value `structured_processing`'s identical live test
+#: also reads -- would make whichever suite runs first "win" the shared
+#: credential's scope and 403 the other. A distinct literal gives this
+#: worker its own credential row, entirely decoupled from
+#: `structured_processing`'s, matching how two independent real worker
+#: deployments would each hold their own distinct token. `settings.
+#: worker_token` is still used as the "is live testing configured at all"
+#: skip-gate below -- only the actual authentication value differs.
+_COMMUNICATION_WORKER_TOKEN = "dev-only-communication-worker-token-change-me-v2"  # noqa: S105
 
 pytestmark = pytest.mark.skipif(
     not ENV_FILE.exists(),
@@ -91,14 +109,6 @@ pytestmark = pytest.mark.skipif(
 def _live_settings() -> Settings:
     values = dotenv_values(ENV_FILE)
     kwargs: dict[str, Any] = {k.lower(): v for k, v in values.items() if v is not None}
-    # tests/conftest.py sets a fixed test-only WORKER_CREDENTIAL_PEPPER in
-    # os.environ for the rest of the suite's sake. Without forcing this key
-    # into kwargs explicitly (even as None), pydantic-settings would fall
-    # back to that OS-env value instead of .env's real (here: absent) one
-    # -- diverging from what the live API container itself resolves via
-    # compose.yaml's own `${WORKER_CREDENTIAL_PEPPER:-}` passthrough, and
-    # causing `_ensure_worker_credential`'s digest to mismatch what the
-    # live server verifies against.
     kwargs.setdefault("worker_credential_pepper", None)
     return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
@@ -115,22 +125,15 @@ def _skip_unless_api_reachable(settings: Settings) -> None:
 
 async def _ensure_worker_credential(settings: Settings, token: str) -> None:
     """Idempotently provision a worker credential bound to the exact `token` given,
-    scoped to every processor `structured_processing.worker` supports.
+    scoped to every processor `communication_processing.worker` supports.
 
-    Deliberately does *not* call `worker_credentials.create_worker_credential`
-    -- that function always mints its own fresh random token (the right
-    behavior for the trusted-operator CLI, which hands the plaintext back to
-    an operator) and has no way to bind a credential to an already-known
-    token. This helper instead builds the `WorkerCredentialRecord` directly
-    with `credential_digest = hash_worker_credential(token, pepper)`, so the
-    developer's own configured `WORKER_TOKEN` is what actually authenticates.
-    Safe to call repeatedly against the same database: a matching *active*
-    digest already existing is a no-op, not an error.
+    See `tests/integration/structured_processing/test_worker_live.py`'s
+    identical helper for the full reasoning -- this is the same pattern.
 
     A digest is unique per row regardless of status, and revocation is
     intentionally permanent (no production "reactivate" path exists --
     that would undermine what revocation is for). So a *revoked* row with
-    a matching digest means this literal `WORKER_TOKEN` value can never be
+    a matching digest means this literal token value can never be
     (re)provisioned again in this database; that's not this helper's call
     to fix silently, since doing so would require weakening real
     access-control semantics. Fail with an actionable message instead of
@@ -148,11 +151,12 @@ async def _ensure_worker_credential(settings: Settings, token: str) -> None:
             pytest.fail(
                 f"worker credential for this token literal was revoked "
                 f"(worker_id={existing.worker_id}); revocation is permanent -- "
-                f"change WORKER_TOKEN in .env, then rerun"
+                f"change the token literal this test provisions with, "
+                f"then rerun"
             )
         record = WorkerCredentialRecord(
             worker_id=uuid4(),
-            display_name="structured-processing-worker-live-test",
+            display_name="communication-processing-worker-live-test",
             status=WorkerCredentialStatus.ACTIVE,
             allowed_processor_names=tuple(name for name, _version in SUPPORTED_PROCESSORS),
             credential_digest=digest,
@@ -169,26 +173,22 @@ def test_worker_client_against_real_running_api() -> None:
     settings = _live_settings()
     _skip_unless_api_reachable(settings)
 
-    secret = settings.worker_token
-    if secret is None:
+    token = settings.worker_token
+    if token is None:
         pytest.skip(
             "WORKER_TOKEN is not configured in the live .env; "
             "the internal worker API fails closed without it"
         )
 
-    asyncio.run(_ensure_worker_credential(settings, secret.get_secret_value()))
+    asyncio.run(_ensure_worker_credential(settings, _COMMUNICATION_WORKER_TOKEN))
 
     client = WorkerApiClient(
-        base_url=settings.worker_api_base_url, shared_secret=secret.get_secret_value()
+        base_url=settings.worker_api_base_url, worker_token=_COMMUNICATION_WORKER_TOKEN
     )
     try:
-        claim = client.claim(processor_name="fir_report_text_v1", processor_version="1.0.0")
+        claim = client.claim(processor_name="audio_metadata_v1", processor_version="1.0.0")
         assert claim.job is None  # nothing seeded a queued job for this specific check
 
-        # A random job_id with no real claim genuinely rejects with a real
-        # 401 -- the endpoint exists as of Phase 2.2, so this is an auth
-        # rejection, not the pre-Phase-2.2 `InputResolutionUnavailableError`
-        # 404 this test originally proved.
         with pytest.raises(WorkerAuthenticationError):
             client.fetch_input(uuid4(), claim_token="no-real-claim-exists-for-this-job")
     finally:
@@ -197,28 +197,20 @@ def test_worker_client_against_real_running_api() -> None:
 
 _PIPELINE_CASES = [
     pytest.param(
-        "document",
-        "text/plain",
-        "fir_live_test.txt",
-        b"FIR No. 999/2026 filed at Live Test Police Station. Section 302 IPC.",
-        "fir_report_text_v1",
-        id="document-fir_report_text_v1",
+        "audio",
+        "audio/wav",
+        "call_live_test.wav",
+        build_wav_bytes(duration_seconds=0.5),
+        "audio_metadata_v1",
+        id="audio-audio_metadata_v1",
     ),
     pytest.param(
-        "structured_tabular",
-        "text/csv",
-        "records_live_test.csv",
-        b"name,value\nalpha,1\nbeta,2\n",
-        "generic_tabular_v1",
-        id="structured_tabular-generic_tabular_v1",
-    ),
-    pytest.param(
-        "structured_json",
+        "chat",
         "application/json",
-        "records_live_test.json",
-        b'{"records": [{"a": 1}, {"a": 2}]}',
-        "generic_json_v1",
-        id="structured_json-generic_json_v1",
+        "export_live_test.json",
+        build_generic_json_export(records=[{"sender": "alice", "text": "hello from live test"}]),
+        "generic_social_json_v1",
+        id="chat-generic_social_json_v1",
     ),
 ]
 
@@ -232,8 +224,8 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
     settings = _live_settings()
     _skip_unless_api_reachable(settings)
 
-    secret = settings.worker_token
-    if secret is None:
+    token = settings.worker_token
+    if token is None:
         pytest.skip("WORKER_TOKEN is not configured in the live .env")
 
     try:
@@ -242,20 +234,17 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
     except Exception as exc:
         pytest.skip(f"live PostgreSQL/MinIO not reachable: {type(exc).__name__}")
 
-    await _ensure_worker_credential(settings, secret.get_secret_value())
+    await _ensure_worker_credential(settings, _COMMUNICATION_WORKER_TOKEN)
 
     ac_engine = create_ac_engine(settings)
     repository = AccessControlRepository(ac_engine)
-    email = f"live-worker-test-{uuid4().hex[:8]}@example.test"
+    email = f"comm-live-worker-test-{uuid4().hex[:8]}@example.test"
     password = "correct-horse-battery-staple"  # noqa: S105
 
-    # `run_once` claims the *oldest* eligible job for whichever processor it
-    # tries first (see `SUPPORTED_PROCESSORS` order); a long-lived dev
-    # sandbox's shared PostgreSQL volume can accumulate leftover `queued`
-    # rows for `expected_processor` from unrelated earlier runs, which
-    # would otherwise make `run_once` claim a stale job instead of the one
-    # this test is about to upload. Clearing them first is this test's own
-    # isolation, not a change to any application behavior.
+    # Clear any leftover `queued` rows for `expected_processor` from earlier
+    # runs in this long-lived shared sandbox -- see the structured-processing
+    # sibling test for the full reasoning. This test's own isolation, not a
+    # change to any application behavior.
     async with ac_engine.begin() as conn:
         await conn.execute(
             sa.delete(worker_jobs_table).where(
@@ -267,7 +256,7 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
     async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
         register = await ac.post(
             "/api/v1/auth/register",
-            json={"email": email, "password": password, "display_name": "Live Worker Test"},
+            json={"email": email, "password": password, "display_name": "Comm Live Worker Test"},
         )
         assert register.status_code == 201, register.text
         user_id = register.json()["user_id"]
@@ -278,7 +267,7 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
 
         case = CaseRecord(
             case_id=uuid4(),
-            case_reference=f"LIVE-WORKER-TEST-{uuid4().hex[:8]}",
+            case_reference=f"COMM-LIVE-WORKER-TEST-{uuid4().hex[:8]}",
             classification=ClearanceLevel.RESTRICTED,
             status=CaseStatus.OPEN,
             created_at=datetime.now(UTC),
@@ -308,7 +297,7 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
             assert upload.json()["job"]["processor_name"] == expected_processor
 
             client = WorkerApiClient(
-                base_url=settings.worker_api_base_url, shared_secret=secret.get_secret_value()
+                base_url=settings.worker_api_base_url, worker_token=_COMMUNICATION_WORKER_TOKEN
             )
             try:
                 outcome = run_once(client=client, input_resolver=LiveInputResolver(client))
