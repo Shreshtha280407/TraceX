@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -50,6 +50,13 @@ def storage() -> FakeObjectStorage:
     return FakeObjectStorage()
 
 
+_TEST_WORKER_PRINCIPAL = WorkerPrincipal(
+    worker_id=uuid4(),
+    display_name="test-worker",
+    allowed_processor_names=("fir_report_text_v1",),
+)
+
+
 @pytest.fixture
 def _override_worker_dependencies(
     evidence_repository: FakeEvidenceLifecycleRepository, storage: FakeObjectStorage
@@ -57,7 +64,7 @@ def _override_worker_dependencies(
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_job_producer] = FakeJobProducer
-    app.dependency_overrides[require_worker_principal] = lambda: WorkerPrincipal()
+    app.dependency_overrides[require_worker_principal] = lambda: _TEST_WORKER_PRINCIPAL
     app.dependency_overrides[get_access_control_repository] = FakeAccessControlRepository
     yield
     app.dependency_overrides.clear()
@@ -77,6 +84,7 @@ def _seed_claimed_job(
     status: WorkerStatus = WorkerStatus.RUNNING,
     lease_expires_at: datetime | None | object = _DEFAULT_LEASE,
     claim_token_hash: str | None = None,
+    claimed_by_worker_id: UUID | None = _TEST_WORKER_PRINCIPAL.worker_id,
     data: bytes = _INPUT_BYTES,
 ) -> WorkerJobRecord:
     # The route always compares against the *real* current time
@@ -118,6 +126,7 @@ def _seed_claimed_job(
         claimed_at=FIXED_TIME if status is not WorkerStatus.QUEUED else None,
         lease_expires_at=lease_expires_at,
         claimed_by="fir_report_text_v1" if status is not WorkerStatus.QUEUED else None,
+        claimed_by_worker_id=claimed_by_worker_id,
         claim_token_hash=claim_token_hash,
         last_error_code=None,
         last_error_message=None,
@@ -202,14 +211,19 @@ async def _fake_open_stream(
 
 
 async def test_missing_worker_authentication_rejected_safely() -> None:
-    """No `require_worker_principal` override: exercises the real fail-closed dependency."""
+    """No `require_worker_principal` override: exercises the real fail-closed dependency.
+
+    A pepper is configured in the shared test environment (see
+    `tests/conftest.py`), so per-worker authentication is genuinely active
+    -- a missing `Authorization` header is a `401`.
+    """
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get(
             f"/api/v1/internal/worker-jobs/{uuid4()}/input",
             headers={"X-Claim-Token": "irrelevant"},
         )
-    assert response.status_code == 503  # WORKER_SHARED_SECRET unset in the default test env
+    assert response.status_code == 401
 
 
 # --- 5: missing / incorrect / malformed claim tokens ------------------------

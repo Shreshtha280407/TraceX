@@ -50,16 +50,16 @@ def test_valid_config_loads(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.contract_version == "v1"
 
 
-def test_blank_worker_shared_secret_normalizes_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Security regression: `docker compose`'s `${VAR}` substitution (no default)
+def test_blank_worker_token_and_pepper_normalize_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Security regression, now applied to both worker-identity secrets.
 
-    resolves an unset variable to an empty string, not an absent one --
-    which pydantic-settings would otherwise treat as "provided"
-    (`SecretStr('')`, not `None`), defeating
-    `require_worker_principal`'s fail-closed `is None` check and letting an
-    empty `Authorization: Bearer ` header authenticate via
-    `hmac.compare_digest("", "")`. `worker_shared_secret` must normalize
-    any blank/whitespace-only value to `None`.
+    `docker compose`'s `${VAR}` substitution (no default) resolves an
+    unset variable to an empty string, not an absent one -- which
+    pydantic-settings would otherwise treat as "provided" (`SecretStr('')`,
+    not `None`). The exact bug this originally caught (Phase 2.1,
+    `worker_shared_secret`) applied identically to any worker-identity
+    secret sourced this way -- `worker_token` and `worker_credential_pepper`
+    must both normalize any blank/whitespace-only value to `None`.
     """
     monkeypatch.setenv("POSTGRES_DSN", "postgresql+asyncpg://u:p@localhost:5432/db")
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
@@ -70,12 +70,18 @@ def test_blank_worker_shared_secret_normalizes_to_none(monkeypatch: pytest.Monke
     monkeypatch.setenv("MINIO_ACCESS_KEY", "key")
     monkeypatch.setenv("MINIO_SECRET_KEY", "secret")
 
-    for blank in ("", "   "):
-        monkeypatch.setenv("WORKER_SHARED_SECRET", blank)
-        settings = Settings(_env_file=None)  # type: ignore[call-arg]
-        assert settings.worker_shared_secret is None
+    for env_var, attr in (
+        ("WORKER_TOKEN", "worker_token"),
+        ("WORKER_CREDENTIAL_PEPPER", "worker_credential_pepper"),
+    ):
+        for blank in ("", "   "):
+            monkeypatch.setenv(env_var, blank)
+            settings = Settings(_env_file=None)  # type: ignore[call-arg]
+            assert getattr(settings, attr) is None
 
-    monkeypatch.setenv("WORKER_SHARED_SECRET", "a-real-secret")
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert settings.worker_shared_secret is not None
-    assert settings.worker_shared_secret.get_secret_value() == "a-real-secret"
+        monkeypatch.setenv(env_var, "a-real-secret")
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+        value = getattr(settings, attr)
+        assert value is not None
+        assert value.get_secret_value() == "a-real-secret"
+        monkeypatch.delenv(env_var, raising=False)

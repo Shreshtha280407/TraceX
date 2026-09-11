@@ -86,6 +86,7 @@ worker_jobs_table = sa.Table(
     sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("claimed_by", sa.Text(), nullable=True),
+    sa.Column("claimed_by_worker_id", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("claim_token_hash", sa.Text(), nullable=True),
     sa.Column("last_error_code", sa.Text(), nullable=True),
     sa.Column("last_error_message", sa.Text(), nullable=True),
@@ -314,6 +315,7 @@ class EvidenceLifecycleRepository:
         now: datetime,
         lease_seconds: int,
         claim_token_hash: str,
+        claimed_by_worker_id: UUID | None = None,
     ) -> tuple[WorkerJobRecord, bool] | None:
         """Atomically claim one eligible job for `processor_name`/`processor_version`.
 
@@ -322,6 +324,12 @@ class EvidenceLifecycleRepository:
         SKIP LOCKED` makes two concurrent callers structurally unable to
         claim the same row: the loser's `SELECT` simply skips the winner's
         locked row and finds a different eligible job (or none).
+
+        `claimed_by_worker_id` (the authenticated worker's verified
+        identity, when known) is written unconditionally on every
+        successful claim -- including a reclaim, which is exactly how
+        ownership legitimately transfers to a new worker after a lease
+        expires (see `docs/architecture/worker-identity-and-security.md`).
 
         Returns `(claimed_job, was_reclaim)`, or `None` if nothing eligible
         exists right now. `was_reclaim` is `True` only when an expired
@@ -368,6 +376,7 @@ class EvidenceLifecycleRepository:
                     claimed_at=now,
                     lease_expires_at=lease_expires_at,
                     claimed_by=processor_name,
+                    claimed_by_worker_id=claimed_by_worker_id,
                     claim_token_hash=claim_token_hash,
                     updated_at=now,
                 )
@@ -379,6 +388,7 @@ class EvidenceLifecycleRepository:
                 claimed_at=now,
                 lease_expires_at=lease_expires_at,
                 claimed_by=processor_name,
+                claimed_by_worker_id=claimed_by_worker_id,
                 claim_token_hash=claim_token_hash,
                 updated_at=now,
             )

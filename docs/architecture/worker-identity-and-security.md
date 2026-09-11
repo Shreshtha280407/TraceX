@@ -1,0 +1,127 @@
+# Worker Identity and Security (Aditya Phase 2)
+
+Replaces the temporary `WORKER_SHARED_SECRET` boundary Nipun's Phase 2.1/2.2 work explicitly flagged as a stand-in (see `docs/architecture/worker-job-lifecycle.md`'s original "Worker identity" section, and `docs/architecture/phase-2-decisions.md`'s Phase 2.1 "Open questions") with revocable, per-worker service identities: every worker process now authenticates as a specific, named, individually-scoped, individually-revocable identity — not "anyone who knows the one shared value."
+
+## What changed, and what didn't
+
+**Changed**: `require_worker_principal` (`app/modules/evidence_lifecycle/dependencies.py`) now authenticates against a real `WorkerCredentialRecord` looked up by credential digest, not a single compared secret. `WorkerPrincipal` now carries `worker_id`/`display_name`/`allowed_processor_names` instead of being an empty marker. A successful `/claim` now records *which* authenticated worker identity owns the job (`worker_jobs.claimed_by_worker_id`); `/result` and `/input` now additionally require the caller to *be* that worker, not just hold the job's claim token.
+
+**Unchanged**: everything Nipun built in Phase 2/2.1/2.2/2.3 — claim-token generation/hashing, lease/reclaim semantics, `FOR UPDATE SKIP LOCKED` concurrency, idempotent result submission, the evidence-delivery streaming endpoint, and the `structured_tabular`/`structured_json` routing — is untouched. A worker still never receives a PostgreSQL, Neo4j, MinIO, or Redis credential of any kind.
+
+## Worker credential lifecycle
+
+### Model
+
+`app/modules/access_control/models.py`'s `WorkerCredentialRecord` (table `worker_credentials`, migration `48e9e76153ca_worker_credentials_and_job_ownership`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `worker_id` | UUID (primary key) | Stable across rotation |
+| `display_name` | str | Operator-assigned, non-secret |
+| `status` | `active` \| `revoked` | `WorkerCredentialStatus` |
+| `allowed_processor_names` | tuple of str (JSONB) | Which `WorkerJobV1.processor_name` values this worker may claim |
+| `credential_digest` | str, unique, indexed | `HMAC-SHA256(pepper, token)`, or plain SHA-256 if no pepper is configured — **never the plaintext token** |
+| `created_at` | datetime | |
+| `rotated_at` | datetime \| null | Last rotation, if any |
+| `revoked_at` | datetime \| null | Set once, on revocation |
+
+### Create, distribute, rotate, revoke — the trusted-operator CLI
+
+`app/modules/access_control/worker_credentials.py` is the *only* way a worker credential is ever created, rotated, or revoked in this codebase. There is deliberately no public HTTP API for any of it (see "Explicit non-goals" below) — this CLI runs wherever the server's own PostgreSQL configuration is already available (a developer machine, a deployment bastion, a CI provisioning step), the same trust boundary an operator running `alembic upgrade head` already has.
+
+```bash
+# Create — prints the plaintext token exactly once, to the local terminal.
+uv run python -m app.modules.access_control.worker_credentials create \
+  --name structured-worker \
+  --processor fir_report_text_v1 \
+  --processor cdr_generic_v1 \
+  --processor financial_transaction_generic_v1 \
+  --processor generic_tabular_v1 \
+  --processor generic_json_v1
+
+# Rotate — invalidates the old token immediately; prints the new one once.
+uv run python -m app.modules.access_control.worker_credentials rotate --worker-id <uuid>
+
+# Revoke — idempotent; safe to call more than once.
+uv run python -m app.modules.access_control.worker_credentials revoke --worker-id <uuid>
+
+# List — never prints a token or a digest.
+uv run python -m app.modules.access_control.worker_credentials list
+```
+
+**Distribution**: the plaintext token printed by `create`/`rotate` is the value an operator pastes into that specific worker process's own `.env` as `WORKER_TOKEN`, and nowhere else. It is never emailed, never pasted into a chat, never committed.
+
+### Token storage and Git-secret rules
+
+- `secrets.token_urlsafe(32)` (256 bits of entropy) generates every worker token — the same primitive `access_control.tokens.generate_refresh_token` already uses for refresh tokens.
+- Only `credential_digest` is ever persisted. The raw token exists only in the CLI operator's terminal output and the target worker process's own environment.
+- **Issued worker tokens go only into untracked local/deployment secrets** — a developer's own `.env` (git-ignored) or a deployment's real secret store. They must **never** appear in: Git (any commit, any branch), `.env.example` (which ships only a blank placeholder), application logs, test reports, CI output, or a screenshot. `hash_worker_credential`/`require_worker_principal`/the CLI's own print statements are the only places a raw token is ever handled, and none of them log it.
+- `WORKER_CREDENTIAL_PEPPER` (server-side) is likewise never committed — `.env.example` ships it blank, documented as optional outside production and required inside it (see "Configuration" below).
+
+## Processor scoping
+
+`allowed_processor_names` is enforced at claim time only: `POST /api/v1/internal/worker-jobs/claim` rejects (`403`, `worker_processor_scope_denied` audited) a `processor_name` outside the authenticated worker's allow-list, **before** the claim query ever runs — no job is claimed on the scoped-out worker's behalf. Result submission and input streaming don't re-check scope (a worker that already legitimately claimed a job is, by construction, one that was in-scope for it at claim time); they check *identity* instead — see below.
+
+## Claim ownership and lease-reclaim semantics
+
+`worker_jobs.claimed_by_worker_id` (nullable UUID, FK to `worker_credentials.worker_id`, `ON DELETE SET NULL`) records the authenticated worker identity that currently owns a `running` job. It is set unconditionally on every successful claim — including a reclaim after lease expiry, which is exactly how ownership legitimately transfers: worker A claims, its lease expires without a result, worker B (any worker in scope for that processor, not necessarily A) claims the same job next, and `claimed_by_worker_id` now reads B. `claimed_by` (Nipun's Phase 2.1 field — the claiming worker's self-declared `processor_name`) is unchanged and untouched; the two fields serve different purposes and both remain.
+
+A `worker_jobs` row claimed before this migration has `claimed_by_worker_id IS NULL`. It is not retroactively attributed to any identity — it simply becomes unclaimable-by-identity until its lease expires and a real authenticated worker reclaims it under the new system (a `NULL` never equality-matches a real `worker_id`, so the identity check below fails closed for it, exactly as intended).
+
+## Worker input/result authorization requirements
+
+`POST /result` and `GET /input` both require, in this exact order (see `EvidenceLifecycleService.submit_result`/`get_claimed_evidence_input`):
+
+1. A valid, active worker credential (`require_worker_principal`) — `401`/`503`, audited `worker_authentication_denied`.
+2. The job exists and has a claim-token hash at all — else `401` (`InvalidClaimTokenError`, `reason="unknown_or_unclaimed_job"`).
+3. The presented claim token's hash matches — else `401` (`reason="token_mismatch"`).
+4. **The authenticated worker is the identity currently bound to this job** (`job.claimed_by_worker_id == principal.worker_id`) — else `401` (`reason="worker_identity_mismatch"`). This check runs immediately after step 3, **before** the already-terminal/idempotent-replay branch — a wrong worker presenting a right-shaped-but-not-theirs claim token can never retrieve a cached result or a stream it wasn't entitled to, whether the job is still running or already complete.
+5. (`/result` only) The lease is still valid, and the submitted result's own scope/status validate.
+
+Every one of these renders as the identical generic `401` to the caller (never distinguishing which check failed) — the same default-deny philosophy every other denial in this codebase already follows — while the *audit* trail (below) does record which one, safely.
+
+## Audit event policy and safe fields
+
+Reuses `app.modules.access_control.audit.record_audit_event`/`record_audit_event_safely` — no parallel audit store. Six event types this phase adds or completes:
+
+| `event_type` | Raised from | Safe `metadata` fields |
+|---|---|---|
+| `case_access_denied` | `access_control.dependencies.require_case_action` | `action` |
+| `worker_authentication_denied` | `evidence_lifecycle.dependencies.require_worker_principal` | `reason` (`missing_or_malformed_credential` / `invalid_credential` / `revoked_credential`), `worker_id` (only when known — i.e. a revoked credential was actually found) |
+| `worker_processor_scope_denied` | `evidence_lifecycle.internal_api.claim_job` | `worker_id`, `processor_name`, `processor_version` |
+| `worker_job_access_denied` | `evidence_lifecycle.internal_api.submit_result`/`get_worker_job_input` | `worker_id`, `job_id`, `reason` (from `InvalidClaimTokenError.reason` — e.g. `token_mismatch`, `worker_identity_mismatch`, `lease_expired`, `not_claimed`) |
+| `worker_credential_rotated` | `access_control.worker_credentials.rotate_worker_credential` | `worker_id` |
+| `worker_credential_revoked` | `access_control.worker_credentials.revoke_worker_credential` | `worker_id` |
+
+Every event additionally carries the standard `record_audit_event` fields where known/safe: `request_id`, `user_id`/`case_id` (human-facing denials), `outcome=DENIED`. **Never** present in any event: a bearer token, a claim token, an object key/URI, a request body, a stack trace, or raw evidence content — verified behaviorally in `tests/unit/evidence_lifecycle/test_worker_identity_api.py`.
+
+**`worker_credential_rotated`/`worker_credential_revoked` are recorded via the plain (propagating) `record_audit_event`, not the denial-only `record_audit_event_safely`.** Rotation/revocation are accepted operator actions, not denials — the same distinction `access_control/audit.py`'s own docstring draws for every other accepted-path event (e.g. login/register) — so an audit-write failure here surfaces as a real error to the operator running the CLI rather than being silently swallowed. `revoke_worker_credential` audits every call, including a redundant call against an already-revoked credential, since the operator action itself (not just the resulting DB state) is what's worth a trail entry. Rotation/revocation are also already durably recorded as `WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, queryable via `list_worker_credentials` — the audit event is additional, not the only record.
+
+**Failure to write a denial audit never grants access or turns a deny into a successful request** — `record_audit_event_safely` (`access_control/audit.py`) swallows a write failure and logs a warning instead of propagating it; every denial call site in this phase uses it. `require_case_action`'s `case_access_denied` audit closes the exact gap `docs/architecture/phase-2-decisions.md`'s Phase 2 "Open questions" and `docs/qa/known-limitations.md` documented since Phase 2.
+
+## Workers remain database/MinIO/Neo4j/Redis blind
+
+Unchanged from every prior phase: a worker's credential proves *identity*, not infrastructure access. `WorkerPrincipal`/`WorkerCredentialRecord` never carry a PostgreSQL, Neo4j, MinIO, or Redis credential; `GET /input` still streams evidence bytes through the API process itself (see `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery"), never handing out an object key or storage credential. Nothing in this phase changes that boundary.
+
+## Temporary/shared-secret behavior is removed, not retained as a fallback
+
+`Settings.worker_shared_secret` no longer exists. `require_worker_principal` has no code path that accepts a bare shared secret, an unauthenticated caller, or any credential not resolvable to a specific, active `WorkerCredentialRecord`. `WORKER_TOKEN` (client-side, what a worker process presents) and `WORKER_CREDENTIAL_PEPPER` (server-side, mixed into every stored digest) are new, distinct settings — not a renamed continuation of the old boundary.
+
+## Configuration
+
+| Setting | Side | Required? | Behavior when missing |
+|---|---|---|---|
+| `WORKER_TOKEN` | Client (a worker process) | Yes, for that worker to authenticate | That worker process's own CLI (`structured_processing.worker --once`) refuses to start, safely (`WorkerAuthenticationError`, no fabricated request) |
+| `WORKER_CREDENTIAL_PEPPER` | Server | Optional outside production; **required** when `APP_ENV=production` | Outside production: falls back to an unkeyed SHA-256 digest (documented, intentional — see below). In production: `require_worker_principal` fails every request `503` (`worker security is not configured`), and the CLI refuses to create/rotate a credential, both via `resolve_worker_pepper` raising `WorkerSecurityConfigurationError` with a clear, non-secret message — never a stack trace, never a silent unkeyed fallback in that environment. |
+
+### Why an unpeppered fallback is safe outside production
+
+`hash_worker_credential`'s unkeyed-SHA-256 fallback applies the identical reasoning `access_control.tokens.hash_refresh_token` already documents for refresh tokens: the input is already a 256-bit-entropy random secret, so there is no dictionary/rainbow-table attack surface a slow KDF or a pepper would meaningfully close for a *local development* threat model. The pepper's real value is defense-in-depth against a **leaked production database dump** being immediately usable to forge worker credentials without also having the separately-stored pepper — a production-specific concern, hence the production-only hard requirement.
+
+### Rotating the pepper invalidates every existing credential
+
+`hash_worker_credential` must be called identically (same pepper, or same "no pepper" state) at credential-creation/rotation time and at every subsequent authentication. Changing `WORKER_CREDENTIAL_PEPPER` in an already-provisioned deployment silently breaks every previously-issued token's digest match — every worker would need its token rotated after a pepper change. This is an inherent property of peppering, not a bug; flagged here so an operator doesn't mistake mass worker-authentication failure after a pepper rotation for something else.
+
+## Explicit non-goals (this phase)
+
+No public worker-account management API, no worker login/logout flow, no OAuth/OIDC/SAML, no mTLS/certificate-authority infrastructure, no Kubernetes secrets or cloud secret-manager integration, no RBAC/ABAC redesign, no case CRUD changes, no changes to `EvidenceRecordV1`/`ObservationV1`/`EntityV1`/`EventV1`/`WorkerJobV1`/`WorkerResultV1`/`WorkerProgressV1` payload contracts. See `docs/qa/known-limitations.md` for the full deferred list.

@@ -2,15 +2,15 @@
 
 The only way this module talks to the rest of the system: no direct
 PostgreSQL/Neo4j/Redis/MinIO access, ever. Every request carries
-`Authorization: Bearer <WORKER_SHARED_SECRET>` (the same narrow, temporary
-boundary `require_worker_principal` enforces -- see
-`docs/architecture/worker-job-lifecycle.md`); result submission and input
-resolution additionally carry the per-job `X-Claim-Token` header, exactly
-as `internal_api.py::submit_result` already expects (`fetch_input`'s target
-endpoint is *proposed*, not yet implemented -- see
-`docs/architecture/structured-processing-worker.md`).
+`Authorization: Bearer <WORKER_TOKEN>` -- this worker process's own
+per-worker credential, verified against `require_worker_principal` (see
+`docs/architecture/worker-identity-and-security.md`; this boundary was a
+narrow, temporary shared secret in Phase 2.1, since replaced); result
+submission and input resolution additionally carry the per-job
+`X-Claim-Token` header, exactly as `internal_api.py::submit_result` already
+expects.
 
-Never logs the shared secret, a claim token, or a raw response body --
+Never logs the worker token, a claim token, or a raw response body --
 every log call below passes only `job_id`s, processor names, and status
 codes.
 """

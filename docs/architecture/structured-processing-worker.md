@@ -80,7 +80,7 @@ Every emitted item is a canonical `ObservationV1` — a raw, unresolved statemen
 
 ```
 GET /api/v1/internal/worker-jobs/{job_id}/input
-Authorization: Bearer <WORKER_SHARED_SECRET>
+Authorization: Bearer <WORKER_TOKEN>
 X-Claim-Token: <claim_token from /claim>
 
 200 OK
@@ -90,7 +90,7 @@ X-TraceX-Evidence-SHA256: <evidence.sha256>
 <raw evidence bytes, streamed>
 ```
 
-Authenticated identically to `/result` (shared secret + the same claim-token header, reused rather than a second header name), scoped to exactly the job the caller holds a valid, currently-`running`, unexpired-lease claim token for — never an object key, bucket, endpoint, or credential.
+Authenticated identically to `/result` (a real per-worker credential, `WORKER_TOKEN` -- see `docs/architecture/worker-identity-and-security.md`, Phase 2.4 -- plus the same claim-token header, reused rather than a second header name), scoped to exactly the job the caller holds a valid, currently-`running`, unexpired-lease claim token for, **and** is the specific worker identity that claimed it — never an object key, bucket, endpoint, or credential.
 
 ## Shimming `EvidenceRecordV1` for `process_job`
 

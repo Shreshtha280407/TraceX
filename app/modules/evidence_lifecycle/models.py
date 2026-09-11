@@ -86,10 +86,14 @@ class WorkerJobRecord(EvidenceLifecycleModel):
     future redrive.
 
     `claimed_by` stores the claiming worker's self-declared `processor_name`
-    only -- a non-secret identifier, not a verified per-worker identity (see
-    `docs/architecture/worker-job-lifecycle.md`'s "Worker identity" section
-    for why). `claim_token_hash` is the SHA-256 hex digest of the one-time
-    claim token handed to the worker; the raw token is never persisted.
+    only -- a non-secret identifier, kept unchanged from Phase 2.1 for
+    observability. `claimed_by_worker_id` (Aditya's worker-identity
+    hardening) is the *verified* identity: the `worker_id` of the
+    authenticated `WorkerCredentialRecord` that actually performed the
+    successful claim, set unconditionally on every claim and reclaim -- see
+    `docs/architecture/worker-identity-and-security.md`. `claim_token_hash`
+    is the SHA-256 hex digest of the one-time claim token handed to the
+    worker; the raw token is never persisted.
     """
 
     job_id: UUID
@@ -108,6 +112,7 @@ class WorkerJobRecord(EvidenceLifecycleModel):
     claimed_at: datetime | None
     lease_expires_at: datetime | None
     claimed_by: str | None
+    claimed_by_worker_id: UUID | None
     claim_token_hash: str | None
     last_error_code: str | None
     last_error_message: str | None

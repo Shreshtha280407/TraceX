@@ -2,6 +2,8 @@
 
 `app/modules/evidence_lifecycle/` implements the real, case-scoped evidence ingestion foundation: authorized upload → streamed SHA-256 hashing → private object storage → immutable metadata persistence → a durable worker-job record → best-effort dispatch. As of Phase 2.1, this module also implements the job **claim** and **result-submission** half of the lifecycle — see `docs/architecture/worker-job-lifecycle.md` for that part in full; this document covers upload through durable job creation. It is the common foundation every later source-processing module (Jasraj's `structured_processing`, Sarthak's `communication_processing`, Gaurav's `media_processing`) will eventually consume jobs from, and that Shreshtha's `graph` module will eventually see reviewed observations flow past. This module does not implement any actual worker execution, entity resolution, correlation, review workflows, or Merkle/signature chains — see "Non-goals" below.
 
+**As of Aditya's Phase 2 worker-identity hardening**, `worker_jobs` also carries `claimed_by_worker_id` (nullable, set on every successful claim/reclaim), and `/result`/`/input` additionally require the caller to be that verified identity, not just hold the job's claim token. Every claim/result/input request now authenticates against a real, revocable per-worker credential (`require_worker_principal`), not the temporary shared secret this document previously described. See `docs/architecture/worker-identity-and-security.md` for the full design; the upload → durable-job-creation flow this document covers is otherwise unchanged.
+
 ## Lifecycle, end to end
 
 ```
@@ -89,7 +91,7 @@ No endpoint in this module returns a working URL to the underlying bytes, a pres
 
 ```
 GET /api/v1/internal/worker-jobs/{job_id}/input
-Authorization: Bearer <WORKER_SHARED_SECRET>
+Authorization: Bearer <WORKER_TOKEN>
 X-Claim-Token: <claim_token from /claim>
 
 200 OK
@@ -105,7 +107,7 @@ X-TraceX-Parser-Profile: <evidence.parser_profile, when set>
 <raw evidence bytes, streamed>
 ```
 
-**Why this doesn't reopen the boundary above**: the API remains the sole MinIO credential holder and streams the exact object through itself — a worker never receives an object key, bucket name, MinIO endpoint, presigned URL, or credential, only the bytes it was already dispatched to process. Access requires both `require_worker_principal` (the same shared-secret boundary every internal endpoint requires) *and* the exact claim token returned when *this specific job* was claimed — verified via `EvidenceLifecycleService.get_claimed_evidence_input`, which rejects a wrong job's token, a never-claimed (`queued`) job, an already-terminal job, and an expired lease uniformly with the same generic `401` every other claim-token failure produces (never distinguishing which). The stream is valid only for the active lease on the claimed job — not a standing credential, not reusable after the job completes or the lease expires.
+**Why this doesn't reopen the boundary above**: the API remains the sole MinIO credential holder and streams the exact object through itself — a worker never receives an object key, bucket name, MinIO endpoint, presigned URL, or credential, only the bytes it was already dispatched to process. Access requires `require_worker_principal` (a real, active, per-worker credential — see `docs/architecture/worker-identity-and-security.md`), the exact claim token returned when *this specific job* was claimed, *and* (as of Aditya's Phase 2 worker-identity hardening) that the caller is the worker identity currently bound to this job — verified via `EvidenceLifecycleService.get_claimed_evidence_input`, which rejects a wrong job's token, a different worker's valid token, a never-claimed (`queued`) job, an already-terminal job, and an expired lease uniformly with the same generic `401` every other claim-token failure produces (never distinguishing which). The stream is valid only for the active lease on the claimed job, held by the worker that claimed it — not a standing credential, not reusable after the job completes, the lease expires, or a different worker reclaims it.
 
 **Streaming, not buffering**: `ObjectStorage.open_stream` (`storage.py`) returns a bounded, chunked `ObjectStream` — `MinioObjectStorage`'s implementation bridges minio-py's synchronous chunk iterator to an async one via `asyncio.to_thread` per chunk (the same offload-to-thread convention every other method on that class already uses), so the object is never fully read into API process memory regardless of its size. A missing/unreadable backing object propagates as `StorageError` to the existing central safe-500 handler (`app/core/errors.py`) — never a bespoke error path, never a leaked object key or MinIO detail.
 

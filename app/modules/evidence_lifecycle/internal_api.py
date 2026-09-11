@@ -34,7 +34,7 @@ from fastapi.responses import StreamingResponse
 
 from app.contracts.worker import WorkerResultV1
 from app.core.errors import get_request_id
-from app.modules.access_control.audit import record_audit_event
+from app.modules.access_control.audit import record_audit_event, record_audit_event_safely
 from app.modules.access_control.dependencies import get_access_control_repository
 from app.modules.access_control.models import AuditOutcome
 from app.modules.access_control.repository import AccessControlRepository
@@ -66,20 +66,47 @@ _MAX_CLAIM_TOKEN_LENGTH = 200
 @router.post("/claim", response_model=ClaimResponse)
 async def claim_job(
     body: ClaimRequest,
-    _principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
 ) -> ClaimResponse:
     """Claim exactly one eligible job routed to the declared processor.
+
+    `body.processor_name` must be one of `principal.allowed_processor_names`
+    -- a worker credential scopes *which* processors a worker may claim, not
+    just whether it may call this endpoint at all. A scope violation is a
+    `403` (the caller is authenticated, just not authorized for this
+    processor), audited as `worker_processor_scope_denied`, and never
+    reaches the claim query at all -- no job is claimed on its behalf.
 
     Returns a safe "no work available" response (`job: null`) rather than
     an error when nothing is eligible. The `claim_token` returned here is
     shown to the caller exactly once -- only its hash is ever persisted.
     """
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    if body.processor_name not in principal.allowed_processor_names:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_processor_scope_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "processor_name": body.processor_name,
+                "processor_version": body.processor_version,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this worker is not authorized for the requested processor",
+        )
+
     outcome = await service.claim_job(
         processor_name=body.processor_name,
         processor_version=body.processor_version,
         context=context,
+        claimed_by_worker_id=principal.worker_id,
     )
     return ClaimResponse(
         job=outcome.job.to_contract() if outcome.job is not None else None,
@@ -92,7 +119,7 @@ async def claim_job(
 async def submit_result(
     job_id: UUID,
     result: WorkerResultV1,
-    _principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
@@ -101,7 +128,12 @@ async def submit_result(
 
     Idempotent: an exact-payload resubmission for an already-completed job
     returns the original accepted outcome (never a duplicate write); a
-    different payload for an already-completed job is a safe `409`.
+    different payload for an already-completed job is a safe `409`. Only
+    the worker identity currently bound to this job
+    (`WorkerJobRecord.claimed_by_worker_id`, set at claim time) may submit
+    its result -- a different, even fully-authenticated, worker presenting
+    this job's valid claim token is rejected exactly like a wrong token
+    (see `service.submit_result`'s ordering).
     """
     if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
@@ -109,9 +141,25 @@ async def submit_result(
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
         outcome = await service.submit_result(
-            job_id=job_id, claim_token=claim_token, result=result, context=context
+            job_id=job_id,
+            claim_token=claim_token,
+            result=result,
+            context=context,
+            worker_id=principal.worker_id,
         )
     except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     except ResultValidationError as exc:
         raise HTTPException(
@@ -149,18 +197,21 @@ async def submit_result(
 @router.get("/{job_id}/input")
 async def get_worker_job_input(
     job_id: UUID,
-    _principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
 ) -> StreamingResponse:
     """Stream a currently-claimed job's evidence bytes to the worker that claimed it.
 
-    Requires both `require_worker_principal` (the shared-secret boundary
-    every internal endpoint requires) and the exact claim token returned
-    when *this* job was claimed -- rejects a wrong job's token, a
-    never-claimed job, an already-terminal job, and an expired lease
-    uniformly via `InvalidClaimTokenError` (never distinguishing which).
+    Requires `require_worker_principal` (a real, active, per-worker
+    credential), the exact claim token returned when *this* job was
+    claimed, *and* that the caller is the worker identity currently bound
+    to this job (`WorkerJobRecord.claimed_by_worker_id`) -- rejects a wrong
+    job's token, a different worker's valid token, a never-claimed job, an
+    already-terminal job, and an expired lease uniformly via
+    `InvalidClaimTokenError` (never distinguishing which to the caller).
     Streamed in bounded chunks (`storage.open_stream`), never fully
     buffered in API memory. Response headers carry only the safe metadata
     a worker genuinely needs to parse and verify its input -- never an
@@ -172,9 +223,24 @@ async def get_worker_job_input(
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
         claimed_input = await service.get_claimed_evidence_input(
-            job_id=job_id, claim_token=claim_token, context=context
+            job_id=job_id,
+            claim_token=claim_token,
+            context=context,
+            worker_id=principal.worker_id,
         )
     except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
     # A storage failure (including "object missing") propagates uncaught

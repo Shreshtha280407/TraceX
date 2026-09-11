@@ -184,3 +184,53 @@ Auditing `service.upload_evidence` while implementing this change found that `Ev
 ## Open questions for team review (Phase 2.3)
 
 - None specific to this change — it closes the one open question Phase 2.2 raised, and introduces no new unresolved boundary.
+
+---
+
+# Phase 2.4 Decisions — Aditya Worker Identity, Authorization Binding, and Security Audit Completion
+
+Full design lives in `docs/architecture/worker-identity-and-security.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.4)
+
+- **Token generation/hashing pattern**: `secrets.token_urlsafe(32)` + a fast hash of a high-entropy secret, the exact primitives `access_control.tokens.generate_refresh_token`/`hash_refresh_token` and (Phase 2.1) `evidence_lifecycle`'s claim-token generation already established. `hash_worker_credential` adds one documented deviation — an optional pepper — see below.
+- **Audit logging**: `app.modules.access_control.audit.record_audit_event`, reused for every new event type. No parallel audit store.
+- **`Table`/repository conventions**: `worker_credentials_table` (new) follows `access_control.repository`'s existing hand-written-`sa.Table`-matching-a-migration pattern exactly.
+- **Case/membership/session model and auth flow**: entirely unchanged. This phase adds a second, independent kind of principal (`WorkerPrincipal`) alongside `AuthenticatedPrincipal`/`AuthorizedCasePrincipal` — it does not touch either.
+
+## Genuinely new (Phase 2.4)
+
+- `worker_credentials` table + `worker_jobs.claimed_by_worker_id` column, migration `48e9e76153ca_worker_credentials_and_job_ownership`.
+- `WorkerCredentialRecord`/`WorkerCredentialStatus` (`access_control/models.py`); `AccessControlRepository`'s `create_worker_credential`/`get_worker_credential_by_id`/`get_worker_credential_by_digest`/`list_worker_credentials`/`rotate_worker_credential`/`revoke_worker_credential`.
+- `app/modules/access_control/worker_credentials.py` — the trusted-operator CLI, `hash_worker_credential`, `resolve_worker_pepper`, `generate_worker_token`.
+- `WorkerSecurityConfigurationError` (`access_control/errors.py`); `Settings.worker_token`/`worker_credential_pepper` (replacing `worker_shared_secret`, removed).
+- Rewritten `WorkerPrincipal`/`require_worker_principal` (`evidence_lifecycle/dependencies.py`); `claimed_by_worker_id`/`worker_id` parameters threaded through `EvidenceLifecycleService.claim_job`/`submit_result`/`get_claimed_evidence_input` and `EvidenceLifecycleRepository.claim_job`.
+- `InvalidClaimTokenError.reason` (a safe, internal-only classifier, never in the HTTP response).
+- `case_access_denied`/`worker_authentication_denied`/`worker_processor_scope_denied`/`worker_job_access_denied`/`worker_credential_rotated`/`worker_credential_revoked` audit events; `record_audit_event_safely` (`access_control/audit.py`) for the four denial events, the plain propagating `record_audit_event` for the two accepted-operator-action events.
+- No new dependency: everything above is stdlib (`secrets`, `hashlib`, `hmac`, `argparse`) plus already-approved SQLAlchemy/FastAPI/Pydantic features.
+
+## Why `allowed_processor_names` is enforced only at claim time, not on every request
+
+A worker that has already legitimately claimed a job (proven by a valid claim token) was, by construction, in-scope for that job's processor at the moment it claimed it — re-checking scope on `/result`/`/input` would be redundant with the claim-time check and would only matter if a worker's scope could shrink *while it holds an active claim*, which this phase's CLI has no mechanism to do (rotation preserves scope; only revocation changes standing, and revocation is checked by `require_worker_principal` on every request regardless of scope). Checking scope once, at the one point where it actually gates a new action (claiming), keeps the authorization model simple and matches exactly what the task brief asked for ("A worker can claim only processor names included in its allowed_processor_names").
+
+## Why worker-identity verification sits immediately after claim-token verification, not folded into it
+
+`submit_result`/`get_claimed_evidence_input` check the claim-token hash and the worker identity as two separate, sequential, unconditional steps — both before any branching (including the terminal-job replay/conflict path) — rather than combining them into one compound condition. Keeping them separate lets each failure carry its own safe `reason` code for auditing (`token_mismatch` vs. `worker_identity_mismatch`) while still rendering the identical generic `401` to the caller either way; a single combined check would have to either lose that distinction internally or invent a second exception type purely to carry it, which `InvalidClaimTokenError.reason` already does more simply.
+
+## Why `claimed_by_worker_id` is a new column, not a repurposed `claimed_by`
+
+`worker_jobs.claimed_by` (Phase 2.1) already existed as "the claiming worker's self-declared `processor_name`" — a non-secret observability label, explicitly documented as *not* a verified identity. Overloading it to also mean "verified worker UUID" would have silently changed its type and meaning out from under any future code (or human) reading old rows, and would have made a `NULL` ambiguous between "never claimed" and "claimed under the old system, no identity recorded." A new, additive, nullable column keeps both facts independently queryable and keeps Phase 2.1's own column untouched, satisfying the task brief's "without changing frozen worker contract payloads" instruction at the schema level too — no existing column's meaning changed, only a new one was added.
+
+## Why a pre-migration `running` job (`claimed_by_worker_id IS NULL`) is not retroactively attributed
+
+There is no way to safely infer *which* worker identity should own a job claimed before this migration existed — `claimed_by` (a processor name, shared by every worker capable of that processor) is not a 1:1 mapping to a `worker_id`. Rather than guessing (which would violate this codebase's "never silently coerce/guess ambiguous data" rule, applied elsewhere to CDR timestamps and phone numbers), such a row is simply left unbound: `NULL` never equality-matches a real `worker_id`, so `/result`/`/input` correctly deny it until its lease expires and a real authenticated worker reclaims it — a safe, honest "this job needs to be reclaimed under the new system" outcome rather than a fabricated ownership assignment.
+
+## Why `worker_credential_rotated`/`worker_credential_revoked` are not wired to `record_audit_event` in this phase
+
+Rotation and revocation are already durably recorded as first-class, queryable state (`WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, visible via the CLI's own `list` command) — a genuine audit trail in their own right, independent of `security_audit_events`. The CLI is a standalone script, run by a trusted human at a terminal, not a request-serving path where "the audit write failed, but should we still let this succeed" is a live question; wiring it to `record_audit_event` is a small, safe follow-up (flagged in `docs/qa/known-limitations.md`) rather than something this phase needed to force through given the state is already captured.
+
+## Open questions for team review (Phase 2.4)
+
+- Whether `worker_credential_rotated`/`worker_credential_revoked` should also emit a `security_audit_events` row (currently: state changes are captured on the `worker_credentials` row itself, not duplicated into the audit table).
+- Rotating `WORKER_CREDENTIAL_PEPPER` in an already-provisioned deployment invalidates every existing worker credential's digest match at once (documented, not automated) — a later phase might want a dual-pepper transition window if this becomes operationally painful.
+- No maximum number of processor names or worker credentials is enforced — not expected to matter at this project's scale, but worth noting if a very large worker fleet is ever provisioned.

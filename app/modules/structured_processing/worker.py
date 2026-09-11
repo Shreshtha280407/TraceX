@@ -484,13 +484,14 @@ def _configure_logging() -> None:
 
 
 def _build_client(settings: Settings) -> WorkerApiClient:
-    secret = settings.worker_shared_secret
-    if secret is None:
+    token = settings.worker_token
+    if token is None:
         raise WorkerAuthenticationError(
-            "WORKER_SHARED_SECRET is not configured; the internal worker API fails closed"
+            "WORKER_TOKEN is not configured for this worker process; see "
+            "docs/architecture/worker-identity-and-security.md"
         )
     return WorkerApiClient(
-        base_url=settings.worker_api_base_url, shared_secret=secret.get_secret_value()
+        base_url=settings.worker_api_base_url, shared_secret=token.get_secret_value()
     )
 
 
