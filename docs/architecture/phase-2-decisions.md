@@ -106,3 +106,45 @@ Found while wiring `WORKER_SHARED_SECRET` into `compose.yaml`'s `api` service, b
 - No max-attempt cutoff — a job with a perpetually-expiring lease is reclaimable forever. A later phase should decide the policy (likely a small addition to the claim query's eligibility condition).
 - No automatic redrive of `deferred`/`cancelled` jobs.
 - Denied worker actions (bad/expired/wrong claim token, scope mismatch, conflict) are not audit-logged, mirroring the same pre-existing gap already documented for case-scoped user endpoints.
+
+---
+
+# Phase 2.2 Decisions — Nipun Secure Worker Evidence Delivery
+
+Full design and the revised security boundary live in `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery" section and `docs/architecture/structured-processing-worker.md`'s "Input-access boundary" section (updated in place, not superseded, since this phase closes the exact gap that section documented). This section records the decisions worth cross-referencing from here.
+
+## Why this revises, rather than violates, "no raw-evidence-download API"
+
+Phase 2's `docs/architecture/evidence-lifecycle.md` documented "no raw-evidence-download API" as a *user-facing/generic-caller* boundary — the concern it names explicitly is an object key or presigned URL a caller could resolve directly against MinIO, bypassing the API as the credential holder. `GET /api/v1/internal/worker-jobs/{job_id}/input` doesn't do that: it never returns an object key, bucket name, MinIO endpoint, or presigned URL — the API remains the only thing that ever holds a MinIO credential, and it streams the exact bytes through itself. What's new is *who* can trigger that stream and *when*: a worker that has actively claimed a specific job, only while that job's claim/lease is live, authenticated by the same `require_worker_principal` boundary plus the same per-job claim token `/result` already requires. This is authorized to a worker performing the job it was assigned, not to "anyone with the shared secret" and not to a case-scoped human caller — a narrower grant than either existing access path, not a wider one.
+
+## Reused, not duplicated (Phase 2.2)
+
+- **Claim-token verification**: `get_claimed_evidence_input` reuses `_hash_claim_token` and the identical unconditional-token-check-first ordering `submit_result` already established (see `docs/architecture/worker-job-lifecycle.md`'s claim-token section) — deliberately *narrower* than `submit_result`'s branching, since input delivery has no "already terminal" replay case: only a job that is *right now* `running` with an unexpired lease may stream its input.
+- **Evidence lookup**: `EvidenceLifecycleRepository.get_evidence` (Phase 2, unchanged) — no new repository query was needed; the job record already carries `case_id`/`evidence_id`.
+- **Safe-error philosophy**: a storage failure (including "object missing") propagates uncaught to `app/core/errors.py`'s existing central safe-500 handler, exactly like every other `StorageError` in this module already does — no bespoke error path was invented for this endpoint specifically.
+- **`asyncio.to_thread`-per-blocking-call convention**: `MinioObjectStorage.open_stream`'s chunk bridge (`_stream_response`) follows the identical pattern every other method on that class already uses for minio-py's synchronous API.
+
+## Genuinely new (Phase 2.2)
+
+- `ObjectStorage.open_stream`/`ObjectStream` (`storage.py`) — a bounded, chunked read handle; `MinioObjectStorage` bridges minio-py's synchronous `.stream()` generator to an async one via `asyncio.to_thread` per chunk, never reading the whole object into API memory at once. `FakeObjectStorage.open_stream` is the matching in-memory test double.
+- `EvidenceLifecycleService.get_claimed_evidence_input`/`ClaimedEvidenceInput` (`service.py`).
+- `GET /api/v1/internal/worker-jobs/{job_id}/input` (`internal_api.py`) — streams the response via FastAPI's `StreamingResponse`, `Cache-Control: no-store`, a safe RFC 6266 `Content-Disposition` (sanitized against header injection), and `X-TraceX-Evidence-Id`/`X-TraceX-Evidence-SHA256`/`X-TraceX-Source-Type`/`X-TraceX-Parser-Profile` headers — never an object key, bucket, endpoint, or credential.
+- Reuses the existing `X-Claim-Token` header (not a second header name) for consistency with `/result` — considered and rejected a distinct `X-Worker-Claim-Token` header since the two endpoints prove the identical thing (possession of the job's claim token) the identical way.
+
+## Why `Content-Disposition` instead of a bespoke `X-Original-Filename` header
+
+`structured_processing`'s originally-*proposed* endpoint shape (written before this endpoint existed, in `docs/architecture/structured-processing-worker.md`) used a custom `X-Original-Filename` header. Implemented here as a standard RFC 6266 `Content-Disposition` instead — a well-defined, standard way to carry a filename on a byte-stream response, with a documented non-ASCII encoding (`filename*=UTF-8''...`) that a bespoke header would have to reinvent. `original_filename` is caller-supplied display metadata (trimmed/length-capped at upload time, never sanitized against quotes or control characters — see `service._safe_filename`) — `_safe_content_disposition` strips CR/LF and escapes quotes before building the header, the one place that safety property is now enforced, since it's the first place `original_filename` is ever placed into a response header.
+
+## Why streaming, not `read_bytes`
+
+`ObjectStorage.read_bytes` (Phase 2, used internally by `MinioSourceResolver` for trusted orchestration code) fully buffers the object before returning. Reused as-is for that internal use (evidence is already capped at `MAX_EVIDENCE_BYTES`, and that call site was never HTTP-exposed), but this new endpoint is reachable over HTTP by a caller this module doesn't fully control the size of, so `open_stream` was added instead of extending `read_bytes`'s contract — a genuinely different memory-safety requirement, not a refactor of the existing internal path.
+
+## `generic_tabular_v1`/`generic_json_v1` remain unreachable via live routing — considered, deferred
+
+Investigated whether `routing.py` could route some `document`/`cdr`/`financial` uploads to these two fallback profiles instead of their default processor. Concluded this cannot be done as a "server-side allowlist" the way the task asked without breaking a principle this module already deliberately established (see "One canonical processor per `source_type`" above): choosing between multiple valid profiles for the *same* `source_type` requires reading and classifying the bytes' shape, which is explicitly documented as the *owning processing module's* job, not evidence-lifecycle's coarse ingestion-time routing. Making `generic_tabular_v1`/`generic_json_v1` reachable would require either (a) a new `source_type` dedicated to "generic tabular/JSON, not CDR or financial shaped" — a frozen-contract change, out of scope for any module to make unilaterally — or (b) content-shape-sniffing logic inside `evidence_lifecycle` at upload time, which contradicts the "coarse routing only" boundary this module already committed to and documented. Left unimplemented; flagged in `docs/qa/known-limitations.md` as a genuine open question for team review, not silently worked around.
+
+## Open questions for team review (Phase 2.2)
+
+- `generic_tabular_v1`/`generic_json_v1` routing reachability (above) needs a team decision: a new `source_type`, or accept they remain reachable only via direct/test job construction.
+- A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around; the connection simply terminates.
+- No lease-renewal exists yet (unchanged from Phase 2.1) — a worker streaming a very large evidence file close to its lease boundary could have the lease expire mid-stream; the stream itself is unaffected (already authorized before the check), but a subsequent `/result` submission past that point would be rejected as `lease_expired`, same as today.

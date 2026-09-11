@@ -2,6 +2,90 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Nipun — Phase 2.2: Secure Worker Evidence Delivery build
+
+Environment: same sandbox as the Jasraj Phase 2 build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3 (confirmed reachable this session, unlike the Jasraj Phase 2 session earlier the same day — see that entry's "blocked" note; Docker availability varies by sandbox session, not by anything in this repository). Branch `nipun`, rebased cleanly onto `origin/main` (which already included Jasraj's merged Phase 2 work) with a clean working tree. Read `app/modules/evidence_lifecycle/{internal_api,service,repository,storage,dependencies,schemas,errors}.py`, `docs/architecture/{evidence-lifecycle,worker-job-lifecycle,phase-2-decisions,structured-processing-worker}.md`, and `structured_processing/{client,input_resolver,worker}.py` before designing the new endpoint.
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 1ms
+Checked 65 packages in 0.79ms
+$ uv run ruff format --check .
+266 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 120 source files
+```
+Result: **pass**, all four. No new dependency — `StreamingResponse` is existing FastAPI, `asyncio.to_thread`/chunked streaming is stdlib + already-used minio-py API surface.
+
+```bash
+$ uv run pytest -q
+997 passed, 24 skipped in 20.22s
+```
+Result: **pass**, no regressions. New this build: `tests/unit/evidence_lifecycle/test_worker_input_api.py` (14 tests), 4 new tests in `tests/unit/evidence_lifecycle/test_object_storage.py` (lazy-chunk-pull proof against a fake minio-py response, round-trip, missing-object safety), 1 new SHA-256-mismatch test in `tests/unit/structured_processing/test_worker_orchestration.py`, and `test_worker_client.py`'s `fetch_input` tests updated for the real `Content-Disposition`/`X-TraceX-Evidence-SHA256` header contract plus a new oversized-response test.
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0).
+
+```bash
+$ docker compose up --build -d
+```
+Result: **pass** after 5 attempts. The first four attempts hit the same transient sandbox-network DNS/registry-resolution flakiness already documented in this file's Phase 2/2.1 entries (`registry-1.docker.io`/`files.pythonhosted.org` DNS timeouts, a different dependency each time — `typing-extensions`, `alembic`, then two bare registry-metadata timeouts) — not a code or configuration issue (`docker compose config` above already proved the compose file itself is valid). The fifth attempt completed cleanly: all five services (`api`, `postgres`, `neo4j`, `redis`, `minio`) reached `healthy`/`running`.
+
+```bash
+$ curl -sf http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -sf http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -sf http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+$ uv run alembic current
+102857ca8d1d (head)
+```
+Result: **pass**, all four — no new migration was needed for Phase 2.2 (the endpoint reads existing `evidence_records`/`worker_jobs` tables only).
+
+**Live smoke test — the full claim -> stream -> parse -> submit path, for real** (a one-off script, not part of the pytest suite; registers a real user, seeds a real case/membership via `AccessControlRepository`, uploads a real synthetic FIR-text evidence file through the real `/api/v1/cases/{case_id}/evidence` endpoint, runs the real `uv run python -m app.modules.structured_processing.worker --once` as a subprocess, then asserts on the real job-status API — and cleans up every row it created):
+
+```
+uploaded evidence, job_id=55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69
+--- worker stdout ---
+{"event": "worker.run_once.started", ...}
+{"processor_name": "fir_report_text_v1", "processor_version": "1.0.0", "event": "worker.client.claim_attempted", ...}
+HTTP Request: POST http://localhost:8000/api/v1/internal/worker-jobs/claim "HTTP/1.1 200 OK"
+{"processor_name": "fir_report_text_v1", "event": "worker.run_once.claimed", "job_id": "55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69", ...}
+HTTP Request: GET http://localhost:8000/api/v1/internal/worker-jobs/55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69/input "HTTP/1.1 200 OK"
+{"job_id": "55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69", "event": "worker.client.submit_attempted", ...}
+HTTP Request: POST http://localhost:8000/api/v1/internal/worker-jobs/55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69/result "HTTP/1.1 200 OK"
+{"status": "succeeded", "observation_count": 2, "event": "worker.run_once.submitted", "job_id": "55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69", ...}
+{"job_id": "55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69", "status": "succeeded", "event": "worker.cli.done", ...}
+--- job status ---
+{'job_id': '55d1dbb7-bdc2-4f8e-8354-02a4a8f7cf69', 'case_id': 'b591b72d-23ba-433c-9bb5-52dda62a8d48', 'evidence_id': '8eec3238-ff72-421d-99d1-c7aa41a60a0d', 'source_type': 'document', 'processor_name': 'fir_report_text_v1', 'processor_version': '1.0.0', 'attempt': 1, 'status': 'succeeded', 'requested_at': '2026-09-11T07:53:47.196113Z', 'dispatched_at': '2026-09-11T07:53:47.206462Z', 'claimed_at': '2026-09-11T07:53:47.681549Z', 'completed_at': '2026-09-11T07:53:47.702794Z', 'observation_count': 2, 'last_error_code': None, 'last_error_message': None}
+SMOKE TEST PASSED
+```
+Result: **pass** — genuinely, not fabricated. Note the `GET .../input "HTTP/1.1 200 OK"` line: this is the real new endpoint, streaming the real uploaded evidence bytes back to the worker, which the worker then genuinely parsed (`FIR No. 77/2026 filed at Test Police Station. Section 420 IPC.` -> 2 observations, matching the `fir_reference` + `legal_section_mention` patterns) and submitted as a real `SUCCEEDED` result — not the `DEFERRED`/`input_resolution_unavailable` fallback every prior live attempt in this repository's history produced, because the gap that caused that is now closed. The job-status API (`GET /api/v1/cases/{case_id}/jobs/{job_id}`) independently confirms the same `job_id`, `succeeded` status, `claimed_at`/`completed_at` populated, and `observation_count: 2` — and, as always, no claim token or `object_uri` anywhere in that response. One incidental finding during script development: this long-lived sandbox's postgres volume had accumulated leftover `queued` `fir_report_text_v1` jobs from earlier manual live-verification sessions (Nipun Phase 2.1's own smoke test, run much earlier in this same session) — the claim query correctly claimed the *oldest* eligible one first, which briefly caused the smoke-test script (not the application) to check the wrong job. Not a bug in `claim_job` (this is its documented, correct FIFO behavior) — fixed in the script by clearing stale `queued` rows for the test processor before uploading, and by asserting the claimed `job_id` matches the uploaded one. All rows this script created (worker_observations, worker_results, worker_jobs, evidence_records, case_memberships, cases, users) were deleted in a `finally` block after the assertions ran; also cleaned up two earlier same-session partial-failure runs' leftover rows via a separate one-off query before the passing run above.
+
+**`tests/integration/structured_processing/test_worker_live.py` upgraded and re-verified live**: with the input-stream endpoint now real, the original test's `InputResolutionUnavailableError`-on-404 assertion was updated to `WorkerAuthenticationError`-on-401 (the endpoint now genuinely exists and rejects an unclaimed job's fake token, rather than 404ing), and a second test, `test_full_claim_stream_parse_submit_live_pipeline`, was added — a *permanent*, self-skipping, automated version of the live smoke test above (real register/login/case/membership/upload, a real `run_once()`, real assertions, real cleanup), so this proof no longer depends on a one-off manual script:
+
+```bash
+$ uv run pytest tests/integration/structured_processing/test_worker_live.py -v
+tests/integration/structured_processing/test_worker_live.py::test_worker_client_against_real_running_api PASSED
+tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline PASSED
+2 passed in 0.80s
+```
+
+**Full suite, live infrastructure fully up** (the strongest verification run of this whole session — every self-skipping `tests/integration/*` suite in the repository ran for real, not skipped):
+
+```bash
+$ uv run pytest -q
+1022 passed in 16.31s
+```
+Result: **pass**, zero skips, zero failures — access_control, evidence_lifecycle, graph, structured_processing, and readiness-live integration suites all exercised against real PostgreSQL/Neo4j/Redis/MinIO/the real API. `uv run ruff format --check .`/`ruff check .`/`mypy app`/`docker compose config` were re-run clean immediately before this (266 files formatted, all checks passed, no issues in 120 source files, exit 0).
+
+**Docker services left running**: `docker compose up --build -d` was already running when this task began (started outside this session, confirmed via `docker ps` before any action was taken) and was rebuilt/restarted in place for this verification — left running afterward rather than torn down, since it wasn't stood up fresh by this task and may still be in interactive use.
+
 ## 2026-09-11 — Jasraj — Phase 2: Structured-Processing Worker build
 
 Environment: same sandbox as the Nipun Phase 2.1 build below, Python 3.12.13 (via `uv`). Branch `jasraj`, working tree already matched `origin/main` (no rebase needed). Inspected the merged `evidence_lifecycle` internal worker API (`internal_api.py`, `schemas.py`, `routing.py`), `structured_processing`'s existing Phase 1 `process_job`/`models.py`/`provenance.py`/`structured/profiles.py`, and `docs/architecture/worker-job-lifecycle.md` before designing anything. Confirmed via inspection (not assumption) that no endpoint exists for a worker to fetch a claimed job's evidence bytes/metadata — the "Input-access boundary" documented in `docs/architecture/structured-processing-worker.md`.

@@ -71,9 +71,37 @@ A small, explicit, independently-maintained registry — not derived from any pr
 
 `RedisJobProducer.publish` pushes the job's canonical JSON (`app.core.canonical.canonical_bytes`) onto a Redis list keyed `tracex:jobs:{source_type}` via `RPUSH` — one list per source type, so a future consumer's `BLPOP` naturally scopes itself to the modality it knows how to process. This is a **producer only**: no consumer loop, no `BLPOP`, no worker execution exists in this repository. A worker never receives PostgreSQL, Neo4j, or MinIO credentials — it is handed a `WorkerJobV1` (from the queue, or a future redrive off `worker_jobs`) and, separately, an internal `SourceResolver`-shaped object (`MinioSourceResolver`) that already holds the real credentials; the worker code itself never sees them.
 
-## No raw-evidence-download API
+## No raw-evidence-download API — and the one narrow exception (Phase 2.2)
 
-No endpoint in this module returns a working URL to the underlying bytes, a presigned MinIO URL, or the raw bytes themselves. `EvidenceView`/`JobView` (`schemas.py`) are hand-picked safe projections — `object_uri` is deliberately excluded even though it carries no credential, simply because "an identifier a caller could try to resolve against MinIO directly" is exactly the shape of thing this rule exists to prevent. `MinioSourceResolver` is the sanctioned internal abstraction a later-phase authorized-viewing/worker-orchestration feature should use instead.
+No endpoint in this module returns a working URL to the underlying bytes, a presigned MinIO URL, an object key, a bucket name, a MinIO endpoint, or a storage credential. `EvidenceView`/`JobView` (`schemas.py`) are hand-picked safe projections — `object_uri` is deliberately excluded from both even though it carries no credential, simply because "an identifier a caller could try to resolve against MinIO directly" is exactly the shape of thing this rule exists to prevent. This boundary is unchanged by the section below — nothing in this module hands a raw MinIO URL or credential to any caller, ever.
+
+### Worker evidence delivery (Phase 2.2)
+
+`process_job`/`worker.py` implementations (Jasraj's `structured_processing`, and later Sarthak's/Gaurav's own workers) need the actual evidence bytes to do their job — `WorkerJobV1.input_object_uri` alone is an internal object key, not something a worker (which holds no MinIO credential) can resolve. Phase 2.1 left this as a documented gap (see `docs/architecture/structured-processing-worker.md`'s "Input-access boundary", written before this endpoint existed). Phase 2.2 closes it with exactly one narrow, authenticated, claim-token-bound, job-specific stream — not a general download API:
+
+```
+GET /api/v1/internal/worker-jobs/{job_id}/input
+Authorization: Bearer <WORKER_SHARED_SECRET>
+X-Claim-Token: <claim_token from /claim>
+
+200 OK
+Content-Type: <evidence.content_type>
+Content-Disposition: attachment; filename="..."; filename*=UTF-8''...
+Cache-Control: no-store
+Content-Length: <when known>
+X-TraceX-Evidence-Id: <evidence_id>
+X-TraceX-Evidence-SHA256: <evidence.sha256>
+X-TraceX-Source-Type: <evidence.source_type>
+X-TraceX-Parser-Profile: <evidence.parser_profile, when set>
+
+<raw evidence bytes, streamed>
+```
+
+**Why this doesn't reopen the boundary above**: the API remains the sole MinIO credential holder and streams the exact object through itself — a worker never receives an object key, bucket name, MinIO endpoint, presigned URL, or credential, only the bytes it was already dispatched to process. Access requires both `require_worker_principal` (the same shared-secret boundary every internal endpoint requires) *and* the exact claim token returned when *this specific job* was claimed — verified via `EvidenceLifecycleService.get_claimed_evidence_input`, which rejects a wrong job's token, a never-claimed (`queued`) job, an already-terminal job, and an expired lease uniformly with the same generic `401` every other claim-token failure produces (never distinguishing which). The stream is valid only for the active lease on the claimed job — not a standing credential, not reusable after the job completes or the lease expires.
+
+**Streaming, not buffering**: `ObjectStorage.open_stream` (`storage.py`) returns a bounded, chunked `ObjectStream` — `MinioObjectStorage`'s implementation bridges minio-py's synchronous chunk iterator to an async one via `asyncio.to_thread` per chunk (the same offload-to-thread convention every other method on that class already uses), so the object is never fully read into API process memory regardless of its size. A missing/unreadable backing object propagates as `StorageError` to the existing central safe-500 handler (`app/core/errors.py`) — never a bespoke error path, never a leaked object key or MinIO detail.
+
+**Full design reasoning**: `docs/architecture/phase-2-decisions.md`'s "Phase 2.2 Decisions" section.
 
 ## Supported source/content types and limits (Phase 2)
 

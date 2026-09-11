@@ -97,6 +97,26 @@ class ClaimOutcome:
 
 
 @dataclass(frozen=True)
+class ClaimedEvidenceInput:
+    """Safe evidence metadata for a currently-claimed job, plus its internal object key.
+
+    `object_uri` is present here (unlike every *external* response shape in
+    this module, e.g. `EvidenceView`) because this dataclass is consumed
+    only by `internal_api.py`'s already-worker-authenticated,
+    claim-token-verified input-stream route to open the byte stream -- it
+    is never serialized directly into an HTTP response.
+    """
+
+    evidence_id: UUID
+    content_type: str
+    original_filename: str
+    sha256: str
+    source_type: SourceType
+    parser_profile: str | None
+    object_uri: str
+
+
+@dataclass(frozen=True)
 class ResultOutcome:
     job_id: UUID
     status: WorkerStatus
@@ -525,6 +545,79 @@ class EvidenceLifecycleService:
             result_id=existing.result_id,
             observation_ids=tuple(o.observation_id for o in observations),
             created=False,
+        )
+
+    # --- worker lifecycle: claimed-job input delivery -----------------------
+
+    async def get_claimed_evidence_input(
+        self, *, job_id: UUID, claim_token: str, context: UploadContext
+    ) -> ClaimedEvidenceInput:
+        """Validate a claim token against a currently-*running* job; return its evidence metadata.
+
+        Deliberately narrower than `submit_result`'s claim-token check:
+        input may only be streamed for a job that is *right now* `running`
+        with an unexpired lease -- a never-claimed (`queued`), already-
+        terminal, or lease-expired job is rejected with the same generic
+        `InvalidClaimTokenError` every other claim-token failure mode uses
+        (see `docs/architecture/worker-job-lifecycle.md`'s "Worker
+        identity"/"Claim tokens" sections) -- the caller is never told
+        *which* condition failed, or whether a different job exists.
+        """
+        logger.info(
+            "worker.input.stream_attempted", request_id=context.request_id, job_id=str(job_id)
+        )
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.claim_token_hash is None:
+            logger.warning(
+                "worker.input.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="unknown_or_unclaimed_job",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+        if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
+            logger.warning(
+                "worker.input.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="token_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+        if job.status is not WorkerStatus.RUNNING:
+            logger.warning(
+                "worker.input.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="not_claimed",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+        if job.lease_expires_at is None or job.lease_expires_at < context.now:
+            logger.warning(
+                "worker.input.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="lease_expired",
+            )
+            raise InvalidClaimTokenError("invalid claim token")
+
+        evidence = await self._repository.get_evidence(job.case_id, job.evidence_id)
+        if evidence is None:  # pragma: no cover - defensive: evidence+job always created together
+            raise InvalidClaimTokenError("invalid claim token")
+
+        logger.info(
+            "worker.input.stream_authorized",
+            request_id=context.request_id,
+            job_id=str(job_id),
+            evidence_id=str(evidence.evidence_id),
+        )
+        return ClaimedEvidenceInput(
+            evidence_id=evidence.evidence_id,
+            content_type=evidence.content_type,
+            original_filename=evidence.original_filename,
+            sha256=evidence.sha256,
+            source_type=evidence.source_type,
+            parser_profile=evidence.parser_profile,
+            object_uri=evidence.object_uri,
         )
 
 

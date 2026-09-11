@@ -102,6 +102,10 @@ A successfully **accepted** result submission (first acceptance only, not an ide
 - **Max-attempt behavior**: **none implemented**. `attempt` increments without bound on every reclaim; nothing in this phase transitions a job to `failed` automatically after N attempts. A later phase should decide that policy (and would naturally do so in the same eligibility query, e.g. adding `AND attempt < :max_attempts`).
 - **What remains deferred**: an actual worker daemon/consumer loop; automatic redrive of `deferred`/`cancelled` jobs; lease renewal (a long-running worker extending its own lease mid-processing); a real per-worker credential system (see "Worker identity" above); max-attempt cutoff.
 
+## Worker evidence delivery (Phase 2.2 addendum)
+
+A third internal endpoint, `GET /api/v1/internal/worker-jobs/{job_id}/input`, was added after this document was first written — see `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery" section for its full shape and `docs/architecture/phase-2-decisions.md`'s "Phase 2.2 Decisions" for the reasoning. It authenticates identically to `/result` (`require_worker_principal` + the same per-job `X-Claim-Token`), and only ever succeeds while the job is `running` with an unexpired lease — no new claim-token semantics were introduced, this endpoint reuses the ones documented above exactly.
+
 ## Non-goals (unchanged from Phase 2, still true)
 
 No document/OCR/CDR/finance/video/image/audio/social-chat extraction, no entity resolution, no graph projection, no correlation/scoring/hypotheses, no human review workflow, no Merkle roots/signatures, no new queue platform, no frontend. This phase adds exactly two capabilities to the existing evidence-lifecycle foundation: claim, and submit-result. Nothing calls either from a real worker process anywhere in this repository.
