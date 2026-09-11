@@ -23,6 +23,15 @@ class SourceType(StrEnum):
     `OTHER` is the deliberate escape hatch: it lets evidence of an
     unanticipated modality be ingested without widening this enum, keeping
     the contract stable while later phases add modality-specific handling.
+
+    `STRUCTURED_TABULAR`/`STRUCTURED_JSON` (Phase 2.3) are an additive,
+    backward-compatible extension: every previously-valid `SourceType`
+    value remains valid and unchanged. They give general CSV/XLSX/JSON
+    evidence that isn't specifically CDR or financial shaped an explicit,
+    server-routable source type of its own, reaching
+    `structured_processing`'s existing `generic_tabular_v1`/
+    `generic_json_v1` fallback profiles — see
+    `docs/architecture/evidence-lifecycle.md`.
     """
 
     DOCUMENT = "document"
@@ -32,6 +41,8 @@ class SourceType(StrEnum):
     IMAGE = "image"
     AUDIO = "audio"
     CHAT = "chat"
+    STRUCTURED_TABULAR = "structured_tabular"
+    STRUCTURED_JSON = "structured_json"
     OTHER = "other"
 
 

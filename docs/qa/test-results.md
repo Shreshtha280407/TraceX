@@ -2,6 +2,82 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Nipun — Phase 2.3: Explicit Structured-Data Upload Routing build
+
+Environment: same sandbox as the Phase 2.2 build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3 (available this session, same intermittent-per-session pattern already documented). Branch `nipun`, rebased cleanly onto `origin/main` with a clean tree.
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 2ms
+Checked 65 packages in 13ms
+$ uv run ruff format --check .
+267 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 120 source files
+```
+Result: **pass**, all four. No new dependency.
+
+```bash
+$ uv run pytest -q
+1037 passed in 13.61s
+```
+Result: **pass**, zero skips (Docker/live infra reachable this session), zero failures. New this build: `tests/unit/evidence_lifecycle/test_structured_routing.py` (11 tests), `tests/contract/test_evidence.py` (+1 parametrized), `tests/integration/structured_processing/test_worker_live.py`'s pipeline test now parametrized ×3 (`document`, `structured_tabular`, `structured_json`).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0).
+
+**Real bug found and fixed during live verification**: the first live run of the new `structured_tabular`/`structured_json` pipeline tests against the rebuilt container failed with a genuine `500` on upload — not the app-level `SourceType` enum (which correctly accepted the new values once the image was rebuilt with current code), but a **PostgreSQL `CHECK` constraint** (`ck_evidence_records_source_type`/`ck_worker_jobs_source_type`, defined in `migrations/versions/f2086e1e89f6_evidence_lifecycle_foundation.py`, enumerating the *original* eight `SourceType` values at the database level, independent of the Pydantic contract). Adding an enum value at the Python/contract layer alone was not sufficient — the database's own integrity constraint also needed widening. Fixed with a new, additive migration (`af5b05e61b08_structured_source_type_routing.py`, hand-written like its predecessors) that drops and recreates both constraints with the two new values added — every previously-accepted value remains accepted; nothing narrows. Applied live:
+
+```bash
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade 102857ca8d1d -> af5b05e61b08, structured source type routing
+$ uv run alembic current
+af5b05e61b08 (head)
+```
+
+After the migration, the same previously-failing live pipeline tests passed genuinely:
+
+```bash
+$ uv run pytest tests/integration/structured_processing/test_worker_live.py -v
+tests/integration/structured_processing/test_worker_live.py::test_worker_client_against_real_running_api PASSED
+tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline[document-fir_report_text_v1] PASSED
+tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline[structured_tabular-generic_tabular_v1] PASSED
+tests/integration/structured_processing/test_worker_live.py::test_full_claim_stream_parse_submit_live_pipeline[structured_json-generic_json_v1] PASSED
+4 passed in 1.20s
+```
+
+Full suite re-confirmed clean after the migration:
+
+```bash
+$ uv run pytest -q
+1037 passed in 13.61s
+$ curl -sf http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -sf http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -sf http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+```
+
+**XLSX live check** (the third format named in the task brief; the automated pipeline test above covers CSV and JSON, so this one-off script covers XLSX specifically — real register/login/case/upload/`--once` worker subprocess/status-check/cleanup, identical pattern to the automated test):
+
+```
+uploaded XLSX evidence, job_id=b28955cc-3008-4cab-a50b-284185f3207d
+... claim_attempted fir_report_text_v1 -> no work, cdr_generic_v1 -> no work,
+    financial_transaction_generic_v1 -> no work, generic_tabular_v1 -> claimed ...
+HTTP Request: GET http://localhost:8000/api/v1/internal/worker-jobs/b28955cc.../input "HTTP/1.1 200 OK"
+{"status": "succeeded", "observation_count": 2, "event": "worker.run_once.submitted", ...}
+job status: {'status': 'succeeded', 'processor_name': 'generic_tabular_v1', 'observation_count': 2, ...}
+XLSX LIVE CHECK PASSED
+```
+Result: **pass**, genuinely — real CSV, XLSX, and JSON evidence all routed to the correct processor and fully processed live.
+
+**Docker services left running**, same as the Phase 2.2 entry below — not stood up fresh by this task.
+
 ## 2026-09-11 — Nipun — Phase 2.2: Secure Worker Evidence Delivery build
 
 Environment: same sandbox as the Jasraj Phase 2 build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3 (confirmed reachable this session, unlike the Jasraj Phase 2 session earlier the same day — see that entry's "blocked" note; Docker availability varies by sandbox session, not by anything in this repository). Branch `nipun`, rebased cleanly onto `origin/main` (which already included Jasraj's merged Phase 2 work) with a clean working tree. Read `app/modules/evidence_lifecycle/{internal_api,service,repository,storage,dependencies,schemas,errors}.py`, `docs/architecture/{evidence-lifecycle,worker-job-lifecycle,phase-2-decisions,structured-processing-worker}.md`, and `structured_processing/{client,input_resolver,worker}.py` before designing the new endpoint.

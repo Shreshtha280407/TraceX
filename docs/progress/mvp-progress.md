@@ -241,9 +241,28 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 
 ### Outstanding for team review
 
-- [ ] `generic_tabular_v1`/`generic_json_v1` routing reachability needs a team decision: a new `source_type`, or accept they remain reachable only via direct/test job construction.
+- [x] ~~`generic_tabular_v1`/`generic_json_v1` routing reachability needs a team decision~~ — **resolved in Phase 2.3 below.**
 - [ ] A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around.
 - [ ] No lease-renewal exists yet (unchanged from Phase 2.1) — a very large evidence stream close to its lease boundary could have the lease expire before the subsequent `/result` submission, which would then be rejected as `lease_expired`.
+
+## Phase 2.3 — Nipun explicit structured-data upload routing: Complete
+
+Verification ran 2026-09-11, including a full live Docker pass (see `docs/qa/test-results.md`). The first live attempt found a real bug: the app-level `SourceType` contract change alone wasn't sufficient — PostgreSQL's own `CHECK` constraints on `evidence_records.source_type`/`worker_jobs.source_type` independently enumerated the original eight values and rejected the two new ones with a `500`. Fixed with an additive migration (`af5b05e61b08_structured_source_type_routing`) widening both constraints; re-verified live afterward with a genuine `SUCCEEDED` result (real observations) for all three formats (CSV, XLSX, JSON) via `uv run pytest -q` (1037 passed, zero skips, fully live) and a standalone XLSX smoke check.
+
+### Delivered
+
+- [x] `SourceType.STRUCTURED_TABULAR`/`STRUCTURED_JSON` (`app/contracts/evidence.py`) — additive, backward-compatible enum values; every pre-existing `SourceType` value remains valid and unchanged.
+- [x] `routing.py`: `structured_tabular` → `text/csv`/XLSX → `generic_tabular_v1`/`1.0.0`; `structured_json` → `application/json` → `generic_json_v1`/`1.0.0`. Fully disjoint content-type sets between the two, preserving "one source type, one processor" with zero branching logic.
+- [x] `EvidenceLifecycleService.upload_evidence`'s persisted `parser_profile` is now always server-computed (`route.processor_name`), for every source type — closing a latent, previously-untested inconsistency where a client-supplied value was stored verbatim. `upload_evidence`'s signature and every existing call site are unchanged.
+- [x] `app/modules/structured_processing/structured/profiles.py` inspected and confirmed to already match the required routing exactly — no parser code changed.
+- [x] `migrations/versions/af5b05e61b08_structured_source_type_routing.py` (new) — widens the two `CHECK` constraints PostgreSQL independently enforces on `source_type`; found necessary only by attempting the live upload, not by static review.
+- [x] `tests/unit/evidence_lifecycle/test_structured_routing.py` (11 tests: CSV/XLSX/JSON valid routing, cross-MIME rejection before storage write, unsupported-MIME rejection, processor/parser-profile override prevention, idempotent replay ×2, cross-case isolation), `tests/contract/test_evidence.py` (+1 parametrized round-trip test), `tests/integration/structured_processing/test_worker_live.py`'s full pipeline test parametrized to also cover both new processors — all 12 required scenarios from the task brief covered (scenario 7 "`other` remains rejected" and scenario 9 "existing routing unchanged" both already covered by the pre-existing, untouched `test_source_type_other_has_no_registered_processor` plus a full-suite regression pass).
+- [x] QA entries `STRUCTURED-ROUTING-001`, `STRUCTURED-ROUTING-002`, `STRUCTURED-ROUTING-003` added to `docs/qa/test-matrix.md`; `WORKER-INPUT-STREAM-LIVE-001` updated to reflect the parametrized live pipeline.
+- [x] `docs/architecture/{contracts,evidence-lifecycle,phase-2-decisions,structured-processing-worker}.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- None. This phase closes the one open question Phase 2.2 raised and introduces no new unresolved boundary.
 
 ## Later phases (not started)
 

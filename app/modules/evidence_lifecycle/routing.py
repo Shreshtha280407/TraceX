@@ -60,6 +60,15 @@ SOURCE_TYPE_CONTENT_TYPES: dict[SourceType, frozenset[str]] = {
     SourceType.CHAT: frozenset({"application/json"}),
     SourceType.IMAGE: frozenset({"image/jpeg", "image/png"}),
     SourceType.VIDEO: frozenset({"video/mp4", "video/quicktime", "video/x-matroska"}),
+    # Phase 2.3: general CSV/XLSX/JSON evidence that isn't specifically CDR
+    # or financial shaped. Deliberately disjoint content-type sets from
+    # each other (never both CSV/XLSX *and* JSON under one source type) so
+    # one declared source type still maps unambiguously to exactly one
+    # processor -- see docs/architecture/phase-2-decisions.md.
+    SourceType.STRUCTURED_TABULAR: frozenset(
+        {"text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    ),
+    SourceType.STRUCTURED_JSON: frozenset({"application/json"}),
 }
 
 #: `source_type` -> the processor a durable `WorkerJobV1` is routed to. One
@@ -77,6 +86,11 @@ ROUTING: dict[SourceType, ProcessorRoute] = {
     SourceType.CHAT: ProcessorRoute("generic_social_json_v1", "1.0.0"),
     SourceType.VIDEO: ProcessorRoute("media_metadata_v1", "1.0.0"),
     SourceType.IMAGE: ProcessorRoute("media_metadata_v1", "1.0.0"),
+    # Phase 2.3: reaches structured_processing's existing generic fallback
+    # profiles (previously only constructible via a direct/test job, never
+    # a real upload -- see docs/architecture/structured-processing-worker.md).
+    SourceType.STRUCTURED_TABULAR: ProcessorRoute("generic_tabular_v1", "1.0.0"),
+    SourceType.STRUCTURED_JSON: ProcessorRoute("generic_json_v1", "1.0.0"),
 }
 
 
