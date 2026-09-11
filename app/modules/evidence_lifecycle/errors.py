@@ -50,3 +50,22 @@ class StorageError(EvidenceLifecycleError):
     Never constructed with the underlying driver exception's text -- some
     S3/MinIO client errors can embed endpoint or request details.
     """
+
+
+class InvalidClaimTokenError(EvidenceLifecycleError):
+    """A claim token is missing, malformed, doesn't match, expired, or names an unknown job.
+
+    Deliberately generic -- covers "job not found," "wrong job," "expired
+    lease," and "token doesn't match" uniformly (see
+    `docs/architecture/worker-job-lifecycle.md`'s "Worker identity"
+    section), the same default-deny philosophy `access_control.errors
+    .AuthenticationError` already applies to login.
+    """
+
+
+class ResultValidationError(EvidenceLifecycleError):
+    """A submitted `WorkerResultV1` doesn't belong to the claimed job, or isn't terminal."""
+
+
+class ResultConflictError(EvidenceLifecycleError):
+    """A different result payload was already accepted for this (already-terminal) job."""

@@ -170,10 +170,37 @@ Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command outp
 
 ### Outstanding for team review
 
-- [ ] No worker consumer or automatic redrive of undispatched jobs exists yet — `worker_jobs.status` is always `queued` in this phase.
+- [x] ~~No worker consumer... `worker_jobs.status` is always `queued`~~ — **claim/result submission delivered in Phase 2.1 below**; a real worker daemon still does not exist.
 - [ ] Denied-access-attempt auditing for case-scoped endpoints is not wired (a pre-existing gap in `require_case_action`, not introduced or fixed by this task).
 - [ ] `source_type=other` has no registered processor and is rejected outright — a later phase must decide how (or whether) to support it.
 - [ ] `Idempotency-Key` conflict detection does not consider `classification`/`parser_profile` — see `docs/qa/known-limitations.md`.
+
+## Phase 2.1 — Nipun job claim/result integration: Complete
+
+Verification ran 2026-09-11 (see `docs/qa/test-results.md` for full command output), including a full `docker compose up --build` rebuild and a real claim→submit-result smoke test against the fully containerized stack with real auth/case setup, producing durable `worker_jobs`/`worker_results`/`worker_observations` rows confirmed both via the API and by querying PostgreSQL directly. Two real bugs were found and fixed during that live testing (a claim-token-check ordering gap and a blank-secret normalization gap — see `docs/qa/test-results.md` for both), each closed with a regression test before this record.
+
+### Delivered
+
+- [x] `EvidenceLifecycleRepository.claim_job` — atomic, concurrency-safe job claiming via `FOR UPDATE SKIP LOCKED`, matching on `processor_name`/`processor_version`, recovering expired leases (incrementing `attempt` only on a genuine reclaim), never double-claimable by two concurrent callers. Verified both against `FakeEvidenceLifecycleRepository` (unit) and real PostgreSQL (integration).
+- [x] One-time, high-entropy claim tokens (`secrets.token_urlsafe(32)`), hashed at rest (SHA-256), never part of `WorkerJobV1` or any frozen contract — the same primitive/reasoning as `access_control.tokens`'s refresh-token handling.
+- [x] `worker_results`/`worker_observations` tables (migration `102857ca8d1d`, additive on top of `f2086e1e89f6`) plus four additive columns on `worker_jobs` (`claimed_at`, `lease_expires_at`, `claimed_by`, `claim_token_hash`) — durable, canonical persistence of one `WorkerResultV1` and every `ObservationV1` per job attempt, atomic with the job's terminal status transition.
+- [x] `EvidenceLifecycleService.submit_result` — validates claim-token match/expiry, `job_id`/`case_id`/`evidence_id`/observation scope, and terminal-status-only submission, before persisting; idempotent exact-payload replay; safe `409` conflict for a different payload against an already-terminal job; a failed persistence transaction leaves the job non-terminal with zero result/observation rows.
+- [x] `POST /api/v1/internal/worker-jobs/claim`, `POST /api/v1/internal/worker-jobs/{job_id}/result` — gated by a new `require_worker_principal` dependency (fails closed `503` when unconfigured, `401` on a wrong/missing shared secret) — a narrow, documented stand-in for a real per-worker credential system, per this task's explicit instruction.
+- [x] User-facing `GET /api/v1/cases/{case_id}/jobs/{job_id}` extended with safe `claimed_at`/`completed_at`/`observation_count` fields; still never exposes a claim token, `claim_token_hash`, or `object_uri`.
+- [x] Reused, not duplicated: `access_control.tokens`'s token-generation/hashing pattern, `create_evidence_with_job`'s `IntegrityError`-based race handling, `app.core.canonical.canonical_sha256` for idempotency comparison, `record_audit_event` for accepted-result auditing.
+- [x] `tests/unit/evidence_lifecycle/{test_worker_claim,test_worker_result,test_worker_internal_api}.py` (21 new unit/HTTP tests), `tests/integration/evidence_lifecycle/test_worker_lifecycle_live.py` (2 tests, run live against real PostgreSQL/MinIO), plus one new case-scoped HTTP test and `FakeEvidenceLifecycleRepository`/factory extensions — all 18 required scenarios from the task brief covered.
+- [x] `tests/security/evidence_lifecycle/test_evidence_lifecycle_boundaries.py`'s forbidden-contract-import list narrowed (`ObservationV1`/`WorkerResultV1` removed) to reflect this module's new, legitimate validate-and-persist-a-submitted-result responsibility — documented in `docs/architecture/phase-2-decisions.md`.
+- [x] QA entries `WORKER-CLAIM-001`, `WORKER-RESULT-SUBMIT-001`, `WORKER-RESULT-IDEMPOTENCY-001`, `WORKER-INTERNAL-API-001`, `WORKER-JOB-STATUS-001`, `WORKER-LIVE-001` added to `docs/qa/test-matrix.md`.
+- [x] `docs/architecture/worker-job-lifecycle.md` (new); `docs/architecture/evidence-lifecycle.md`, `docs/architecture/phase-2-decisions.md`, `docs/architecture/contracts.md`, `docs/qa/test-data.md`, `docs/qa/known-limitations.md`, `docs/runbooks/local-development.md`, README.md updated additively.
+
+### Outstanding for team review
+
+- [ ] No real per-worker credential system — `require_worker_principal` is a narrow shared-secret boundary only; see "Worker identity" in `docs/architecture/worker-job-lifecycle.md` for the explicit Aditya handoff this implies.
+- [ ] No max-attempt cutoff on reclaiming — a job with a perpetually-expiring lease is reclaimable forever.
+- [ ] No lease renewal for a long-running worker.
+- [ ] No automatic redrive of `deferred`/`cancelled` jobs.
+- [ ] Denied worker actions (bad claim token, scope mismatch, conflict) are not audit-logged — mirrors the same pre-existing gap already noted for case-scoped user endpoints.
+- [ ] `evidence_records.processing_status` still doesn't reflect job completion once a result is submitted — deliberately out of this task's scope (see `docs/qa/known-limitations.md`).
 
 ## Later phases (not started)
 
@@ -186,7 +213,8 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - Face recognition, person re-identification, biometric identification, and cross-camera `local_track_id` correlation — explicit non-goals for `media_processing` in every phase, not just this one (see `CLAUDE.md`).
 - Graph analytics (centrality, community detection, motifs).
 - Case CRUD API (evidence-lifecycle API itself is now delivered above, built against `access_control.dependencies.require_case_*`).
-- A worker consumer/orchestrator that actually reads off the `tracex:jobs:*` Redis lists (or a redrive off `worker_jobs`) and calls `structured_processing`/`communication_processing`/`media_processing`'s `process_job`.
+- A worker daemon/consumer loop that actually calls `/api/v1/internal/worker-jobs/claim`, runs `structured_processing`/`communication_processing`/`media_processing`'s `process_job`, and submits the result via `/api/v1/internal/worker-jobs/{job_id}/result` (the claim/submit primitives themselves are delivered — see Phase 2.1 above).
+- A real per-worker credential-issuance system (Aditya-owned), replacing Phase 2.1's narrow shared-secret `require_worker_principal` stand-in.
 - MFA, SSO, external identity provider, production secret management.
 - Merkle checkpointing and signatures.
 - Frontend (including any future cookie/CSRF/CORS decisions).

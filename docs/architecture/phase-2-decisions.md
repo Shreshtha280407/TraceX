@@ -61,3 +61,48 @@ Even though it carries no credential (it's just `cases/{case_id}/evidence/{evide
 - Denied-access-attempt auditing for case-scoped endpoints is a pre-existing gap in `require_case_action` (Aditya's module), not something this task fixed — see `docs/qa/known-limitations.md`.
 - No automatic redrive of `worker_jobs` rows with `dispatched_at IS NULL` exists yet; a later phase should decide whether that's a scheduled sweep, a manual admin action, or built into the eventual consumer's startup.
 - `routing.ROUTING`'s one-processor-per-source-type mapping will need revisiting once a real orchestrator needs to choose between multiple valid profiles for the same source type (e.g. a specific chat-export platform) at ingestion time rather than at processing time.
+
+---
+
+# Phase 2.1 Decisions — Nipun Worker Claim and Result-Submission Integration
+
+Full design reasoning lives in `docs/architecture/worker-job-lifecycle.md` (the dedicated document this phase's task brief required); this section records the handful of decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.1)
+
+- **Claim-token generation/hashing**: `secrets.token_urlsafe(32)` + SHA-256 hex, the exact primitives and reasoning `access_control.tokens.generate_refresh_token`/`hash_refresh_token` already established for "a high-entropy secret shown once, only its hash persisted." Not imported directly (would cross a module boundary for a two-line stdlib pattern) — duplicated as a documented pattern, the same precedent `_dump_for_insert` already set between `access_control.repository` and `evidence_lifecycle.repository`.
+- **Race-safe duplicate handling**: `worker_results.job_id`'s unique constraint + catching `sqlalchemy.exc.IntegrityError` is the identical technique `create_evidence_with_job`'s `Idempotency-Key` race already uses — not a new pattern.
+- **Canonical hashing for idempotency comparison**: `app.core.canonical.canonical_sha256`, Phase 1's own utility, used exactly as its docstring anticipated ("a utility for future integrity work").
+- **Audit logging**: `record_audit_event`, called for an accepted (non-replay) result submission with `user_id=None` — a worker is not a human user, and the function's `user_id` parameter is already nullable for exactly this kind of caller.
+
+## Genuinely new (Phase 2.1)
+
+- `worker_results`, `worker_observations` tables + four additive columns on `worker_jobs` (`claimed_at`, `lease_expires_at`, `claimed_by`, `claim_token_hash`), migration `102857ca8d1d`.
+- `EvidenceLifecycleRepository.claim_job`/`get_job_by_id`/`get_result_for_job`/`list_observations_for_result`/`count_observations_for_job`/`submit_result`.
+- `EvidenceLifecycleService.claim_job`/`submit_result`.
+- `require_worker_principal` + `Settings.worker_shared_secret`/`worker_lease_seconds`.
+- `app/modules/evidence_lifecycle/internal_api.py` — `/api/v1/internal/worker-jobs/{claim,{job_id}/result}`.
+- No new dependency: everything above is stdlib (`secrets`, `hashlib`, `hmac`) plus already-approved SQLAlchemy/FastAPI/Pydantic features (`FOR UPDATE SKIP LOCKED` is a SQLAlchemy Core method call, not a new library).
+
+## Why `worker_results`/`worker_observations` are new tables, not columns bolted onto `worker_jobs`
+
+A job can be claimed and its lease can expire more than once (each reclaim is a new attempt), but at most one attempt ever produces the accepted, canonical result. Modeling the result as its own table with a `job_id` unique constraint makes "exactly one accepted result per job, ever" a database-enforced fact rather than an application convention — and gives a durable, independent home for the full submitted payload (`canonical_payload`) that would be awkward to bolt onto the job row without duplicating most of its own columns.
+
+## Why `get_job_by_id` is unscoped by `case_id`
+
+Every case-scoped, human-facing query in this module takes `case_id` as a mandatory filter (see `docs/architecture/evidence-lifecycle.md`'s "Case-scoping rule"). The internal worker endpoints deliberately do not follow that rule for job lookups, because a worker's authorization model is different in kind: it authenticates by holding a valid claim token for one specific `job_id`, not by case membership. `get_job_by_id` is the one place this module intentionally looks up a job without a `case_id` filter — restricted to `internal_api.py`, which is itself gated by `require_worker_principal` and never reachable from the case-scoped router.
+
+## Security test's forbidden-contract list updated for this module's new, legitimate scope
+
+`tests/security/evidence_lifecycle/test_evidence_lifecycle_boundaries.py`'s `_FORBIDDEN_CONTRACT_IMPORTS` previously forbade importing `ObservationV1`/`WorkerResultV1` at all, on the Phase 2 assumption that this module only ever *produces* `WorkerJobV1`. Phase 2.1 legitimately needs to *validate and persist* a worker-submitted `WorkerResultV1` (and the `ObservationV1`s inside it) — the frozen contract's own Pydantic validators are the enforcement mechanism the task brief explicitly requires ("Validate the submitted `WorkerResultV1` using the frozen Pydantic contract before persistence"). The forbidden set was narrowed to `{EntityV1, EventV1, WorkerProgressV1}` — this module still never touches entity/event resolution or worker-progress reporting, and it never *fabricates* an `ObservationV1`/`WorkerResultV1` from raw evidence content itself (that remains extraction-module territory) — only re-validates and round-trips what a worker submitted.
+
+## `worker_shared_secret` normalizes a blank value to `None` (real bug caught before this record)
+
+Found while wiring `WORKER_SHARED_SECRET` into `compose.yaml`'s `api` service, before ever committing the passthrough: `docker compose`'s `${VAR}` substitution (no default) resolves an **unset** variable to an **empty string** inside the container, not an absent one — and pydantic-settings treats an environment variable's mere *presence* as "provided" regardless of its contents, so `Settings.worker_shared_secret` would have resolved to `SecretStr('')`, not `None`. `require_worker_principal`'s fail-closed check is `if configured_secret is None: raise 503` — an empty-but-not-`None` secret would skip that branch entirely and proceed to `hmac.compare_digest(token, "")`, which returns `True` for an empty submitted token (e.g. a request literally carrying `Authorization: Bearer ` with nothing after it) — a real authentication bypass on the internal worker endpoints in exactly the deployment configuration (compose, secret unset) this task's own "fails closed outside tests" requirement was meant to cover. Fixed with a `field_validator` on `worker_shared_secret` that normalizes any blank/whitespace-only value to `None` at the `Settings` level (so every caller gets the fix, not just this one passthrough), plus a redundant defense-in-depth emptiness check in `require_worker_principal` itself. Regression test: `tests/unit/test_config.py::test_blank_worker_shared_secret_normalizes_to_none`.
+
+## Open questions for team review (Phase 2.1)
+
+- No real per-worker credential system exists — `require_worker_principal` is a narrow shared-secret stand-in. See "Worker identity" in `docs/architecture/worker-job-lifecycle.md` for the exact Aditya handoff this implies.
+- No max-attempt cutoff — a job with a perpetually-expiring lease is reclaimable forever. A later phase should decide the policy (likely a small addition to the claim query's eligibility condition).
+- No automatic redrive of `deferred`/`cancelled` jobs.
+- Denied worker actions (bad/expired/wrong claim token, scope mismatch, conflict) are not audit-logged, mirroring the same pre-existing gap already documented for case-scoped user endpoints.

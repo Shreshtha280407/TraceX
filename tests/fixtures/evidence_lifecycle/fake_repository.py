@@ -10,18 +10,26 @@ conflict-detection path is exercisable without a real database. See
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import sqlalchemy.exc
 
-from app.modules.evidence_lifecycle.models import EvidenceRecord, WorkerJobRecord
+from app.contracts.worker import WorkerStatus
+from app.modules.evidence_lifecycle.models import (
+    EvidenceRecord,
+    ObservationRecord,
+    WorkerJobRecord,
+    WorkerResultRecord,
+)
 
 
 class FakeEvidenceLifecycleRepository:
     def __init__(self) -> None:
         self.evidence: dict[UUID, EvidenceRecord] = {}
         self.jobs: dict[UUID, WorkerJobRecord] = {}
+        self.results: dict[UUID, WorkerResultRecord] = {}
+        self.observations: dict[UUID, ObservationRecord] = {}
 
     async def close(self) -> None:
         pass
@@ -90,3 +98,92 @@ class FakeEvidenceLifecycleRepository:
             self.jobs[job_id] = job.model_copy(
                 update={"dispatched_at": dispatched_at, "updated_at": dispatched_at}
             )
+
+    async def get_job_by_id(self, job_id: UUID) -> WorkerJobRecord | None:
+        return self.jobs.get(job_id)
+
+    # --- job claim (worker lifecycle) --------------------------------------
+
+    async def claim_job(
+        self,
+        *,
+        processor_name: str,
+        processor_version: str,
+        now: datetime,
+        lease_seconds: int,
+        claim_token_hash: str,
+    ) -> tuple[WorkerJobRecord, bool] | None:
+        eligible = sorted(
+            (
+                job
+                for job in self.jobs.values()
+                if job.processor_name == processor_name
+                and job.processor_version == processor_version
+                and (
+                    job.status is WorkerStatus.QUEUED
+                    or (
+                        job.status is WorkerStatus.RUNNING
+                        and job.lease_expires_at is not None
+                        and job.lease_expires_at < now
+                    )
+                )
+            ),
+            key=lambda job: job.requested_at,
+        )
+        if not eligible:
+            return None
+        candidate = eligible[0]
+        was_reclaim = candidate.status is WorkerStatus.RUNNING
+        new_attempt = candidate.attempt + 1 if was_reclaim else candidate.attempt
+        claimed = candidate.model_copy(
+            update={
+                "status": WorkerStatus.RUNNING,
+                "attempt": new_attempt,
+                "claimed_at": now,
+                "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "claimed_by": processor_name,
+                "claim_token_hash": claim_token_hash,
+                "updated_at": now,
+            }
+        )
+        self.jobs[claimed.job_id] = claimed
+        return claimed, was_reclaim
+
+    # --- worker result -------------------------------------------------------
+
+    async def get_result_for_job(self, job_id: UUID) -> WorkerResultRecord | None:
+        return next((r for r in self.results.values() if r.job_id == job_id), None)
+
+    async def list_observations_for_result(self, result_id: UUID) -> list[ObservationRecord]:
+        return [o for o in self.observations.values() if o.result_id == result_id]
+
+    async def count_observations_for_job(self, job_id: UUID) -> int:
+        return sum(1 for o in self.observations.values() if o.job_id == job_id)
+
+    async def submit_result(
+        self,
+        *,
+        job_id: UUID,
+        expected_claim_token_hash: str,
+        result: WorkerResultRecord,
+        observations: list[ObservationRecord],
+    ) -> None:
+        if any(r.job_id == result.job_id for r in self.results.values()):
+            raise sqlalchemy.exc.IntegrityError(
+                "duplicate worker_results.job_id", {}, Exception("unique violation")
+            )
+        job = self.jobs.get(job_id)
+        if job is None or job.claim_token_hash != expected_claim_token_hash:
+            return
+        self.results[result.result_id] = result
+        for observation in observations:
+            self.observations[observation.observation_id] = observation
+        self.jobs[job_id] = job.model_copy(
+            update={
+                "status": result.status,
+                "last_error_code": result.error_code,
+                "last_error_message": result.error_message,
+                "last_error_retryable": result.error_retryable,
+                "updated_at": result.updated_at,
+            }
+        )

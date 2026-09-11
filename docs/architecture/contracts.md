@@ -124,4 +124,4 @@ The only way two entities connect in TraceX. Timeless direct entity-to-entity ed
 
 A worker never needs direct PostgreSQL, Neo4j, or MinIO credentials: it receives `input_object_uri` pre-scoped for reading, and returns `ObservationV1`s for the API/orchestrator to persist.
 
-As of Phase 2, `app/modules/evidence_lifecycle/` is a real, durable producer of `WorkerJobV1` (persisted in `worker_jobs`, published to Redis) — see `docs/architecture/evidence-lifecycle.md`. No consumer of `WorkerJobV1` exists yet in this repository; `WorkerResultV1`/`WorkerProgressV1` remain contract-only.
+As of Phase 2, `app/modules/evidence_lifecycle/` is a real, durable producer of `WorkerJobV1` (persisted in `worker_jobs`, published to Redis) — see `docs/architecture/evidence-lifecycle.md`. As of Phase 2.1, the same module also validates and durably persists a worker-*submitted* `WorkerResultV1` (and the `ObservationV1`s inside it) via `POST /api/v1/internal/worker-jobs/{job_id}/result` — see `docs/architecture/worker-job-lifecycle.md`. No actual worker process, consumer loop, or daemon exists anywhere in this repository; `WorkerProgressV1` remains contract-only.
