@@ -31,7 +31,7 @@ This document is the canonical field-level reference for every Phase 1 shared co
 
 ### `EvidenceRecordV1` (`app/contracts/evidence.py`)
 
-Contract only — Phase 1 does not implement upload storage, hashing, or MinIO writes.
+Contract-only in Phase 1. As of Phase 2, `app/modules/evidence_lifecycle/` is a real producer of this contract — see `docs/architecture/evidence-lifecycle.md`. The field set and validation rules below are unchanged; `EvidenceRecord` (that module's internal persistence record) adds lifecycle-only bookkeeping columns (`upload_idempotency_key`, `created_at`/`updated_at`) that never appear in the contract itself.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -123,3 +123,5 @@ The only way two entities connect in TraceX. Timeless direct entity-to-entity ed
 **Idempotency key format**: `"{case_id}:{evidence_id}:{processor_name}:{processor_version}"` — colon-separated, each segment matching `[A-Za-z0-9_.-]+` (dots allowed for semantic-version processor versions like `1.0.0`). The key deliberately excludes `attempt`, so retries of the same logical job reuse the same key and a consumer can safely deduplicate re-delivered results.
 
 A worker never needs direct PostgreSQL, Neo4j, or MinIO credentials: it receives `input_object_uri` pre-scoped for reading, and returns `ObservationV1`s for the API/orchestrator to persist.
+
+As of Phase 2, `app/modules/evidence_lifecycle/` is a real, durable producer of `WorkerJobV1` (persisted in `worker_jobs`, published to Redis) — see `docs/architecture/evidence-lifecycle.md`. No consumer of `WorkerJobV1` exists yet in this repository; `WorkerResultV1`/`WorkerProgressV1` remain contract-only.
