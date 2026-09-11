@@ -1,6 +1,6 @@
 # Graph Taxonomy v1 (proposed)
 
-Owner: Shreshtha. Status: **proposed, versioned taxonomy** for the graph layer built in `app/modules/graph/`.
+Owner: Shreshtha. Status: **proposed, versioned taxonomy** for the graph layer built in `app/modules/graph/`. `EntityMention`/`MENTIONS` (below) were added in Phase 2.5 (`docs/architecture/graph-projection.md`); everything else in this document is unchanged from Phase 1.
 
 **This document does not modify any frozen `V1` contract.** `EvidenceRecordV1`, `ObservationV1`, `EntityV1`, `EventV1`, and the worker envelopes in `app/contracts/` are unchanged. Everything below is an internal graph-projection scheme that consumes those contracts; `entity_type` / `event_type` / `observation_type` remain plain, unconstrained strings at the contract level exactly as documented in `docs/architecture/phase-1-decisions.md` — the taxonomy values recommended here are conventions for graph consumers, not new validation rules on the contracts.
 
@@ -19,6 +19,9 @@ Five core labels, matching the four canonical contracts plus their common case a
 | `Observation` | `ObservationV1` | `(case_id, observation_id)` |
 | `Entity` | `EntityV1` | `(case_id, entity_id)` |
 | `Event` | `EventV1` | `(case_id, event_id)` |
+| `EntityMention` | `ObservationV1.extracted_entities[i]` | `(case_id, mention_id)` |
+
+`EntityMention` (Phase 2.5) is **not** an `Entity`. It is a raw, evidence-local mention exactly as it appeared in one observation — never resolved, never merged with another mention, never itself a claim about a real-world person/organization/location. `mention_id` is derived deterministically from `(case_id, observation_id, ordinal, normalized text)` (`app.core.ids.deterministic_uuid`), not from any content-similarity heuristic. See `docs/architecture/graph-projection.md` for the full design and the identity-safety reasoning.
 
 No `Location` label is introduced in this phase. A location is represented as an `Entity` node with `entity_type = "location"` (see recommended entity taxonomy below) so there is exactly one way to represent "a place" in the graph, instead of two competing representations (a `Location` node vs. a `location`-typed `Entity`) that later entity-resolution/correlation code would have to reconcile. `ObservationV1.location` / `EventV1.location` (the loosely-structured `Location` value from `app/contracts/common.py`) is stored as plain properties on the `Observation`/`Event` node that carries it — it is evidence about a place mentioned in that observation/event, not itself a resolved graph entity.
 
@@ -35,6 +38,7 @@ No `Location` label is introduced in this phase. A location is represented as an
 | `HAS_EVENT` | `(:Case)-[:HAS_EVENT]->(:Event)` | none beyond graph structure | This event was recorded within this case. |
 | `SUPPORTS` | `(:Observation)-[:SUPPORTS]->(:Event)` | `case_id`, `evidence_id`, `observation_id`, `source_locator`, `assertion_kind` | An observation directly supports (is evidence for) an event having happened. |
 | `HAS_PARTICIPANT` | `(:Event)-[:HAS_PARTICIPANT]->(:Entity)` | none beyond graph structure | This entity took part in this event. |
+| `MENTIONS` | `(:Observation)-[:MENTIONS]->(:EntityMention)` | `ordinal` | This observation's `extracted_entities[ordinal]` is this mention. |
 
 `assertion_kind` on `SUPPORTS` is `"fact"` (`AssertionKind.FACT`) only in this phase — a direct, faithful projection of a canonical observation, not a derived or hypothesized link. Inference/hypothesis assertion kinds are explicitly not created yet (later-phase hypothesis engine work).
 
@@ -95,14 +99,15 @@ These rules bind every later phase that extends this graph, not just Phase 1:
 - **Transliteration similarity is not identity proof.** The same reasoning applies across scripts/languages — similarity is a candidate signal only.
 - **Corroboration produces a reviewable candidate, not an automatic merge.** Shared phone numbers, accounts, devices, vehicles, contacts, timing, or location across two `Entity` nodes may justify a future *candidate identity link* for human review — it must never silently merge the two nodes or their observation histories.
 - **Only a human-reviewed decision may promote a candidate identity relationship.** No code path in this phase (or implied by this phase) merges entities automatically. `ReviewStatus` (`unreviewed` / `confirmed` / `disputed` / `rejected`, from `app/contracts/common.py`) exists specifically so a merge or event confirmation is always an explicit, auditable analyst action.
+- **An `EntityMention` is never merged with another mention, across observations or otherwise.** Two mentions with identical-looking `display_label` text — even within the same case — get distinct `mention_id`s and remain distinct nodes; nothing in `project_observation_mentions` compares one mention's content against another's. Promoting a set of mentions into a single resolved `Entity` is exactly the same kind of explicit, later-phase, human-reviewable operation as identity merging above — not something this phase performs automatically.
 - **No criminality, guilt, or "suspect" conclusion is inferred from graph structure.** Node/edge existence, degree, or connectivity in this graph is a record of what evidence says was observed — never a computed guilt or suspicion score. `ObservationV1.extraction_confidence` and `EventV1.confidence` are extraction/statement-quality measures only (see `docs/architecture/contracts.md`), and nothing in this module recasts them as anything else.
 
 ## What later Shreshtha phases add on top of this foundation
 
-Not built here — this module is a foundation only:
+Phase 2.5 (`docs/architecture/graph-projection.md`) wired `project_evidence`/`project_observation`/`project_observation_mentions` to a real, durable pipeline for the first time — `project_entity`/`project_event` remain unwired (nothing in this repository constructs a real `EntityV1`/`EventV1` yet). Still not built here:
 
 - Candidate identity links (fuzzy/transliteration/corroboration-based), stored as their own reviewable relationship type, distinct from `HAS_*`/`SUPPORTS`/`HAS_PARTICIPANT`.
-- The human review workflow that promotes a candidate link to a confirmed identity relationship.
+- The human review workflow that promotes a candidate link (or a set of `EntityMention`s) to a confirmed identity relationship/resolved `Entity`.
 - Cross-modal correlation and candidate scoring.
 - The hypothesis engine and any inference/hypothesis `assertion_kind` values on `SUPPORTS` (or a new relationship type) beyond `"fact"`.
 - Graph analytics (centrality, community detection, motifs) — explicitly out of scope for this phase and the next.

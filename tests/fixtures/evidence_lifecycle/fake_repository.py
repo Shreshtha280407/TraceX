@@ -10,8 +10,9 @@ conflict-detection path is exercisable without a real database. See
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy.exc
 
@@ -24,12 +25,32 @@ from app.modules.evidence_lifecycle.models import (
 )
 
 
+@dataclass
+class FakeGraphProjectionJob:
+    """Shape-only stand-in for a `graph_projection_jobs` row.
+
+    Just enough fields to let `evidence_lifecycle`'s own tests assert that
+    one row is durably enqueued per accepted observation -- the real
+    claim/lease/retry lifecycle over this table is `app/modules/graph/`'s
+    responsibility, tested against its own fixtures.
+    """
+
+    projection_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    observation_id: UUID
+    status: str
+    attempt: int
+    max_attempts: int
+
+
 class FakeEvidenceLifecycleRepository:
     def __init__(self) -> None:
         self.evidence: dict[UUID, EvidenceRecord] = {}
         self.jobs: dict[UUID, WorkerJobRecord] = {}
         self.results: dict[UUID, WorkerResultRecord] = {}
         self.observations: dict[UUID, ObservationRecord] = {}
+        self.graph_projection_jobs: dict[UUID, FakeGraphProjectionJob] = {}
 
     async def close(self) -> None:
         pass
@@ -169,6 +190,7 @@ class FakeEvidenceLifecycleRepository:
         expected_claim_token_hash: str,
         result: WorkerResultRecord,
         observations: list[ObservationRecord],
+        graph_projection_max_attempts: int,
     ) -> None:
         if any(r.job_id == result.job_id for r in self.results.values()):
             raise sqlalchemy.exc.IntegrityError(
@@ -180,6 +202,15 @@ class FakeEvidenceLifecycleRepository:
         self.results[result.result_id] = result
         for observation in observations:
             self.observations[observation.observation_id] = observation
+            self.graph_projection_jobs[observation.observation_id] = FakeGraphProjectionJob(
+                projection_id=uuid4(),
+                case_id=observation.case_id,
+                evidence_id=observation.evidence_id,
+                observation_id=observation.observation_id,
+                status="queued",
+                attempt=0,
+                max_attempts=graph_projection_max_attempts,
+            )
         self.jobs[job_id] = job.model_copy(
             update={
                 "status": result.status,

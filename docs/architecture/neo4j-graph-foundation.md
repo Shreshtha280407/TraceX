@@ -1,21 +1,27 @@
 # Neo4j Graph Foundation
 
-How `app/modules/graph/` turns the frozen `app/contracts/` payloads into the Neo4j graph defined by `docs/architecture/graph-taxonomy-v1.md`. Read that document first for the node/relationship vocabulary; this document covers the module structure, the property-storage policy, and how to run it locally.
+How `app/modules/graph/` turns the frozen `app/contracts/` payloads into the Neo4j graph defined by `docs/architecture/graph-taxonomy-v1.md`. Read that document first for the node/relationship vocabulary; this document covers the module structure, the property-storage policy, and how to run it locally. **Phase 2.5** (`docs/architecture/graph-projection.md`) added the durable PostgreSQL-backed projection queue, the `--once` projector CLI, and the case-scoped read API that finally *call* the projection functions below from a real pipeline — this document's Phase 1 content (module structure, property policy, schema CLI) is otherwise unchanged.
 
 ## Module map
 
 ```text
 app/modules/graph/
 ├── __init__.py
-├── errors.py       # GraphError, GraphConnectionError, GraphValidationError, GraphNotFoundError
-├── models.py        # GraphNodeKind, GraphRelationshipKind, AssertionKind, projection/query result models
-├── schema.py         # idempotent constraint/index statements + apply/verify + CLI entry point
-├── repository.py     # the only module that touches the `neo4j` driver
-├── projection.py      # EvidenceRecordV1/ObservationV1/EntityV1/EventV1 -> graph, idempotent
-└── queries.py          # safe, case-scoped, bounded reads
+├── errors.py             # GraphError, GraphConnectionError, GraphValidationError, GraphNotFoundError
+├── models.py             # GraphNodeKind, GraphRelationshipKind, AssertionKind, projection/query/job result models
+├── schema.py             # idempotent constraint/index statements + apply/verify + CLI entry point
+├── repository.py         # the only module that touches the `neo4j` driver
+├── projection.py         # EvidenceRecordV1/ObservationV1/EntityV1/EventV1 -> graph, idempotent
+├── queries.py            # safe, case-scoped, bounded reads
+├── outbox_repository.py  # Phase 2.5 -- the only module that touches PostgreSQL (durable job queue)
+├── projector.py          # Phase 2.5 -- claim/project/mark-outcome orchestration
+├── worker.py             # Phase 2.5 -- `uv run python -m app.modules.graph.worker --once`
+├── dependencies.py       # Phase 2.5 -- FastAPI DI for the read endpoint
+├── schemas.py            # Phase 2.5 -- API response shapes
+└── api.py                # Phase 2.5 -- GET /api/v1/cases/{case_id}/graph/observations
 ```
 
-Dependency direction is strictly one-way: `projection.py` and `queries.py` depend on `repository.py` and `models.py`; `repository.py` depends on nothing else in the package. Nothing in `app/contracts/`, `app/core/`, `app/api/`, or `app/dependencies/` was changed to build this — the graph module is additive only.
+Dependency direction is strictly one-way: `projection.py` and `queries.py` depend on `repository.py` and `models.py`; `repository.py` depends on nothing else in the package. Nothing in `app/contracts/`, `app/core/`, `app/api/`, or `app/dependencies/` was changed to build this — the graph module is additive only. `outbox_repository.py` is the one Phase 2.5 exception to "graph never touches PostgreSQL": it imports `app.modules.evidence_lifecycle.repository`'s table objects directly (a sanctioned one-directional dependency — see `docs/architecture/graph-projection.md`), since this module is a backend-owned internal service, not a DB-blind extractor worker.
 
 ## Raw evidence vs. observation vs. entity vs. event, in the graph
 

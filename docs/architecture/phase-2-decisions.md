@@ -225,13 +225,12 @@ A worker that has already legitimately claimed a job (proven by a valid claim to
 
 There is no way to safely infer *which* worker identity should own a job claimed before this migration existed — `claimed_by` (a processor name, shared by every worker capable of that processor) is not a 1:1 mapping to a `worker_id`. Rather than guessing (which would violate this codebase's "never silently coerce/guess ambiguous data" rule, applied elsewhere to CDR timestamps and phone numbers), such a row is simply left unbound: `NULL` never equality-matches a real `worker_id`, so `/result`/`/input` correctly deny it until its lease expires and a real authenticated worker reclaims it — a safe, honest "this job needs to be reclaimed under the new system" outcome rather than a fabricated ownership assignment.
 
-## Why `worker_credential_rotated`/`worker_credential_revoked` are not wired to `record_audit_event` in this phase
+## `worker_credential_rotated`/`worker_credential_revoked` are wired to `record_audit_event`
 
-Rotation and revocation are already durably recorded as first-class, queryable state (`WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, visible via the CLI's own `list` command) — a genuine audit trail in their own right, independent of `security_audit_events`. The CLI is a standalone script, run by a trusted human at a terminal, not a request-serving path where "the audit write failed, but should we still let this succeed" is a live question; wiring it to `record_audit_event` is a small, safe follow-up (flagged in `docs/qa/known-limitations.md`) rather than something this phase needed to force through given the state is already captured.
+Resolved within Phase 2.4 (after this section was first drafted): rotation and revocation are already durably recorded as first-class, queryable state (`WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, visible via the CLI's own `list` command) -- but they *also* each record a `security_audit_events` row via the plain, propagating `record_audit_event` (not the denial-only `record_audit_event_safely`), since these are accepted operator actions, not denials. See `docs/architecture/worker-identity-and-security.md`'s "Audit event policy" for the exact fields.
 
 ## Open questions for team review (Phase 2.4)
 
-- Whether `worker_credential_rotated`/`worker_credential_revoked` should also emit a `security_audit_events` row (currently: state changes are captured on the `worker_credentials` row itself, not duplicated into the audit table).
 - Rotating `WORKER_CREDENTIAL_PEPPER` in an already-provisioned deployment invalidates every existing worker credential's digest match at once (documented, not automated) — a later phase might want a dual-pepper transition window if this becomes operationally painful.
 - No maximum number of processor names or worker credentials is enforced — not expected to matter at this project's scale, but worth noting if a very large worker fleet is ever provisioned.
 
@@ -263,11 +262,70 @@ The task brief's suggested file tree (`parsers/social_export.py`/`parsers/audio_
 
 Unlike Phase 2.3's `structured_tabular`/`structured_json` (which had explicit prior team approval to add), no such approval exists yet for new `SourceType`s or a `parser_profile` hint covering `transcript_import_v1`/`diarization_import_v1`/`whatsapp_export_v1`/`telegram_export_v1`/`instagram_export_v1`. `evidence_lifecycle/routing.py` is a shared contract this task's brief explicitly forbade changing without that approval ("do not add/modify a SourceType... unless clearly within an already-approved, additive route"). See `communication-processing-worker.md`'s "Routing boundary" section for the recommended additive decision, left for team review rather than implemented unilaterally.
 
+**Resolved below** ("Communication Processing Routing Fix" section, later in this document): team direction was to implement the new-`SourceType`-per-platform shape.
+
 ## Why `_ensure_worker_credential`'s test helper now fails loudly instead of silently retrying on a revoked digest
 
 Both this module's and `structured_processing`'s live-test helper originally treated "an active credential with a matching digest exists" as the only no-op case, and fell through to an `INSERT` otherwise. Since `credential_digest` is unique per row *regardless of status* (a revoked credential's digest is never freed for reuse — this is intentional: revocation must be permanent, or a leaked-then-revoked token could be silently reactivated by anything that re-provisions it), a revoked row with a matching digest made that fallthrough `INSERT` hit the unique constraint and crash with a raw `IntegrityError`, discovered when this module's own live test and `structured_processing`'s live test collided over the *same* shared local-dev `WORKER_TOKEN` digest in a single full-suite run (see `docs/qa/known-limitations.md`). Fixed in both files' identical helper: a matching-but-revoked row now fails the test immediately with an actionable message ("revocation is permanent — change the token literal, then rerun") instead of surfacing a confusing SQL error. No change to `access_control`'s production repository or CLI — revocation-permanence as a real security property was deliberately preserved, not routed around.
 
 ## Open questions for team review
 
-- The routing gap above: which of the two proposed shapes (server-validated `parser_profile` hint vs. new `SourceType`s per platform) `evidence_lifecycle/routing.py`'s owner prefers, if/when these five profiles need to be reachable via a real upload.
+- ~~The routing gap above: which of the two proposed shapes...~~ — **resolved**, see "Communication Processing Routing Fix" below.
 - Whether a future phase wants `transcript_import_v1`/`diarization_import_v1` to also accept a raw-audio input that this worker itself defers (current behavior: `audio_metadata_v1`-shaped input routed to either import profile returns `DEFERRED`/`DEFERRED_REQUIRES_ASR`/`DEFERRED_REQUIRES_DIARIZATION`, unchanged from Phase 1) once a real ASR/diarization adapter is ever approved.
+
+# Phase 2.5 Decisions — Shreshtha Canonical Observation-to-Neo4j Graph Projection
+
+Full design lives in `docs/architecture/graph-projection.md` (the dedicated document this phase's task brief required); this section records the decisions worth cross-referencing from here.
+
+## Reused, not duplicated (Phase 2.5)
+
+- **Deterministic ID pattern**: `app.core.ids.deterministic_uuid`, the same primitive `structured_processing.provenance`/`communication_processing.linking.deterministic` already use, applied to `EntityMention.mention_id`.
+- **Claim/lease/`FOR UPDATE SKIP LOCKED` pattern**: `outbox_repository.claim_batch` mirrors `evidence_lifecycle.repository.claim_job`'s concurrency-safety approach exactly, adapted for a genuine max-attempt bound (see "Genuinely new" below for the one deliberate divergence).
+- **One-shot `--once` CLI convention**: `app.modules.graph.worker` follows the exact same shape as `structured_processing.worker`/`communication_processing.worker`/`media_processing.worker` — no daemon, argparse `--once` required flag, structured JSON logging.
+- **Case-scoped read query conventions**: `list_case_observations` reuses `queries.py`'s existing `_ensure_case_id`/`_ensure_limit`/`_ensure_offset`/`MAX_PAGE_SIZE`/`DEFAULT_PAGE_SIZE` unchanged.
+- **`require_case_action`/`CaseAction.GRAPH_READ`**: Aditya's Phase 1 access-control foundation already defined this exact action and granted it to every role that also has `CASE_READ` — this phase is its first real consumer.
+- **`GraphConnectionError`/`GraphValidationError`/`GraphNotFoundError`**: Shreshtha's own Phase 1 error types, reused unchanged by the new projector/API code.
+
+## Genuinely new (Phase 2.5)
+
+- `graph_projection_jobs` table, migration `a204a94ccd49_graph_projection_jobs`. Defined in `evidence_lifecycle/repository.py` (the transaction owner), imported by `app/modules/graph/outbox_repository.py` (the consumer) — see "Why this sits across two modules" in `docs/architecture/graph-projection.md`.
+- `EntityMention`/`GraphNodeKind.ENTITY_MENTION`, `MENTIONS`/`GraphRelationshipKind.MENTIONS`, `EntityMentionProjectionResult`, `project_observation_mentions` (`app/modules/graph/projection.py`).
+- `GraphProjectionJobStatus`, `GraphProjectionJobRecord`, `CLAIMABLE_PROJECTION_JOB_STATUSES`/`TERMINAL_PROJECTION_JOB_STATUSES` (`app/modules/graph/models.py`).
+- `app/modules/graph/outbox_repository.py` (`GraphProjectionOutboxRepository`), `app/modules/graph/projector.py` (`run_batch`), `app/modules/graph/worker.py` (the `--once` CLI).
+- `list_case_observations`, `CaseObservationsPage`, `ObservationWithMentions` (`queries.py`/`models.py`).
+- `app/modules/graph/{dependencies,schemas,api}.py` — `GET /api/v1/cases/{case_id}/graph/observations`.
+- `Settings.graph_projection_{batch_size,lease_seconds,max_attempts}` (`app/core/config.py`).
+- `EvidenceLifecycleRepository.submit_result` gained a required `graph_projection_max_attempts` parameter and now enqueues one `graph_projection_jobs` row per accepted observation, in the same transaction — the only change to another contributor's module this phase made, and it is purely additive (existing callers/tests needed no changes beyond the new required parameter, already defaulted at the `EvidenceLifecycleService` layer).
+- No new dependency: everything above is stdlib plus already-approved SQLAlchemy/FastAPI/Pydantic/`neo4j`-driver features.
+
+## Why `attempt` increments on every claim here, unlike `evidence_lifecycle.claim_job`
+
+`evidence_lifecycle.repository.claim_job`'s `attempt` only increments on a lease-expiry *reclaim*, deliberately, because Phase 2.1 has no max-attempt cutoff at all (documented as an open limitation) — `attempt` there is purely an observability counter. `graph_projection_jobs.max_attempts` is a real, enforced bound, so `attempt` has to mean "how many times this has actually been tried," including the first — otherwise a job could be attempted `max_attempts + 1` times before ever being marked exhausted. This is a deliberate, documented divergence from the pattern it otherwise mirrors, not an inconsistency.
+
+## Why evidence is re-projected on every attempt instead of tracked as "already done"
+
+`project_evidence` is a plain, dependency-free `MERGE` — re-running it is a safe no-op when the evidence node is already correct. Projecting it unconditionally inside every observation-projection attempt (rather than maintaining separate "has this evidence been projected" state) means one job's attempt is always fully self-sufficient: it can never spuriously `DEFERRED` just because a *different* job for the same evidence hasn't run yet. The cost is a handful of redundant `MERGE` calls under concurrent load, traded deliberately for simpler, more robust per-job logic.
+
+## Open questions for team review (Phase 2.5)
+
+- Whether `EvidenceNode.object_uri` (a Phase 1 decision, unchanged by this phase) should eventually be removed from Neo4j storage entirely, now that a real case-scoped read API exists and its response shape has to be deliberately curated to exclude it. Flagged, not resolved, in `docs/architecture/graph-projection.md`.
+- No re-projection/rebuild-from-scratch maintenance CLI exists yet — recovering from a full graph loss requires a manual SQL reset of every `graph_projection_jobs.status` back to `queued` today.
+- No lease renewal, matching the same pre-existing gap in `evidence_lifecycle`'s own worker-job leases.
+
+# Communication Processing Routing Fix
+
+Sarthak's Phase 2 `communication_processing` worker build (client/input_resolver/`--once` CLI, mirroring `structured_processing`'s established pattern) reported, but explicitly did not fix, a routing gap: `evidence_lifecycle/routing.py` only ever routed `SourceType.AUDIO`/`SourceType.CHAT` to `audio_metadata_v1`/`generic_social_json_v1`, leaving five of `communication_processing`'s seven processor profiles (`transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1` — all fully implemented and unit-tested since Phase 1) unreachable through a real evidence upload. That task's own brief explicitly forbade changing shared routing without prior approval, so it was reported as an open question rather than fixed unilaterally, proposing two shapes for the team to choose between: a server-validated `parser_profile` hint, or a new `SourceType` per platform.
+
+## Decision: new `SourceType` per platform, not a `parser_profile` hint
+
+Chosen because it's the exact pattern this codebase already established and tested for the identical problem: Phase 2.3 added `structured_tabular`/`structured_json` as new, disjoint source types rather than accepting a client hint about which processor to use. `STRUCTURED-ROUTING-002` (`docs/qa/test-matrix.md`) already hard-tests that a client-supplied `parser_profile` is never honored, for any source type — accepting a "which parser" hint for chat exports would directly contradict an already-shipped, already-tested security invariant. A new source type per platform also happens to be *necessary*, not just consistent: `telegram_export_v1`/`instagram_export_v1`/`generic_social_json_v1` all consume `application/json`, so they cannot share one source type's content-type set unambiguously the way a hint-free, content-type-based routing decision requires.
+
+Five new, additive `SourceType` values: `audio_transcript`, `audio_diarization`, `whatsapp_chat`, `telegram_chat`, `instagram_chat` (`app/contracts/evidence.py`) — every previously-valid value remains valid and unchanged, same backward-compatibility guarantee Phase 2.3 made. `evidence_lifecycle/routing.py` gained one `SOURCE_TYPE_CONTENT_TYPES`/`ROUTING` entry per new value; migration `ed593db47d8c_communication_source_type_routing.py` widens the same two `evidence_records`/`worker_jobs` `source_type` `CHECK` constraints Phase 2.3's migration already widened once. Every processor profile's parser and the worker's own claim/parse/submit logic are untouched; the routing-table change itself is purely an `evidence_lifecycle` change reaching code that already existed.
+
+## Second gap found only by real end-to-end verification: `communication_processing/worker.py`'s own source-type check
+
+The routing fix above was necessary but not sufficient. `communication_processing/worker.py` performs its own, second, independent source-type check (`_validate_source_type`) before dispatching to a parser — and that check was written against the *old*, group-based routing (`SourceType.AUDIO` for all three audio profiles, `SourceType.CHAT` for all four chat profiles). None of the five new, disjoint source types satisfied it, so every real upload for the five newly-routed processors still failed with `unsupported_source_type`, even after the routing-table fix was correct and even though `evidence_lifecycle/routing.py` selected the right processor. This was only discoverable by actually running the real worker against a real claimed job — routing-level and worker-unit-level tests each passed in isolation because each used source types consistent with its own (previously mismatched) assumptions.
+
+Fixed by replacing the two group checks with an exact `_PROFILE_REQUIRED_SOURCE_TYPES: dict[str, SourceType]` mapping, one entry per processor profile. This is a real, narrow change to `communication_processing/worker.py` (Sarthak's module), made only because the user's own instruction required running and fixing genuine end-to-end verification; no parsing logic, dispatch table, or other behavior in that module was touched. Eleven pre-existing tests in that module encoded the old group-based assumption in their fixtures and needed their `source_type` arguments corrected to match; all were updated and pass.
+
+**Verified end-to-end, live, on 2026-09-11** against the full Docker Compose stack (Postgres, Neo4j, Redis, MinIO, API): for all five new source types, a real evidence upload was routed to the correct processor, claimed and processed by the real `communication_processing` worker `--once` CLI, resulted in a persisted `ObservationV1`, and was successfully projected into Neo4j by the real `graph.worker --once` CLI — confirmed by both a direct Neo4j query and the `GET /api/v1/cases/{case_id}/graph/observations` endpoint. All test data was cleaned up afterward (verification script and full output logged in `docs/qa/test-results.md`).

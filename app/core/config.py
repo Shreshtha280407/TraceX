@@ -144,6 +144,23 @@ class Settings(BaseSettings):
     # unkeyed in that environment.
     worker_credential_pepper: SecretStr | None = Field(default=None)
 
+    # --- Graph projection (Phase 2 -- Shreshtha) ---
+    # How many durable `graph_projection_jobs` rows one `graph.worker --once`
+    # invocation claims and processes before exiting. Bounded so a single
+    # run has a predictable, finite amount of work -- never "claim
+    # everything queued."
+    graph_projection_batch_size: int = Field(default=25, ge=1)
+    # How long a claimed projection job stays exclusively owned by the
+    # claiming projector run before its lease is considered expired and the
+    # job becomes eligible for reclaim -- same "lease, not a lock held
+    # forever" policy as `worker_lease_seconds` above.
+    graph_projection_lease_seconds: int = Field(default=120, ge=1)
+    # A projection job whose lease keeps expiring (Neo4j down, a crashing
+    # projector run) is reclaimed and retried up to this many times before
+    # being left `failed` for operator inspection rather than retried
+    # forever -- see "Bounded retries" in docs/architecture/graph-projection.md.
+    graph_projection_max_attempts: int = Field(default=5, ge=1)
+
     @field_validator("worker_token", "worker_credential_pepper")
     @classmethod
     def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:

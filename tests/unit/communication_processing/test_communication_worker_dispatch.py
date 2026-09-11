@@ -26,7 +26,7 @@ def test_audio_metadata_job_succeeds() -> None:
 
 
 def test_transcript_import_job_succeeds() -> None:
-    job = make_job(processor_name="transcript_import_v1", source_type=SourceType.AUDIO)
+    job = make_job(processor_name="transcript_import_v1", source_type=SourceType.AUDIO_TRANSCRIPT)
     segments = (
         TranscriptSegmentInput(
             start_ms=0,
@@ -44,7 +44,7 @@ def test_transcript_import_job_succeeds() -> None:
 
 def test_transcript_import_requested_with_only_raw_audio_defers() -> None:
     """Scenario 10: a transcript request given only raw audio must defer, never succeed."""
-    job = make_job(processor_name="transcript_import_v1", source_type=SourceType.AUDIO)
+    job = make_job(processor_name="transcript_import_v1", source_type=SourceType.AUDIO_TRANSCRIPT)
     result = process_job(job, AudioMetadataInput(filename="a.wav", data=build_wav_bytes()))
     assert result.status == WorkerStatus.DEFERRED
     assert result.observations == []
@@ -55,7 +55,7 @@ def test_transcript_import_requested_with_only_raw_audio_defers() -> None:
 
 def test_diarization_import_requested_with_only_raw_audio_defers() -> None:
     """Scenario 10: a request for diarization, given only raw audio, must defer -- never succeed."""
-    job = make_job(processor_name="diarization_import_v1", source_type=SourceType.AUDIO)
+    job = make_job(processor_name="diarization_import_v1", source_type=SourceType.AUDIO_DIARIZATION)
     result = process_job(job, AudioMetadataInput(filename="a.wav", data=build_wav_bytes()))
     assert result.status == WorkerStatus.DEFERRED
     assert result.observations == []
@@ -65,7 +65,7 @@ def test_diarization_import_requested_with_only_raw_audio_defers() -> None:
 
 
 def test_diarization_import_job_succeeds() -> None:
-    job = make_job(processor_name="diarization_import_v1", source_type=SourceType.AUDIO)
+    job = make_job(processor_name="diarization_import_v1", source_type=SourceType.AUDIO_DIARIZATION)
     segments = (
         DiarizationSegmentInput(
             start_ms=0,
@@ -80,7 +80,7 @@ def test_diarization_import_job_succeeds() -> None:
 
 
 def test_whatsapp_job_succeeds() -> None:
-    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.CHAT)
+    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.WHATSAPP_CHAT)
     data = build_whatsapp_export(["01/01/26, 10:00 - Alice: hi"])
     result = process_job(job, SocialExportInput(platform="whatsapp", data=data))
     assert result.status == WorkerStatus.SUCCEEDED
@@ -103,7 +103,7 @@ def test_wrong_source_type_fails_safely() -> None:
 
 
 def test_wrong_input_payload_role_fails_safely() -> None:
-    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.CHAT)
+    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.WHATSAPP_CHAT)
     result = process_job(job, AudioMetadataInput(filename="a.wav", data=b"x"))
     assert result.status == WorkerStatus.FAILED
     assert result.error is not None
@@ -111,7 +111,7 @@ def test_wrong_input_payload_role_fails_safely() -> None:
 
 
 def test_wrong_social_platform_fails_safely() -> None:
-    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.CHAT)
+    job = make_job(processor_name="whatsapp_export_v1", source_type=SourceType.WHATSAPP_CHAT)
     result = process_job(job, SocialExportInput(platform="telegram", data=b"{}"))
     assert result.status == WorkerStatus.FAILED
     assert result.error is not None

@@ -148,9 +148,22 @@ GENERIC_SOCIAL_JSON_V1 = ProcessorProfile(
     confidence_rule="1.00 -- a complete message record read directly from a validated export.",
 )
 
-_AUDIO_PROFILE_NAMES = frozenset(
-    {AUDIO_METADATA_V1.name, TRANSCRIPT_IMPORT_V1.name, DIARIZATION_IMPORT_V1.name}
-)
+#: The exact `source_type` a real evidence upload must declare for each
+#: profile to route to it -- see `evidence_lifecycle/routing.py`'s Phase 2
+#: routing fix, which gave `transcript_import_v1`/`diarization_import_v1`/
+#: `whatsapp_export_v1`/`telegram_export_v1`/`instagram_export_v1` each
+#: their own disjoint `SourceType` (previously only `audio_metadata_v1`/
+#: `generic_social_json_v1` had a real route, via the shared `audio`/`chat`
+#: values `_validate_source_type` originally checked for the whole group).
+_PROFILE_REQUIRED_SOURCE_TYPES: dict[str, SourceType] = {
+    AUDIO_METADATA_V1.name: SourceType.AUDIO,
+    TRANSCRIPT_IMPORT_V1.name: SourceType.AUDIO_TRANSCRIPT,
+    DIARIZATION_IMPORT_V1.name: SourceType.AUDIO_DIARIZATION,
+    WHATSAPP_EXPORT_V1.name: SourceType.WHATSAPP_CHAT,
+    TELEGRAM_EXPORT_V1.name: SourceType.TELEGRAM_CHAT,
+    INSTAGRAM_EXPORT_V1.name: SourceType.INSTAGRAM_CHAT,
+    GENERIC_SOCIAL_JSON_V1.name: SourceType.CHAT,
+}
 _PLATFORM_TO_PROFILE_NAME = {
     "whatsapp": WHATSAPP_EXPORT_V1.name,
     "telegram": TELEGRAM_EXPORT_V1.name,
@@ -175,11 +188,11 @@ def process_job(job: WorkerJobV1, input_payload: InputPayload) -> WorkerResultV1
     """Process one communication-processing job and return a canonical `WorkerResultV1`.
 
     `job.processor_name` must be one of the names in this module (`_PROFILES`);
-    `job.source_type` must match what that profile requires (`audio` for the
-    three audio profiles, `chat` for the four social-export profiles); and
-    `input_payload`'s role/platform must match what the profile expects.
-    Any mismatch fails safely as a named `ProcessingError` rather than being
-    silently reinterpreted.
+    `job.source_type` must be the exact `SourceType` that profile's own
+    entry in `_PROFILE_REQUIRED_SOURCE_TYPES` requires; and `input_payload`'s
+    role/platform must match what the profile expects. Any mismatch fails
+    safely as a named `ProcessingError` rather than being silently
+    reinterpreted.
     """
     completed_at = datetime.now(UTC)
     try:
@@ -231,14 +244,11 @@ def _get_profile(name: str) -> ProcessorProfile:
 
 
 def _validate_source_type(profile: ProcessorProfile, source_type: SourceType) -> None:
-    if profile.name in _AUDIO_PROFILE_NAMES and source_type is not SourceType.AUDIO:
+    required = _PROFILE_REQUIRED_SOURCE_TYPES.get(profile.name)
+    if required is not None and source_type is not required:
         raise ProcessingError(
             ErrorCode.UNSUPPORTED_SOURCE_TYPE,
-            f"profile '{profile.name}' requires source_type=audio",
-        )
-    if profile.name in _PLATFORM_TO_PROFILE_NAME.values() and source_type is not SourceType.CHAT:
-        raise ProcessingError(
-            ErrorCode.UNSUPPORTED_SOURCE_TYPE, f"profile '{profile.name}' requires source_type=chat"
+            f"profile '{profile.name}' requires source_type={required.value}",
         )
 
 
@@ -369,18 +379,15 @@ def _defer_checkpoint(reason: AudioRoutingDecision) -> str:
 
 
 #: Every profile this worker's `process_job` dispatch table supports,
-#: matching this module's own `_PROFILES` exactly (name, version).
-#: `evidence_lifecycle/routing.py` today only ever creates `audio_metadata_v1`
-#: jobs (from `SourceType.AUDIO`) and `generic_social_json_v1` jobs (from
-#: `SourceType.CHAT`) from a real evidence upload -- `transcript_import_v1`,
-#: `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, and
-#: `instagram_export_v1` are supported here for completeness (and any
-#: future routing decision or direct job construction) but are never
-#: claimable through the live upload path today. See
-#: docs/architecture/communication-processing-worker.md's "Routing
-#: boundary" section for the precise gap and the recommended, not-yet-
-#: approved additive decision -- not implemented here, matching this
-#: task's explicit instruction not to silently add/modify shared routing.
+#: matching this module's own `_PROFILES` exactly (name, version). Resolved
+#: (Phase 2 routing fix, `evidence_lifecycle/routing.py`): all seven are now
+#: reachable through a real evidence upload -- `audio_metadata_v1` (from
+#: `SourceType.AUDIO`) and `generic_social_json_v1` (from `SourceType.CHAT`)
+#: since Phase 1, and `transcript_import_v1`/`diarization_import_v1`/
+#: `whatsapp_export_v1`/`telegram_export_v1`/`instagram_export_v1` (from
+#: their own new, disjoint `SourceType`s) since the routing fix. See
+#: `docs/architecture/evidence-lifecycle.md`'s routing table and
+#: `docs/architecture/phase-2-decisions.md`.
 SUPPORTED_PROCESSORS: tuple[tuple[str, str], ...] = tuple(
     (profile.name, profile.version) for profile in _PROFILES.values()
 )

@@ -13,6 +13,7 @@ _CASE_SCOPED_LABELS = {
     "Observation": "observation_id",
     "Entity": "entity_id",
     "Event": "event_id",
+    "EntityMention": "mention_id",
 }
 
 
@@ -35,7 +36,10 @@ def test_case_node_constraint_is_bare_case_id_only() -> None:
 
 def test_evidence_observation_entity_event_constraints_are_compound_on_case_id() -> None:
     for label, domain_id_field in _CASE_SCOPED_LABELS.items():
-        matches = [s for s in CONSTRAINT_STATEMENTS if label in s.cypher]
+        # `:{label})` (colon, label, closing paren), not a bare substring
+        # match -- "Entity" is itself a substring of "EntityMention", so a
+        # naive `label in s.cypher` check would also match that statement.
+        matches = [s for s in CONSTRAINT_STATEMENTS if f":{label})" in s.cypher]
         assert len(matches) == 1, f"expected exactly one constraint statement for {label}"
         cypher = matches[0].cypher
         assert "case_id" in cypher
@@ -55,6 +59,7 @@ def test_expected_indexes_are_present() -> None:
         "event_event_time_idx",
         "entity_case_id_idx",
         "entity_entity_type_idx",
+        "entity_mention_case_id_idx",
     }
 
 

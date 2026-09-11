@@ -113,7 +113,9 @@ def test_run_once_happy_path_audio_metadata() -> None:
 
 def test_run_once_happy_path_transcript_import_json_interchange() -> None:
     """The new Phase 2 JSON interchange deserialization path."""
-    job = make_job(processor_name=TRANSCRIPT_IMPORT_V1.name, source_type=SourceType.AUDIO)
+    job = make_job(
+        processor_name=TRANSCRIPT_IMPORT_V1.name, source_type=SourceType.AUDIO_TRANSCRIPT
+    )
     client = _FakeClient(
         claim_responses=[ClaimResult(job=job, claim_token="tok-x", lease_expires_at=None)],
         submit_ack=_ack(job.job_id),
@@ -147,7 +149,9 @@ def test_run_once_happy_path_transcript_import_json_interchange() -> None:
 
 
 def test_run_once_happy_path_diarization_import_json_interchange() -> None:
-    job = make_job(processor_name=DIARIZATION_IMPORT_V1.name, source_type=SourceType.AUDIO)
+    job = make_job(
+        processor_name=DIARIZATION_IMPORT_V1.name, source_type=SourceType.AUDIO_DIARIZATION
+    )
     client = _FakeClient(
         claim_responses=[ClaimResult(job=job, claim_token="tok-y", lease_expires_at=None)],
         submit_ack=_ack(job.job_id),
@@ -179,7 +183,7 @@ def test_run_once_happy_path_diarization_import_json_interchange() -> None:
 
 
 def test_run_once_happy_path_social_export() -> None:
-    job = make_job(processor_name=WHATSAPP_EXPORT_V1.name, source_type=SourceType.CHAT)
+    job = make_job(processor_name=WHATSAPP_EXPORT_V1.name, source_type=SourceType.WHATSAPP_CHAT)
     client = _FakeClient(
         claim_responses=[ClaimResult(job=job, claim_token="tok-z", lease_expires_at=None)],
         submit_ack=_ack(job.job_id),

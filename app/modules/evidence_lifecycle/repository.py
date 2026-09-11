@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from pydantic import BaseModel
@@ -128,6 +128,42 @@ worker_observations_table = sa.Table(
     sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+#: A durable projection queue/outbox row: "this accepted observation needs
+#: (re)projecting into Neo4j." Defined here because this module owns the
+#: transaction that inserts it (`submit_result` below, atomic with
+#: `worker_results`/`worker_observations`); `app/modules/graph/
+#: outbox_repository.py` imports this exact `Table` object to claim/update
+#: rows -- a one-directional import, since `app.modules.graph` is a
+#: downstream consumer of this module's accepted results (like every other
+#: extraction module, just over a direct PostgreSQL connection instead of
+#: the internal worker HTTP API, per its own explicit "backend-owned
+#: internal service" design -- see
+#: `docs/architecture/graph-projection.md`). This module itself only ever
+#: inserts the initial `queued` row here; it never reads or transitions
+#: one, and it never imports `app.modules.graph` back (see
+#: `tests/security/evidence_lifecycle/test_evidence_lifecycle_boundaries.py`).
+graph_projection_jobs_table = sa.Table(
+    "graph_projection_jobs",
+    metadata,
+    sa.Column("projection_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("attempt", sa.Integer(), nullable=False),
+    sa.Column("max_attempts", sa.Integer(), nullable=False),
+    sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_error_code", sa.Text(), nullable=True),
+    sa.Column("last_error_message", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+#: The one status this module ever writes -- every later transition
+#: (`running`/`succeeded`/`failed`/`deferred`) is `app/modules/graph/`'s.
+_GRAPH_PROJECTION_STATUS_QUEUED = "queued"
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -442,6 +478,7 @@ class EvidenceLifecycleRepository:
         expected_claim_token_hash: str,
         result: WorkerResultRecord,
         observations: list[ObservationRecord],
+        graph_projection_max_attempts: int,
     ) -> None:
         """Insert the result + its observations and mark the job terminal, in one transaction.
 
@@ -452,13 +489,39 @@ class EvidenceLifecycleRepository:
         `sqlalchemy.exc.IntegrityError` here, exactly like
         `create_evidence_with_job`'s idempotency-key race, and `service.py`
         handles it the same way (re-read, compare, replay-or-conflict).
+
+        Also durably enqueues one `graph_projection_jobs` row per accepted
+        observation, in this same transaction: a canonical observation is
+        never accepted without a corresponding projection job, or vice
+        versa -- see `docs/architecture/graph-projection.md`. Empty when
+        `observations` is empty (a non-`succeeded` result), same as
+        `worker_observations` above.
         """
         result_values = _dump_for_insert(result, ("status",))
         observation_values = [_dump_for_insert(o) for o in observations]
+        projection_job_values = [
+            {
+                "projection_id": uuid4(),
+                "case_id": observation.case_id,
+                "evidence_id": observation.evidence_id,
+                "observation_id": observation.observation_id,
+                "status": _GRAPH_PROJECTION_STATUS_QUEUED,
+                "attempt": 0,
+                "max_attempts": graph_projection_max_attempts,
+                "lease_expires_at": None,
+                "last_error_code": None,
+                "last_error_message": None,
+                "created_at": observation.created_at,
+                "updated_at": observation.created_at,
+                "completed_at": None,
+            }
+            for observation in observations
+        ]
         async with self._engine.begin() as conn:
             await conn.execute(sa.insert(worker_results_table).values(**result_values))
             if observation_values:
                 await conn.execute(sa.insert(worker_observations_table), observation_values)
+                await conn.execute(sa.insert(graph_projection_jobs_table), projection_job_values)
             await conn.execute(
                 sa.update(worker_jobs_table)
                 .where(

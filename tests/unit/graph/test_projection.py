@@ -15,16 +15,25 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.graph.models import EventProjectionResult, GraphRelationshipKind, ProjectionOutcome
+from app.contracts.observation import ExtractedEntityMention
+from app.modules.graph.models import (
+    EntityMentionProjectionResult,
+    EventProjectionResult,
+    GraphRelationshipKind,
+    ProjectionOutcome,
+)
 from app.modules.graph.projection import (
     ENTITY_ALLOWED_PROPERTIES,
+    ENTITY_MENTION_ALLOWED_PROPERTIES,
     EVENT_ALLOWED_PROPERTIES,
     EVIDENCE_ALLOWED_PROPERTIES,
     OBSERVATION_ALLOWED_PROPERTIES,
+    _build_entity_mention_merge_query,
     _build_entity_merge_query,
     _build_event_merge_query,
     _build_evidence_merge_query,
     _build_observation_merge_query,
+    _entity_mention_id,
     _entity_properties,
     _event_properties,
     _evidence_properties,
@@ -33,6 +42,7 @@ from app.modules.graph.projection import (
     project_event,
     project_evidence,
     project_observation,
+    project_observation_mentions,
 )
 from tests.fixtures.factories import make_entity, make_event, make_evidence_record, make_observation
 
@@ -41,9 +51,15 @@ _ALL_BUILDERS = (
     lambda: _build_observation_merge_query(make_observation()),
     lambda: _build_entity_merge_query(make_entity()),
     lambda: _build_event_merge_query(make_event()),
+    lambda: _build_entity_mention_merge_query(make_observation()),
 )
 
-_RELATIONSHIP_TOKEN_PATTERN = re.compile(r"\[:([A-Z_]+)\]")
+#: `\w*` allows an optional bound variable name before the colon (e.g.
+#: `[r:MENTIONS]`, needed only when a later clause sets a property on the
+#: relationship itself, as `MENTIONS.ordinal` does) -- every other
+#: relationship in this module is unbound (`[:HAS_EVIDENCE]`), both forms
+#: are valid Cypher and both are exhaustively covered by this pattern.
+_RELATIONSHIP_TOKEN_PATTERN = re.compile(r"\[\w*:([A-Z_]+)\]")
 
 
 class _FakeRepository:
@@ -219,6 +235,7 @@ def test_relationship_kind_enum_has_no_entity_to_entity_kind() -> None:
         "HAS_EVENT",
         "SUPPORTS",
         "HAS_PARTICIPANT",
+        "MENTIONS",
     }
 
 
@@ -306,3 +323,165 @@ def test_event_attributes_never_reach_graph_properties() -> None:
     props = _event_properties(event)
     assert "attributes" not in props
     assert sentinel not in repr(props)
+
+
+# --- EntityMention: evidence-local, deterministic, never resolved -----------
+
+
+def test_entity_mention_query_never_interpolates_ids_or_text() -> None:
+    observation = make_observation(
+        extracted_entities=[ExtractedEntityMention(text="Jane Roe", entity_type_hint="person")]
+    )
+    query, params = _build_entity_mention_merge_query(observation)
+    assert str(observation.case_id) not in query
+    assert str(observation.observation_id) not in query
+    assert "Jane Roe" not in query
+    assert "$case_id" in query
+    assert "$observation_id" in query
+    assert "$mentions" in query
+    assert params["case_id"] == str(observation.case_id)
+    assert params["observation_id"] == str(observation.observation_id)
+    assert params["mentions"][0]["properties"]["display_label"] == "Jane Roe"
+
+
+def test_entity_mention_properties_are_exactly_allow_listed() -> None:
+    observation = make_observation(
+        extracted_entities=[ExtractedEntityMention(text="Jane Roe", entity_type_hint="person")]
+    )
+    _, params = _build_entity_mention_merge_query(observation)
+    assert set(params["mentions"][0]["properties"]) == ENTITY_MENTION_ALLOWED_PROPERTIES
+
+
+def test_entity_mention_properties_omit_mention_type_when_hint_is_none() -> None:
+    observation = make_observation(
+        extracted_entities=[
+            ExtractedEntityMention(text="unlabelled mention", entity_type_hint=None)
+        ]
+    )
+    _, params = _build_entity_mention_merge_query(observation)
+    props = params["mentions"][0]["properties"]
+    assert "mention_type" not in props
+    assert set(props) <= ENTITY_MENTION_ALLOWED_PROPERTIES
+
+
+def test_entity_mention_attributes_never_reach_graph_properties() -> None:
+    sentinel = "SENSITIVE-RAW-MENTION-ATTRIBUTE"
+    observation = make_observation(
+        extracted_entities=[
+            ExtractedEntityMention(
+                text="Jane Roe", entity_type_hint="person", attributes={"note": sentinel}
+            )
+        ]
+    )
+    _, params = _build_entity_mention_merge_query(observation)
+    props = params["mentions"][0]["properties"]
+    assert "attributes" not in props
+    assert sentinel not in repr(props)
+
+
+def test_entity_mention_id_is_deterministic_for_identical_input() -> None:
+    case_id, observation_id = uuid4(), uuid4()
+    first = _entity_mention_id(case_id, observation_id, 0, "Jane Roe")
+    second = _entity_mention_id(case_id, observation_id, 0, "Jane Roe")
+    assert first == second
+
+
+def test_entity_mention_id_changes_with_ordinal_case_observation_or_text() -> None:
+    case_id, observation_id = uuid4(), uuid4()
+    base = _entity_mention_id(case_id, observation_id, 0, "Jane Roe")
+    assert base != _entity_mention_id(case_id, observation_id, 1, "Jane Roe")  # ordinal
+    assert base != _entity_mention_id(case_id, observation_id, 0, "John Doe")  # text
+    assert base != _entity_mention_id(case_id, uuid4(), 0, "Jane Roe")  # observation
+    assert base != _entity_mention_id(uuid4(), observation_id, 0, "Jane Roe")  # case
+
+
+def test_entity_mention_id_normalizes_incidental_whitespace_only() -> None:
+    """Normalization is whitespace/composition-form only -- never casefolding.
+
+    Two mentions differing only in incidental whitespace hash identically
+    (re-projecting the same canonical observation is always stable); two
+    mentions differing in case are still different content.
+    """
+    case_id, observation_id = uuid4(), uuid4()
+    tight = _entity_mention_id(case_id, observation_id, 0, "Jane Roe")
+    padded = _entity_mention_id(case_id, observation_id, 0, "  Jane   Roe  ")
+    assert tight == padded
+
+    lower = _entity_mention_id(case_id, observation_id, 0, "jane roe")
+    assert lower != tight
+
+
+def test_same_observation_id_reused_across_two_cases_gets_different_mention_identity() -> None:
+    """Same defense as `test_same_entity_id_in_two_cases_carries_different_merge_identity`,
+    for `EntityMention`: a coincidentally-reused `observation_id` across two cases must never
+    let their mentions collide into the same graph node."""
+    shared_observation_id = uuid4()
+    case_a, case_b = uuid4(), uuid4()
+    id_in_case_a = _entity_mention_id(case_a, shared_observation_id, 0, "Jane Roe")
+    id_in_case_b = _entity_mention_id(case_b, shared_observation_id, 0, "Jane Roe")
+    assert id_in_case_a != id_in_case_b
+
+
+def test_two_different_observations_mentioning_the_same_text_get_different_mentions() -> None:
+    """No cross-observation dedup or fuzzy matching -- see module docstring."""
+    case_id = uuid4()
+    mention = ExtractedEntityMention(text="Jane Roe", entity_type_hint="person")
+    first_observation = make_observation(case_id=case_id, extracted_entities=[mention])
+    second_observation = make_observation(case_id=case_id, extracted_entities=[mention])
+    assert first_observation.observation_id != second_observation.observation_id
+
+    _, first_params = _build_entity_mention_merge_query(first_observation)
+    _, second_params = _build_entity_mention_merge_query(second_observation)
+    assert first_params["mentions"][0]["mention_id"] != second_params["mentions"][0]["mention_id"]
+
+
+async def test_project_observation_mentions_defers_when_observation_missing() -> None:
+    observation = make_observation(
+        extracted_entities=[ExtractedEntityMention(text="Jane Roe", entity_type_hint="person")]
+    )
+    repository = _FakeRepository(write_results=[[]])  # MATCH (Observation) found nothing
+    result: EntityMentionProjectionResult = await project_observation_mentions(
+        repository,  # type: ignore[arg-type]
+        observation,
+    )
+    assert result.outcome == ProjectionOutcome.DEFERRED
+    assert result.missing_observation_id == observation.observation_id
+    assert result.mention_count == 0
+
+
+async def test_project_observation_mentions_applies_when_observation_present() -> None:
+    observation = make_observation(
+        extracted_entities=[
+            ExtractedEntityMention(text="Jane Roe", entity_type_hint="person"),
+            ExtractedEntityMention(text="Acme Corp", entity_type_hint="organisation"),
+        ]
+    )
+    repository = _FakeRepository(write_results=[[{"mention_count": 2}]])
+    result = await project_observation_mentions(repository, observation)  # type: ignore[arg-type]
+    assert result.outcome == ProjectionOutcome.APPLIED
+    assert result.mention_count == 2
+
+
+async def test_project_observation_mentions_with_no_mentions_is_a_no_op_write() -> None:
+    """No `extracted_entities` -> trivially applied, and no query is even run."""
+    observation = make_observation(extracted_entities=[])
+    repository = _FakeRepository()
+    result = await project_observation_mentions(repository, observation)  # type: ignore[arg-type]
+    assert result.outcome == ProjectionOutcome.APPLIED
+    assert result.mention_count == 0
+    assert repository.write_calls == []
+
+
+def test_entity_mention_relationship_carries_ordinal_matching_list_position() -> None:
+    observation = make_observation(
+        extracted_entities=[
+            ExtractedEntityMention(text="First", entity_type_hint=None),
+            ExtractedEntityMention(text="Second", entity_type_hint=None),
+            ExtractedEntityMention(text="Third", entity_type_hint=None),
+        ]
+    )
+    _, params = _build_entity_mention_merge_query(observation)
+    ordinals = [m["ordinal"] for m in params["mentions"]]
+    assert ordinals == [0, 1, 2]
+    labels_by_ordinal = {m["ordinal"]: m["properties"]["display_label"] for m in params["mentions"]}
+    assert labels_by_ordinal == {0: "First", 1: "Second", 2: "Third"}

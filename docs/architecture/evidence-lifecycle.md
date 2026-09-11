@@ -67,11 +67,18 @@ A small, explicit, independently-maintained registry — not derived from any pr
 | `video` | `video/mp4`, `video/quicktime`, `video/x-matroska` | `media_metadata_v1` / `1.0.0` |
 | `structured_tabular` | `text/csv`, XLSX | `generic_tabular_v1` / `1.0.0` |
 | `structured_json` | `application/json` | `generic_json_v1` / `1.0.0` |
+| `audio_transcript` | `application/json` | `transcript_import_v1` / `1.0.0` |
+| `audio_diarization` | `application/json` | `diarization_import_v1` / `1.0.0` |
+| `whatsapp_chat` | `text/plain` | `whatsapp_export_v1` / `1.0.0` |
+| `telegram_chat` | `application/json` | `telegram_export_v1` / `1.0.0` |
+| `instagram_chat` | `application/json` | `instagram_export_v1` / `1.0.0` |
 | `other` | *(none registered yet)* | *(no processor — upload rejected)* |
 
 `source_type` is always declared explicitly by the client, never inferred from content — the same "never guess ambiguous input" rule applied everywhere else in this codebase (FIR extraction, CDR/financial normalization, audio routing). Selecting the *specific* profile within a source type (e.g. FIR-report vs. a fallback tabular profile for `document`) remains each processing module's own job once it actually reads the bytes; this registry only makes the coarse routing decision needed to construct a valid `WorkerJobV1`.
 
 **`structured_tabular`/`structured_json` (Phase 2.3)**: general CSV/XLSX/JSON evidence that isn't specifically CDR- or financial-shaped now has its own explicit source type, reaching `structured_processing`'s existing `generic_tabular_v1`/`generic_json_v1` fallback profiles (previously constructible only via a direct/test job, never a real upload — see `docs/architecture/structured-processing-worker.md`). Each new source type's accepted content types are disjoint from the other's (CSV/XLSX only for `structured_tabular`, JSON only for `structured_json`) — a request can never be ambiguous about which of the two it means. `parser_profile` is server-controlled for *every* source type as of this phase (see "Server-controlled parser profile" below), not only these two.
+
+**`audio_transcript`/`audio_diarization`/`whatsapp_chat`/`telegram_chat`/`instagram_chat` (Phase 2 routing fix)**: closes the gap Sarthak's Phase 2 `communication_processing` worker build reported but explicitly did not fix itself (routing is a shared contract, not that task's module to change unilaterally — see `docs/architecture/phase-2-decisions.md`). Five of `communication_processing`'s seven processor profiles were fully implemented and unit-tested since Phase 1 but had no `source_type` a real upload could ever reach; `audio`/`chat` remain unchanged (`audio_metadata_v1`/`generic_social_json_v1` respectively). `telegram_chat`/`instagram_chat`/`chat` all happen to accept `application/json` — since a single source type can only route to one processor, each gets its own explicit, disjoint source type rather than a client-supplied "which parser" hint (which would violate the same "client never chooses its own processor" rule `structured_tabular`/`structured_json` and "Server-controlled parser profile" below already establish).
 
 ### Server-controlled parser profile (Phase 2.3)
 

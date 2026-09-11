@@ -93,6 +93,65 @@ async def test_valid_success_result_transitions_job_and_persists_observations() 
     assert stored_observation.evidence_id == job.evidence_id
 
 
+# --- A durable graph-projection job is enqueued atomically with the result --
+
+
+async def test_accepted_observation_durably_enqueues_a_graph_projection_job() -> None:
+    """See docs/architecture/graph-projection.md.
+
+    One `graph_projection_jobs`-shaped row per accepted observation, queued
+    (never a terminal status) the moment the result is accepted -- in the
+    same transaction as the observation itself, per `FakeEvidenceLifecycleRepository
+    .submit_result`, which mirrors the real repository's single `engine.begin()` block.
+    """
+    service, repository = _service()
+    job, claim_token = await _claimed_job(service)
+    observation = make_observation(case_id=job.case_id, evidence_id=job.evidence_id)
+    result = make_worker_result(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        status=WorkerStatus.SUCCEEDED,
+        observations=[observation],
+        error=None,
+    )
+
+    await service.submit_result(
+        job_id=job.job_id, claim_token=claim_token, result=result, context=_context()
+    )
+
+    assert len(repository.graph_projection_jobs) == 1
+    enqueued = repository.graph_projection_jobs[observation.observation_id]
+    assert enqueued.case_id == job.case_id
+    assert enqueued.evidence_id == job.evidence_id
+    assert enqueued.observation_id == observation.observation_id
+    assert enqueued.status == "queued"
+    assert enqueued.attempt == 0
+    assert (
+        enqueued.max_attempts == 5
+    )  # default configured on `_service()`'s EvidenceLifecycleService
+
+
+async def test_a_result_with_no_observations_enqueues_no_projection_job() -> None:
+    service, repository = _service()
+    job, claim_token = await _claimed_job(service)
+    result = make_worker_result(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        status=WorkerStatus.DEFERRED,
+        observations=[],
+        checkpoint="deferred_requires_asr",
+        error=None,
+    )
+
+    await service.submit_result(
+        job_id=job.job_id, claim_token=claim_token, result=result, context=_context()
+    )
+
+    assert repository.graph_projection_jobs == {}
+
+
 # --- Scenario 8: mismatched case/evidence/job is rejected -------------------
 
 

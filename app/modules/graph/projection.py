@@ -16,7 +16,25 @@ projected, because entity-type-specific identifiers (phone/PAN/account
 numbers) are exactly what future entity-resolution/correlation phases need
 to read back -- it is serialized through `app.core.canonical.canonical_bytes`
 into a single deterministic JSON string property (`stable_identifiers_json`),
-since Neo4j node properties cannot hold nested maps.
+since Neo4j node properties cannot hold nested maps. Likewise,
+`ExtractedEntityMention.attributes` is never projected onto `EntityMention`.
+
+## `EntityMention`: evidence-local, never a resolved entity
+
+`project_observation_mentions` projects each of `ObservationV1.
+extracted_entities` as its own `EntityMention` node, linked from its parent
+`Observation` via `MENTIONS {ordinal}` (`ordinal` is the mention's index in
+that list, preserved so a re-read can reconstruct the original order).
+Unlike `project_entity`, this function is never handed anything to merge
+identity against -- it has no `entity_id`, no candidate-matching, and never
+looks at another observation's mentions. `mention_id` is derived
+deterministically from `(case_id, observation_id, ordinal, normalized text)`
+via `app.core.ids.deterministic_uuid`, so re-projecting the same canonical
+observation is idempotent, but two different observations that happen to
+mention the same-looking text always get two distinct `EntityMention`
+nodes -- there is no cross-observation dedup or fuzzy matching here at all.
+That resolution step (if it ever happens) is later-phase entity-resolution
+work, entirely outside this module.
 
 ## Case isolation
 
@@ -49,6 +67,8 @@ relationship at a node that doesn't exist.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
@@ -56,9 +76,11 @@ from uuid import UUID
 from app.contracts.entity import EntityV1
 from app.contracts.event import EventV1
 from app.contracts.evidence import EvidenceRecordV1
-from app.contracts.observation import ObservationV1
+from app.contracts.observation import ExtractedEntityMention, ObservationV1
 from app.core.canonical import canonical_bytes
+from app.core.ids import deterministic_uuid
 from app.modules.graph.models import (
+    EntityMentionProjectionResult,
     EventProjectionResult,
     GraphNodeKind,
     ObservationProjectionResult,
@@ -113,6 +135,23 @@ OBSERVATION_ALLOWED_PROPERTIES = frozenset(
         "source_locator_time_start_ms",
         "source_locator_time_end_ms",
         "source_locator_message_id",
+    }
+)
+
+#: Namespace label so an `EntityMention`'s deterministic ID can never
+#: collide with a different domain's `deterministic_uuid` call using the
+#: same raw parts by coincidence.
+_ENTITY_MENTION_ID_NAMESPACE_LABEL = "entity_mention"
+
+_WHITESPACE_RUN_PATTERN = re.compile(r"\s+")
+
+ENTITY_MENTION_ALLOWED_PROPERTIES = frozenset(
+    {
+        "mention_id",
+        "case_id",
+        "observation_id",
+        "mention_type",
+        "display_label",
     }
 )
 
@@ -400,6 +439,134 @@ async def project_observation(
         domain_id=observation.observation_id,
         relationships_upserted=0,
         missing_evidence_id=observation.evidence_id,
+    )
+
+
+def _normalize_mention_text(text: str) -> str:
+    """Stable, content-preserving normalization for mention-ID derivation only.
+
+    Unicode NFC + collapsed/stripped whitespace -- exactly the same
+    normalization class `deterministic_uuid`'s own docstring asks callers to
+    apply, and nothing more: no casefolding, no fuzzy matching. Two mentions
+    differing only in case are still different content and get different
+    IDs; this only makes byte-identical-looking text that differs solely in
+    whitespace/composition form hash identically, so re-projecting the same
+    canonical observation is always stable regardless of how a client's
+    JSON encoder happened to serialize whitespace.
+    """
+    return _WHITESPACE_RUN_PATTERN.sub(" ", unicodedata.normalize("NFC", text)).strip()
+
+
+def _entity_mention_id(case_id: UUID, observation_id: UUID, ordinal: int, text: str) -> UUID:
+    """Deterministic from case+observation identity, ordinal, and normalized text.
+
+    Never from `entity_type_hint` alone or from text similarity -- two
+    mentions are the same node only if they are the exact same position in
+    the exact same observation, so re-projecting a canonical observation
+    (whose `extracted_entities` list is immutable once persisted) always
+    yields the same mention IDs, and two different observations mentioning
+    the same-looking text always get different, evidence-local mentions.
+    """
+    return deterministic_uuid(
+        _ENTITY_MENTION_ID_NAMESPACE_LABEL,
+        str(case_id),
+        str(observation_id),
+        str(ordinal),
+        _normalize_mention_text(text),
+    )
+
+
+def _entity_mention_properties(
+    case_id: UUID, observation_id: UUID, mention_id: UUID, mention: ExtractedEntityMention
+) -> dict[str, Any]:
+    props: dict[str, Any] = {
+        "mention_id": str(mention_id),
+        "case_id": str(case_id),
+        "observation_id": str(observation_id),
+        "display_label": mention.text,
+    }
+    if mention.entity_type_hint is not None:
+        props["mention_type"] = mention.entity_type_hint
+    return props
+
+
+def _build_one_mention_param(
+    observation: ObservationV1, ordinal: int, mention: ExtractedEntityMention
+) -> dict[str, Any]:
+    mention_id = _entity_mention_id(
+        observation.case_id, observation.observation_id, ordinal, mention.text
+    )
+    return {
+        "mention_id": str(mention_id),
+        "ordinal": ordinal,
+        "properties": _entity_mention_properties(
+            observation.case_id, observation.observation_id, mention_id, mention
+        ),
+    }
+
+
+def _build_entity_mention_merge_query(observation: ObservationV1) -> tuple[str, dict[str, Any]]:
+    # Same atomic-no-op shape as `_build_observation_merge_query`: the
+    # leading MATCH on Observation makes this an all-or-nothing no-op when
+    # the observation hasn't been projected yet. Only called when
+    # `extracted_entities` is non-empty -- see `project_observation_mentions`.
+    query = (
+        "MATCH (o:Observation {case_id: $case_id, observation_id: $observation_id}) "
+        "UNWIND $mentions AS mention "
+        "MERGE (m:EntityMention {case_id: $case_id, mention_id: mention.mention_id}) "
+        "SET m += mention.properties "
+        "MERGE (o)-[r:MENTIONS]->(m) "
+        "SET r.ordinal = mention.ordinal "
+        "RETURN count(m) AS mention_count"
+    )
+    mentions = [
+        _build_one_mention_param(observation, ordinal, mention)
+        for ordinal, mention in enumerate(observation.extracted_entities)
+    ]
+    params = {
+        "case_id": str(observation.case_id),
+        "observation_id": str(observation.observation_id),
+        "mentions": mentions,
+    }
+    return query, params
+
+
+async def project_observation_mentions(
+    repository: Neo4jGraphRepository, observation: ObservationV1
+) -> EntityMentionProjectionResult:
+    """Idempotently MERGE every `ObservationV1.extracted_entities` entry as an `EntityMention`.
+
+    Each mention is evidence-local only -- never an `EntityV1`, never
+    merged with another mention across observations, never inferred to be
+    the same real-world entity as anything else. Defers (writes nothing) if
+    `observation` has not itself been projected as an `Observation` node in
+    this case yet -- callers should `project_observation` first, which is
+    exactly the order `app.modules.graph.projector` always uses. An
+    observation with no `extracted_entities` is trivially `APPLIED` with
+    `mention_count=0` -- there is nothing to write, so no query even runs.
+    """
+    if not observation.extracted_entities:
+        return EntityMentionProjectionResult(
+            outcome=ProjectionOutcome.APPLIED,
+            case_id=observation.case_id,
+            observation_id=observation.observation_id,
+            mention_count=0,
+        )
+    query, params = _build_entity_mention_merge_query(observation)
+    rows = await repository.write(query, params)
+    if rows:
+        return EntityMentionProjectionResult(
+            outcome=ProjectionOutcome.APPLIED,
+            case_id=observation.case_id,
+            observation_id=observation.observation_id,
+            mention_count=len(observation.extracted_entities),
+        )
+    return EntityMentionProjectionResult(
+        outcome=ProjectionOutcome.DEFERRED,
+        case_id=observation.case_id,
+        observation_id=observation.observation_id,
+        mention_count=0,
+        missing_observation_id=observation.observation_id,
     )
 
 

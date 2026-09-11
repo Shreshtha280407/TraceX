@@ -134,12 +134,14 @@ class EvidenceLifecycleService:
         job_producer: JobProducer,
         max_evidence_bytes: int,
         worker_lease_seconds: int = 300,
+        graph_projection_max_attempts: int = 5,
     ) -> None:
         self._repository = repository
         self._storage = storage
         self._job_producer = job_producer
         self._max_evidence_bytes = max_evidence_bytes
         self._worker_lease_seconds = worker_lease_seconds
+        self._graph_projection_max_attempts = graph_projection_max_attempts
 
     async def upload_evidence(
         self,
@@ -518,6 +520,7 @@ class EvidenceLifecycleService:
                 expected_claim_token_hash=claim_token_hash,
                 result=result_record,
                 observations=observation_records,
+                graph_projection_max_attempts=self._graph_projection_max_attempts,
             )
         except sqlalchemy.exc.IntegrityError:
             refreshed = await self._repository.get_job_by_id(job.job_id)

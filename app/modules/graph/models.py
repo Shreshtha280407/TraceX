@@ -30,6 +30,7 @@ class GraphNodeKind(StrEnum):
     OBSERVATION = "Observation"
     ENTITY = "Entity"
     EVENT = "Event"
+    ENTITY_MENTION = "EntityMention"
 
 
 class GraphRelationshipKind(StrEnum):
@@ -38,7 +39,10 @@ class GraphRelationshipKind(StrEnum):
     There is deliberately no entity-to-entity kind in this enum: TraceX never
     models a call/meeting/transaction/sighting/message as a direct, timeless
     edge between two `Entity` nodes -- every such connection is mediated by a
-    time-bounded `Event` via `HAS_PARTICIPANT`.
+    time-bounded `Event` via `HAS_PARTICIPANT`. There is likewise no
+    `EntityMention`-to-`EntityMention` or `EntityMention`-to-`Entity` kind:
+    a mention is evidence-local only (see `EntityMentionNode`) -- resolving
+    it into a real `Entity` is later-phase entity-resolution work.
     """
 
     HAS_EVIDENCE = "HAS_EVIDENCE"
@@ -48,6 +52,7 @@ class GraphRelationshipKind(StrEnum):
     HAS_EVENT = "HAS_EVENT"
     SUPPORTS = "SUPPORTS"
     HAS_PARTICIPANT = "HAS_PARTICIPANT"
+    MENTIONS = "MENTIONS"
 
 
 class AssertionKind(StrEnum):
@@ -66,6 +71,62 @@ class ProjectionOutcome(StrEnum):
 
     APPLIED = "applied"
     DEFERRED = "deferred"
+
+
+class GraphProjectionJobStatus(StrEnum):
+    """Lifecycle status of a durable `graph_projection_jobs` row.
+
+    Mirrors `app.contracts.worker.WorkerStatus`'s shape but is a distinct
+    enum: this is PostgreSQL-outbox status for "has this observation been
+    projected into Neo4j", not a `WorkerResultV1` extraction outcome.
+    `QUEUED` and `DEFERRED` are both claimable (see
+    `outbox_repository.claim_batch`) -- `DEFERRED` exists only to
+    distinguish, for operator inspection, "this attempt found a dependency
+    not ready yet" from `QUEUED`'s "never attempted, or requeued after a
+    transient Neo4j failure". Both are automatically retried the same way;
+    the distinction is diagnostic, not behavioral.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DEFERRED = "deferred"
+
+
+#: Claimable statuses -- eligible for `outbox_repository.claim_batch` when
+#: not currently `RUNNING` with a live lease. See `GraphProjectionJobStatus`.
+CLAIMABLE_PROJECTION_JOB_STATUSES = frozenset(
+    {GraphProjectionJobStatus.QUEUED, GraphProjectionJobStatus.DEFERRED}
+)
+
+#: Terminal statuses -- a job here is never automatically reclaimed again.
+TERMINAL_PROJECTION_JOB_STATUSES = frozenset(
+    {GraphProjectionJobStatus.SUCCEEDED, GraphProjectionJobStatus.FAILED}
+)
+
+
+class GraphProjectionJobRecord(GraphModel):
+    """A full `graph_projection_jobs` row (see `outbox_repository.py`).
+
+    PostgreSQL is the durable source of truth for "this canonical
+    observation needs (re)projecting" -- Neo4j itself is a derived,
+    rebuildable projection. See `docs/architecture/graph-projection.md`.
+    """
+
+    projection_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    observation_id: UUID
+    status: GraphProjectionJobStatus
+    attempt: int
+    max_attempts: int
+    lease_expires_at: datetime | None
+    last_error_code: str | None
+    last_error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
 
 
 class ProjectionResult(GraphModel):
@@ -88,6 +149,23 @@ class ObservationProjectionResult(ProjectionResult):
     """
 
     missing_evidence_id: UUID | None = None
+
+
+class EntityMentionProjectionResult(GraphModel):
+    """Result of `project_observation_mentions` -- a batch op over one observation's mentions.
+
+    Does not subclass `ProjectionResult`: unlike every other projection call,
+    this one may write zero, one, or many `EntityMention` nodes in a single
+    call, so there is no single `domain_id` to report. `missing_observation_id`
+    is set only when `outcome` is `DEFERRED`: the parent `observation_id` has
+    not been projected into this case yet, so no mention was written at all.
+    """
+
+    outcome: ProjectionOutcome
+    case_id: UUID
+    observation_id: UUID
+    mention_count: int = 0
+    missing_observation_id: UUID | None = None
 
 
 class EventProjectionResult(ProjectionResult):
@@ -164,6 +242,25 @@ class ObservationNode(GraphModel):
     extractor_model_version: str
 
 
+class EntityMentionNode(GraphModel):
+    """Read-view of a projected `EntityMention` node, plus its `MENTIONS` edge's `ordinal`.
+
+    Evidence-local only -- never a resolved `Entity`. `mention_type` mirrors
+    `ExtractedEntityMention.entity_type_hint` verbatim (a free-form hint, not
+    a validated taxonomy value); `display_label` mirrors `.text` exactly.
+    Deliberately excludes `ExtractedEntityMention.attributes` (an
+    open-ended bag), same exclusion policy as `ObservationV1.attributes`/
+    `EntityV1.attributes`/`EventV1.attributes`.
+    """
+
+    mention_id: UUID
+    case_id: UUID
+    observation_id: UUID
+    mention_type: str | None = None
+    display_label: str
+    ordinal: int
+
+
 class EntityNode(GraphModel):
     """Read-view of a projected `Entity` node."""
 
@@ -231,6 +328,23 @@ class EntityEventsPage(GraphModel):
 
     entity_id: UUID
     events: tuple[EventNode, ...]
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class ObservationWithMentions(GraphModel):
+    """One `Observation` plus the (bounded) `EntityMention`s it yielded, ordinal-ordered."""
+
+    observation: ObservationNode
+    mentions: tuple[EntityMentionNode, ...]
+
+
+class CaseObservationsPage(GraphModel):
+    """Result of `list_case_observations`: one bounded page, stable-ordered by `observation_id`."""
+
+    case_id: UUID
+    items: tuple[ObservationWithMentions, ...]
     limit: int
     offset: int
     has_more: bool
