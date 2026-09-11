@@ -9,7 +9,13 @@ import pytest
 
 MODULE_ROOT = Path(__file__).resolve().parents[3] / "app" / "modules" / "communication_processing"
 
-# Scenario 30: infrastructure/ML/subprocess/HTTP clients this module must never import.
+# Scenario 30: infrastructure/ML/subprocess clients this module must never
+# import. `httpx` is deliberately *not* forbidden (Phase 2): `client.py`
+# legitimately needs an HTTP client to reach Nipun's internal worker API
+# (`/api/v1/internal/worker-jobs/*`) -- the same, already-reviewed
+# reasoning `structured_processing`'s identical static-safety test applies
+# to its own `client.py`. Direct PostgreSQL/Neo4j/Redis/MinIO/queue access
+# remains forbidden, unchanged.
 _FORBIDDEN_IMPORTS = {
     "psycopg2",
     "psycopg",
@@ -21,7 +27,6 @@ _FORBIDDEN_IMPORTS = {
     "celery",
     "kafka",
     "pika",
-    "httpx",
     "requests",
     "urllib3",
     "subprocess",

@@ -8,6 +8,15 @@ parser.
 
 from __future__ import annotations
 
+# --- Worker orchestration (client.py) ---
+#: A bound applied by `client.py::WorkerApiClient.fetch_input` to *any*
+#: resolved evidence, before it's even known which profile will consume it
+#: (that decision happens later, in `worker.py`). Equal to `MAX_AUDIO_BYTES`/
+#: `MAX_CHAT_EXPORT_BYTES` today; kept as its own named constant since a
+#: transcript/diarization JSON interchange payload isn't bounded by either
+#: of those and needs its own ceiling too.
+MAX_INPUT_BYTES = 20 * 1024 * 1024  # 20 MiB
+
 # --- Audio ---
 MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20 MiB per audio file
 MAX_AUDIO_DURATION_SECONDS = 3600.0  # 1 hour

@@ -13,6 +13,16 @@ A deferral (real ASR/diarization needed, an unsupported-but-not-invalid
 audio format) is a normal, expected outcome — not a failure — and is
 represented as a `WorkerResultV1(status=DEFERRED)` return value, never an
 exception. See `audio/routing.py`.
+
+The four errors at the bottom of this file (`WorkerAuthenticationError`,
+`InputResolutionUnavailableError`, `WorkerApiError`, and their common base
+`WorkerOrchestrationError`) are a distinct category: *orchestration*-level
+failures talking to Nipun's internal worker API (claim/submit/input
+resolution) via `client.py`/`worker.run_once` — not source-parsing
+failures. Mirrors `app.modules.structured_processing.errors`'s identical
+addition exactly. None of these four may ever be constructed with a worker
+token, a claim token, or a raw HTTP response body in the message, for the
+same reason `ProcessingError.message` may never carry source content.
 """
 
 from __future__ import annotations
@@ -34,6 +44,14 @@ class ErrorCode:
     AMBIGUOUS_TIMEZONE = "ambiguous_timezone"
     CROSS_CASE_INPUT_REJECTED = "cross_case_input_rejected"
     REQUIRED_FIELD_MISSING = "required_field_missing"
+    #: A transcript/diarization interchange payload (see
+    #: `audio/transcript_import.py::parse_transcript_import_payload`,
+    #: `audio/diarization_import.py::parse_diarization_import_payload`) is
+    #: not valid UTF-8, not valid JSON, not the documented top-level shape
+    #: (`{"segments": [...]}`), or a segment object is missing a required
+    #: field / has a field of the wrong type -- before any timing/bounds
+    #: validation ever runs.
+    MALFORMED_JSON_PAYLOAD = "malformed_json_payload"
 
 
 class ProcessingError(Exception):
@@ -51,3 +69,38 @@ class ProcessingError(Exception):
         self.code = code
         self.message = message
         self.retryable = retryable
+
+
+class WorkerOrchestrationError(Exception):
+    """Base class for the worker CLI's own (non-parsing) safe, named failures."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class WorkerAuthenticationError(WorkerOrchestrationError):
+    """The internal worker API rejected the worker token or a claim token.
+
+    Never constructed with the token itself, or with the API's raw
+    response body (which could itself echo request details).
+    """
+
+
+class InputResolutionUnavailableError(WorkerOrchestrationError):
+    """The claimed job's evidence bytes could not be retrieved through the approved endpoint.
+
+    Raised by `input_resolver.LiveInputResolver` on a `404` from
+    `client.WorkerApiClient.fetch_input` -- an honest, loud signal that the
+    input-access endpoint is unreachable (e.g. an older API build), never
+    silently bypassed with a direct storage read.
+    """
+
+
+class WorkerApiError(WorkerOrchestrationError):
+    """An unexpected (non-auth, non-4xx-validation) failure calling the internal worker API.
+
+    Never constructed with the raw response body or the underlying HTTP
+    client exception's text -- only a safe description (e.g. "claim
+    request failed: HTTP 503").
+    """

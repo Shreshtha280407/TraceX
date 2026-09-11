@@ -126,6 +126,34 @@ uv run pytest tests/integration/structured_processing -v  # local-file pipeline 
 
 `tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_TOKEN` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When `WORKER_TOKEN` *is* set, this suite provisions a matching `worker_credentials` row itself (idempotently, by digest) the first time it runs against a given database, so no separate manual CLI step is required just to run the tests. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
 
+### Communication-processing worker CLI (Phase 2 — Sarthak)
+
+See `docs/architecture/communication-processing-worker.md` for the full design. Same pattern as the structured-processing worker CLI above — a separate worker process, its own `WORKER_TOKEN`-bound credential:
+
+```bash
+docker compose up -d postgres redis minio
+uv run uvicorn app.main:app --reload   # or the full `docker compose up --build`
+uv run python -m app.modules.access_control.worker_credentials create \
+    --name communication-worker --processor audio_metadata_v1 --processor generic_social_json_v1 \
+    --processor transcript_import_v1 --processor diarization_import_v1 \
+    --processor whatsapp_export_v1 --processor telegram_export_v1 --processor instagram_export_v1
+# copy the printed token into .env as WORKER_TOKEN=<token>, then:
+uv run python -m app.modules.communication_processing.worker --once
+```
+
+**Only two of the seven processors above are reachable through a real evidence upload today**: `audio_metadata_v1` (`source_type=audio`) and `generic_social_json_v1` (`source_type=chat`). The other five are fully supported by this worker but have no route from `evidence_lifecycle/routing.py` yet — see the architecture doc's "Routing boundary" section; they can still be exercised via a directly-constructed `WorkerJobV1` (as the unit tests do).
+
+`--once` is the only supported mode — no daemon or polling loop; run it again to attempt another job.
+
+Running its test suites specifically:
+
+```bash
+uv run pytest tests/unit/communication_processing -v         # no live infra needed
+uv run pytest tests/integration/communication_processing -v  # full in-process pipeline test, plus a self-skipping live-API check
+```
+
+`tests/integration/communication_processing/test_communication_worker_live.py` self-skips (never fabricates a pass) under the same conditions as `structured_processing`'s live test. It provisions its **own** dedicated worker-credential token (a fixed dev-only literal distinct from `settings.worker_token`), not a credential bound to the shared `.env` `WORKER_TOKEN` value — so running both live suites together in one `pytest -q` pass never has one suite's credential scope collide with the other's (see `docs/architecture/phase-2-decisions.md` for the full reasoning). `WORKER_TOKEN` in `.env` is still what gates whether live testing runs at all.
+
 ## Authentication and case-scoped access control
 
 `app/modules/access_control/` (see `docs/architecture/access-control-v1.md`, `docs/architecture/security-boundaries-v1.md`) needs PostgreSQL (users/sessions/case data) and Redis (login/refresh rate limiting):

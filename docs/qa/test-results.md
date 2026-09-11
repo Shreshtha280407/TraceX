@@ -2,6 +2,103 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Sarthak — Phase 2: Communication Processing Worker Foundation build
+
+Environment: local dev machine, branch `sarthak` (clean tree, containing merged `main` through Aditya's Phase 2.4), Python 3.12.13 (via `uv`), Docker reachable (`tracex-api-1` rebuilt fresh this session via `docker compose up --build -d`, all five services healthy).
+
+```bash
+$ uv run ruff format --check .
+281 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 123 source files
+```
+Result: **pass**, all three. No new dependency — `httpx` was already an approved, installed dependency (used by `structured_processing.client` and the FastAPI app itself).
+
+```bash
+$ docker compose config -q && echo "compose config OK"
+compose config OK
+$ uv run alembic current
+48e9e76153ca (head)
+$ uv run alembic heads
+48e9e76153ca (head)
+```
+Result: **pass** — DB already at head from the migration applied earlier this session (`af5b05e61b08 -> 48e9e76153ca`); no new migration needed this phase (no schema change).
+
+```bash
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -s http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -s http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1"}
+```
+Result: **pass**, all three.
+
+```bash
+$ uv run pytest -q
+1137 passed in 20.39s
+```
+Result: **pass** — the full suite, including every pre-existing evidence-lifecycle/structured-processing/access-control/Phase 2.4 test, plus this phase's new communication-processing worker-orchestration tests (`test_communication_worker_client.py`, `test_communication_worker_orchestration.py`, the extended `test_transcript_import.py`/`test_diarization_import.py`, and the live `test_communication_worker_live.py`). Zero failures, zero unexpected skips (Docker was up, so nothing live self-skipped).
+
+### A real bug caught by live testing, not present before this session's own changes
+
+Running `tests/integration/communication_processing/test_communication_worker_live.py` and `tests/integration/structured_processing/test_worker_live.py` together in one full-suite `pytest -q` run initially produced **7 failures**, all `WorkerApiError: claim request failed: HTTP 403`. Root cause: both live-test files' `_ensure_worker_credential` helpers read the *same* shared local-dev `settings.worker_token` value; whichever suite's helper ran first (`communication_processing`, alphabetically) "won" the one credential row matching that digest and scoped it to only its own 7 processors, so `structured_processing`'s subsequent claim for e.g. `fir_report_text_v1` was correctly, legitimately denied by the real, working processor-scope enforcement (Aditya's Phase 2.4 code) — a genuine test-environment collision, not an application defect.
+
+Fix: `test_communication_worker_live.py` now provisions its own credential under a distinct hardcoded token literal (`_COMMUNICATION_WORKER_TOKEN`), fully decoupling its credential row from `structured_processing`'s (`settings.worker_token` is still used as the "is live testing configured at all" skip-gate — only the actual authentication value differs). This is confined to Sarthak's own test file.
+
+Cleaning up the stale rows this collision had already created in the shared local dev DB (two `active` rows scoped only to `communication_processing`, both blocking `structured_processing`'s test) surfaced a **second, genuine latent bug**, present in both live-test files' identical `_ensure_worker_credential` helper: the no-op check only handled "an *active* row with a matching digest exists" — a *revoked* row with a matching digest (exactly what a `worker_credentials revoke --worker-id ...` cleanup produces) fell through to a fresh `INSERT`, which crashed with a raw `sqlalchemy.exc.IntegrityError: duplicate key value violates unique constraint "uq_worker_credentials_credential_digest"` instead of a clean skip or an actionable message — because `credential_digest` is unique per row regardless of status, and revocation is intentionally permanent (no production "reactivate" path exists, by design). Fixed in both files: a matching-but-revoked row now fails the test immediately with an explicit message ("revocation is permanent — change the token literal / `WORKER_TOKEN`, then rerun") instead of surfacing a confusing SQL error. `access_control`'s production repository/CLI were not touched — revocation-permanence as a real security property was deliberately preserved, not routed around. Full reasoning: `docs/architecture/phase-2-decisions.md`'s "Why `_ensure_worker_credential`'s test helper now fails loudly..." section.
+
+After both fixes (and rotating the local `.env`'s `WORKER_TOKEN` to a fresh, unpoisoned literal, since the original had been revoked in the course of diagnosing this):
+
+```bash
+$ uv run pytest tests/integration/communication_processing/test_communication_worker_live.py tests/integration/structured_processing/test_worker_live.py -v
+... 7 passed in 2.90s
+$ uv run pytest -q
+1137 passed in 20.39s
+```
+Result: **pass**, both live suites together and the full suite.
+
+### Docker/live worker verification — real `--once` CLI subprocess run
+
+In addition to the pytest live-pipeline test (which calls `run_once()` directly — the exact function `--once` invokes), a literal `--once` CLI subprocess run was performed against the real running stack, to prove the actual entry point, not just the function underneath it:
+
+```bash
+$ curl -s -X POST http://localhost:8000/api/v1/auth/register -d '{"email":"comm-cli-verify-...@example.test", ...}'
+{"user_id":"43d96f3e-be79-4322-b02c-b69f5d37f5a6", ...}   # HTTP 201
+# case + membership seeded directly via AccessControlRepository (no case-CRUD API exists yet — out of Phase 1/2 scope)
+
+$ curl -s -X POST http://localhost:8000/api/v1/cases/3d4269b0.../evidence \
+    -F "file=@verify.wav;type=audio/wav" -F "source_type=audio" -F "classification=unclassified"
+{"evidence":{...,"parser_profile":"audio_metadata_v1","processing_status":"queued",...},
+ "job":{"job_id":"d30c3e3f-ec43-4a75-9867-b082ed027ba8","processor_name":"audio_metadata_v1","status":"queued",...}}
+
+$ WORKER_TOKEN="dev-only-communication-worker-token-change-me-v2" \
+    uv run python -m app.modules.communication_processing.worker --once
+{"event": "worker.run_once.started", ...}
+{"processor_name": "audio_metadata_v1", "event": "worker.client.claim_attempted", ...}
+HTTP Request: POST http://localhost:8000/api/v1/internal/worker-jobs/claim "HTTP/1.1 200 OK"
+{"processor_name": "audio_metadata_v1", "event": "worker.run_once.claimed", "job_id": "d30c3e3f-...", ...}
+HTTP Request: GET http://localhost:8000/api/v1/internal/worker-jobs/d30c3e3f.../input "HTTP/1.1 200 OK"
+{"job_id": "d30c3e3f-...", "event": "worker.client.submit_attempted", ...}
+HTTP Request: POST http://localhost:8000/api/v1/internal/worker-jobs/d30c3e3f.../result "HTTP/1.1 200 OK"
+{"status": "succeeded", "observation_count": 1, "event": "worker.run_once.submitted", "job_id": "d30c3e3f-...", ...}
+{"job_id": "d30c3e3f-...", "status": "succeeded", "event": "worker.cli.done", ...}
+
+$ curl -s http://localhost:8000/api/v1/cases/3d4269b0.../jobs/d30c3e3f-...
+{"job_id":"d30c3e3f-...","status":"succeeded","observation_count":1,"claimed_at":"...","completed_at":"...", ...}
+
+$ docker compose exec postgres psql -U tracex -d tracex -c \
+    "SELECT observation_id, case_id, evidence_id, observation_type, canonical_payload->>'extraction_confidence', canonical_payload->'source_locator', canonical_payload->'extractor' FROM worker_observations WHERE job_id = 'd30c3e3f-...';"
+ e9409cdf-...  | 3d4269b0-... | 22e63650-... | audio_metadata | 1.0 |
+   {"time_start_ms": 0, "time_end_ms": 500, "message_id": null, "json_path": null, ...} |
+   {"name": "audio_metadata_v1", "version": "1.0.0", "config_hash": "628bb4...", "model_version": "n/a"}
+```
+Result: **pass** — claim → secure claim-token-bound input stream → SHA-256-implicit parse → submit all succeeded for real against the real running stack; the stored `worker_observations` row is case-scoped (`case_id` matches the seeded case), evidence-scoped (`evidence_id` matches the uploaded file), provenance-complete (`source_locator`, `extractor.name`/`.version`/`.config_hash` all populated), and carries no raw audio bytes (only the derived technical metadata). No worker token, claim token, MinIO endpoint/object key, or DB credential appeared anywhere in the CLI's stdout log lines. The `chat`/`generic_social_json_v1` path was proven the same way via the automated `test_communication_worker_live.py` pytest case rather than a second manual run (redundant to repeat by hand).
+
+The five profiles not reachable via a real upload (`transcript_import_v1`, `diarization_import_v1`, `whatsapp_export_v1`, `telegram_export_v1`, `instagram_export_v1`) were exercised end to end via directly-constructed `WorkerJobV1`s in `test_communication_worker_orchestration.py` instead — see `docs/architecture/communication-processing-worker.md`'s "Routing boundary" section for why no real-upload path exists for them yet.
+
 ## 2026-09-11 — Nipun — Phase 2.3: Explicit Structured-Data Upload Routing build
 
 Environment: same sandbox as the Phase 2.2 build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3 (available this session, same intermittent-per-session pattern already documented). Branch `nipun`, rebased cleanly onto `origin/main` with a clean tree.

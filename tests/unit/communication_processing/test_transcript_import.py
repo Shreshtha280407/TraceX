@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -107,3 +108,97 @@ def test_observation_round_trips_through_frozen_contract() -> None:
     )
     reloaded = ObservationV1.model_validate_json(observation.model_dump_json())
     assert reloaded == observation
+
+
+# --- parse_transcript_import_payload (Phase 2: the JSON interchange format) -
+
+
+def _payload_bytes(segments: list[dict[str, object]]) -> bytes:
+    return json.dumps({"segments": segments}).encode("utf-8")
+
+
+def test_parse_transcript_import_payload_valid_json() -> None:
+    data = _payload_bytes(
+        [
+            {
+                "start_ms": 0,
+                "end_ms": 500,
+                "text": "hi",
+                "language_hint": "en",
+                "confidence": 0.75,
+                "source_segment_id": "seg-1",
+            }
+        ]
+    )
+    result = transcript_module.parse_transcript_import_payload(data)
+    assert result.segments == (
+        TranscriptSegmentInput(
+            start_ms=0,
+            end_ms=500,
+            text="hi",
+            language_hint="en",
+            confidence=0.75,
+            source_segment_id="seg-1",
+        ),
+    )
+
+
+def test_parse_transcript_import_payload_accepts_missing_optional_language_hint() -> None:
+    data = _payload_bytes(
+        [{"start_ms": 0, "end_ms": 1, "text": "x", "confidence": 1.0, "source_segment_id": "s"}]
+    )
+    result = transcript_module.parse_transcript_import_payload(data)
+    assert result.segments[0].language_hint is None
+
+
+def test_parse_transcript_import_payload_rejects_malformed_utf8() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.parse_transcript_import_payload(b"\xff\xfe\x00not utf-8")
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_transcript_import_payload_rejects_invalid_json() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.parse_transcript_import_payload(b"{not json")
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_transcript_import_payload_rejects_missing_top_level_segments() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.parse_transcript_import_payload(json.dumps({"foo": "bar"}).encode())
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_transcript_import_payload_rejects_missing_required_field() -> None:
+    data = _payload_bytes([{"start_ms": 0, "end_ms": 1, "text": "x", "confidence": 1.0}])
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.parse_transcript_import_payload(data)
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_transcript_import_payload_rejects_wrong_field_type() -> None:
+    data = _payload_bytes(
+        [
+            {
+                "start_ms": "not-an-int",
+                "end_ms": 1,
+                "text": "x",
+                "confidence": 1.0,
+                "source_segment_id": "s",
+            }
+        ]
+    )
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.parse_transcript_import_payload(data)
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_transcript_import_payload_still_enforces_timing_validation() -> None:
+    """Malformed-shape checks live here; timing/bounds validation still runs downstream."""
+    data = _payload_bytes(
+        [{"start_ms": 100, "end_ms": 50, "text": "x", "confidence": 1.0, "source_segment_id": "s"}]
+    )
+    parsed = transcript_module.parse_transcript_import_payload(data)
+    with pytest.raises(ProcessingError) as exc_info:
+        transcript_module.transcript_segments_to_mentions(parsed.segments)
+    assert exc_info.value.code == ErrorCode.INVALID_TRANSCRIPT_SEGMENT

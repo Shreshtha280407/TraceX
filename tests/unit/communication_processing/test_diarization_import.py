@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.modules.communication_processing.audio import diarization_import as diarization_module
@@ -82,3 +84,94 @@ def test_too_many_segments_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
             (_segment(), _segment(source_segment_id="seg-2"))
         )
     assert exc_info.value.code == ErrorCode.INPUT_LIMIT_EXCEEDED
+
+
+# --- parse_diarization_import_payload (Phase 2: the JSON interchange format) -
+
+
+def _payload_bytes(segments: list[dict[str, object]]) -> bytes:
+    return json.dumps({"segments": segments}).encode("utf-8")
+
+
+def test_parse_diarization_import_payload_valid_json() -> None:
+    data = _payload_bytes(
+        [
+            {
+                "start_ms": 0,
+                "end_ms": 500,
+                "speaker_label": "SPEAKER_00",
+                "confidence": 0.6,
+                "source_segment_id": "seg-1",
+            }
+        ]
+    )
+    result = diarization_module.parse_diarization_import_payload(data)
+    assert result.segments == (
+        DiarizationSegmentInput(
+            start_ms=0,
+            end_ms=500,
+            speaker_label="SPEAKER_00",
+            confidence=0.6,
+            source_segment_id="seg-1",
+        ),
+    )
+
+
+def test_parse_diarization_import_payload_rejects_malformed_utf8() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.parse_diarization_import_payload(b"\xff\xfe\x00not utf-8")
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_diarization_import_payload_rejects_invalid_json() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.parse_diarization_import_payload(b"{not json")
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_diarization_import_payload_rejects_missing_top_level_segments() -> None:
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.parse_diarization_import_payload(json.dumps({"foo": "bar"}).encode())
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_diarization_import_payload_rejects_missing_required_field() -> None:
+    data = _payload_bytes([{"start_ms": 0, "end_ms": 1, "confidence": 1.0}])
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.parse_diarization_import_payload(data)
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_diarization_import_payload_rejects_wrong_field_type() -> None:
+    data = _payload_bytes(
+        [
+            {
+                "start_ms": 0,
+                "end_ms": "not-an-int",
+                "speaker_label": "SPEAKER_00",
+                "confidence": 1.0,
+                "source_segment_id": "s",
+            }
+        ]
+    )
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.parse_diarization_import_payload(data)
+    assert exc_info.value.code == ErrorCode.MALFORMED_JSON_PAYLOAD
+
+
+def test_parse_diarization_import_payload_still_enforces_timing_validation() -> None:
+    data = _payload_bytes(
+        [
+            {
+                "start_ms": 100,
+                "end_ms": 50,
+                "speaker_label": "SPEAKER_00",
+                "confidence": 1.0,
+                "source_segment_id": "s",
+            }
+        ]
+    )
+    parsed = diarization_module.parse_diarization_import_payload(data)
+    with pytest.raises(ProcessingError) as exc_info:
+        diarization_module.diarization_segments_to_mentions(parsed.segments)
+    assert exc_info.value.code == ErrorCode.INVALID_DIARIZATION_SEGMENT
