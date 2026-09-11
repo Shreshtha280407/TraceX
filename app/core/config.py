@@ -106,6 +106,40 @@ class Settings(BaseSettings):
     # large video evidence should raise this explicitly via `.env`.
     max_evidence_bytes: int = Field(default=209_715_200, ge=1)
 
+    # --- Worker job claim/result integration (Phase 2.1) ---
+    # No default, unlike auth_jwt_secret: a *missing* value means "no
+    # worker-integration credential has been provisioned yet" and the
+    # internal worker endpoints must fail closed (503), not silently accept
+    # every caller. This is a narrow, temporary shared-secret boundary --
+    # see docs/architecture/worker-job-lifecycle.md for the real
+    # per-worker-credential system this is standing in for (Aditya-owned).
+    worker_shared_secret: SecretStr | None = Field(default=None)
+    # How long a claimed job stays exclusively owned by the claiming worker
+    # before its lease is considered expired and the job becomes eligible
+    # for another worker to reclaim (see "Lease and retry policy" in
+    # docs/architecture/worker-job-lifecycle.md).
+    worker_lease_seconds: int = Field(default=300, ge=1)
+
+    @field_validator("worker_shared_secret")
+    @classmethod
+    def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:
+        """An empty/whitespace-only value is treated as "not configured", not as a real secret.
+
+        `docker compose`'s `${WORKER_SHARED_SECRET}` substitution (no
+        default) resolves to an empty string, not an absent variable, when
+        the shell/`.env` doesn't define it -- which pydantic-settings would
+        otherwise treat as "provided" (`SecretStr('')`, not `None`),
+        defeating `require_worker_principal`'s `is None` fail-closed check
+        entirely. Without this, an empty configured secret would also
+        accept an empty `Authorization: Bearer ` header via
+        `hmac.compare_digest("", "")`. Normalizing here closes both paths
+        at the source, for every caller of `Settings`, not just this one
+        compose passthrough.
+        """
+        if value is not None and not value.get_secret_value().strip():
+            return None
+        return value
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` instance from the current environment.

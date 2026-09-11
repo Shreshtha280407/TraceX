@@ -42,6 +42,16 @@ _TEST_ENV_DEFAULTS = {
     "AUTH_LOGIN_RATE_LIMIT": "5",
     "AUTH_REFRESH_RATE_LIMIT": "20",
     "MAX_EVIDENCE_BYTES": "209715200",
+    # Deliberately blank (not a placeholder secret): the default test suite
+    # must exercise `require_worker_principal`'s fail-closed-when-
+    # unconfigured path deterministically, regardless of whether a
+    # developer's own `.env` happens to define a real
+    # `WORKER_SHARED_SECRET` for live/manual testing. An empty value
+    # normalizes to `None` (`Settings._normalize_blank_worker_secret_to_none`),
+    # matching "unconfigured" exactly. Tests that need a configured secret
+    # set it explicitly via `monkeypatch`/`app.dependency_overrides`.
+    "WORKER_SHARED_SECRET": "",
+    "WORKER_LEASE_SECONDS": "300",
 }
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():

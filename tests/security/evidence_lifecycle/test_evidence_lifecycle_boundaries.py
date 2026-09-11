@@ -47,13 +47,14 @@ _FORBIDDEN_LIBRARY_ROOTS = {
     "transformers",
 }
 
-#: This module produces `WorkerJobV1` only; it never constructs the
-#: contracts that belong to extraction, resolution, or worker-result output.
+#: This module produces `WorkerJobV1`, and (Phase 2.1) validates/persists a
+#: worker-*submitted* `WorkerResultV1`/`ObservationV1` -- it never
+#: fabricates either from raw evidence content itself (that remains
+#: extraction-module territory), and it never touches entity/event
+#: resolution or worker progress reporting at all.
 _FORBIDDEN_CONTRACT_IMPORTS = {
     "EntityV1",
     "EventV1",
-    "ObservationV1",
-    "WorkerResultV1",
     "WorkerProgressV1",
 }
 

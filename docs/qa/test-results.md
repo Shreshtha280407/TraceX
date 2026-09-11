@@ -2,6 +2,105 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Nipun — Phase 2.1: Worker Job Claim and Result-Submission Integration build
+
+Environment: same sandbox as the build below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3. Branch `nipun`; working tree was clean and `git log` showed the local `nipun` branch (`95023e3 Completed nipun/phase-2`) and `origin/main` (`fac9f54 Completed nipun/phase-2 (#10)`) had each independently advanced by one equivalent commit past their common ancestor — the same Phase 2 work, committed on both sides separately; not touched further, per instruction to work only on `nipun` without altering history. Inspected the merged Phase 2 evidence-lifecycle code, `access_control`'s token-generation/hashing pattern, and the frozen `WorkerJobV1`/`WorkerResultV1`/`ObservationV1` contracts before designing anything.
+
+```bash
+$ uv sync --all-groups
+Resolved 66 packages in 3ms
+Checked 65 packages in 0.83ms
+```
+Result: **pass**. No new dependency — `FOR UPDATE SKIP LOCKED` is a SQLAlchemy Core method, `secrets`/`hashlib`/`hmac` are stdlib.
+
+```bash
+$ uv run ruff format --check .
+259 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 118 source files
+```
+Result: **pass**, all three.
+
+```bash
+$ uv run pytest -q
+977 passed in 13.94s
+```
+Result: **pass**, no regressions. 65 new/changed tests this build across `tests/unit/evidence_lifecycle/{test_worker_claim,test_worker_result,test_worker_internal_api}.py`, one new case-scoped test in `test_evidence_api.py`, `tests/integration/evidence_lifecycle/test_worker_lifecycle_live.py` (2, run live), and `tests/unit/test_config.py` (1 new security-regression test).
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0) — validates the new `WORKER_SHARED_SECRET`/`WORKER_LEASE_SECONDS` passthrough on the `api` service.
+
+```bash
+$ docker compose up -d postgres neo4j redis minio
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade f2086e1e89f6 -> 102857ca8d1d, worker job claim and result foundation
+```
+Result: **pass** — all four infra services reached `healthy`; the new revision applies cleanly on top of the existing chain against a live database.
+
+```bash
+$ uv run pytest tests/integration/evidence_lifecycle/test_worker_lifecycle_live.py -v
+test_real_claim_and_result_submission_against_live_infra PASSED
+test_real_claim_with_wrong_processor_finds_nothing PASSED
+2 passed in 0.92s
+```
+Result: **pass — run live**, not self-skipped. Confirms `FOR UPDATE SKIP LOCKED` claiming, the full claim→submit→persist flow, and a processor/version mismatch finding nothing eligible, all against real PostgreSQL/MinIO.
+
+### Docker build: `api` image built cleanly this session (no repeat of the earlier flakiness)
+
+```bash
+$ docker compose up --build -d
+...
+ Image tracex-api Built
+ Container tracex-api-1 Started
+$ docker compose ps
+# api, postgres, neo4j, redis, minio — all Up/healthy
+$ curl .../healthz    # 200
+$ curl .../readyz     # 200, all four deps "ok"
+$ curl .../api/v1/meta/contracts   # 200
+```
+Result: **pass**.
+
+### Live end-to-end worker-lifecycle smoke test (beyond the required command list)
+
+Against the freshly-built containerized stack, using the project's real auth/case setup (register → login → seed case + membership directly via `AccessControlRepository`, the same pattern every integration test in this repo uses) and the real `Idempotency`-free upload flow:
+
+```bash
+$ curl -X POST .../cases/<case_id>/evidence -F file=@cdr_fixture.csv -F source_type=cdr -F classification=unclassified
+# 201 -- evidence + a queued WorkerJobV1 for cdr_generic_v1
+
+$ curl -X POST .../internal/worker-jobs/claim -H "Authorization: Bearer $WORKER_SHARED_SECRET" \
+    -d '{"processor_name":"cdr_generic_v1","processor_version":"1.0.0"}'
+# 200 -- {"job": {...WorkerJobV1 incl. input_object_uri...}, "claim_token": "...", "lease_expires_at": "..."}
+
+$ curl -X POST .../internal/worker-jobs/<job_id>/result -H "Authorization: Bearer $WORKER_SHARED_SECRET" \
+    -H "X-Claim-Token: <claim_token>" -d '<WorkerResultV1 JSON, 1 ObservationV1, status=succeeded>'
+# 200 -- {"job_id":..., "status":"succeeded", "result_id":..., "observation_count":1, "observation_ids":[...]}
+
+$ curl .../cases/<case_id>/jobs/<job_id> -H "Authorization: Bearer <user_token>"
+# 200 -- status=succeeded, claimed_at set, completed_at set, observation_count=1; no claim_token/object_uri
+
+$ docker compose exec postgres psql -U tracex -d tracex -c "SELECT status, attempt, claimed_by FROM worker_jobs WHERE job_id = '<job_id>';"
+# succeeded | 1 | cdr_generic_v1
+$ ... SELECT result_id, status, payload_hash FROM worker_results WHERE job_id = '<job_id>';
+# 1 row
+$ ... SELECT observation_id, observation_type FROM worker_observations WHERE job_id = '<job_id>';
+# 1 row, cdr_call_record
+```
+Result: **pass** — real durable terminal job state and a real durable observation row, confirmed both through the API and by querying PostgreSQL directly. Idempotent exact-payload replay (same `X-Claim-Token`) returned the identical `result_id`/`observation_ids` with `200`. No worker authentication header → `401`; wrong shared secret → `401`.
+
+### Two real bugs caught and fixed during this build's live smoke test (not caught by unit tests alone, before this record)
+
+- **A wrong/unknown claim token against an *already-terminal* job silently returned the cached result instead of being rejected.** `submit_result`'s original ordering checked `job.status in TERMINAL_WORKER_STATUSES` *before* verifying the claim token, short-circuiting straight to the idempotent-replay/conflict comparison (which only compares the submitted payload's hash, not who's asking) whenever the job was already done. Caught live: submitting a deliberately wrong `X-Claim-Token` against the just-completed job from the smoke test above returned `200` with the real cached result instead of `401` — meaning any caller holding only the coarse, worker-fleet-wide `WORKER_SHARED_SECRET` (not a valid per-job claim token) could retrieve a completed job's result summary by guessing/reusing its exact payload, defeating the claim token's purpose as a per-job credential. Fixed by moving the claim-token hash verification to run first and unconditionally (job found + token matches, checked before branching on terminal vs. running status) — the terminal-job idempotency/conflict path is now only reached once the caller has already proven they hold the job's real token. Regression test: `tests/unit/evidence_lifecycle/test_worker_result.py::test_wrong_claim_token_is_rejected_even_against_an_already_terminal_job`; re-verified live on the rebuilt container (`401` where it previously returned `200`).
+- **`Settings.worker_shared_secret` could resolve to an empty-but-not-`None` secret, defeating the fail-closed check.** Found while wiring `WORKER_SHARED_SECRET` into `compose.yaml`'s `api` service, before committing the passthrough: `docker compose`'s `${VAR}` substitution (no default) resolves an unset variable to an empty string inside the container, and pydantic-settings treats a *present* env var as "provided" regardless of content, so `worker_shared_secret` would become `SecretStr('')`, not `None` — skipping `require_worker_principal`'s `is None` fail-closed branch and allowing `hmac.compare_digest("", "")` to accept an empty `Authorization: Bearer ` header. Fixed with a `field_validator` normalizing any blank/whitespace-only value to `None`, plus a redundant emptiness check at the point of use. A related, quieter issue found in the same pass: this repo's own `.env` (needed locally to exercise the live smoke test above) now defines a real `WORKER_SHARED_SECRET`, which `tests/conftest.py` didn't pin the way it already pins every other optional setting with a default (e.g. `MAX_EVIDENCE_BYTES`) — so the default unit-test run was silently picking up the developer's real local value instead of exercising the fail-closed path deterministically. Fixed by adding `WORKER_SHARED_SECRET: ""` (and `WORKER_LEASE_SECONDS`) to `tests/conftest.py`'s `_TEST_ENV_DEFAULTS`. Regression test: `tests/unit/test_config.py::test_blank_worker_shared_secret_normalizes_to_none`.
+
+### Known limitations and intentionally deferred work
+
+No worker daemon/consumer loop, no real per-worker credential system, no max-attempt cutoff, no lease renewal, no automatic redrive of `deferred`/`cancelled` jobs, no denied-worker-action auditing — all explicit non-goals or documented gaps for this phase. See `docs/qa/known-limitations.md` and `docs/architecture/worker-job-lifecycle.md`.
+
 ## 2026-09-11 — Nipun — Phase 2: Evidence Lifecycle and Durable Processing Foundation build
 
 Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3. Branch `nipun`, clean tree, not diverged from `origin/main`, confirmed via `git status --short`/`git branch --show-current`/`git fetch origin` before starting. Inspected and reused, rather than duplicated: `app.modules.access_control.dependencies.require_case_action`/`require_evidence_read`, `record_audit_event`, the hand-written-`sa.Table`/Alembic convention, the `asyncio.to_thread`-wrapped MinIO client-construction pattern, and `structured_processing`'s `SourceResolver` protocol shape (satisfied structurally, no cross-module import).

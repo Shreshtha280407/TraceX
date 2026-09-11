@@ -52,7 +52,11 @@ from app.modules.evidence_lifecycle.errors import (
     UnsupportedContentTypeError,
     UnsupportedSourceTypeError,
 )
-from app.modules.evidence_lifecycle.models import EvidenceRecord, WorkerJobRecord
+from app.modules.evidence_lifecycle.models import (
+    EvidenceRecord,
+    WorkerJobRecord,
+    WorkerResultRecord,
+)
 from app.modules.evidence_lifecycle.schemas import (
     EvidenceListResponse,
     EvidenceUploadResponse,
@@ -87,7 +91,12 @@ def _evidence_view(evidence: EvidenceRecord) -> EvidenceView:
     )
 
 
-def _job_view(job: WorkerJobRecord) -> JobView:
+def _job_view(
+    job: WorkerJobRecord,
+    *,
+    result: WorkerResultRecord | None = None,
+    observation_count: int = 0,
+) -> JobView:
     return JobView(
         job_id=job.job_id,
         case_id=job.case_id,
@@ -99,6 +108,9 @@ def _job_view(job: WorkerJobRecord) -> JobView:
         status=job.status,
         requested_at=job.requested_at,
         dispatched_at=job.dispatched_at,
+        claimed_at=job.claimed_at,
+        completed_at=result.completed_at if result is not None else None,
+        observation_count=observation_count,
         last_error_code=job.last_error_code,
         last_error_message=job.last_error_message,
     )
@@ -220,4 +232,5 @@ async def get_job(
         record = await service.get_job(case_id, job_id)
     except JobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found") from exc
-    return _job_view(record)
+    result, observation_count = await service.get_job_result_summary(job_id)
+    return _job_view(record, result=result, observation_count=observation_count)
