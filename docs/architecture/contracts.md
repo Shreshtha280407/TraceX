@@ -31,14 +31,14 @@ This document is the canonical field-level reference for every Phase 1 shared co
 
 ### `EvidenceRecordV1` (`app/contracts/evidence.py`)
 
-Contract-only in Phase 1. As of Phase 2, `app/modules/evidence_lifecycle/` is a real producer of this contract — see `docs/architecture/evidence-lifecycle.md`. The field set and validation rules below are unchanged; `EvidenceRecord` (that module's internal persistence record) adds lifecycle-only bookkeeping columns (`upload_idempotency_key`, `created_at`/`updated_at`) that never appear in the contract itself.
+Contract-only in Phase 1. As of Phase 2, `app/modules/evidence_lifecycle/` is a real producer of this contract — see `docs/architecture/evidence-lifecycle.md`. The field set and validation rules below are unchanged; `EvidenceRecord` (that module's internal persistence record) adds lifecycle-only bookkeeping columns (`upload_idempotency_key`, `created_at`/`updated_at`) that never appear in the contract itself. As of Phase 2.3, `SourceType` gained two additive values (`structured_tabular`, `structured_json`) — a backward-compatible widening, not a breaking change: every previously-valid `source_type` value remains valid and behaves exactly as before.
 
 | Field | Type | Notes |
 |---|---|---|
 | `schema_version` | `"v1"` | |
 | `evidence_id` | UUID | |
 | `case_id` | UUID | |
-| `source_type` | enum | `document`, `cdr`, `financial`, `video`, `image`, `audio`, `chat`, `other` |
+| `source_type` | enum | `document`, `cdr`, `financial`, `video`, `image`, `audio`, `chat`, `structured_tabular`, `structured_json`, `other` |
 | `original_filename` | str | |
 | `content_type` | str | MIME type |
 | `object_uri` | str | Where the bytes live in object storage |

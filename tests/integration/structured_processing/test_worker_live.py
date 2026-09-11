@@ -5,19 +5,21 @@ true, each checked explicitly:
   - no `.env` at the repo root
   - the live API server isn't reachable at `WORKER_API_BASE_URL`
   - `WORKER_SHARED_SECRET` isn't configured in that live environment
-  - (second test only) PostgreSQL/MinIO specifically aren't reachable --
+  - (pipeline tests only) PostgreSQL/MinIO specifically aren't reachable --
     needed to seed a real case/user/membership and a real evidence upload
 
 `test_worker_client_against_real_running_api` proves the client reaches the
-real API for the "no work"/auth-rejection paths without needing any
-seeded data. `test_full_claim_stream_parse_submit_live_pipeline` proves the
-*complete* path end to end: a real case/user/evidence upload, followed by a
-real `run_once()` claiming it, streaming its bytes through
+real API for the "no work"/auth-rejection paths without needing any seeded
+data. `test_full_claim_stream_parse_submit_live_pipeline` (parametrized over
+`document`/`fir_report_text_v1`, `structured_tabular`/`generic_tabular_v1`,
+and `structured_json`/`generic_json_v1` -- Phase 2.3's new routing) proves
+the *complete* path end to end for each: a real case/user/evidence upload,
+followed by a real `run_once()` claiming it, streaming its bytes through
 `GET /api/v1/internal/worker-jobs/{job_id}/input` (Phase 2.2 -- see
 `docs/architecture/evidence-lifecycle.md`'s "Worker evidence delivery"),
 parsing, and submitting a genuine `SUCCEEDED` result -- not a `DEFERRED`
-fallback. Before Phase 2.2 that endpoint didn't exist, so this second test
-could not have been written honestly; it exists now because the capability
+fallback. Before Phase 2.2 that endpoint didn't exist, so this couldn't have
+been written honestly before; it exists now because the capability
 genuinely does.
 """
 
@@ -113,7 +115,40 @@ def test_worker_client_against_real_running_api() -> None:
         client.close()
 
 
-async def test_full_claim_stream_parse_submit_live_pipeline() -> None:
+_PIPELINE_CASES = [
+    pytest.param(
+        "document",
+        "text/plain",
+        "fir_live_test.txt",
+        b"FIR No. 999/2026 filed at Live Test Police Station. Section 302 IPC.",
+        "fir_report_text_v1",
+        id="document-fir_report_text_v1",
+    ),
+    pytest.param(
+        "structured_tabular",
+        "text/csv",
+        "records_live_test.csv",
+        b"name,value\nalpha,1\nbeta,2\n",
+        "generic_tabular_v1",
+        id="structured_tabular-generic_tabular_v1",
+    ),
+    pytest.param(
+        "structured_json",
+        "application/json",
+        "records_live_test.json",
+        b'{"records": [{"a": 1}, {"a": 2}]}',
+        "generic_json_v1",
+        id="structured_json-generic_json_v1",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source_type", "content_type", "filename", "content", "expected_processor"), _PIPELINE_CASES
+)
+async def test_full_claim_stream_parse_submit_live_pipeline(
+    source_type: str, content_type: str, filename: str, content: bytes, expected_processor: str
+) -> None:
     settings = _live_settings()
     _skip_unless_api_reachable(settings)
 
@@ -131,7 +166,21 @@ async def test_full_claim_stream_parse_submit_live_pipeline() -> None:
     repository = AccessControlRepository(ac_engine)
     email = f"live-worker-test-{uuid4().hex[:8]}@example.test"
     password = "correct-horse-battery-staple"  # noqa: S105
-    fir_text = b"FIR No. 999/2026 filed at Live Test Police Station. Section 302 IPC."
+
+    # `run_once` claims the *oldest* eligible job for whichever processor it
+    # tries first (see `SUPPORTED_PROCESSORS` order); a long-lived dev
+    # sandbox's shared PostgreSQL volume can accumulate leftover `queued`
+    # rows for `expected_processor` from unrelated earlier runs, which
+    # would otherwise make `run_once` claim a stale job instead of the one
+    # this test is about to upload. Clearing them first is this test's own
+    # isolation, not a change to any application behavior.
+    async with ac_engine.begin() as conn:
+        await conn.execute(
+            sa.delete(worker_jobs_table).where(
+                worker_jobs_table.c.processor_name == expected_processor,
+                worker_jobs_table.c.status == "queued",
+            )
+        )
 
     async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
         register = await ac.post(
@@ -169,11 +218,12 @@ async def test_full_claim_stream_parse_submit_live_pipeline() -> None:
             upload = await ac.post(
                 f"/api/v1/cases/{case.case_id}/evidence",
                 headers={**headers, "Idempotency-Key": str(uuid4())},
-                files={"file": ("fir_live_test.txt", fir_text, "text/plain")},
-                data={"source_type": "document", "classification": "unclassified"},
+                files={"file": (filename, content, content_type)},
+                data={"source_type": source_type, "classification": "unclassified"},
             )
             assert upload.status_code == 201, upload.text
             job_id = upload.json()["job"]["job_id"]
+            assert upload.json()["job"]["processor_name"] == expected_processor
 
             client = WorkerApiClient(
                 base_url=settings.worker_api_base_url, shared_secret=secret.get_secret_value()
@@ -193,6 +243,7 @@ async def test_full_claim_stream_parse_submit_live_pipeline() -> None:
             assert status_response.status_code == 200
             job_status = status_response.json()
             assert job_status["status"] == "succeeded"
+            assert job_status["processor_name"] == expected_processor
             assert job_status["observation_count"] > 0
         finally:
             async with ac_engine.begin() as conn:

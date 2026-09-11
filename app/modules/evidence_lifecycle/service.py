@@ -201,7 +201,15 @@ class EvidenceLifecycleService:
             classification=classification,
             uploaded_by=uploaded_by,
             uploaded_at=context.now,
-            parser_profile=parser_profile,
+            # Server-controlled, not the caller's `parser_profile` argument:
+            # the persisted parser profile must always match the processor
+            # this upload was actually routed to (`route`, decided above
+            # from `source_type` alone) -- a client-supplied value here
+            # would let a caller claim a profile inconsistent with its real
+            # routing. The parameter itself is kept (existing call sites
+            # pass `parser_profile=None` unchanged) but its value is never
+            # stored -- see docs/architecture/phase-2-decisions.md.
+            parser_profile=route.processor_name,
             # Evidence and its job are always created together in one
             # transaction (see `create_evidence_with_job`) -- there is no
             # separately-observable "uploaded but not yet queued" state.

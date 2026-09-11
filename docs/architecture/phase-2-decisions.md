@@ -143,8 +143,44 @@ Phase 2's `docs/architecture/evidence-lifecycle.md` documented "no raw-evidence-
 
 Investigated whether `routing.py` could route some `document`/`cdr`/`financial` uploads to these two fallback profiles instead of their default processor. Concluded this cannot be done as a "server-side allowlist" the way the task asked without breaking a principle this module already deliberately established (see "One canonical processor per `source_type`" above): choosing between multiple valid profiles for the *same* `source_type` requires reading and classifying the bytes' shape, which is explicitly documented as the *owning processing module's* job, not evidence-lifecycle's coarse ingestion-time routing. Making `generic_tabular_v1`/`generic_json_v1` reachable would require either (a) a new `source_type` dedicated to "generic tabular/JSON, not CDR or financial shaped" — a frozen-contract change, out of scope for any module to make unilaterally — or (b) content-shape-sniffing logic inside `evidence_lifecycle` at upload time, which contradicts the "coarse routing only" boundary this module already committed to and documented. Left unimplemented; flagged in `docs/qa/known-limitations.md` as a genuine open question for team review, not silently worked around.
 
+**Resolved in Phase 2.3, below**, via exactly option (a) — a controlled, additive `SourceType` extension, approved by the team rather than decided unilaterally.
+
 ## Open questions for team review (Phase 2.2)
 
-- `generic_tabular_v1`/`generic_json_v1` routing reachability (above) needs a team decision: a new `source_type`, or accept they remain reachable only via direct/test job construction.
+- [x] ~~`generic_tabular_v1`/`generic_json_v1` routing reachability~~ — **resolved in Phase 2.3 below.**
 - A storage failure mid-stream (after response headers are already sent) cannot be converted into a clean error response — an inherent HTTP-streaming limitation, not something this endpoint's code can work around; the connection simply terminates.
 - No lease-renewal exists yet (unchanged from Phase 2.1) — a worker streaming a very large evidence file close to its lease boundary could have the lease expire mid-stream; the stream itself is unaffected (already authorized before the check), but a subsequent `/result` submission past that point would be rejected as `lease_expired`, same as today.
+
+---
+
+# Phase 2.3 Decisions — Nipun Explicit Structured-Data Upload Routing
+
+Approved, team-reviewed resolution of the Phase 2.2 open question above: a controlled, additive extension of `SourceType`, not a content-sniffing workaround and not a change to any existing routing entry.
+
+## Why an additive `SourceType` change is not a frozen-contract violation
+
+`CLAUDE.md`'s shared-contract rule forbids changing a `V1` contract's required fields, types, or validation rules *in a way that breaks existing valid payloads*; `docs/architecture/contracts.md`'s versioning policy explicitly allows "additive, backward-compatible changes... with a contract-test update." Adding two new `SourceType` enum members is exactly that: every payload that was valid before this change (every existing `source_type` value, on every existing evidence record, in every existing test) remains valid and behaves identically — nothing is removed, renamed, or tightened. `tests/contract/test_evidence.py::test_evidence_record_accepts_phase_2_3_structured_source_types` is the required contract-test update.
+
+## Why two source types, not one
+
+`structured_tabular` (CSV/XLSX) and `structured_json` (JSON) are kept separate, with fully disjoint accepted-content-type sets, rather than one combined `structured_data` type accepting all three MIME types. A single combined type would need a *second* signal beyond `source_type` to decide between `generic_tabular_v1` and `generic_json_v1` for a given upload — and the only candidate signal is `content_type`, which would mean content-type-based branching inside the routing decision itself. Keeping them separate preserves the exact invariant `routing.py`'s docstring already states: "one declared source type maps to exactly one canonical processor," with zero branching logic anywhere in `route_for`.
+
+## Why `parser_profile` became fully server-controlled (all source types, not just the new two)
+
+Auditing `service.upload_evidence` while implementing this change found that `EvidenceRecordV1.parser_profile` was, in every source type, silently set from a client-supplied form field with no relationship to `route.processor_name` — the actual routing decision. No existing test asserted a specific stored value (all pass `parser_profile=None`), so this was a live, untested inconsistency: a client could have uploaded a `document` and declared `parser_profile="anything"`, and that string would have been persisted and returned verbatim. Fixed by always computing the stored value from `route.processor_name` inside `upload_evidence`, for every source type — not scoped narrowly to `structured_tabular`/`structured_json`, since the same gap existed identically everywhere else. The `parser_profile` parameter/form field itself was kept (not removed) specifically so `upload_evidence`'s signature — and every existing call site across `tests/unit/evidence_lifecycle/{test_upload_service,test_worker_claim,test_worker_result}.py` and `tests/integration/evidence_lifecycle/*.py` — needed zero changes, satisfying "existing document/CDR/finance routing tests remain unchanged and pass" literally.
+
+## Genuinely new (Phase 2.3)
+
+- `SourceType.STRUCTURED_TABULAR`/`STRUCTURED_JSON` (`app/contracts/evidence.py`).
+- Two new entries in `SOURCE_TYPE_CONTENT_TYPES`/`ROUTING` (`routing.py`), routing to Jasraj's pre-existing (Phase 2, unmodified) `generic_tabular_v1`/`generic_json_v1` profiles.
+- `EvidenceLifecycleService.upload_evidence`'s stored `parser_profile` is now always `route.processor_name` (see above).
+- `migrations/versions/af5b05e61b08_structured_source_type_routing.py` — widens the `ck_evidence_records_source_type`/`ck_worker_jobs_source_type` `CHECK` constraints (`f2086e1e89f6`'s hand-written, hardcoded eight-value list) to also accept the two new values. **Only found live**: the Pydantic contract change alone was not sufficient — a real upload against the real database failed `500` until this migration was applied, because PostgreSQL independently enforces its own copy of the allowed-values list. See `docs/qa/test-results.md`'s Phase 2.3 entry for the exact failure and fix.
+- `tests/unit/evidence_lifecycle/test_structured_routing.py` (11 tests), a new contract test, and a parametrized extension of `tests/integration/structured_processing/test_worker_live.py`'s full live pipeline test to cover `generic_tabular_v1`/`generic_json_v1` alongside the pre-existing `fir_report_text_v1` case.
+
+## No changes to Jasraj's parser implementation
+
+`app/modules/structured_processing/structured/profiles.py`'s `GENERIC_TABULAR_V1`/`GENERIC_JSON_V1` (name, version, accepted content types, parsing logic) were inspected and found to already match this task's required routing table exactly — no compatibility correction was needed or made.
+
+## Open questions for team review (Phase 2.3)
+
+- None specific to this change — it closes the one open question Phase 2.2 raised, and introduces no new unresolved boundary.
