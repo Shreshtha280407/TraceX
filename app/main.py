@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
@@ -25,6 +27,26 @@ from app.core.errors import (
 )
 from app.modules.access_control.api import SecurityHeadersMiddleware
 from app.modules.access_control.api import router as auth_router
+from app.modules.evidence_lifecycle.api import router as evidence_router
+from app.modules.evidence_lifecycle.dependencies import get_object_storage
+
+logger = structlog.get_logger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Best-effort, idempotent evidence-bucket initialization.
+
+    Never raises: a MinIO that isn't reachable yet at process startup must
+    not crash the whole app -- `/readyz` (`check_minio`) is the designated
+    signal for "MinIO is down", not a failed startup. `ensure_bucket` is
+    safe to call on every restart.
+    """
+    try:
+        await get_object_storage().ensure_bucket()
+    except Exception as exc:
+        logger.warning("evidence_lifecycle.bucket_init_failed", exc_type=type(exc).__name__)
+    yield
 
 
 def _configure_logging(log_level: str) -> None:
@@ -48,7 +70,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     _configure_logging(settings.log_level)
 
-    application = FastAPI(title=settings.app_name, version="0.1.0")
+    application = FastAPI(title=settings.app_name, version="0.1.0", lifespan=_lifespan)
     application.add_middleware(RequestIDMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(StarletteHTTPException, http_exception_handler)
@@ -56,6 +78,7 @@ def create_app() -> FastAPI:
     application.add_exception_handler(Exception, unhandled_exception_handler)
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(evidence_router)
     return application
 
 

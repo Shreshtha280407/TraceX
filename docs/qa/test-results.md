@@ -2,6 +2,138 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-11 — Nipun — Phase 2: Evidence Lifecycle and Durable Processing Foundation build
+
+Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.4.1 / Compose v5.1.3. Branch `nipun`, clean tree, not diverged from `origin/main`, confirmed via `git status --short`/`git branch --show-current`/`git fetch origin` before starting. Inspected and reused, rather than duplicated: `app.modules.access_control.dependencies.require_case_action`/`require_evidence_read`, `record_audit_event`, the hand-written-`sa.Table`/Alembic convention, the `asyncio.to_thread`-wrapped MinIO client-construction pattern, and `structured_processing`'s `SourceResolver` protocol shape (satisfied structurally, no cross-module import).
+
+```bash
+$ uv add python-multipart
+Resolved 66 packages in 1.22s
+ + python-multipart==0.0.32
+```
+Result: **pass**. The only new dependency (FastAPI requires it for `File`/`Form` multipart parsing) — confirmed genuinely absent first via `uv run python -c "import multipart"` failing with `ModuleNotFoundError`.
+
+```bash
+$ uv sync --all-groups
+```
+Result: **pass**.
+
+```bash
+$ uv run ruff format --check .
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 117 source files
+```
+Result: **pass**, all three. (One real mypy finding fixed before this record: `MinioObjectStorage.put_object`'s `data: IO[bytes]` parameter didn't satisfy `asyncio.to_thread`'s `BinaryIO` expectation for `minio.Minio.put_object` — changed the `ObjectStorage` protocol and both implementations to `BinaryIO` throughout `storage.py`.)
+
+```bash
+$ uv run pytest -q
+948 passed in 12.97s
+```
+Result: **pass**, no regressions. 65 new tests this build: `tests/unit/evidence_lifecycle/` (29), `tests/security/evidence_lifecycle/` (34), `tests/integration/evidence_lifecycle/` (2, run live — see below). 883 total collected before this build (864 passed + 19 skipped, Gaurav's entry below) + 65 = 948; this run had `.env` present and live infra up (see below), so every previously-self-skipping suite across every other module also ran live instead of skipping, which is why `0 skipped` here rather than the expected `19` — not a regression, a side effect of infra being up for this build's own live verification.
+
+```bash
+$ docker compose config
+```
+Result: **pass** (exit 0) — validates the new `MAX_EVIDENCE_BYTES` env passthrough on the `api` service alongside the existing ones.
+
+### Docker build: transient sandbox network flakiness (not a code defect)
+
+```bash
+$ docker compose up --build -d
+...
+#12 25.05   × Failed to download `opencv-python-headless==5.0.0.93`
+#12 25.05   ├─▶ dns error / failed to lookup address information: Try again
+```
+Retried twice more (once after confirming `docker ps`/a synthetic `docker build` both had working outbound network): failed a second time on the same package, then a third time on `asyncpg` instead — three different pre-existing dependencies (unrelated to this task's own code, already present before this build), each failing ~24s into `uv sync` inside the BuildKit build network with an intermittent DNS resolution failure against `files.pythonhosted.org`. A direct `docker run alpine wget https://files.pythonhosted.org/` from the same daemon succeeded once and failed once across two attempts, confirming this is environment-level flakiness in this sandbox's Docker networking, not a dependency-resolution or code problem. Used the documented "Option B" workflow instead (infra in Docker, API on host) to complete live verification without waiting on a fresh image build — see below for the full live smoke test.
+
+**Resolved**: the user re-ran `docker compose up --build -d` afterward (in the background, ~153s for `uv sync` alone this time — a fourth package, `neo4j`, hit the same transient DNS failure mid-attempt before it eventually succeeded), and it completed clean:
+
+```bash
+$ docker compose ps
+tracex-api-1        Up   (running)
+tracex-minio-1      Up   (healthy)
+tracex-neo4j-1      Up   (healthy)
+tracex-postgres-1   Up   (healthy)
+tracex-redis-1      Up   (healthy)
+
+$ curl .../healthz    # {"status":"ok","service":"tracex-api","version":"0.1.0"}                              200
+$ curl .../readyz     # {"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}} 200
+$ curl .../api/v1/meta/contracts                                                                                200
+```
+Result: **pass** — the full containerized stack, including the `api` image, builds and runs correctly. Confirms the earlier failures were exactly what they looked like (sandbox network flakiness across four different unrelated packages, never the same one twice), not a defect in this task's `Dockerfile`/`compose.yaml`/dependency changes. `docs/qa/known-limitations.md` and `docs/progress/mvp-progress.md` updated to close this out.
+
+```bash
+$ docker compose up -d postgres neo4j redis minio
+```
+Result: **pass** — all four reached `healthy` (confirmed via polled `docker compose ps`).
+
+```bash
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade  -> 3e8cbaa07711, baseline
+INFO  [alembic.runtime.migration] Running upgrade 3e8cbaa07711 -> 7e8499f34f29, access control foundation
+INFO  [alembic.runtime.migration] Running upgrade 7e8499f34f29 -> f2086e1e89f6, evidence lifecycle foundation
+```
+Result: **pass** — the full chain applies cleanly against a genuinely fresh database, including the new revision. (The local `.env` predated the `AUTH_JWT_*`/`MAX_EVIDENCE_BYTES` settings entirely — a pre-existing gap unrelated to this task — so the missing required-setting block from `.env.example` was appended to the local, git-ignored `.env` before this could run.)
+
+```bash
+$ uv run pytest tests/integration/evidence_lifecycle -v
+test_migration_created_tables_enforce_uniqueness_and_fks PASSED
+test_real_upload_flow_against_live_postgres_and_minio PASSED
+2 passed in 1.07s
+```
+Result: **pass — run live**, not self-skipped. Confirms the partial unique index on `(case_id, upload_idempotency_key)` and the FK from `evidence_records.uploaded_by` to `users.user_id` are both enforced by real PostgreSQL (the second one caught a real test-fixture bug — see below), and a real upload through `EvidenceLifecycleService` against real MinIO round-trips byte-identical content.
+
+### Live end-to-end HTTP smoke test (beyond the required command list)
+
+Ran a real `uv run uvicorn app.main:app --host 0.0.0.0 --port 8000` process against the live containers, exercised over real HTTP with `curl`, plus direct Redis/MinIO inspection:
+
+```bash
+$ curl .../healthz     # {"status":"ok",...}                                                  200
+$ curl .../readyz      # postgres:ok, neo4j:ok, redis:ok, minio:ok                             200
+$ curl .../api/v1/meta/contracts                                                               200
+$ curl -X POST .../auth/register ... ; curl -X POST .../auth/login ...                         201, 200
+# seeded a real case + active membership directly via AccessControlRepository (no case-CRUD API exists)
+$ curl -X POST .../cases/<case_id>/evidence -H "Idempotency-Key: smoke-2-key" -F file=@fir_fixture.txt \
+    -F source_type=document -F classification=unclassified
+{"evidence":{...,"sha256":"b54a...","processing_status":"queued",...},
+ "job":{...,"processor_name":"fir_report_text_v1","status":"queued","dispatched_at":"2026-09-11T03:47:11.414906Z",...}}
+                                                                                                201
+$ curl -X POST ... (same Idempotency-Key, same file again)   # identical evidence_id/job_id     200
+$ curl -X POST ... (same case, file declared as video/mp4 against source_type=document)
+{"error":{"code":"validation_error","message":"content_type 'video/mp4' is not accepted for source_type 'document'",...}}
+                                                                                                422
+```
+```bash
+$ uv run python3 -c "... MinioObjectStorage(settings).read_bytes(<object_uri>) ..."
+b'FIR No. 999/2026 filed at Sample Police Station. Section 420 IPC.\n'   # byte-identical to the uploaded fixture
+
+$ docker compose exec -T redis redis-cli LLEN tracex:jobs:document
+2
+$ docker compose exec -T redis redis-cli LRANGE tracex:jobs:document 0 -1
+# both pushed jobs' canonical JSON: schema_version, job_id, case_id, evidence_id, source_type,
+# processor_name, processor_version, attempt, idempotency_key, input_object_uri, requested_at —
+# no extra fields, no credentials. Exactly 2 entries for 2 distinct uploads (the idempotent
+# replay above did NOT push a duplicate).
+```
+Result: **pass** — real evidence metadata, real private MinIO object, real durable+published job, idempotent replay, and rejection of an unsupported content type, all verified against live infrastructure. `docker compose ps` afterward: `minio`/`neo4j`/`postgres`/`redis` all `healthy`, left running (nothing destroyed); the manual host `uvicorn` verification process was stopped.
+
+### Two real bugs caught and fixed during this build (before this record)
+
+- **`UploadOutcome.job.dispatched_at` was always `null` on a fresh upload, even when the same-request Redis publish actually succeeded.** `service.upload_evidence` built the returned `UploadOutcome` from the in-memory `WorkerJobRecord` constructed *before* calling `_dispatch`, and `_dispatch` updated only the database row, never the caller's local variable. Caught live: the smoke-test upload response showed `"dispatched_at": null` immediately after a successful upload, while a subsequent `GET /jobs/{job_id}` (which re-reads from PostgreSQL) would have shown the correct timestamp — a real, if non-critical, response-accuracy bug that no unit test (which never checked the *returned* value's freshness, only the repository's stored value) had caught. Fixed by having `_dispatch` return the updated (or, on a deferred publish, unchanged) `WorkerJobRecord`, used to build the final `UploadOutcome`. Added a regression assertion (`outcome.job.dispatched_at is not None`) to `tests/unit/evidence_lifecycle/test_upload_service.py::test_valid_upload_creates_evidence_storage_write_and_job`.
+- **A test-fixture bug (not an application bug), also only caught live.** `tests/integration/evidence_lifecycle/`'s two integration tests originally passed a bare `uuid4()` for `uploaded_by`, which violates `evidence_records.uploaded_by`'s real foreign key onto `users.user_id` (`FakeEvidenceLifecycleRepository`, used everywhere else, doesn't enforce foreign keys at all — exactly the class of bug live integration tests exist to catch, the same lesson `docs/decisions/ADR-003-...md` Decision 7 already recorded for `access_control`). Fixed by adding a `seeded_user` fixture (mirroring the existing `seeded_case`) to `tests/integration/evidence_lifecycle/conftest.py` and using it for `uploaded_by` in both tests.
+
+```bash
+$ git status --short -- app/modules/graph app/modules/structured_processing app/modules/communication_processing app/modules/media_processing app/contracts
+(no output)
+```
+Result: **pass** — zero diff against every other contributor's owned module and the frozen contracts.
+
+### Known limitations and intentionally deferred work
+
+No worker consumer, no automatic job redrive, no case CRUD API, no document/OCR/ASR/video parsing, no entity resolution, no graph projection, no Merkle roots/signatures were introduced — all explicit non-goals for this phase. The containerized `api` image build was blocked by sandbox-level network flakiness, not a code defect — see above and `docs/qa/known-limitations.md` for the full list.
+
 ## 2026-09-10 — Gaurav — Video and Image Processing Foundation build
 
 Environment: same sandbox as the builds below, Python 3.12.13 (via `uv`), Docker 29.7.2, `ffmpeg`/`ffprobe` n9.0 and `nvidia-smi` present but reporting no driver/GPU (`NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver` — exercised directly as the expected "GPU absent" path, not worked around). Started on the `gaurav` branch at `e2f8827`; partway through the session `git log`/`git status` showed the branch had since picked up `53d1d4e Completed sarthak/phase-1 (#7)` (a concurrent, separately-authored build) via a manual git operation outside this task — confirmed via `git status --short` that this caused zero conflicts with this task's own files, and this task's own doc edits (`docs/qa/test-matrix.md`, `docs/qa/known-limitations.md`, `docs/qa/test-data.md`, `docs/runbooks/local-development.md`) were re-based on the current on-disk content before editing, additive on top of Sarthak's own additions to the same files. Additive edits only to shared files: `pyproject.toml`/`uv.lock` (three new dependencies only), the four docs above, plus this file and `docs/progress/mvp-progress.md`. No file under `app/modules/graph/`, `app/modules/structured_processing/`, `app/modules/access_control/`, `app/modules/communication_processing/`, or `app/contracts/` was touched (confirmed by `git status --short -- <owned paths>` below).

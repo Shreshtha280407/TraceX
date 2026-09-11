@@ -100,6 +100,12 @@ class Settings(BaseSettings):
             )
         return value
 
+    # --- Evidence lifecycle ---
+    # 200 MiB: a safe default ceiling for a single evidence upload (document/
+    # audio/image-sized files) in local development. Deployments handling
+    # large video evidence should raise this explicitly via `.env`.
+    max_evidence_bytes: int = Field(default=209_715_200, ge=1)
+
 
 def get_settings() -> Settings:
     """Build a fresh `Settings` instance from the current environment.
