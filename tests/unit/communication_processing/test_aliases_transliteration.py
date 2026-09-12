@@ -69,6 +69,19 @@ def test_candidate_exposes_method_and_version() -> None:
     assert result.method_version
 
 
+def test_mixed_script_token_preserves_original_and_produces_bounded_candidates() -> None:
+    """Scenario 24: a mixed-script token is never transliterated, but the
+    original text is preserved and a bounded (never unbounded/invented)
+    normalized candidate is still produced -- never silently dropped."""
+    mixed_token = "Ram" + _DEVANAGARI_RAM  # one token, no space: Latin + Devanagari
+    result = generate_candidates(mixed_token)
+    assert result.script is Script.MIXED
+    assert result.category == CATEGORY_NOT_GENERATED
+    assert result.original_text == mixed_token
+    assert len(result.candidates) <= 1  # bounded: at most the exact-normalized key
+    assert result.reason is not None
+
+
 def test_phone_number_is_never_transliterated_as_a_name() -> None:
     """Scenario 21: phone numbers are excluded from transliteration."""
     result = generate_candidates("9876543210")

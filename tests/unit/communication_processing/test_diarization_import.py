@@ -38,6 +38,14 @@ def test_speaker_label_never_becomes_a_verified_identity_hint() -> None:
     """The entity_type_hint must never claim verified identity -- only source-local label."""
     mentions = diarization_module.diarization_segments_to_mentions((_segment(),))
     assert mentions[0].entity_type_hint == "speaker_label_local"
+
+
+def test_imported_segment_is_tagged_metadata_supplied_not_model_derived() -> None:
+    """Section 5.3: an externally-imported segment must never be indistinguishable
+    from one a local model genuinely derived -- no adapter in this phase ever
+    produces `model_derived` (see `audio/diarization_adapter.py`)."""
+    mentions = diarization_module.diarization_segments_to_mentions((_segment(),))
+    assert mentions[0].attributes["segment_source"] == "metadata_supplied"
     assert "verified" not in (mentions[0].entity_type_hint or "")
     assert "person" not in (mentions[0].entity_type_hint or "")
 

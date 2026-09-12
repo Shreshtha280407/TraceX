@@ -2168,3 +2168,93 @@ The **safe graph-read API** was then queried directly for this exact case and re
 ### Final state
 
 `git status --short` shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `jasraj`, HEAD unchanged at `fc5a2b7` plus this session's uncommitted changes. Docker stack left running (unmodified `.env` throughout — no temporary configuration was needed this session); `docker compose down` removes it cleanly whenever wanted.
+
+## 2026-09-12 — Sarthak — Phase 3 Audio, Social/Chat, and Multilingual Communication Evidence Pipelines
+
+Micro-batch submission, chat-timezone default policy, mentioned-identifier extraction, sender-transliteration wiring, and a typed ASR/diarization adapter boundary for `app/modules/communication_processing/` — on top of Nipun's batch-ingestion contract, Aditya's worker-security boundary, and this module's own Phase 1/2 foundation. Full reasoning in `docs/architecture/phase-3-decisions.md`'s Sarthak section.
+
+### Commands run and results
+
+```text
+$ uv sync --all-groups
+Resolved 101 packages in 3ms
+Checked 99 packages in 1ms                    # no dependency changes -- pure-stdlib additions only
+
+$ uv run ruff format --check .
+355 files already formatted
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 151 source files
+
+$ uv run pytest -q
+1577 passed, 1 skipped in 64.44s               # tests/unit/communication_processing/ alone: 269 -> 332 (+63)
+
+$ docker compose config --quiet
+(exit 0 -- valid)
+
+$ docker compose up --build -d
+Image tracex-api Built; postgres/neo4j/redis/minio Healthy; api Started (healthy)
+
+$ uv run alembic current / upgrade head
+d3f1a6c9b8e2 (head)                            # unchanged -- this phase added no migration
+```
+
+One genuine gap found only by actually running `docker compose config` after these changes: `compose.yaml`'s `x-tracex-app-env` anchor explicitly lists every config env var it passes through to containers, and the two new ones (`COMMUNICATION_BATCH_SIZE`, `COMMUNICATION_DEFAULT_TIMEZONE`) were missing -- added to `.env.example` and `Settings` but not wired into `compose.yaml`, which would have made a deployer's `.env` override silently have no effect inside the container. Fixed directly (`compose.yaml` now carries both, confirmed present in `docker compose config`'s resolved output).
+
+### Live verification against the rebuilt stack
+
+`GET /healthz` → `{"status":"ok",...}`; `GET /readyz` → all four dependencies `"ok"`; `GET /api/v1/meta/contracts` → all nine contract names present.
+
+**Self-skipping live suite ran for real (not skipped):**
+
+```text
+$ uv run pytest tests/integration/communication_processing/ -v
+test_worker_client_against_real_running_api PASSED
+test_full_claim_stream_parse_submit_live_pipeline[audio-audio_metadata_v1] PASSED
+test_full_claim_stream_parse_submit_live_pipeline[chat-generic_social_json_v1] PASSED
+test_full_pipeline.py::test_every_processor_succeeds_end_to_end PASSED
+```
+
+Both parametrized pipeline cases already exercise this session's new batch-orchestration code path (`run_once` now calls `run_communication_job_with_batches`, not the old single-result path) for real against the live API/database.
+
+**Manual real-HTTP verification focused on this session's four new capabilities specifically** (micro-batch delivery, chat-timezone default, mentioned-identifier extraction, sender-transliteration wiring) — none of the existing live tests exercise `whatsapp_export_v1` (only `audio_metadata_v1`/`generic_social_json_v1` are live-reachable in the committed parametrized suite), so a one-off script drove a real WhatsApp chat upload end to end:
+
+```text
+[PASS] healthz/readyz
+[setup] reusing existing active worker credential
+[PASS] register
+[PASS] login
+[PASS] case + membership seeded
+[PASS] whatsapp chat upload -> routed to whatsapp_export_v1
+[worker --once] exit=0
+[PASS] worker --once exit 0 (real subprocess)
+[job status] succeeded observation_count=3
+[PASS] job succeeded with observation_count >= 3
+[observation types persisted] ['chat_message', 'email_address', 'phone_number']
+[PASS] all observations are real batch-linked rows (observation_batch_id set, result_id null)
+[chat_message attributes] timestamp_source_timezone='Asia/Kolkata'
+[PASS] timezone default applied + sender transliteration candidates present: [['राहुल', 'raahula'], ['शर्मा', 'sharmaa']]
+```
+
+Input: one WhatsApp-format line with a naive (timezone-less) timestamp, a Devanagari sender name ("राहुल शर्मा"), and a message body containing an Indian-mobile-shaped phone number and an email address. Confirmed directly via a raw `worker_observations` query: all 3 observations (`chat_message`, `phone_number`, `email_address`) have `observation_batch_id` set and `result_id` NULL — genuinely delivered through the new `/observations` micro-batch path, not the old terminal-result path. The `chat_message` row's `canonical_payload.attributes` confirmed both new features directly: `timestamp_source_timezone="Asia/Kolkata"` (the naive timestamp really did resolve via the configured default) and `sender_transliteration_candidates` containing two per-word candidates (`राहुल`→`raahula`, `शर्मा`→`sharmaa`) — proving the multi-word-tokenization fix actually works against a real pipeline run, not just the unit test that exercises `chat_message_to_mention` directly.
+
+**Graph outbox/projector idempotency**, run twice against the real stack:
+
+```text
+run 1: {"claimed": 18, "succeeded": 3, "failed": 15, ...}   exit 1
+run 2: {"claimed": 0, "succeeded": 0, "failed": 0, ...}     exit 0
+Neo4j Observation node count for this case after both runs: 3
+```
+
+The 15 failures in run 1 were investigated, not assumed benign: `SELECT last_error_code, count(*) FROM graph_projection_jobs WHERE status='failed' GROUP BY last_error_code` returned `observation_not_found | 15` — the identical, already-documented pre-existing phenomenon from earlier sessions in this long-lived shared sandbox (stale `graph_projection_jobs` rows referencing observations from previously-cleaned-up test data, unrelated to this case). This run's own 3 observations all succeeded on the first pass; the second pass claimed zero new work and the Neo4j node count stayed at exactly 3 — genuine, live proof that batch-delivered observations (this session's new code path) project into Neo4j exactly once, with no duplication on a second projector run.
+
+**Not verified live** (by design, not oversight): the ASR/diarization adapter `Protocol` (`UnavailableAsrAdapter`/`UnavailableDiarizationAdapter`) is deliberately never reachable from any live dispatch path — `audio/routing.py` defers before either adapter would ever be invoked — so there is no live-pipeline scenario in which it could be exercised. Its correctness is proven entirely at the unit level (`test_asr_adapter.py`/`test_diarization_adapter.py`), which is the only level where it is ever actually called.
+
+**Cleanup**: every row created by the manual verification script (the case, its membership, the evidence record, the worker job/result/observation rows) was deleted directly afterward; the corresponding Neo4j nodes for this case were removed via `DETACH DELETE`. Confirmed directly: `0` matching cases (`case_reference LIKE 'SARTHAK-LIVE-VERIFY%'`), `0` matching users (`email_normalized LIKE 'sarthak-live-verify%'`). The pre-existing, already-active `communication-processing-worker-live-test` credential (provisioned in an earlier session) was reused, not re-created or revoked.
+
+### Final state
+
+`git status --short` shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `sarthak`, no branch switch performed. Docker stack left running (rebuilt via `docker compose up --build -d` to pick up this session's code changes; `.env` unchanged throughout); `docker compose down` removes it cleanly whenever wanted.

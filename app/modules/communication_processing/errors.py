@@ -52,6 +52,14 @@ class ErrorCode:
     #: field / has a field of the wrong type -- before any timing/bounds
     #: validation ever runs.
     MALFORMED_JSON_PAYLOAD = "malformed_json_payload"
+    #: Raised only if `AsrAdapter.transcribe`/`DiarizationAdapter.diarize` is
+    #: ever called directly while `state` reports `UNAVAILABLE` -- a
+    #: programming-error safety net, not a path `worker.py`'s live dispatch
+    #: can reach today (it defers via `AudioRoutingDecision.DEFERRED_*`
+    #: *before* any adapter would be invoked). See `audio/asr_adapter.py`/
+    #: `audio/diarization_adapter.py`.
+    ASR_ADAPTER_UNAVAILABLE = "asr_adapter_unavailable"
+    DIARIZATION_ADAPTER_UNAVAILABLE = "diarization_adapter_unavailable"
 
 
 class ProcessingError(Exception):

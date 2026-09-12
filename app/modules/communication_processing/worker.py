@@ -35,6 +35,7 @@ the result. No daemon, polling loop, or scheduler -- see
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -48,6 +49,8 @@ import structlog
 
 from app.contracts.common import SourceLocator
 from app.contracts.evidence import SourceType
+from app.contracts.observation import ObservationV1
+from app.contracts.observation_batch import TransformationProvenanceV1
 from app.contracts.worker import WorkerError, WorkerJobV1, WorkerResultV1, WorkerStatus
 from app.core.config import Settings, get_settings
 from app.modules.communication_processing.audio.diarization_import import (
@@ -62,6 +65,12 @@ from app.modules.communication_processing.audio.routing import (
 from app.modules.communication_processing.audio.transcript_import import (
     parse_transcript_import_payload,
     transcript_segments_to_mentions,
+)
+from app.modules.communication_processing.batching import (
+    build_batch_submission,
+    build_progress,
+    build_transformation,
+    deterministic_batch_id,
 )
 from app.modules.communication_processing.client import WorkerApiClient
 from app.modules.communication_processing.errors import (
@@ -88,14 +97,23 @@ from app.modules.communication_processing.models import (
 from app.modules.communication_processing.provenance import (
     CONFIDENCE_STRUCTURED_COMPLETE,
     mention_to_observation,
+    profile_config_hash,
 )
 from app.modules.communication_processing.social.common import chat_message_to_mention
+from app.modules.communication_processing.social.identifiers import extract_mentioned_identifiers
 from app.modules.communication_processing.social.instagram import parse_instagram_export
 from app.modules.communication_processing.social.json_records import parse_generic_json_export
 from app.modules.communication_processing.social.telegram import parse_telegram_export
 from app.modules.communication_processing.social.whatsapp import parse_whatsapp_export
 
 logger = structlog.get_logger(__name__)
+
+Clock = Callable[[], datetime]
+
+
+def _default_clock() -> datetime:
+    return datetime.now(UTC)
+
 
 AUDIO_METADATA_V1 = ProcessorProfile(
     name="audio_metadata_v1",
@@ -199,16 +217,7 @@ def process_job(job: WorkerJobV1, input_payload: InputPayload) -> WorkerResultV1
         profile = _get_profile(job.processor_name)
         _validate_source_type(profile, job.source_type)
         mentions, checkpoint, status = _dispatch(profile, input_payload)
-        observations = [
-            mention_to_observation(
-                case_id=job.case_id,
-                evidence_id=job.evidence_id,
-                profile=profile,
-                mention=mention,
-                created_at=completed_at,
-            )
-            for mention in mentions
-        ]
+        observations = _observations_for(job, profile, mentions, completed_at)
         return WorkerResultV1(
             job_id=job.job_id,
             case_id=job.case_id,
@@ -370,12 +379,192 @@ def _handle_social_export(
     else:
         records = parse_generic_json_export(input_payload.data)
 
-    mentions = [chat_message_to_mention(record) for record in records]
+    mentions: list[RawMention] = []
+    for record in records:
+        mentions.append(chat_message_to_mention(record))
+        mentions.extend(extract_mentioned_identifiers(record))
     return mentions, None, WorkerStatus.SUCCEEDED
 
 
 def _defer_checkpoint(reason: AudioRoutingDecision) -> str:
     return json.dumps({"reason": reason.value}, sort_keys=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (Sarthak): micro-batch submission through Nipun's `/observations`
+# endpoint, instead of bundling every observation into one terminal result.
+# Reuses `_dispatch` (above) completely unchanged -- every profile already
+# produces the identical `list[RawMention]` shape regardless of source
+# modality, so only the *submission* strategy is new here, not the
+# extraction logic itself. See docs/architecture/communication-processing.md
+# and docs/architecture/phase-3-decisions.md's Sarthak section.
+# ---------------------------------------------------------------------------
+
+#: One safe, named transformation step per profile family -- recorded in
+#: every batch's `TransformationProvenanceV1`, never raw source content.
+_TRANSFORMATION_STEP_NAMES: dict[str, str] = {
+    AUDIO_METADATA_V1.name: "wav_metadata_extraction",
+    TRANSCRIPT_IMPORT_V1.name: "transcript_segment_import_validation",
+    DIARIZATION_IMPORT_V1.name: "diarization_segment_import_validation",
+    WHATSAPP_EXPORT_V1.name: "whatsapp_export_parsing",
+    TELEGRAM_EXPORT_V1.name: "telegram_export_parsing",
+    INSTAGRAM_EXPORT_V1.name: "instagram_export_parsing",
+    GENERIC_SOCIAL_JSON_V1.name: "generic_social_json_parsing",
+}
+
+
+def _observations_for(
+    job: WorkerJobV1, profile: ProcessorProfile, mentions: list[RawMention], now: datetime
+) -> list[ObservationV1]:
+    """Convert mentions to observations, one per mention, with stable IDs.
+
+    Most mentions have a locator unique within the job, so this is
+    ordinarily a 1:1 `mention_to_observation` mapping (`discriminator=""`,
+    unchanged from before this helper existed). The one documented
+    exception: `social/identifiers.py` intentionally reuses a chat
+    message's own locator for every `phone_number`/`email_address`/
+    `username_or_handle`/`url` mention it extracts from that message's
+    text -- the message *is* the accurate source location; there is
+    nothing more precise to point at. When more than one such mention
+    shares `(observation_type, locator)`, later occurrences get a
+    positional `discriminator` so they still get distinct, stable
+    `observation_id`s instead of colliding.
+    """
+    seen: dict[tuple[str, str], int] = {}
+    observations: list[ObservationV1] = []
+    for mention in mentions:
+        key = (mention.observation_type, mention.locator.model_dump_json())
+        ordinal = seen.get(key, 0)
+        seen[key] = ordinal + 1
+        observations.append(
+            mention_to_observation(
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                profile=profile,
+                mention=mention,
+                created_at=now,
+                discriminator=str(ordinal) if ordinal else "",
+            )
+        )
+    return observations
+
+
+def run_communication_job_with_batches(
+    *,
+    client: WorkerApiClient,
+    job: WorkerJobV1,
+    claim_token: str,
+    input_payload: InputPayload,
+    clock: Clock = _default_clock,
+) -> WorkerResultV1:
+    """Process one communication-processing job, submitting bounded micro-batches.
+
+    Reuses `_get_profile`/`_validate_source_type`/`_dispatch` (this
+    module's existing, unchanged extraction logic) to build the full list
+    of mentions first, then submits them through `client.submit_batch` in
+    bounded chunks (`Settings.communication_batch_size`) with real
+    transformation provenance and monotonically-increasing progress, before
+    submitting exactly one terminal `WorkerResultV1` with `observations=[]`
+    -- the observations were already delivered. A `DEFERRED` outcome (raw
+    audio with no real ASR/diarization capability available) submits zero
+    batches, exactly as before this phase: there is nothing real to
+    report. Never raises `ProcessingError` -- caught here and turned into a
+    terminal `FAILED` result, exactly like `process_job`'s own contract.
+    """
+    settings = get_settings()
+    now = clock()
+
+    try:
+        profile = _get_profile(job.processor_name)
+        _validate_source_type(profile, job.source_type)
+        mentions, checkpoint, status = _dispatch(profile, input_payload)
+    except ProcessingError as exc:
+        return WorkerResultV1(
+            job_id=job.job_id,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            status=WorkerStatus.FAILED,
+            observations=[],
+            derived_artifacts=[],
+            checkpoint=None,
+            error=WorkerError(code=exc.code, message=exc.message, retryable=exc.retryable),
+            completed_at=now,
+        )
+
+    if status is WorkerStatus.DEFERRED or not mentions:
+        return WorkerResultV1(
+            job_id=job.job_id,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            status=status,
+            observations=[],
+            derived_artifacts=[],
+            checkpoint=checkpoint,
+            error=None,
+            completed_at=now,
+        )
+
+    step_name = _TRANSFORMATION_STEP_NAMES.get(profile.name, "communication_extraction")
+    config_hash = profile_config_hash(profile)
+    batch_size = settings.communication_batch_size
+    total = len(mentions)
+    renew_since_last = 0
+
+    for batch_sequence, start in enumerate(range(0, total, batch_size)):
+        chunk = mentions[start : start + batch_size]
+        observations = _observations_for(job, profile, chunk, now)
+        batch_id = deterministic_batch_id(job_id=job.job_id, batch_sequence=batch_sequence)
+        units_completed = min(start + batch_size, total)
+
+        transformation: TransformationProvenanceV1 = build_transformation(
+            job=job,
+            batch_id=batch_id,
+            ordinal=0,
+            step_name=step_name,
+            step_version=profile.version,
+            config_hash=config_hash,
+            started_at=now,
+            completed_at=now,
+            output_observation_ids=[o.observation_id for o in observations],
+            safe_metadata={"batch_sequence": batch_sequence, "item_count": len(chunk)},
+        )
+        progress = build_progress(
+            stage="submitting",
+            units_total=total,
+            units_completed=units_completed,
+            observations_emitted=len(observations),
+            batch_sequence=batch_sequence,
+            occurred_at=now,
+            message_code="BATCH_SUBMITTED",
+        )
+        submission = build_batch_submission(
+            job=job,
+            batch_sequence=batch_sequence,
+            submitted_at=now,
+            observations=observations,
+            transformations=[transformation],
+            progress=progress,
+        )
+        client.submit_batch(job_id=job.job_id, claim_token=claim_token, submission=submission)
+
+        renew_since_last += 1
+        if renew_since_last >= 5:
+            # Best-effort heartbeat only; a failure here is not fatal to the job.
+            with contextlib.suppress(WorkerApiError):
+                client.renew_lease(job.job_id, claim_token=claim_token)
+            renew_since_last = 0
+
+    return WorkerResultV1(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        status=WorkerStatus.SUCCEEDED,
+        observations=[],
+        derived_artifacts=[],
+        checkpoint=None,
+        error=None,
+        completed_at=now,
+    )
 
 
 #: Every profile this worker's `process_job` dispatch table supports,
@@ -398,12 +587,6 @@ SUPPORTED_PROCESSORS: tuple[tuple[str, str], ...] = tuple(
 #: identical addition: an honest, expected "not yet possible" outcome,
 #: never a fabricated failure or a crash.
 CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE = "input_resolution_unavailable"
-
-Clock = Callable[[], datetime]
-
-
-def _default_clock() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -488,7 +671,13 @@ def run_once(
             ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=failed)
             return RunOnceOutcome(claimed=True, job_id=job.job_id, result_status=ack.status)
 
-        result = process_job(job, input_payload)
+        result = run_communication_job_with_batches(
+            client=client,
+            job=job,
+            claim_token=claim_token,
+            input_payload=input_payload,
+            clock=clock,
+        )
         ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=result)
         logger.info(
             "worker.run_once.submitted",

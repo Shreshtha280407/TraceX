@@ -237,7 +237,7 @@ uv run python -m app.modules.access_control.worker_credentials create \
 uv run python -m app.modules.communication_processing.worker --once
 ```
 
-**Only two of the seven processors above are reachable through a real evidence upload today**: `audio_metadata_v1` (`source_type=audio`) and `generic_social_json_v1` (`source_type=chat`). The other five are fully supported by this worker but have no route from `evidence_lifecycle/routing.py` yet — see the architecture doc's "Routing boundary" section; they can still be exercised via a directly-constructed `WorkerJobV1` (as the unit tests do).
+**All seven processors above are reachable through a real evidence upload** (resolved in Phase 2 — `evidence_lifecycle/routing.py` added five additive `SourceType`s: `audio_transcript`, `audio_diarization`, `whatsapp_chat`, `telegram_chat`, `instagram_chat`, alongside the original `audio`/`chat`; see `docs/qa/known-limitations.md`). They can also still be exercised via a directly-constructed `WorkerJobV1` (as the unit tests do).
 
 `--once` is the only supported mode — no daemon or polling loop; run it again to attempt another job.
 
@@ -249,6 +249,29 @@ uv run pytest tests/integration/communication_processing -v  # full in-process p
 ```
 
 `tests/integration/communication_processing/test_communication_worker_live.py` self-skips (never fabricates a pass) under the same conditions as `structured_processing`'s live test. It provisions its **own** dedicated worker-credential token (a fixed dev-only literal distinct from `settings.worker_token`), not a credential bound to the shared `.env` `WORKER_TOKEN` value — so running both live suites together in one `pytest -q` pass never has one suite's credential scope collide with the other's (see `docs/architecture/phase-2-decisions.md` for the full reasoning). `WORKER_TOKEN` in `.env` is still what gates whether live testing runs at all.
+
+### Real audio/chat micro-batch processing, timezone default, and mentioned-identifier/transliteration hooks (Phase 3 — Sarthak)
+
+See `docs/architecture/communication-processing.md` for the full design. No extra configuration or bootstrap step is needed — every capability below is pure-Python/stdlib, ships with the repository, and needs no system package or model download.
+
+**Micro-batch submission**: `worker.py --once` now submits observations through Nipun's `POST /{job_id}/observations` in bounded chunks (`COMMUNICATION_BATCH_SIZE`, default 200) instead of bundling everything into the terminal result, renewing its lease via `POST /{job_id}/renew` every 5 batches for a long-running job — the same pattern `structured_processing`'s Phase 3 worker established.
+
+**Chat timezone default**: a naive chat timestamp with no explicit offset/`Z`/epoch signal is interpreted in `COMMUNICATION_DEFAULT_TIMEZONE` (default `Asia/Kolkata`) rather than left unresolved — WhatsApp (always naive), Telegram (when `date_unixtime` is absent), and generic-JSON exports (a naive ISO string) all use this fallback; `timestamp_source_timezone` on the resulting observation records which zone was actually used (`None` when the source's own signal was unambiguous).
+
+**Mentioned-identifier extraction**: every chat message's text is also scanned for `phone_number`/`email_address`/`url`/`username_or_handle` via fixed, deterministic regexes (`social/identifiers.py`) — separate observations from the parent `chat_message`, never a graph edge or resolved identity.
+
+**Sender-name transliteration candidates**: a chat message's `sender` field gets per-word `deterministic_transliteration`/`exact_normalized` candidates attached as a `sender_transliteration_candidates` observation attribute (via the pre-existing, unmodified `aliases/transliteration.py`) — review-only extraction aids, never auto-attached to any entity's aliases.
+
+**ASR/diarization**: still no real local speech-to-text or diarization model (this module's own `test_module_safety.py` bans every practical ML toolkit for it — see `docs/architecture/phase-3-decisions.md`'s Sarthak section). `audio/asr_adapter.py`/`audio/diarization_adapter.py` now give that absence a typed, documented `Protocol` boundary (`UnavailableAsrAdapter`/`UnavailableDiarizationAdapter`, always deferring) instead of an implicit one — `worker.py`'s dispatch behavior is unchanged.
+
+Running its new test suites specifically:
+
+```bash
+uv run pytest tests/unit/communication_processing/test_social_identifiers.py -v
+uv run pytest tests/unit/communication_processing/test_social_common.py -v
+uv run pytest tests/unit/communication_processing/test_asr_adapter.py tests/unit/communication_processing/test_diarization_adapter.py -v
+uv run pytest tests/unit/communication_processing/test_communication_worker_orchestration.py -v
+```
 
 ## Authentication and case-scoped access control
 

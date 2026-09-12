@@ -26,6 +26,14 @@ from app.modules.communication_processing.models import ProcessorProfile, RawMen
 # `CONFIDENCE_STRUCTURED_COMPLETE`: a complete record read directly from a
 # validated source (a WAV header fact, a parsed chat message field).
 #
+# `CONFIDENCE_REGEX_EXACT_MATCH`: an exact deterministic regex match
+# against unstructured message text (a phone number, email address, URL,
+# or handle -- see `social/identifiers.py`) -- slightly below
+# `CONFIDENCE_STRUCTURED_COMPLETE` because the match is a pattern over free
+# text rather than a value read from an already-validated structured
+# field, mirroring `structured_processing.provenance`'s identical
+# constant/rationale.
+#
 # Transcript-segment and diarization-segment observations do NOT use a
 # fixed constant here: `extraction_confidence` is the caller-supplied
 # transcript/diarization confidence value itself (validated into [0, 1] by
@@ -34,6 +42,7 @@ from app.modules.communication_processing.models import ProcessorProfile, RawMen
 # doing so would misrepresent how confident the *external* ASR/diarization
 # system actually was.
 CONFIDENCE_STRUCTURED_COMPLETE = 1.00
+CONFIDENCE_REGEX_EXACT_MATCH = 0.95
 
 
 def profile_config_hash(profile: ProcessorProfile) -> str:

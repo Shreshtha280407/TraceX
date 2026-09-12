@@ -19,10 +19,13 @@ Documented accepted shape:
 }
 ```
 
-`"timestamp"` is converted to UTC only when it is a valid ISO-8601 string
-carrying an explicit offset or `Z` suffix (`datetime.fromisoformat`,
-tz-aware result); a naive/ambiguous timestamp string is preserved as
-`timestamp_raw` only, per this module's documented never-guess policy.
+`"timestamp"` is converted to UTC directly when it is a valid ISO-8601
+string carrying an explicit offset or `Z` suffix; otherwise, if it is a
+naive ISO-8601 string, it is interpreted in
+`Settings.communication_default_timezone` (see `social/common.py`'s
+documented timezone policy). A string that isn't valid ISO-8601 at all
+leaves `timestamp_utc` as `None`; `timestamp_raw` always preserves the
+original value regardless.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ from app.modules.communication_processing.limits import (
 )
 from app.modules.communication_processing.social.common import (
     ChatMessageRecord,
-    utc_from_iso_with_explicit_offset,
+    resolve_naive_or_explicit_iso,
 )
 
 
@@ -107,9 +110,10 @@ def parse_generic_json_export(data: bytes) -> list[ChatMessageRecord]:
 
         timestamp_raw = entry.get("timestamp")
         timestamp_raw = timestamp_raw if isinstance(timestamp_raw, str) else None
-        timestamp_utc = (
-            utc_from_iso_with_explicit_offset(timestamp_raw) if timestamp_raw is not None else None
+        resolved_timestamp = (
+            resolve_naive_or_explicit_iso(timestamp_raw) if timestamp_raw is not None else None
         )
+        timestamp_utc, timestamp_source_timezone = resolved_timestamp or (None, None)
 
         text = entry.get("text")
         message_id = entry.get("message_id")
@@ -126,6 +130,7 @@ def parse_generic_json_export(data: bytes) -> list[ChatMessageRecord]:
                 participants=participants,
                 timestamp_raw=timestamp_raw,
                 timestamp_utc=timestamp_utc,
+                timestamp_source_timezone=timestamp_source_timezone,
                 text=text if isinstance(text, str) and text else None,
                 reply_to=str(reply_to) if reply_to is not None else None,
                 locator=SourceLocator(json_path=f"$.records[{index}]"),

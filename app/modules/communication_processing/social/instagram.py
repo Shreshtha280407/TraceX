@@ -109,6 +109,7 @@ def parse_instagram_export(data: bytes) -> list[ChatMessageRecord]:
                 participants=participants,
                 timestamp_raw=str(timestamp_ms) if timestamp_ms is not None else None,
                 timestamp_utc=timestamp_utc,
+                timestamp_source_timezone=None,
                 text=content,
                 reply_to=None,
                 locator=SourceLocator(json_path=f"$.messages[{index}]"),

@@ -54,3 +54,17 @@ def test_no_messages_fails_safely() -> None:
     with pytest.raises(ProcessingError) as exc_info:
         parse_instagram_export(data)
     assert exc_info.value.code == ErrorCode.MALFORMED_CHAT_EXPORT
+
+
+def test_non_dict_entry_is_skipped_without_corrupting_valid_neighbours() -> None:
+    """Scenario 16: a malformed entry is skipped, never fatal to the whole batch."""
+    data = build_instagram_export(
+        messages=[
+            {"sender_name": "alice", "timestamp_ms": 1767261600000, "content": "first"},
+            "not a message object",  # type: ignore[list-item]
+            None,  # type: ignore[list-item]
+            {"sender_name": "bob", "timestamp_ms": 1767261700000, "content": "second"},
+        ]
+    )
+    records = parse_instagram_export(data)
+    assert [r.text for r in records] == ["first", "second"]

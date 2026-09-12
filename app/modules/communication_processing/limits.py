@@ -40,6 +40,8 @@ MAX_CHAT_PARTICIPANTS = 2_000
 MAX_MESSAGE_TEXT_LENGTH = 4_000
 MAX_HANDLE_LENGTH = 300
 MAX_TIMESTAMP_PARSE_ATTEMPTS = 5  # documented formats tried, in order, per timestamp value
+MAX_IDENTIFIER_TEXT_LENGTH = 300  # a single matched phone/email/url/handle is always short
+MAX_IDENTIFIER_MATCHES_PER_MESSAGE = 100  # per observation type, per message -- see identifiers.py
 
 # --- Alias / transliteration ---
 MAX_ALIAS_TEXT_LENGTH = 300

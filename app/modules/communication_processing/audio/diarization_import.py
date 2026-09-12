@@ -26,6 +26,9 @@ from __future__ import annotations
 import json
 
 from app.contracts.common import SourceLocator
+from app.modules.communication_processing.audio.diarization_adapter import (
+    SEGMENT_SOURCE_METADATA_SUPPLIED,
+)
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
 from app.modules.communication_processing.limits import (
     MAX_DIARIZATION_SEGMENTS,
@@ -110,6 +113,14 @@ def diarization_segments_to_mentions(
     `entity_type_hint="speaker_label_local"` — a raw, unresolved,
     source-local label, exactly like a phone number or FIR-mentioned name
     elsewhere in this project; never a resolved identity.
+
+    `segment_source` is always `SEGMENT_SOURCE_METADATA_SUPPLIED`: this
+    function only ever imports externally-produced segments (see this
+    module's docstring) -- no `DiarizationAdapter` in this phase ever
+    reports `READY` (see `audio/diarization_adapter.py`), so no segment is
+    ever `SEGMENT_SOURCE_MODEL_DERIVED` today. The attribute exists so a
+    future real adapter's output is distinguishable from an imported one
+    without an observation-shape change.
     """
     validated = validate_diarization_segments(segments)
     mentions: list[RawMention] = []
@@ -126,7 +137,10 @@ def diarization_segments_to_mentions(
                 locator=locator,
                 confidence=segment.confidence,
                 entity_type_hint=ENTITY_TYPE_HINT,
-                attributes={"source_segment_id": segment.source_segment_id},
+                attributes={
+                    "source_segment_id": segment.source_segment_id,
+                    "segment_source": SEGMENT_SOURCE_METADATA_SUPPLIED,
+                },
             )
         )
     return mentions
