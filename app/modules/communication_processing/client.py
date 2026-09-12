@@ -30,6 +30,7 @@ from uuid import UUID
 import httpx
 import structlog
 
+from app.contracts.observation_batch import ObservationBatchReceiptV1, ObservationBatchSubmissionV1
 from app.contracts.worker import WorkerJobV1, WorkerResultV1
 from app.modules.communication_processing.errors import (
     InputResolutionUnavailableError,
@@ -67,6 +68,14 @@ def _result_path(job_id: UUID) -> str:
     return f"/api/v1/internal/worker-jobs/{job_id}/result"
 
 
+def _observations_path(job_id: UUID) -> str:
+    return f"/api/v1/internal/worker-jobs/{job_id}/observations"
+
+
+def _renew_path(job_id: UUID) -> str:
+    return f"/api/v1/internal/worker-jobs/{job_id}/renew"
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     """Mirrors `evidence_lifecycle.schemas.ClaimResponse`'s shape without importing it.
@@ -89,6 +98,14 @@ class SubmitResultAck:
     result_id: UUID
     observation_count: int
     observation_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True)
+class RenewAck:
+    """Mirrors `evidence_lifecycle.schemas.RenewLeaseResponse`'s shape without importing it."""
+
+    job_id: UUID
+    lease_expires_at: datetime
 
 
 class WorkerApiClient:
@@ -168,6 +185,58 @@ class WorkerApiClient:
             result_id=UUID(body["result_id"]),
             observation_count=body["observation_count"],
             observation_ids=tuple(UUID(o) for o in body["observation_ids"]),
+        )
+
+    def submit_batch(
+        self, *, job_id: UUID, claim_token: str, submission: ObservationBatchSubmissionV1
+    ) -> ObservationBatchReceiptV1:
+        """Submit one partial observation micro-batch via Nipun's `/observations` endpoint.
+
+        Idempotent on the caller's side too: retrying the exact same
+        `submission` (same `batch_id`/`idempotency_key`/content) after a
+        transport failure is always safe -- the server replays rather than
+        duplicates (see `app/contracts/observation_batch.py`).
+        """
+        logger.info(
+            "worker.client.submit_batch_attempted",
+            job_id=str(job_id),
+            batch_id=submission.batch_id,
+        )
+        response = self._post_safely(
+            _observations_path(job_id),
+            content=submission.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"batch submission conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(f"batch submission rejected for job {job_id}: validation failed")
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"batch submission failed: HTTP {response.status_code}")
+        return ObservationBatchReceiptV1.model_validate(response.json())
+
+    def renew_lease(self, job_id: UUID, *, claim_token: str) -> RenewAck:
+        """Extend a currently-claimed job's lease via Aditya's `/renew` endpoint.
+
+        Used between micro-batch submissions for a long-running audio/chat
+        job so its lease never expires mid-processing -- the same
+        server-enforced ceiling (`WORKER_LEASE_MAX_SECONDS`) and
+        current-claim-owner-only authorization documented in
+        `docs/architecture/worker-job-lifecycle.md` apply exactly as they
+        do to any other caller of this endpoint.
+        """
+        logger.info("worker.client.renew_attempted", job_id=str(job_id))
+        response = self._post_safely(
+            _renew_path(job_id), headers={_CLAIM_TOKEN_HEADER: claim_token}
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"lease renewal failed: HTTP {response.status_code}")
+        body = response.json()
+        return RenewAck(
+            job_id=UUID(body["job_id"]),
+            lease_expires_at=datetime.fromisoformat(body["lease_expires_at"]),
         )
 
     def fetch_input(self, job_id: UUID, *, claim_token: str) -> ResolvedInput:

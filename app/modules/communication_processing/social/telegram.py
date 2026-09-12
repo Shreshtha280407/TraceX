@@ -26,11 +26,14 @@ not an error, just not a message. Only plain-string `"text"` is supported;
 Telegram's rich-text entity-array form is treated as `text_present=False`
 rather than rejecting the whole export (documented limitation).
 
-Telegram's `"date"` field is local/naive with no timezone — never
-converted to UTC. `"date_unixtime"` is a Unix epoch value and therefore
-unambiguous UTC *by construction*; this is used as the authoritative
-`timestamp_utc` source specifically because it carries no ambiguity to
-guess at, not because `"date"` was reinterpreted.
+`"date_unixtime"` is a Unix epoch value and therefore unambiguous UTC *by
+construction* -- used as the preferred `timestamp_utc` source whenever
+present, since it carries no ambiguity to guess at. When it is absent or
+invalid, `"date"` (a naive local ISO-8601 string) is instead interpreted
+in `Settings.communication_default_timezone` (see `social/common.py`'s
+documented timezone policy) -- `timestamp_source_timezone` records
+whichever path was actually used, `None` for the unambiguous
+`date_unixtime` path.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from app.modules.communication_processing.limits import (
 )
 from app.modules.communication_processing.social.common import (
     ChatMessageRecord,
+    resolve_naive_or_explicit_iso,
     utc_from_unix_seconds,
 )
 
@@ -58,6 +62,19 @@ def _parse_date_unixtime(value: object) -> datetime | None:
     if isinstance(value, int | float):
         return utc_from_unix_seconds(float(value))
     return None
+
+
+def _resolve_timestamp(entry: dict[str, Any]) -> tuple[datetime | None, str | None]:
+    """`date_unixtime` first (unambiguous); `date` as a default-timezone fallback."""
+    epoch = _parse_date_unixtime(entry.get("date_unixtime"))
+    if epoch is not None:
+        return epoch, None
+    date_str = entry.get("date")
+    if isinstance(date_str, str):
+        resolved = resolve_naive_or_explicit_iso(date_str)
+        if resolved is not None:
+            return resolved
+    return None, None
 
 
 def parse_telegram_export(data: bytes) -> list[ChatMessageRecord]:
@@ -97,7 +114,7 @@ def parse_telegram_export(data: bytes) -> list[ChatMessageRecord]:
         text = entry.get("text")
         text = text if isinstance(text, str) and text else None
 
-        timestamp_utc = _parse_date_unixtime(entry.get("date_unixtime"))
+        timestamp_utc, timestamp_source_timezone = _resolve_timestamp(entry)
 
         reply_to = entry.get("reply_to_message_id")
         message_id = entry.get("id")
@@ -111,6 +128,7 @@ def parse_telegram_export(data: bytes) -> list[ChatMessageRecord]:
                 participants=(),
                 timestamp_raw=entry.get("date") if isinstance(entry.get("date"), str) else None,
                 timestamp_utc=timestamp_utc,
+                timestamp_source_timezone=timestamp_source_timezone,
                 text=text,
                 reply_to=str(reply_to) if reply_to is not None else None,
                 locator=SourceLocator(json_path=f"$.messages[{index}]"),

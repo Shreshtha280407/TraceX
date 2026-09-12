@@ -15,15 +15,20 @@ messages this way), appended verbatim.
 
 WhatsApp's exported timestamp carries no timezone information at all — it
 is always the exporting device's local time. Per this module's documented
-timezone policy, `timestamp_utc` is therefore always `None` for WhatsApp;
-only `timestamp_raw` is preserved. No reply-reference marker exists in
-this plain-text format, so `reply_to` is always `None`.
+timezone policy, a recognizable timestamp is interpreted in
+`Settings.communication_default_timezone` (see `social/common.py`) to
+produce `timestamp_utc`, with `timestamp_source_timezone` recording that
+resolved zone name; `timestamp_raw` always preserves the original,
+untouched string. An unrecognized date/time shape leaves `timestamp_utc`
+as `None` rather than guessing. No reply-reference marker exists in this
+plain-text format, so `reply_to` is always `None`.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.contracts.common import SourceLocator
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
@@ -32,12 +37,42 @@ from app.modules.communication_processing.limits import (
     MAX_CHAT_LINES,
     MAX_CHAT_MESSAGES,
 )
-from app.modules.communication_processing.social.common import ChatMessageRecord
+from app.modules.communication_processing.social.common import (
+    ChatMessageRecord,
+    default_timezone_name,
+    utc_from_naive_local,
+)
 
 _LINE_PATTERN = re.compile(
     r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}), (?P<time>\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(?P<rest>.*)$"
 )
 _SENDER_PATTERN = re.compile(r"^(?P<sender>[^:\n]{1,100}?):\s(?P<text>.*)$")
+
+#: Tried in order against the `"DD/MM/YY[YY], H:MM[:SS]"` shape `_LINE_PATTERN`
+#: extracts -- a value matching none of these is a documented extraction
+#: limit, not a guess.
+_TIMESTAMP_FORMATS = (
+    "%d/%m/%y, %H:%M:%S",
+    "%d/%m/%y, %H:%M",
+    "%d/%m/%Y, %H:%M:%S",
+    "%d/%m/%Y, %H:%M",
+)
+
+
+def _parse_whatsapp_timestamp(raw: str) -> tuple[datetime, str] | None:
+    """Resolve a WhatsApp timestamp string to `(timestamp_utc, timestamp_source_timezone)`.
+
+    Always the configured default timezone -- WhatsApp's plain-text export
+    never carries any timezone signal of its own -- or `None` if `raw`
+    doesn't match any documented format.
+    """
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            naive = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        return utc_from_naive_local(naive), default_timezone_name()
+    return None
 
 
 @dataclass
@@ -120,18 +155,25 @@ def parse_whatsapp_export(
             ErrorCode.MALFORMED_CHAT_EXPORT, "no recognizable WhatsApp message line found"
         )
 
-    return [
-        ChatMessageRecord(
-            platform="whatsapp",
-            conversation_id=conversation_id,
-            message_id=None,
-            sender=message.sender,
-            participants=(),
-            timestamp_raw=message.timestamp_raw,
-            timestamp_utc=None,
-            text=message.text,
-            reply_to=None,
-            locator=SourceLocator(span_start=message.start_offset, span_end=message.end_offset),
+    records: list[ChatMessageRecord] = []
+    for message in pending:
+        resolved = _parse_whatsapp_timestamp(message.timestamp_raw)
+        timestamp_utc, timestamp_source_timezone = (
+            resolved if resolved is not None else (None, None)
         )
-        for message in pending
-    ]
+        records.append(
+            ChatMessageRecord(
+                platform="whatsapp",
+                conversation_id=conversation_id,
+                message_id=None,
+                sender=message.sender,
+                participants=(),
+                timestamp_raw=message.timestamp_raw,
+                timestamp_utc=timestamp_utc,
+                timestamp_source_timezone=timestamp_source_timezone,
+                text=message.text,
+                reply_to=None,
+                locator=SourceLocator(span_start=message.start_offset, span_end=message.end_offset),
+            )
+        )
+    return records

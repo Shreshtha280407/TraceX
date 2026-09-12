@@ -263,6 +263,20 @@ class Settings(BaseSettings):
     # per-file. Must be a valid IANA timezone name.
     structured_default_timezone: str = Field(default="Asia/Kolkata")
 
+    # --- Audio/social-chat chunked batch processing (Phase 3 -- Sarthak) ---
+    # How many transcript/diarization segments or chat messages one
+    # micro-batch submits to Nipun's observation-batch endpoint at a time --
+    # see docs/architecture/communication-processing.md.
+    communication_batch_size: int = Field(default=200, ge=1)
+    # Naive (no explicit offset/epoch signal) chat timestamps are
+    # interpreted in this fixed, documented timezone before being converted
+    # to the canonical UTC value that is actually stored -- never silently
+    # interpreted in the host machine's own local time. Must be a valid
+    # IANA timezone name. Deliberately the same default as
+    # `structured_default_timezone` -- both modules process the same class
+    # of India-context evidence.
+    communication_default_timezone: str = Field(default="Asia/Kolkata")
+
     @field_validator("worker_token", "worker_credential_pepper")
     @classmethod
     def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:

@@ -46,6 +46,19 @@ def test_date_unixtime_is_unambiguous_utc() -> None:
     record = parse_telegram_export(data)[0]
     assert record.timestamp_utc is not None
     assert record.timestamp_raw == "2026-01-01T10:00:00"
+    assert record.timestamp_source_timezone is None  # date_unixtime: nothing to default
+
+
+def test_naive_date_without_unixtime_resolves_via_default_timezone() -> None:
+    """Scenario 18: no `date_unixtime` at all falls back to the documented default zone."""
+    data = build_telegram_export(
+        messages=[{"id": 1, "type": "message", "date": "2026-01-01T10:00:00", "text": "hi"}]
+    )
+    record = parse_telegram_export(data)[0]
+    assert record.timestamp_utc is not None
+    assert record.timestamp_source_timezone == "Asia/Kolkata"
+    assert record.timestamp_utc.hour == 4  # 10:00 IST (+05:30) == 04:30 UTC
+    assert record.timestamp_utc.minute == 30
 
 
 def test_reply_to_message_id_preserved() -> None:
