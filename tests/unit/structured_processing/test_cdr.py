@@ -14,15 +14,20 @@ def test_cdr_resolves_header_aliases_case_and_spacing_insensitively() -> None:
     mentions = normalize_cdr_records(parse_csv(data))
     record_mentions = [m for m in mentions if m.observation_type == "cdr_call_record"]
     assert len(record_mentions) == 1
-    assert record_mentions[0].attributes["caller_number"] == "9876543210"
-    assert record_mentions[0].attributes["callee_number"] == "9123456789"
+    # Phase 3: normalized to E.164 (India is this codebase's only known
+    # country context) -- the original value is always kept alongside.
+    assert record_mentions[0].attributes["caller_number"] == "+919876543210"
+    assert record_mentions[0].attributes["caller_number_raw"] == "9876543210"
+    assert record_mentions[0].attributes["callee_number"] == "+919123456789"
+    assert record_mentions[0].attributes["callee_number_raw"] == "9123456789"
 
 
-def test_cdr_normalizes_unambiguous_indian_mobile_number() -> None:
+def test_cdr_normalizes_unambiguous_indian_mobile_number_to_e164() -> None:
     data = b"caller_number,timestamp\n+91-9876543210,2026-01-01 10:00:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
-    assert record.attributes["caller_number"] == "9876543210"
+    assert record.attributes["caller_number"] == "+919876543210"
+    assert record.attributes["caller_number_raw"] == "+91-9876543210"
 
 
 def test_cdr_retains_original_value_when_normalization_is_uncertain() -> None:
@@ -30,6 +35,33 @@ def test_cdr_retains_original_value_when_normalization_is_uncertain() -> None:
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
     assert record.attributes["caller_number"] == "UNKNOWN-CALLER"
+    assert record.attributes["caller_number_raw"] == "UNKNOWN-CALLER"
+
+
+def test_cdr_timestamp_uses_the_configured_default_timezone_when_none_is_given() -> None:
+    data = b"caller_number,timestamp\n9876543210,2026-01-01 10:00:00\n"
+    mentions = normalize_cdr_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "cdr_call_record")
+    # Asia/Kolkata (UTC+05:30) is the configured default; 10:00 IST -> 04:30 UTC.
+    assert record.attributes["timestamp"] == "2026-01-01T04:30:00+00:00"
+    assert record.attributes["timestamp_source_timezone"] == "Asia/Kolkata"
+    assert record.attributes["timestamp_source_utc_offset"] == "+0530"
+
+
+def test_cdr_timestamp_respects_an_explicit_source_timezone() -> None:
+    data = b"caller_number,timestamp,source_timezone\n9876543210,2026-01-01 10:00:00,UTC\n"
+    mentions = normalize_cdr_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "cdr_call_record")
+    assert record.attributes["timestamp"] == "2026-01-01T10:00:00+00:00"
+    assert record.attributes["timestamp_source_timezone"] == "UTC"
+
+
+def test_cdr_timestamp_respects_an_explicit_fixed_offset() -> None:
+    data = b"caller_number,timestamp,source_timezone\n9876543210,2026-01-01 10:00:00,+02:00\n"
+    mentions = normalize_cdr_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "cdr_call_record")
+    assert record.attributes["timestamp"] == "2026-01-01T08:00:00+00:00"
+    assert record.attributes["timestamp_source_utc_offset"] == "+0200"
 
 
 def test_cdr_rejects_record_missing_required_fields() -> None:

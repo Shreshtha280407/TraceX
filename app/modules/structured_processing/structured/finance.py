@@ -5,8 +5,16 @@ Money is never passed through `float`. `_normalize_amount` uses
 the *original* source string is always preserved alongside the normalized
 value (`amount_raw` next to `amount`). Currency is never invented: a
 record without an explicit currency is rejected via `required_field_missing`
-rather than guessed. No account-owner identity linkage or criminal-network
-inference happens here — only `ObservationV1`-ready mentions.
+rather than guessed; a well-formed but unrecognized ISO 4217-shaped code is
+still accepted (`currency_is_known_iso4217=False`), never rejected outright
+— this module validates *format*, it does not maintain the authoritative
+currency-code registry. No account-owner identity linkage or
+criminal-network inference happens here — only `ObservationV1`-ready
+mentions. Timestamp timezone resolution reuses `cdr.resolve_timezone`'s
+identical policy (explicit `source_timezone` field, else
+`Settings.structured_default_timezone`) — `timestamp` is optional for this
+profile (only `amount`/`currency` are required), so an unparseable
+timestamp is preserved raw rather than rejecting the whole record.
 """
 
 from __future__ import annotations
@@ -22,9 +30,64 @@ from app.modules.structured_processing.provenance import (
     CONFIDENCE_NORMALIZATION_CONSERVATIVE,
     CONFIDENCE_STRUCTURED_COMPLETE,
 )
+from app.modules.structured_processing.structured.cdr import parse_record_timestamp
 from app.modules.structured_processing.structured.profiles import FINANCIAL_TRANSACTION_GENERIC_V1
 
 _CURRENCY_PREFIX = re.compile(r"^(?:₹|\$|Rs\.?|INR|USD)\s*", re.IGNORECASE)
+_ISO4217_SHAPE = re.compile(r"^[A-Z]{3}$")
+
+#: A curated, intentionally non-exhaustive set of common ISO 4217 codes —
+#: used only to set a safe, informational `currency_is_known_iso4217` flag,
+#: never to reject a well-formed but unlisted code (see module docstring).
+_COMMON_ISO4217_CODES = frozenset(
+    {
+        "INR",
+        "USD",
+        "EUR",
+        "GBP",
+        "AED",
+        "SGD",
+        "JPY",
+        "CNY",
+        "AUD",
+        "CAD",
+        "CHF",
+        "HKD",
+        "SAR",
+        "QAR",
+        "KWD",
+        "THB",
+        "MYR",
+        "IDR",
+        "NPR",
+        "LKR",
+        "BDT",
+        "PKR",
+        "ZAR",
+        "NZD",
+        "SEK",
+        "NOK",
+        "DKK",
+        "RUB",
+        "BRL",
+        "MXN",
+    }
+)
+
+#: Documented, case-insensitive debit/credit vocabulary. A raw value
+#: outside this set is preserved only as `direction_raw` — never guessed.
+_DIRECTION_MAP: dict[str, str] = {
+    "debit": "debit",
+    "dr": "debit",
+    "d": "debit",
+    "credit": "credit",
+    "cr": "credit",
+    "c": "credit",
+}
+
+
+def _normalize_direction(raw: str) -> str | None:
+    return _DIRECTION_MAP.get(raw.strip().lower())
 
 
 def _resolve_alias(record: RawRecord, canonical: str) -> tuple[str, str] | None:
@@ -95,9 +158,40 @@ def normalize_financial_records(records: list[RawRecord]) -> list[RawMention]:
             "amount_raw": amount_field[1],
             "currency": currency,
             "currency_raw": currency_raw,
+            "currency_is_known_iso4217": bool(_ISO4217_SHAPE.match(currency))
+            and currency in _COMMON_ISO4217_CODES,
         }
 
-        for canonical in ("transaction_id", "timestamp", "reference", "channel", "status"):
+        timestamp_field = _resolve_alias(record, "timestamp")
+        if timestamp_field is not None:
+            timezone_field = _resolve_alias(record, "source_timezone")
+            parsed = parse_record_timestamp(
+                timestamp_field[1], timezone_field[1] if timezone_field else None
+            )
+            record_attrs["timestamp_raw"] = timestamp_field[1]
+            if parsed is not None:
+                utc_timestamp, resolved_tz_name, utc_offset = parsed
+                record_attrs["timestamp"] = utc_timestamp.isoformat()
+                record_attrs["timestamp_source_timezone"] = resolved_tz_name
+                record_attrs["timestamp_source_utc_offset"] = utc_offset or None
+            # else: timestamp is optional for this profile -- the raw value
+            # above is preserved, but no canonical value is fabricated.
+
+        direction_field = _resolve_alias(record, "direction")
+        if direction_field is not None:
+            record_attrs["direction_raw"] = direction_field[1]
+            normalized_direction = _normalize_direction(direction_field[1])
+            if normalized_direction is not None:
+                record_attrs["direction"] = normalized_direction
+
+        for canonical in (
+            "transaction_id",
+            "reference",
+            "channel",
+            "status",
+            "balance",
+            "counterparty",
+        ):
             field = _resolve_alias(record, canonical)
             if field is not None:
                 record_attrs[canonical] = field[1]

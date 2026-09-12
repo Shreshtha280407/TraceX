@@ -227,6 +227,31 @@ _PIPELINE_CASES = [
         "generic_json_v1",
         id="structured_json-generic_json_v1",
     ),
+    # Phase 3 (Jasraj): these two now flow through `run_document_job_with_
+    # batches`/`run_structured_batches_job` -- observations are delivered
+    # via one or more `/observations` micro-batches, then a terminal
+    # `WorkerResultV1` with `observations=[]`. `observation_count` on the
+    # status endpoint below still counts correctly because both paths write
+    # into the same `worker_observations` table (see
+    # `docs/architecture/phase-3-decisions.md`).
+    pytest.param(
+        "cdr",
+        "text/csv",
+        "cdr_live_test.csv",
+        b"caller_number,timestamp\n"
+        b"9876543210,2026-01-01 10:00:00\n"
+        b"9876543211,2026-01-01 10:05:00\n",
+        "cdr_generic_v1",
+        id="cdr-cdr_generic_v1",
+    ),
+    pytest.param(
+        "financial",
+        "text/csv",
+        "finance_live_test.csv",
+        b"amount,currency\n500,INR\n750,INR\n",
+        "financial_transaction_generic_v1",
+        id="financial-financial_transaction_generic_v1",
+    ),
 ]
 
 

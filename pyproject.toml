@@ -30,6 +30,10 @@ dependencies = [
     "httpx>=0.28.1",
     "onnxruntime>=1.30.0",
     "pytesseract>=0.3.13",
+    "spacy>=3.8.16",
+    "polars>=1.44.2",
+    "pypdfium2>=5.13.0",
+    "pyarrow>=25.0.1",
 ]
 
 # Swap the base "onnxruntime" dependency above for "onnxruntime-gpu" (same
@@ -96,7 +100,17 @@ no_implicit_reexport = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["neo4j.*", "minio.*", "asyncpg.*", "openpyxl.*", "onnxruntime.*", "pytesseract.*"]
+module = [
+    "neo4j.*",
+    "minio.*",
+    "asyncpg.*",
+    "openpyxl.*",
+    "onnxruntime.*",
+    "pytesseract.*",
+    "pypdfium2.*",
+    "spacy.*",
+    "pyarrow.*",
+]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

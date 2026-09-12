@@ -2,6 +2,8 @@
 
 This phase adds a **one-shot worker CLI** on top of `app/modules/structured_processing/`'s existing (Phase 1) `process_job` pure function: it claims a job through Nipun's internal worker API, resolves that job's evidence, calls `process_job` completely unchanged, and submits the result — establishing the worker pattern Gaurav's and Sarthak's later-phase workers will follow. No daemon, polling loop, Celery, or scheduler exists anywhere in this repository; running the worker means running it once, by hand or by an external scheduler this repo does not provide.
 
+**Phase 3 (Jasraj) update**: `run_once` now submits `fir_report_text_v1`/`cdr_generic_v1`/`financial_transaction_generic_v1` jobs through Nipun's `/observations` micro-batch endpoint (one or more batches with real progress/provenance), then a terminal result with `observations=[]`, instead of calling `process_job` for a single all-at-once result. `process_job` itself is unchanged and still used directly for `generic_tabular_v1`/`generic_json_v1` and by every existing test. See `docs/architecture/document-structured-processing.md` for the full Phase 3 design (real OCR/NER/relation extraction, vectorized CDR/finance batching) — this doc's "Supported processors"/"Source-locator conventions" tables below remain accurate and unchanged.
+
 ## The full flow
 
 ```

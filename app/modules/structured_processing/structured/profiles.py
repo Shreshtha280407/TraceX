@@ -40,13 +40,27 @@ FIR_REPORT_TEXT_V1 = ParserProfile(
         "date_time_mention",
         "amount_mention",
         "legal_section_mention",
+        # Phase 3 additions -- see document/{ocr,ner,ner_fallback,ner_spacy,
+        # relations}.py.
+        "document_page_ocr_text",
+        "ner_entity_mention",
+        "person_contact_association",
+        "dated_communication_reference",
+        "transaction_claim",
+        "incident_event_mention",
     ),
     confidence_rule=(
-        "0.95 for every match: all fir_report_text_v1 patterns require an "
-        "exact, explicit deterministic regex match (a label like 'FIR No.', "
-        "'Police Station', 'Section', a currency symbol, or a "
+        "0.95 for every regex match: all fir_report_text_v1 patterns require "
+        "an exact, explicit deterministic regex match (a label like 'FIR "
+        "No.', 'Police Station', 'Section', a currency symbol, or a "
         "structurally-distinctive format like an email/vehicle-plate/UPI "
-        "pattern) in embedded text extracted from a non-scanned page."
+        "pattern) in embedded text extracted from a trusted (non-scanned, "
+        "non-corrupted) page. NER mentions use a separate, lower "
+        "confidence tier (0.50 deterministic-fallback / 0.75 real local "
+        "model — see document/ner.py) since they are a statistical/"
+        "heuristic judgment, not an exact structural match. Relation/event "
+        "mentions use 0.60 (an inference from proximity, not itself a "
+        "directly-matched fact — see document/relations.py)."
     ),
 )
 
@@ -77,6 +91,10 @@ CDR_GENERIC_V1 = ParserProfile(
         "caller_number": ("caller_number", "caller", "a_number", "calling_number", "from_number"),
         "callee_number": ("callee_number", "callee", "b_number", "called_number", "to_number"),
         "timestamp": ("timestamp", "call_time", "date_time", "start_time"),
+        # An explicit per-record source timezone, when the export carries one
+        # (e.g. an IANA name like "Asia/Kolkata" or a fixed offset like
+        # "+05:30") -- see structured/cdr.py's timestamp normalization.
+        "source_timezone": ("source_timezone", "timezone", "tz", "utc_offset"),
         "duration_seconds": ("duration_seconds", "duration", "call_duration", "duration_secs"),
         "call_type": ("call_type", "type", "direction"),
         "cell_tower_id": ("cell_tower_id", "tower_id", "cell_id", "site_id"),
@@ -113,14 +131,18 @@ FINANCIAL_TRANSACTION_GENERIC_V1 = ParserProfile(
     ),
     field_aliases={
         "transaction_id": ("transaction_id", "txn_id", "reference_no", "txn_ref"),
-        "timestamp": ("timestamp", "date", "transaction_date", "txn_date"),
+        "timestamp": ("timestamp", "date", "transaction_date", "txn_date", "value_date"),
+        "source_timezone": ("source_timezone", "timezone", "tz", "utc_offset"),
         "sender_account": ("sender_account", "from_account", "debit_account", "payer_account"),
         "receiver_account": ("receiver_account", "to_account", "credit_account", "payee_account"),
         "amount": ("amount", "txn_amount", "value"),
         "currency": ("currency", "ccy"),
-        "reference": ("reference", "remarks", "narration"),
+        "direction": ("direction", "debit_credit", "dr_cr", "entry_type"),
+        "reference": ("reference", "remarks", "narration", "description"),
         "channel": ("channel", "mode", "payment_mode"),
         "status": ("status",),
+        "balance": ("balance", "closing_balance", "available_balance"),
+        "counterparty": ("counterparty", "counterparty_name", "payee_name", "payer_name"),
     },
     required_fields=("amount", "currency"),
 )

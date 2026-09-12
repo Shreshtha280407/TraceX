@@ -230,6 +230,39 @@ class Settings(BaseSettings):
     media_worker_max_backoff_seconds: float = Field(default=60.0, gt=0)
     media_worker_max_consecutive_failures: int = Field(default=5, ge=1)
 
+    # --- Document/FIR page-OCR and local NER (Phase 3 -- Jasraj) ---
+    # See docs/architecture/document-structured-processing.md's "OCR runtime
+    # setup"/"Local NER bootstrap". OCR reuses the same `tesseract` system
+    # binary media_processing already requires -- no separate install step.
+    document_ocr_language: str = Field(default="eng")
+    document_ocr_dpi: int = Field(default=300, ge=72, le=600)
+    document_ocr_min_confidence: float = Field(default=0.4, ge=0.0, le=1.0)
+    # Typed, explicit local-model configuration for the real spaCy NER
+    # adapter -- mirrors `media_detector_model_path`'s reasoning exactly.
+    # No model weights are bundled in this repository or downloaded at
+    # import time; this path must point at a real local directory an
+    # operator placed there via `uv run python -m
+    # app.modules.structured_processing.bootstrap_ner_model`. The default
+    # is exactly where that command writes it.
+    ner_model_path: Path = Field(default=Path("models/nlp/en_core_web_sm"))
+    # Pinned to the exact asset `bootstrap_ner_model.py` downloads and
+    # verifies -- see that module's module docstring for the source URL,
+    # license, and version this was built from.
+    ner_model_sha256: str = Field(
+        default="1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
+    )
+
+    # --- CDR/finance chunked batch processing (Phase 3 -- Jasraj) ---
+    # How many normalized records one micro-batch submits to Nipun's
+    # observation-batch endpoint at a time -- see
+    # docs/architecture/document-structured-processing.md.
+    structured_batch_size: int = Field(default=500, ge=1)
+    # Naive (no explicit source timezone) CDR/finance timestamps are
+    # interpreted in this fixed, documented timezone before being converted
+    # to the canonical UTC value that is actually stored -- never guessed
+    # per-file. Must be a valid IANA timezone name.
+    structured_default_timezone: str = Field(default="Asia/Kolkata")
+
     @field_validator("worker_token", "worker_credential_pepper")
     @classmethod
     def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:

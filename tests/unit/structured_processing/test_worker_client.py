@@ -15,6 +15,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.contracts.observation_batch import BatchAcceptanceStatus
 from app.contracts.worker import WorkerStatus
 from app.modules.structured_processing.client import WorkerApiClient
 from app.modules.structured_processing.errors import (
@@ -22,7 +23,11 @@ from app.modules.structured_processing.errors import (
     WorkerApiError,
     WorkerAuthenticationError,
 )
-from tests.fixtures.factories import make_worker_job, make_worker_result
+from tests.fixtures.factories import (
+    make_observation_batch_submission,
+    make_worker_job,
+    make_worker_result,
+)
 
 _SHARED_SECRET = "unit-test-shared-secret"
 
@@ -147,6 +152,112 @@ def test_submit_result_wrong_claim_token_raises_auth_error() -> None:
 
     with pytest.raises(WorkerAuthenticationError):
         _client(handler).submit_result(job_id=job_id, claim_token="wrong", result=result)
+
+
+# --- submit_batch (Phase 3 -- Jasraj) ---------------------------------------
+
+
+def test_submit_batch_success() -> None:
+    submission = make_observation_batch_submission()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/v1/internal/worker-jobs/{submission.job_id}/observations"
+        assert request.headers["x-claim-token"] == "tok-batch"
+        submitted = json.loads(request.content)
+        assert submitted["batch_id"] == submission.batch_id
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "v1",
+                "job_id": str(submission.job_id),
+                "batch_id": submission.batch_id,
+                "status": "accepted",
+                "accepted_observation_count": 1,
+                "progress": json.loads(submission.progress.model_dump_json()),
+                "request_id": "req-1",
+            },
+        )
+
+    receipt = _client(handler).submit_batch(
+        job_id=submission.job_id, claim_token="tok-batch", submission=submission
+    )
+    assert receipt.status is BatchAcceptanceStatus.ACCEPTED
+    assert receipt.accepted_observation_count == 1
+
+
+def test_submit_batch_conflict_raises_safely() -> None:
+    submission = make_observation_batch_submission()
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(409, json={"error": {"code": "conflict", "message": "no"}})
+
+    with pytest.raises(WorkerApiError):
+        _client(handler).submit_batch(
+            job_id=submission.job_id, claim_token="tok-batch", submission=submission
+        )
+
+
+def test_submit_batch_wrong_claim_token_raises_auth_error() -> None:
+    submission = make_observation_batch_submission()
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "no"}})
+
+    with pytest.raises(WorkerAuthenticationError):
+        _client(handler).submit_batch(
+            job_id=submission.job_id, claim_token="wrong", submission=submission
+        )
+
+
+def test_submit_batch_never_logs_the_claim_token(caplog: pytest.LogCaptureFixture) -> None:
+    submission = make_observation_batch_submission()
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "v1",
+                "job_id": str(submission.job_id),
+                "batch_id": submission.batch_id,
+                "status": "accepted",
+                "accepted_observation_count": 1,
+                "progress": None,
+                "request_id": None,
+            },
+        )
+
+    with caplog.at_level("DEBUG"):
+        _client(handler).submit_batch(
+            job_id=submission.job_id, claim_token="super-secret-claim-token", submission=submission
+        )
+    assert "super-secret-claim-token" not in caplog.text
+
+
+# --- renew_lease (Phase 3 -- Jasraj) -----------------------------------------
+
+
+def test_renew_lease_success() -> None:
+    job_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/v1/internal/worker-jobs/{job_id}/renew"
+        assert request.headers["x-claim-token"] == "tok-renew"
+        return httpx.Response(
+            200, json={"job_id": str(job_id), "lease_expires_at": "2026-01-01T12:10:00Z"}
+        )
+
+    ack = _client(handler).renew_lease(job_id, claim_token="tok-renew")
+    assert ack.job_id == job_id
+
+
+def test_renew_lease_raises_auth_error_on_401() -> None:
+    job_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "no"}})
+
+    with pytest.raises(WorkerAuthenticationError):
+        _client(handler).renew_lease(job_id, claim_token="stale")
 
 
 # --- fetch_input (the proposed, currently-unavailable endpoint) -------------

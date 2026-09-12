@@ -167,6 +167,10 @@ Every worker-facing route (`claim`, `input`, `renew`, `observations`, `result`) 
 
 Full design reasoning: `docs/architecture/phase-3-decisions.md`'s "Aditya Phase 3" section.
 
+## Real document/OCR/NER and CDR/finance batch producer (Phase 3 — Jasraj)
+
+`app/modules/structured_processing/worker.py` is now a real, authorized producer against the `/observations` endpoint above — not just `/result`. For `fir_report_text_v1` (PDF/DOCX/TXT), `cdr_generic_v1`, and `financial_transaction_generic_v1` jobs specifically, `run_once` submits one or more real `ObservationBatchSubmissionV1`s (real local OCR for scanned/untrustworthy PDF pages, real regex/NER/rule-based-relation extraction, real vectorized CDR/finance record normalization) through `client.submit_batch`, then exactly one terminal `WorkerResultV1` with `observations=[]` — following the "Producer contract for Jasraj's Phase 3 ... workers" this module's own `/observations` section above already specified, verified against this real implementation. `generic_tabular_v1`/`generic_json_v1` (Nipun's fallback profiles) are unchanged: `process_job` still runs synchronously and submits its full result via `/result` directly, exactly as before this phase. No `evidence_lifecycle` code changed to support this — the batch-ingestion path above needed zero modification to serve a second, independent real producer. Full design: `docs/architecture/document-structured-processing.md` and `docs/architecture/phase-3-decisions.md`'s "Jasraj Phase 3" section.
+
 ## Intentional deferrals (this phase only; see `docs/qa/known-limitations.md` for the full list)
 
 - No worker daemon/consumer loop — Phase 2.1 adds the claim/submit primitives a future worker would call, not the worker itself. See `docs/architecture/worker-job-lifecycle.md`.
