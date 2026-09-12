@@ -40,6 +40,10 @@ class ErrorCode:
     INPUT_LIMIT_EXCEEDED = "input_limit_exceeded"
     REQUIRED_FIELD_MISSING = "required_field_missing"
     UNSUPPORTED_PARSER_PROFILE = "unsupported_parser_profile"
+    OCR_RUNTIME_UNAVAILABLE = "ocr_runtime_unavailable"
+    NER_RUNTIME_UNAVAILABLE = "ner_runtime_unavailable"
+    AMBIGUOUS_SCHEMA = "ambiguous_schema"
+    PARTIAL_ROW_FAILURES = "partial_row_failures"
 
 
 class ProcessingError(Exception):

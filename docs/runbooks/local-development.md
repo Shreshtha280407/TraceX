@@ -187,7 +187,40 @@ uv run pytest tests/unit/structured_processing -v         # no live infra needed
 uv run pytest tests/integration/structured_processing -v  # local-file pipeline test, plus a self-skipping live-API check
 ```
 
-`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_TOKEN` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When `WORKER_TOKEN` *is* set, this suite provisions a matching `worker_credentials` row itself (idempotently, by digest) the first time it runs against a given database, so no separate manual CLI step is required just to run the tests. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
+`tests/integration/structured_processing/test_worker_live.py` self-skips (never fabricates a pass) if there's no `.env`, the live API server isn't reachable at `WORKER_API_BASE_URL`, or `WORKER_TOKEN` isn't configured — same pattern as every other `tests/integration/*` suite in this repo. When `WORKER_TOKEN` *is* set, this suite provisions a matching `worker_credentials` row itself (idempotently, by digest) the first time it runs against a given database, so no separate manual CLI step is required just to run the tests. When PostgreSQL/MinIO are also reachable, its second test (`test_full_claim_stream_parse_submit_live_pipeline`, parametrized over `document`/`structured_tabular`/`structured_json`/`cdr`/`financial`) proves the complete claim -> stream evidence -> parse -> submit path for real, using a real seeded case/user/evidence upload.
+
+### Real document OCR/NER and CDR/finance batch processing (Phase 3 — Jasraj)
+
+See `docs/architecture/document-structured-processing.md` for the full design. No extra configuration is needed to process text-bearing PDFs, DOCX/TXT, or CDR/finance files — the worker CLI above already handles them via real regex/vectorized-batch extraction. Two additional, optional real capabilities need their own setup:
+
+**Real local OCR for scanned/untrustworthy PDF pages** — needs the `tesseract-ocr` system package (already installed in this repository's `Dockerfile`; install it on the host too if running the worker outside Docker):
+
+```bash
+# Debian/Ubuntu:
+sudo apt-get install tesseract-ocr tesseract-ocr-eng
+```
+
+Without it, a page that needs OCR is reported `DEFERRED` in the job's checkpoint rather than failing the whole job — trusted pages' observations are still submitted normally.
+
+**Real local NER** (`PERSON`/`ORGANIZATION`/`LOCATION` mention extraction beyond the deterministic fallback) — bootstrap the pinned spaCy model once:
+
+```bash
+uv run python -m app.modules.structured_processing.bootstrap_ner_model
+```
+
+Downloads, checksum-verifies, and extracts `en_core_web_sm` (3.8.0, MIT-licensed) into `models/nlp/en_core_web_sm` (git-ignored) — never installed as a package, never downloaded automatically at worker runtime. Without this, `worker.py` automatically falls back to `DeterministicNerAdapter` (a fixed, no-ML gazetteer/heuristic adapter) — never a crash. Re-run any time to verify/refresh; pass `--force` to re-download even if a valid model is already present.
+
+Running its test suites specifically:
+
+```bash
+uv run pytest tests/unit/structured_processing/test_normalization.py -v
+uv run pytest tests/unit/structured_processing/test_ner.py -v                       # real-model test self-skips if not bootstrapped
+uv run pytest tests/unit/structured_processing/test_relations.py -v
+uv run pytest tests/unit/structured_processing/test_chunked_processing.py -v
+uv run pytest tests/unit/structured_processing/test_ocr_field_match_precision.py -v -s   # self-skips if tesseract unavailable; -s prints the measured precision/recall
+uv run pytest tests/unit/structured_processing/test_worker_document_batches.py -v
+uv run pytest tests/unit/structured_processing/test_worker_structured_batches.py -v
+```
 
 ### Communication-processing worker CLI (Phase 2 — Sarthak)
 

@@ -68,3 +68,53 @@ def test_finance_never_infers_shared_account_ownership() -> None:
             "amount_mention",
             "financial_account_mention",
         }
+
+
+def test_finance_flags_a_known_iso4217_code() -> None:
+    data = b"amount,currency\n500,inr\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["currency"] == "INR"
+    assert record.attributes["currency_is_known_iso4217"] is True
+
+
+def test_finance_accepts_an_unrecognized_but_well_formed_currency_code() -> None:
+    """Never rejects a well-formed code just because it's outside the curated set."""
+    data = b"amount,currency\n500,ZZZ\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["currency"] == "ZZZ"
+    assert record.attributes["currency_is_known_iso4217"] is False
+
+
+def test_finance_normalizes_debit_credit_direction() -> None:
+    data = b"amount,currency,direction\n500,INR,DR\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["direction"] == "debit"
+    assert record.attributes["direction_raw"] == "DR"
+
+
+def test_finance_preserves_unrecognized_direction_raw_only() -> None:
+    data = b"amount,currency,direction\n500,INR,unclear\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert "direction" not in record.attributes
+    assert record.attributes["direction_raw"] == "unclear"
+
+
+def test_finance_timestamp_uses_the_configured_default_timezone_when_none_is_given() -> None:
+    data = b"amount,currency,timestamp\n500,INR,2026-01-01 10:00:00\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["timestamp"] == "2026-01-01T04:30:00+00:00"
+    assert record.attributes["timestamp_source_timezone"] == "Asia/Kolkata"
+
+
+def test_finance_preserves_raw_timestamp_when_unparseable_without_rejecting_the_record() -> None:
+    """timestamp is optional for this profile -- an unparseable value never aborts the record."""
+    data = b"amount,currency,timestamp\n500,INR,not-a-real-date\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["timestamp_raw"] == "not-a-real-date"
+    assert "timestamp" not in record.attributes

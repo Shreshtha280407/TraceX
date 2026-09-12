@@ -13,13 +13,19 @@ without leaking the claim token.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 
 from app.contracts.evidence import SourceType
+from app.contracts.observation_batch import (
+    BatchAcceptanceStatus,
+    ObservationBatchReceiptV1,
+    ObservationBatchSubmissionV1,
+)
 from app.contracts.worker import WorkerStatus
-from app.modules.structured_processing.client import ClaimResult, SubmitResultAck
+from app.modules.structured_processing.client import ClaimResult, RenewAck, SubmitResultAck
 from app.modules.structured_processing.errors import InputResolutionUnavailableError, WorkerApiError
 from app.modules.structured_processing.input_resolver import ResolvedInput, StaticInputResolver
 from app.modules.structured_processing.structured.profiles import (
@@ -38,12 +44,14 @@ from tests.fixtures.factories import make_worker_job
 
 @dataclass
 class _FakeClient:
-    """Duck-types `WorkerApiClient`'s `claim`/`submit_result`/`close`."""
+    """Duck-types `WorkerApiClient`'s `claim`/`submit_result`/`submit_batch`/`renew_lease`."""
 
     claim_responses: list[ClaimResult]
     submit_ack: SubmitResultAck | None = None
     submit_exception: Exception | None = None
     submit_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
+    batch_calls: list[ObservationBatchSubmissionV1] = field(default_factory=list)
+    renew_calls: int = 0
     _claim_calls: int = 0
 
     def claim(self, *, processor_name: str, processor_version: str) -> ClaimResult:  # noqa: ARG002
@@ -57,6 +65,23 @@ class _FakeClient:
             raise self.submit_exception
         assert self.submit_ack is not None
         return self.submit_ack
+
+    def submit_batch(
+        self, *, job_id: UUID, claim_token: str, submission: ObservationBatchSubmissionV1
+    ) -> ObservationBatchReceiptV1:
+        self.batch_calls.append(submission)
+        return ObservationBatchReceiptV1(
+            job_id=job_id,
+            batch_id=submission.batch_id,
+            status=BatchAcceptanceStatus.ACCEPTED,
+            accepted_observation_count=len(submission.observations),
+            progress=submission.progress,
+            request_id=None,
+        )
+
+    def renew_lease(self, job_id: UUID, *, claim_token: str) -> RenewAck:  # noqa: ARG002
+        self.renew_calls += 1
+        return RenewAck(job_id=job_id, lease_expires_at=datetime.now(UTC))
 
     def close(self) -> None:
         pass
