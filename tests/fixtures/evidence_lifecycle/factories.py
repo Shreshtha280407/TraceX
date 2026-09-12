@@ -67,6 +67,7 @@ def make_job_record(**overrides: Any) -> WorkerJobRecord:
         "processor_name": processor_name,
         "processor_version": processor_version,
         "attempt": 1,
+        "max_attempts": 5,
         "idempotency_key": f"{case_id}:{evidence_id}:{processor_name}:{processor_version}",
         "input_object_uri": "cases/x/evidence/y/original",
         "requested_at": FIXED_TIME,

@@ -82,18 +82,26 @@ Every one of these renders as the identical generic `401` to the caller (never d
 
 ## Audit event policy and safe fields
 
-Reuses `app.modules.access_control.audit.record_audit_event`/`record_audit_event_safely` — no parallel audit store. Six event types this phase adds or completes:
+Reuses `app.modules.access_control.audit.record_audit_event`/`record_audit_event_safely` — no parallel audit store. This is operational security telemetry only; it is **not** cryptographically tamper-evident, and does not become so until Phase 6 implements the Merkle/hash-chain audit-integrity design — see "Explicit non-goals" below.
 
-| `event_type` | Raised from | Safe `metadata` fields |
-|---|---|---|
-| `case_access_denied` | `access_control.dependencies.require_case_action` | `action` |
-| `worker_authentication_denied` | `evidence_lifecycle.dependencies.require_worker_principal` | `reason` (`missing_or_malformed_credential` / `invalid_credential` / `revoked_credential`), `worker_id` (only when known — i.e. a revoked credential was actually found) |
-| `worker_processor_scope_denied` | `evidence_lifecycle.internal_api.claim_job` | `worker_id`, `processor_name`, `processor_version` |
-| `worker_job_access_denied` | `evidence_lifecycle.internal_api.submit_result`/`get_worker_job_input` | `worker_id`, `job_id`, `reason` (from `InvalidClaimTokenError.reason` — e.g. `token_mismatch`, `worker_identity_mismatch`, `lease_expired`, `not_claimed`) |
-| `worker_credential_rotated` | `access_control.worker_credentials.rotate_worker_credential` | `worker_id` |
-| `worker_credential_revoked` | `access_control.worker_credentials.revoke_worker_credential` | `worker_id` |
+| `event_type` | Raised from | Outcome | Safe `metadata` fields | `case_id` |
+|---|---|---|---|---|
+| `case_access_denied` | `access_control.dependencies.require_case_action` | `DENIED` | `action` | yes |
+| `worker_authentication_denied` | `evidence_lifecycle.dependencies.require_worker_principal` | `DENIED` | `reason` (`missing_or_malformed_credential` / `invalid_credential` / `revoked_credential`), `worker_id` (only when known — i.e. a revoked credential was actually found) | no — authentication fails before any case/job is resolved |
+| `worker_processor_scope_denied` | `evidence_lifecycle.internal_api.claim_job` | `DENIED` | `worker_id`, `processor_name`, `processor_version` | no — scope is checked before any specific job is looked at |
+| `worker_job_access_denied` | `evidence_lifecycle.internal_api.submit_result`/`get_worker_job_input`/`renew_job_lease`/`submit_observation_batch` | `DENIED` | `worker_id`, `job_id`, `reason` (from `InvalidClaimTokenError.reason` — e.g. `token_mismatch`, `worker_identity_mismatch`, `lease_expired`, `not_claimed`, `unknown_or_unclaimed_job`) | no — a claim-token failure may not even resolve to a real job; never probes for one just to attach a `case_id` |
+| `worker_credential_rotated` | `access_control.worker_credentials.rotate_worker_credential` | `SUCCESS` | `worker_id` | no |
+| `worker_credential_revoked` | `access_control.worker_credentials.revoke_worker_credential` | `SUCCESS` | `worker_id` | no |
+| `worker_job_claimed` (Phase 3) | `evidence_lifecycle.internal_api.claim_job` (first-ever claim) | `SUCCESS` | `worker_id`, `job_id`, `evidence_id`, `processor_name`, `processor_version`, `attempt` (always `1`) | yes |
+| `worker_job_reclaimed` (Phase 3) | `evidence_lifecycle.internal_api.claim_job` (lease-expiry reclaim) | `SUCCESS` | same shape as `worker_job_claimed`; `attempt` is `>= 2` | yes |
+| `worker_job_lease_renewed` (Phase 3) | `evidence_lifecycle.internal_api.renew_job_lease` | `SUCCESS` | `worker_id`, `job_id`, `evidence_id`, `attempt` | yes |
+| `worker_job_completed` (Phase 3) | `evidence_lifecycle.internal_api.submit_result` (`status=succeeded`) | `SUCCESS` | `job_id`, `evidence_id`, `result_id`, `status`, `observation_count` | yes |
+| `worker_job_failed` (Phase 3) | `evidence_lifecycle.internal_api.submit_result` (any other terminal status) | `SUCCESS` | same shape as `worker_job_completed`; `status` names the actual terminal outcome (`failed`/`deferred`/`cancelled`) | yes |
+| `worker_job_retry_exhausted` (Phase 3) | `evidence_lifecycle.internal_api.claim_job` (opportunistic sweep, once per exhausted job) | `SUCCESS` | `job_id`, `evidence_id`, `attempt`, `max_attempts` | yes |
 
-Every event additionally carries the standard `record_audit_event` fields where known/safe: `request_id`, `user_id`/`case_id` (human-facing denials), `outcome=DENIED`. **Never** present in any event: a bearer token, a claim token, an object key/URI, a request body, a stack trace, or raw evidence content — verified behaviorally in `tests/unit/evidence_lifecycle/test_worker_identity_api.py`.
+Every event additionally carries the standard `record_audit_event` fields where known/safe: `request_id`, `user_id` (always `None` for every worker-facing event above — there is no human user behind a worker call), `outcome`. **Never** present in any event: a bearer token, a claim token, an object key/URI, a request body, a stack trace, or raw evidence content — verified behaviorally in `tests/unit/evidence_lifecycle/test_worker_identity_api.py`, `test_worker_internal_api.py`, and `test_worker_lease_renewal.py`.
+
+**Why the eight Phase 3 rows use `record_audit_event_safely`, including the four `SUCCESS`-outcome ones**: `record_audit_event_safely` was originally documented as denial-path-only, but its actual behavior (swallow a write failure, never propagate) is exactly right for a second case too — an already-committed state change whose entire value to the caller is a one-time secret the response body carries (a `claim_token`, an extended `lease_expires_at`), not the state change itself. An audit-sink outage turning that into a 500 would strand an already-claimed/renewed job with nobody holding a usable token or knowing the new expiry, recoverable only by waiting out the lease. This is different from `worker_job_completed`/`worker_job_failed` (still the propagating `record_audit_event`, matching the pre-Phase-3 `worker.result.accepted` precedent): a result is idempotent and safely retryable, so a genuine audit-write failure there should surface as a visible error, not be silently absorbed. See `app/modules/access_control/audit.py`'s `record_audit_event_safely` docstring for the full reasoning.
 
 **`worker_credential_rotated`/`worker_credential_revoked` are recorded via the plain (propagating) `record_audit_event`, not the denial-only `record_audit_event_safely`.** Rotation/revocation are accepted operator actions, not denials — the same distinction `access_control/audit.py`'s own docstring draws for every other accepted-path event (e.g. login/register) — so an audit-write failure here surfaces as a real error to the operator running the CLI rather than being silently swallowed. `revoke_worker_credential` audits every call, including a redundant call against an already-revoked credential, since the operator action itself (not just the resulting DB state) is what's worth a trail entry. Rotation/revocation are also already durably recorded as `WorkerCredentialRecord.rotated_at`/`revoked_at`/`status`, queryable via `list_worker_credentials` — the audit event is additional, not the only record.
 
@@ -113,6 +121,8 @@ Unchanged from every prior phase: a worker's credential proves *identity*, not i
 |---|---|---|---|
 | `WORKER_TOKEN` | Client (a worker process) | Yes, for that worker to authenticate | That worker process's own CLI (`structured_processing.worker --once`) refuses to start, safely (`WorkerAuthenticationError`, no fabricated request) |
 | `WORKER_CREDENTIAL_PEPPER` | Server | Optional outside production; **required** when `APP_ENV=production` | Outside production: falls back to an unkeyed SHA-256 digest (documented, intentional — see below). In production: `require_worker_principal` fails every request `503` (`worker security is not configured`), and the CLI refuses to create/rotate a credential, both via `resolve_worker_pepper` raising `WorkerSecurityConfigurationError` with a clear, non-secret message — never a stack trace, never a silent unkeyed fallback in that environment. |
+| `WORKER_LEASE_MAX_SECONDS` (Phase 3) | Server | No | Defaults to `3600` (1 hour). Absolute ceiling on `/renew`'s cumulative effect for one claim/reclaim attempt, from that attempt's `claimed_at` — see `docs/architecture/worker-job-lifecycle.md`'s "Lease and retry policy". Validated `>= WORKER_LEASE_SECONDS` at `Settings` construction time; a smaller value fails fast at startup, not silently. |
+| `WORKER_JOB_MAX_ATTEMPTS` (Phase 3) | Server | No | Defaults to `5`. Bounds how many times one `worker_jobs` row may ever be claimed/reclaimed before the opportunistic sweep transitions it to `failed` — see `docs/architecture/worker-job-lifecycle.md`. |
 
 ### Why an unpeppered fallback is safe outside production
 
@@ -125,3 +135,5 @@ Unchanged from every prior phase: a worker's credential proves *identity*, not i
 ## Explicit non-goals (this phase)
 
 No public worker-account management API, no worker login/logout flow, no OAuth/OIDC/SAML, no mTLS/certificate-authority infrastructure, no Kubernetes secrets or cloud secret-manager integration, no RBAC/ABAC redesign, no case CRUD changes, no changes to `EvidenceRecordV1`/`ObservationV1`/`EntityV1`/`EventV1`/`WorkerJobV1`/`WorkerResultV1`/`WorkerProgressV1` payload contracts. See `docs/qa/known-limitations.md` for the full deferred list.
+
+**Aditya Phase 3 additionally does not implement**: credential expiry (the model remains active/revoked only — no `expires_at`; revocation is the only way to deny a previously-active credential, and it is permanent, matching the existing design's own "the smallest necessary extension" scope), a maximum-concurrent-credential cap, an automatic-revocation-on-repeated-authentication-failure policy, or any cryptographic tamper-evidence over the audit trail itself (Merkle roots, hash chains, signatures — Phase 6's responsibility). These security/audit events are durable operational history, not yet a provable, tamper-evident chain.

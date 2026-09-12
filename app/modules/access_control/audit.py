@@ -77,13 +77,24 @@ async def record_audit_event_safely(
 ) -> None:
     """Like `record_audit_event`, but a failure to write is swallowed, not propagated.
 
-    For use exclusively on a *denial* path, where the caller has already
-    decided to reject the request (a 401/403/503) regardless of whether
-    this call succeeds: an audit-sink outage must never additionally turn
-    that deny into an unexpected 500, and must certainly never turn a deny
-    into a grant. Never use this for a path where the audit write is part
-    of what makes a request count as accepted (e.g. an accepted worker
-    result) -- there, a genuine failure should propagate and be visible.
+    Two accepted uses:
+
+    - A *denial* path, where the caller has already decided to reject the
+      request (a 401/403/503) regardless of whether this call succeeds: an
+      audit-sink outage must never additionally turn that deny into an
+      unexpected 500, and must certainly never turn a deny into a grant.
+    - An already-committed state change whose *value to the caller* is a
+      one-time secret the response body carries, not the state change
+      itself (e.g. a worker job claim: the claim already exists in the
+      database by this point, but the caller's only way to use it is the
+      `claim_token` in the response -- an audit-sink hiccup turning that
+      into a 500 would strand the job, recoverable only by lease expiry).
+
+    Never use this where the audit write is part of what makes a request
+    count as accepted and a client can safely retry on failure (e.g. an
+    accepted, idempotent worker result or observation batch) -- there, a
+    genuine failure should propagate and be visible, exactly like
+    `record_audit_event`'s own docstring describes.
     """
     try:
         await record_audit_event(

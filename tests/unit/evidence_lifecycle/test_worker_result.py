@@ -6,7 +6,7 @@ shared, already-validated contract builders) rather than duplicating them.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -272,6 +272,29 @@ async def test_unclaimed_job_rejects_any_result() -> None:
         await service.submit_result(
             job_id=fake_job_id, claim_token="whatever", result=result, context=_context()
         )
+
+
+async def test_result_submission_after_lease_expiry_is_rejected() -> None:
+    """A genuinely expired lease rejects a `/result` submission even if nobody has
+    reclaimed the job yet -- once the lease window has passed, there is no late pass."""
+    service, repository = _service()
+    job, claim_token = await _claimed_job(service)
+
+    stale = repository.jobs[job.job_id]
+    repository.jobs[job.job_id] = stale.model_copy(
+        update={"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+
+    result = make_worker_result(
+        job_id=job.job_id, case_id=job.case_id, evidence_id=job.evidence_id, error=None
+    )
+    with pytest.raises(InvalidClaimTokenError) as excinfo:
+        await service.submit_result(
+            job_id=job.job_id, claim_token=claim_token, result=result, context=_context()
+        )
+    assert excinfo.value.reason == "lease_expired"
+    assert repository.results == {}
+    assert repository.jobs[job.job_id].status is WorkerStatus.RUNNING
 
 
 # --- Scenario 10-11: idempotent duplicate vs. conflicting duplicate ---------

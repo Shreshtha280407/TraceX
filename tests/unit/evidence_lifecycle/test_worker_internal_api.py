@@ -18,7 +18,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.contracts.evidence import SourceType
-from app.contracts.worker import WorkerStatus
+from app.contracts.worker import WorkerError, WorkerStatus
 from app.core.config import AppEnv, get_settings
 from app.main import app
 from app.modules.access_control.dependencies import get_access_control_repository
@@ -55,14 +55,21 @@ _TEST_WORKER_PRINCIPAL = WorkerPrincipal(
 
 
 @pytest.fixture
+def ac_repository() -> FakeAccessControlRepository:
+    return FakeAccessControlRepository()
+
+
+@pytest.fixture
 def _override_worker_dependencies(
-    evidence_repository: FakeEvidenceLifecycleRepository, job_producer: FakeJobProducer
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    job_producer: FakeJobProducer,
+    ac_repository: FakeAccessControlRepository,
 ) -> Iterator[None]:
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = lambda: FakeObjectStorage()
     app.dependency_overrides[get_job_producer] = lambda: job_producer
     app.dependency_overrides[require_worker_principal] = lambda: _TEST_WORKER_PRINCIPAL
-    app.dependency_overrides[get_access_control_repository] = FakeAccessControlRepository
+    app.dependency_overrides[get_access_control_repository] = lambda: ac_repository
     yield
     app.dependency_overrides.clear()
 
@@ -90,6 +97,7 @@ def _seed_queued_job(
         processor_name=processor_name,
         processor_version=processor_version,
         attempt=1,
+        max_attempts=5,
         idempotency_key=f"{case_id}:{evidence_id}:{processor_name}:{processor_version}",
         input_object_uri=f"cases/{case_id}/evidence/{evidence_id}/original",
         requested_at=FIXED_TIME,
@@ -148,6 +156,77 @@ async def test_claim_and_submit_full_round_trip(
     assert ack["status"] == "succeeded"
     assert ack["observation_count"] == 1
     assert ack["observation_ids"] == [str(observation.observation_id)]
+
+
+async def test_succeeded_result_records_a_worker_job_completed_audit_event(
+    client: AsyncClient,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    ac_repository: FakeAccessControlRepository,
+) -> None:
+    job = _seed_queued_job(evidence_repository)
+    claim = await client.post(
+        "/api/v1/internal/worker-jobs/claim",
+        json={"processor_name": job.processor_name, "processor_version": job.processor_version},
+    )
+    claim_token = claim.json()["claim_token"]
+
+    observation = make_observation(case_id=job.case_id, evidence_id=job.evidence_id)
+    result = make_worker_result(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        observations=[observation],
+        error=None,
+    )
+    submit = await client.post(
+        f"/api/v1/internal/worker-jobs/{job.job_id}/result",
+        headers={"X-Claim-Token": claim_token, "Content-Type": "application/json"},
+        content=result.model_dump_json(),
+    )
+    assert submit.status_code == 200, submit.text
+
+    completed = [e for e in ac_repository.audit_events if e.event_type == "worker_job_completed"]
+    failed = [e for e in ac_repository.audit_events if e.event_type == "worker_job_failed"]
+    assert len(completed) == 1
+    assert failed == []
+    assert completed[0].metadata_safe_json["job_id"] == str(job.job_id)
+    assert completed[0].metadata_safe_json["evidence_id"] == str(job.evidence_id)
+    assert completed[0].metadata_safe_json["status"] == "succeeded"
+    assert completed[0].case_id_nullable == job.case_id
+
+
+async def test_failed_result_records_a_worker_job_failed_audit_event(
+    client: AsyncClient,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    ac_repository: FakeAccessControlRepository,
+) -> None:
+    job = _seed_queued_job(evidence_repository)
+    claim = await client.post(
+        "/api/v1/internal/worker-jobs/claim",
+        json={"processor_name": job.processor_name, "processor_version": job.processor_version},
+    )
+    claim_token = claim.json()["claim_token"]
+
+    result = make_worker_result(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        status=WorkerStatus.FAILED,
+        observations=[],
+        error=WorkerError(code="unsupported_content_type", message="safe message", retryable=False),
+    )
+    submit = await client.post(
+        f"/api/v1/internal/worker-jobs/{job.job_id}/result",
+        headers={"X-Claim-Token": claim_token, "Content-Type": "application/json"},
+        content=result.model_dump_json(),
+    )
+    assert submit.status_code == 200, submit.text
+
+    failed = [e for e in ac_repository.audit_events if e.event_type == "worker_job_failed"]
+    completed = [e for e in ac_repository.audit_events if e.event_type == "worker_job_completed"]
+    assert len(failed) == 1
+    assert completed == []
+    assert failed[0].metadata_safe_json["status"] == "failed"
 
 
 async def test_claim_returns_no_work_when_nothing_eligible(client: AsyncClient) -> None:

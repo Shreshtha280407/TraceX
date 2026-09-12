@@ -66,6 +66,8 @@ def get_evidence_lifecycle_service(
         job_producer=job_producer,
         max_evidence_bytes=settings.max_evidence_bytes,
         worker_lease_seconds=settings.worker_lease_seconds,
+        worker_lease_max_seconds=settings.worker_lease_max_seconds,
+        worker_job_max_attempts=settings.worker_job_max_attempts,
         graph_projection_max_attempts=settings.graph_projection_max_attempts,
     )
 

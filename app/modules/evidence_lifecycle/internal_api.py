@@ -37,7 +37,7 @@ from app.contracts.observation_batch import (
     ObservationBatchReceiptV1,
     ObservationBatchSubmissionV1,
 )
-from app.contracts.worker import WorkerResultV1
+from app.contracts.worker import WorkerResultV1, WorkerStatus
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import record_audit_event, record_audit_event_safely
 from app.modules.access_control.dependencies import get_access_control_repository
@@ -116,6 +116,49 @@ async def claim_job(
         context=context,
         claimed_by_worker_id=principal.worker_id,
     )
+
+    # `record_audit_event_safely` (best-effort) throughout this block, not
+    # the propagating `record_audit_event`: the state change itself (the
+    # exhaustion sweep's terminal transition; this caller's own successful
+    # claim) has already durably committed by this point. Unlike an
+    # accepted result/batch, a claim's entire value to the caller is the
+    # one-time `claim_token` in the response body -- letting an audit-sink
+    # hiccup turn that into a 500 would strand an already-claimed job with
+    # a token nobody received, recoverable only by waiting out its lease.
+    for exhausted_job in outcome.retry_exhausted:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_retry_exhausted",
+            outcome=AuditOutcome.SUCCESS,
+            now=context.now,
+            request_id=context.request_id,
+            case_id=exhausted_job.case_id,
+            metadata={
+                "job_id": str(exhausted_job.job_id),
+                "evidence_id": str(exhausted_job.evidence_id),
+                "attempt": exhausted_job.attempt,
+                "max_attempts": exhausted_job.max_attempts,
+            },
+        )
+
+    if outcome.job is not None:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_reclaimed" if outcome.was_reclaim else "worker_job_claimed",
+            outcome=AuditOutcome.SUCCESS,
+            now=context.now,
+            request_id=context.request_id,
+            case_id=outcome.job.case_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(outcome.job.job_id),
+                "evidence_id": str(outcome.job.evidence_id),
+                "processor_name": body.processor_name,
+                "processor_version": body.processor_version,
+                "attempt": outcome.job.attempt,
+            },
+        )
+
     return ClaimResponse(
         job=outcome.job.to_contract() if outcome.job is not None else None,
         claim_token=outcome.claim_token,
@@ -179,7 +222,11 @@ async def submit_result(
     if outcome.created:
         await record_audit_event(
             audit_repository,
-            event_type="worker.result.accepted",
+            event_type=(
+                "worker_job_completed"
+                if outcome.status is WorkerStatus.SUCCEEDED
+                else "worker_job_failed"
+            ),
             outcome=AuditOutcome.SUCCESS,
             now=context.now,
             request_id=context.request_id,
@@ -187,6 +234,7 @@ async def submit_result(
             case_id=result.case_id,
             metadata={
                 "job_id": str(outcome.job_id),
+                "evidence_id": str(result.evidence_id),
                 "result_id": str(outcome.result_id),
                 "status": outcome.status.value,
                 "observation_count": len(outcome.observation_ids),
@@ -314,7 +362,7 @@ async def renew_job_lease(
 
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
-        new_lease_expires_at = await service.renew_claim(
+        renewal = await service.renew_claim(
             job_id=job_id,
             claim_token=claim_token,
             context=context,
@@ -335,7 +383,21 @@ async def renew_job_lease(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
-    return RenewLeaseResponse(job_id=job_id, lease_expires_at=new_lease_expires_at)
+    await record_audit_event_safely(
+        audit_repository,
+        event_type="worker_job_lease_renewed",
+        outcome=AuditOutcome.SUCCESS,
+        now=context.now,
+        request_id=context.request_id,
+        case_id=renewal.case_id,
+        metadata={
+            "worker_id": str(principal.worker_id),
+            "job_id": str(job_id),
+            "evidence_id": str(renewal.evidence_id),
+            "attempt": renewal.attempt,
+        },
+    )
+    return RenewLeaseResponse(job_id=job_id, lease_expires_at=renewal.lease_expires_at)
 
 
 @router.get("/{job_id}/input")

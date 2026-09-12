@@ -80,6 +80,7 @@ worker_jobs_table = sa.Table(
     sa.Column("processor_name", sa.Text(), nullable=False),
     sa.Column("processor_version", sa.Text(), nullable=False),
     sa.Column("attempt", sa.Integer(), nullable=False),
+    sa.Column("max_attempts", sa.Integer(), nullable=False),
     sa.Column("idempotency_key", sa.Text(), nullable=False),
     sa.Column("input_object_uri", sa.Text(), nullable=False),
     sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
@@ -458,10 +459,26 @@ class EvidenceLifecycleRepository:
                             worker_jobs_table.c.processor_name == processor_name,
                             worker_jobs_table.c.processor_version == processor_version,
                             sa.or_(
+                                # A job's first-ever claim is always allowed
+                                # regardless of `max_attempts` -- `attempt`
+                                # is already `1` at creation (it is not
+                                # incremented on a first claim, see
+                                # `docs/architecture/worker-job-lifecycle.md`'s
+                                # "Attempt semantics"), so this is not a
+                                # retry at all, even when `max_attempts == 1`.
                                 worker_jobs_table.c.status == WorkerStatus.QUEUED.value,
                                 sa.and_(
                                     worker_jobs_table.c.status == WorkerStatus.RUNNING.value,
                                     worker_jobs_table.c.lease_expires_at < now,
+                                    # A reclaim increments `attempt` by one --
+                                    # only allowed while there is room for
+                                    # one more. A job that has already used
+                                    # its last allowed attempt is never
+                                    # reclaimed here -- see
+                                    # `get_retry_exhausted_jobs`, which is
+                                    # how such a row is actually transitioned
+                                    # to `failed`.
+                                    worker_jobs_table.c.attempt < worker_jobs_table.c.max_attempts,
                                 ),
                             ),
                         )
@@ -508,7 +525,7 @@ class EvidenceLifecycleRepository:
             return WorkerJobRecord.model_validate(updated), was_reclaim
 
     async def renew_lease(
-        self, job_id: UUID, *, now: datetime, lease_seconds: int
+        self, job_id: UUID, *, now: datetime, lease_seconds: int, max_lease_seconds: int
     ) -> datetime | None:
         """Atomically extend a currently-`running`, unexpired-lease job's lease.
 
@@ -520,8 +537,18 @@ class EvidenceLifecycleRepository:
         expiry (a legitimate reclaim by another worker, racing a slow
         renewal, must always win -- never both hold a "valid" lease at
         once).
+
+        The new lease is also capped, via `LEAST(...)` evaluated in the same
+        `UPDATE`, at `claimed_at + max_lease_seconds` -- this attempt's own
+        absolute lifetime ceiling (`claimed_at` resets on every fresh claim/
+        reclaim, so the ceiling is per-attempt, not per-job). No separate
+        rejection path is needed for "renewed past the ceiling too many
+        times": once real time passes the ceiling, the capped value stops
+        advancing, `lease_expires_at` falls behind `now` on its own, and the
+        `lease_expires_at >= now` re-check above starts failing naturally --
+        exactly as if the worker had simply stopped renewing.
         """
-        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        candidate_expires_at = now + timedelta(seconds=lease_seconds)
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 sa.update(worker_jobs_table)
@@ -530,9 +557,48 @@ class EvidenceLifecycleRepository:
                     worker_jobs_table.c.status == WorkerStatus.RUNNING.value,
                     worker_jobs_table.c.lease_expires_at >= now,
                 )
-                .values(lease_expires_at=lease_expires_at, updated_at=now)
+                .values(
+                    lease_expires_at=sa.func.least(
+                        candidate_expires_at,
+                        worker_jobs_table.c.claimed_at + timedelta(seconds=max_lease_seconds),
+                    ),
+                    updated_at=now,
+                )
+                .returning(worker_jobs_table.c.lease_expires_at)
             )
-        return lease_expires_at if result.rowcount > 0 else None
+            row = result.first()
+        return row[0] if row is not None else None
+
+    async def get_retry_exhausted_jobs(self, *, now: datetime) -> list[WorkerJobRecord]:
+        """Every currently-`running`, lease-expired job with no attempts remaining.
+
+        Read-only and deliberately never mutates or locks anything itself:
+        `service.claim_job` transitions each returned job to `failed` by
+        calling the existing `submit_result` with a synthetic terminal
+        `WorkerResultV1` (`error.code="retry_exhausted"`) -- reusing its
+        already-correct idempotency/conflict handling rather than a second,
+        parallel "mark terminal" write path. Two concurrent callers seeing
+        the same row here is therefore self-healing: the loser's
+        `submit_result` call raises `sqlalchemy.exc.IntegrityError` on
+        `worker_results.job_id`'s unique constraint (the same race
+        `create_evidence_with_job`'s idempotency-key path already handles),
+        which the caller swallows -- the winner already made it terminal.
+        """
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(worker_jobs_table).where(
+                            worker_jobs_table.c.status == WorkerStatus.RUNNING.value,
+                            worker_jobs_table.c.lease_expires_at < now,
+                            worker_jobs_table.c.attempt >= worker_jobs_table.c.max_attempts,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_job_from_row(row) for row in rows]
 
     # --- worker result (single atomic write path) ---------------------------
 

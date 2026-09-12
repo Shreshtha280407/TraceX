@@ -154,6 +154,7 @@ class FakeEvidenceLifecycleRepository:
                         job.status is WorkerStatus.RUNNING
                         and job.lease_expires_at is not None
                         and job.lease_expires_at < now
+                        and job.attempt < job.max_attempts
                     )
                 )
             ),
@@ -180,7 +181,7 @@ class FakeEvidenceLifecycleRepository:
         return claimed, was_reclaim
 
     async def renew_lease(
-        self, job_id: UUID, *, now: datetime, lease_seconds: int
+        self, job_id: UUID, *, now: datetime, lease_seconds: int, max_lease_seconds: int
     ) -> datetime | None:
         job = self.jobs.get(job_id)
         if (
@@ -190,11 +191,23 @@ class FakeEvidenceLifecycleRepository:
             or job.lease_expires_at < now
         ):
             return None
-        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        candidate_expires_at = now + timedelta(seconds=lease_seconds)
+        ceiling = (job.claimed_at or now) + timedelta(seconds=max_lease_seconds)
+        lease_expires_at = min(candidate_expires_at, ceiling)
         self.jobs[job_id] = job.model_copy(
             update={"lease_expires_at": lease_expires_at, "updated_at": now}
         )
         return lease_expires_at
+
+    async def get_retry_exhausted_jobs(self, *, now: datetime) -> list[WorkerJobRecord]:
+        return [
+            job
+            for job in self.jobs.values()
+            if job.status is WorkerStatus.RUNNING
+            and job.lease_expires_at is not None
+            and job.lease_expires_at < now
+            and job.attempt >= job.max_attempts
+        ]
 
     # --- worker result -------------------------------------------------------
 

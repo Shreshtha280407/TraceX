@@ -16,6 +16,7 @@ import pytest
 from app.contracts.evidence import EvidenceClassification, SourceType
 from app.contracts.observation_batch import BatchAcceptanceStatus
 from app.modules.evidence_lifecycle.errors import (
+    InvalidClaimTokenError,
     ObservationBatchConflictError,
     ObservationBatchValidationError,
 )
@@ -431,6 +432,39 @@ async def test_progress_may_reset_after_a_legitimate_reclaim_bumps_attempt() -> 
         context=expired_now,
     )
     assert outcome.status is BatchAcceptanceStatus.ACCEPTED  # reset allowed -- new attempt
+
+
+async def test_stale_claim_token_cannot_submit_a_new_batch_after_reclaim() -> None:
+    """The *old* claim token -- valid before the lease expired and the job was
+    reclaimed by (in this case) a different worker -- can never submit a *new*
+    batch afterward: the reclaim already overwrote `claim_token_hash`."""
+    service, repository = _service()
+    job, old_claim_token = await _claimed_job(service)
+
+    expired_now = _context(now=datetime.now(UTC) + timedelta(seconds=120))
+    reclaim = await service.claim_job(
+        processor_name="cdr_generic_v1", processor_version="1.0.0", context=expired_now
+    )
+    assert reclaim.job is not None
+    assert reclaim.claim_token != old_claim_token
+
+    submission = make_observation_batch_submission(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        batch_id="batch-with-stale-token",
+        idempotency_key="idem-with-stale-token",
+    )
+    with pytest.raises(InvalidClaimTokenError) as excinfo:
+        await service.submit_observation_batch(
+            job_id=job.job_id,
+            claim_token=old_claim_token,
+            submission=submission,
+            context=expired_now,
+        )
+    assert excinfo.value.reason == "token_mismatch"
+    assert repository.observation_batches == {}
+    assert repository.observations == {}
 
 
 # --- Scenario 17: provenance retrievable by case/evidence/job/observation --
