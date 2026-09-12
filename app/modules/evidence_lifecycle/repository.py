@@ -28,8 +28,11 @@ from app.contracts.worker import WorkerStatus
 from app.core.config import Settings
 from app.modules.evidence_lifecycle.models import (
     EvidenceRecord,
+    ObservationBatchRecord,
     ObservationRecord,
+    ObservationTransformationRecord,
     WorkerJobRecord,
+    WorkerProgressEventRecord,
     WorkerResultRecord,
 )
 
@@ -120,12 +123,74 @@ worker_observations_table = sa.Table(
     "worker_observations",
     metadata,
     sa.Column("observation_id", postgresql.UUID(as_uuid=True), primary_key=True),
-    sa.Column("result_id", postgresql.UUID(as_uuid=True), nullable=False),
+    # Exactly one of `result_id` (Phase 2.1 terminal `WorkerResultV1`) /
+    # `observation_batch_id` (Phase 3 partial-batch submission) is ever set --
+    # see `ObservationRecord`'s docstring and `docs/architecture/
+    # phase-3-decisions.md`.
+    sa.Column("result_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("observation_batch_id", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("observation_type", sa.Text(), nullable=False),
     sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+#: One immutable receipt per accepted partial `ObservationBatchSubmissionV1` --
+#: see `ObservationBatchRecord`'s docstring.
+observation_batches_table = sa.Table(
+    "observation_batches",
+    metadata,
+    sa.Column("observation_batch_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("batch_id", sa.Text(), nullable=False),
+    sa.Column("batch_sequence", sa.Integer(), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=False),
+    sa.Column("is_final_batch", sa.Boolean(), nullable=False),
+    sa.Column("observation_count", sa.Integer(), nullable=False),
+    sa.Column("payload_hash", sa.Text(), nullable=False),
+    sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+#: One durable row per `TransformationProvenanceV1` accepted in a batch.
+observation_transformations_table = sa.Table(
+    "observation_transformations",
+    metadata,
+    sa.Column("transformation_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("observation_batch_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("ordinal", sa.Integer(), nullable=False),
+    sa.Column("step_name", sa.Text(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+#: An ordered, append-only progress-event history -- `ordinal` is a
+#: server-assigned, globally monotonic tiebreaker (see the migration).
+worker_progress_events_table = sa.Table(
+    "worker_progress_events",
+    metadata,
+    sa.Column("progress_event_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("ordinal", sa.BigInteger(), nullable=False),
+    sa.Column("observation_batch_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("attempt", sa.Integer(), nullable=False),
+    sa.Column("stage", sa.Text(), nullable=False),
+    sa.Column("units_total", sa.Integer(), nullable=True),
+    sa.Column("units_completed", sa.Integer(), nullable=False),
+    sa.Column("observations_emitted", sa.Integer(), nullable=False),
+    sa.Column("batch_sequence", sa.Integer(), nullable=False),
+    sa.Column("message_code", sa.Text(), nullable=True),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 
@@ -185,6 +250,18 @@ def _result_from_row(row: sa.RowMapping) -> WorkerResultRecord:
 
 def _observation_from_row(row: sa.RowMapping) -> ObservationRecord:
     return ObservationRecord.model_validate(dict(row))
+
+
+def _observation_batch_from_row(row: sa.RowMapping) -> ObservationBatchRecord:
+    return ObservationBatchRecord.model_validate(dict(row))
+
+
+def _transformation_from_row(row: sa.RowMapping) -> ObservationTransformationRecord:
+    return ObservationTransformationRecord.model_validate(dict(row))
+
+
+def _progress_event_from_row(row: sa.RowMapping) -> WorkerProgressEventRecord:
+    return WorkerProgressEventRecord.model_validate(dict(row))
 
 
 class EvidenceLifecycleRepository:
@@ -563,3 +640,174 @@ class EvidenceLifecycleRepository:
                     updated_at=result.updated_at,
                 )
             )
+
+    # --- observation batches (Phase 3: partial micro-batch submission) ------
+
+    async def get_batch_by_job_and_batch_id(
+        self, job_id: UUID, batch_id: str
+    ) -> ObservationBatchRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(observation_batches_table).where(
+                            observation_batches_table.c.job_id == job_id,
+                            observation_batches_table.c.batch_id == batch_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _observation_batch_from_row(row) if row is not None else None
+
+    async def get_batch_by_job_and_idempotency_key(
+        self, job_id: UUID, idempotency_key: str
+    ) -> ObservationBatchRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(observation_batches_table).where(
+                            observation_batches_table.c.job_id == job_id,
+                            observation_batches_table.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _observation_batch_from_row(row) if row is not None else None
+
+    async def list_observations_for_batch(
+        self, observation_batch_id: UUID
+    ) -> list[ObservationRecord]:
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(worker_observations_table).where(
+                            worker_observations_table.c.observation_batch_id == observation_batch_id
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_observation_from_row(row) for row in rows]
+
+    async def list_transformations_for_batch(
+        self, observation_batch_id: UUID
+    ) -> list[ObservationTransformationRecord]:
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(observation_transformations_table)
+                        .where(
+                            observation_transformations_table.c.observation_batch_id
+                            == observation_batch_id
+                        )
+                        .order_by(observation_transformations_table.c.ordinal.asc())
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_transformation_from_row(row) for row in rows]
+
+    async def get_latest_progress_event(self, job_id: UUID) -> WorkerProgressEventRecord | None:
+        """The most recently accepted progress event for `job_id`, or `None`.
+
+        Ordered by `ordinal` (server-assigned, globally monotonic), not
+        `created_at` -- a race-free "which came last" even for two events
+        inserted within the same millisecond.
+        """
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(worker_progress_events_table)
+                        .where(worker_progress_events_table.c.job_id == job_id)
+                        .order_by(worker_progress_events_table.c.ordinal.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _progress_event_from_row(row) if row is not None else None
+
+    async def submit_observation_batch(
+        self,
+        *,
+        batch: ObservationBatchRecord,
+        observations: list[ObservationRecord],
+        transformations: list[ObservationTransformationRecord],
+        progress_event: WorkerProgressEventRecord | None,
+        graph_projection_max_attempts: int,
+    ) -> WorkerProgressEventRecord | None:
+        """Insert the batch receipt + its observations/transformations/progress event
+        + one durable graph-projection job per newly accepted observation, all in
+        one transaction.
+
+        Mirrors `submit_result`'s identical shape and concurrency-safety
+        reasoning: a duplicate `(job_id, batch_id)` or `(job_id,
+        idempotency_key)` raises `sqlalchemy.exc.IntegrityError` via
+        `observation_batches`'s own unique constraints; a duplicate
+        `observation_id` reused from a completely different batch/result
+        raises the same `IntegrityError` via `worker_observations
+        .observation_id`'s primary key. `service.py` handles both the same
+        way `submit_result` already does: re-read, compare, replay-or-conflict
+        -- see `docs/architecture/phase-3-decisions.md`.
+
+        Returns the persisted progress event with its real, server-assigned
+        `ordinal` (`progress_event`'s own `ordinal` value is a placeholder,
+        never written), or `None` if this batch carried no progress update.
+        """
+        batch_values = _dump_for_insert(batch)
+        observation_values = [_dump_for_insert(o) for o in observations]
+        transformation_values = [_dump_for_insert(t, ("status",)) for t in transformations]
+        projection_job_values = [
+            {
+                "projection_id": uuid4(),
+                "case_id": observation.case_id,
+                "evidence_id": observation.evidence_id,
+                "observation_id": observation.observation_id,
+                "status": _GRAPH_PROJECTION_STATUS_QUEUED,
+                "attempt": 0,
+                "max_attempts": graph_projection_max_attempts,
+                "lease_expires_at": None,
+                "last_error_code": None,
+                "last_error_message": None,
+                "created_at": observation.created_at,
+                "updated_at": observation.created_at,
+                "completed_at": None,
+            }
+            for observation in observations
+        ]
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.insert(observation_batches_table).values(**batch_values))
+            if observation_values:
+                await conn.execute(sa.insert(worker_observations_table), observation_values)
+                await conn.execute(sa.insert(graph_projection_jobs_table), projection_job_values)
+            if transformation_values:
+                await conn.execute(
+                    sa.insert(observation_transformations_table), transformation_values
+                )
+            persisted_progress_event: WorkerProgressEventRecord | None = None
+            if progress_event is not None:
+                progress_values = _dump_for_insert(progress_event)
+                # Server-assigned via `nextval()` (see the migration) --
+                # never a client-supplied value.
+                del progress_values["ordinal"]
+                insert_result = await conn.execute(
+                    sa.insert(worker_progress_events_table)
+                    .values(**progress_values)
+                    .returning(worker_progress_events_table.c.ordinal)
+                )
+                real_ordinal = insert_result.scalar_one()
+                persisted_progress_event = progress_event.model_copy(
+                    update={"ordinal": real_ordinal}
+                )
+        return persisted_progress_event

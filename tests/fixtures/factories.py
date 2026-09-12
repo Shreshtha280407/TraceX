@@ -21,6 +21,12 @@ from app.contracts.evidence import (
     SourceType,
 )
 from app.contracts.observation import ExtractedEntityMention, ObservationV1
+from app.contracts.observation_batch import (
+    ObservationBatchProgressV1,
+    ObservationBatchSubmissionV1,
+    TransformationProvenanceV1,
+    TransformationStatus,
+)
 from app.contracts.worker import WorkerJobV1, WorkerResultV1, WorkerStatus
 
 FIXED_TIME = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -139,6 +145,67 @@ def make_worker_job(**overrides: Any) -> WorkerJobV1:
     }
     data.update(overrides)
     return WorkerJobV1(**data)
+
+
+def make_batch_progress(**overrides: Any) -> ObservationBatchProgressV1:
+    data: dict[str, Any] = {
+        "stage": "parsing",
+        "units_total": 10,
+        "units_completed": 1,
+        "observations_emitted": 1,
+        "batch_sequence": 0,
+        "message_code": "PAGE_PARSED",
+        "occurred_at": FIXED_TIME,
+    }
+    data.update(overrides)
+    return ObservationBatchProgressV1(**data)
+
+
+def make_transformation_provenance(**overrides: Any) -> TransformationProvenanceV1:
+    data: dict[str, Any] = {
+        "transformation_id": uuid4(),
+        "case_id": uuid4(),
+        "evidence_id": uuid4(),
+        "job_id": uuid4(),
+        "batch_id": "batch-1",
+        "ordinal": 0,
+        "step_name": "pdf_text_extraction",
+        "step_version": "1.0.0",
+        "config_hash": "c" * 16,
+        "model_version": "n/a",
+        "input_locator": make_source_locator(),
+        "output_observation_ids": [],
+        "derived_artifact_refs": [],
+        "status": TransformationStatus.SUCCEEDED,
+        "started_at": FIXED_TIME,
+        "completed_at": FIXED_TIME,
+        "safe_metadata": {},
+    }
+    data.update(overrides)
+    return TransformationProvenanceV1(**data)
+
+
+def make_observation_batch_submission(**overrides: Any) -> ObservationBatchSubmissionV1:
+    """A valid single-observation batch, defaulting `progress.batch_sequence` to match
+    `batch_sequence` (the contract requires the two to agree) -- override both together
+    if you need a non-zero sequence."""
+    case_id = overrides.pop("case_id", uuid4())
+    evidence_id = overrides.pop("evidence_id", uuid4())
+    data: dict[str, Any] = {
+        "job_id": uuid4(),
+        "case_id": case_id,
+        "evidence_id": evidence_id,
+        "batch_id": "batch-1",
+        "batch_sequence": 0,
+        "idempotency_key": "idem-1",
+        "observations": [make_observation(case_id=case_id, evidence_id=evidence_id)],
+        "transformations": [],
+        "progress": make_batch_progress(batch_sequence=0),
+        "submitted_at": FIXED_TIME,
+        "is_final_batch": False,
+    }
+    data.update(overrides)
+    return ObservationBatchSubmissionV1(**data)
 
 
 def make_worker_result(**overrides: Any) -> WorkerResultV1:

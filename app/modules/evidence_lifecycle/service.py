@@ -29,6 +29,11 @@ import structlog
 from fastapi import UploadFile
 
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
+from app.contracts.observation_batch import (
+    BatchAcceptanceStatus,
+    ObservationBatchProgressV1,
+    ObservationBatchSubmissionV1,
+)
 from app.contracts.worker import WorkerResultV1, WorkerStatus
 from app.core.canonical import canonical_sha256
 from app.modules.evidence_lifecycle.errors import (
@@ -38,6 +43,8 @@ from app.modules.evidence_lifecycle.errors import (
     InvalidClaimTokenError,
     JobNotFoundError,
     MissingFilenameError,
+    ObservationBatchConflictError,
+    ObservationBatchValidationError,
     PayloadTooLargeError,
     ResultConflictError,
     ResultValidationError,
@@ -48,8 +55,11 @@ from app.modules.evidence_lifecycle.jobs import JobProducer
 from app.modules.evidence_lifecycle.models import (
     TERMINAL_WORKER_STATUSES,
     EvidenceRecord,
+    ObservationBatchRecord,
     ObservationRecord,
+    ObservationTransformationRecord,
     WorkerJobRecord,
+    WorkerProgressEventRecord,
     WorkerResultRecord,
 )
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
@@ -124,6 +134,17 @@ class ResultOutcome:
     observation_ids: tuple[UUID, ...]
     #: False when this call returned the cached outcome of an identical, already-accepted replay.
     created: bool
+
+
+@dataclass(frozen=True)
+class ObservationBatchOutcome:
+    """The safe result of one `submit_observation_batch` call -- accepted or replayed."""
+
+    job_id: UUID
+    batch_id: str
+    status: BatchAcceptanceStatus
+    accepted_observation_count: int
+    progress: ObservationBatchProgressV1 | None
 
 
 class EvidenceLifecycleService:
@@ -503,6 +524,7 @@ class EvidenceLifecycleService:
             ObservationRecord(
                 observation_id=observation.observation_id,
                 result_id=result_id,
+                observation_batch_id=None,
                 job_id=job.job_id,
                 case_id=job.case_id,
                 evidence_id=job.evidence_id,
@@ -766,6 +788,318 @@ class EvidenceLifecycleService:
         )
         return new_lease_expires_at
 
+    # --- observation batches (Phase 3: partial micro-batch submission) ------
+
+    async def submit_observation_batch(
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        submission: ObservationBatchSubmissionV1,
+        context: UploadContext,
+        worker_id: UUID | None = None,
+    ) -> ObservationBatchOutcome:
+        """Validate and durably persist one partial observation micro-batch.
+
+        Verification ordering: claim-token hash, then worker identity (both
+        unconditional, exactly like `submit_result`/`renew_claim`), then
+        `submission.job_id`/`case_id`/`evidence_id` against the claimed
+        job's own values. Only *after* those pass does the flow branch on
+        whether `(job_id, batch_id)` already names an accepted batch --
+        exactly like `submit_result`'s "already terminal" branch, an
+        existing batch's idempotent replay/conflict comparison runs
+        regardless of the job's *current* status (a worker may legitimately
+        retry a batch submission whose acknowledgement was lost, even after
+        the job has since gone terminal via a separate `/result` call). Only
+        a genuinely *new* batch_id requires the job to be `running` with an
+        unexpired lease right now -- see
+        `docs/architecture/phase-3-decisions.md`.
+
+        `worker_id` defaults to `None` (skip the identity check) for the
+        same lower-level-test convenience every other method here already
+        documents; `internal_api.py`'s real HTTP endpoint always supplies
+        the authenticated caller's real value.
+        """
+        logger.info(
+            "worker.observation_batch.submit_attempted",
+            request_id=context.request_id,
+            job_id=str(job_id),
+            batch_id=submission.batch_id,
+        )
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.claim_token_hash is None:
+            logger.warning(
+                "worker.observation_batch.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="unknown_or_unclaimed_job",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="unknown_or_unclaimed_job")
+        if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
+            logger.warning(
+                "worker.observation_batch.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="token_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="token_mismatch")
+        if worker_id is not None and job.claimed_by_worker_id != worker_id:
+            logger.warning(
+                "worker.observation_batch.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="worker_identity_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="worker_identity_mismatch")
+
+        if (
+            submission.job_id != job.job_id
+            or submission.case_id != job.case_id
+            or submission.evidence_id != job.evidence_id
+        ):
+            raise ObservationBatchValidationError(
+                "submission job_id/case_id/evidence_id does not match the claimed job"
+            )
+
+        existing = await self._repository.get_batch_by_job_and_batch_id(
+            job.job_id, submission.batch_id
+        )
+        if existing is not None:
+            return await self._replay_or_conflict_batch(existing, submission, context)
+
+        existing_by_key = await self._repository.get_batch_by_job_and_idempotency_key(
+            job.job_id, submission.idempotency_key
+        )
+        if existing_by_key is not None:
+            # `existing_by_key.batch_id != submission.batch_id` is guaranteed here --
+            # an equal batch_id would have matched the lookup above instead.
+            logger.warning(
+                "worker.observation_batch.conflict",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                reason="idempotency_key_reused_for_different_batch_id",
+            )
+            raise ObservationBatchConflictError(
+                "idempotency_key was already used for a different batch_id"
+            )
+
+        if job.status is not WorkerStatus.RUNNING:
+            logger.warning(
+                "worker.observation_batch.rejected",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                reason="not_running",
+            )
+            raise ObservationBatchValidationError(
+                "job is not currently accepting new observation batches"
+            )
+        if job.lease_expires_at is None or job.lease_expires_at < context.now:
+            logger.warning(
+                "worker.observation_batch.rejected",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                reason="lease_expired",
+            )
+            raise ObservationBatchValidationError("job's claim lease has expired")
+
+        if submission.progress is not None:
+            latest_progress = await self._repository.get_latest_progress_event(job.job_id)
+            if (
+                latest_progress is not None
+                and latest_progress.attempt == job.attempt
+                and (
+                    submission.progress.units_completed < latest_progress.units_completed
+                    or submission.progress.observations_emitted
+                    < latest_progress.observations_emitted
+                )
+            ):
+                raise ObservationBatchValidationError(
+                    "progress must not regress within the same job attempt"
+                )
+
+        observation_batch_id = uuid4()
+        batch_record = ObservationBatchRecord(
+            observation_batch_id=observation_batch_id,
+            job_id=job.job_id,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            batch_id=submission.batch_id,
+            batch_sequence=submission.batch_sequence,
+            idempotency_key=submission.idempotency_key,
+            is_final_batch=submission.is_final_batch,
+            observation_count=len(submission.observations),
+            payload_hash=canonical_sha256(submission),
+            submitted_at=submission.submitted_at,
+            created_at=context.now,
+        )
+        observation_records = [
+            ObservationRecord(
+                observation_id=observation.observation_id,
+                result_id=None,
+                observation_batch_id=observation_batch_id,
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                observation_type=observation.observation_type,
+                canonical_payload=observation.model_dump(mode="json"),
+                created_at=context.now,
+            )
+            for observation in submission.observations
+        ]
+        transformation_records = [
+            ObservationTransformationRecord(
+                transformation_id=transformation.transformation_id,
+                observation_batch_id=observation_batch_id,
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                ordinal=transformation.ordinal,
+                step_name=transformation.step_name,
+                status=transformation.status,
+                canonical_payload=transformation.model_dump(mode="json"),
+                created_at=context.now,
+            )
+            for transformation in submission.transformations
+        ]
+        progress_event_record: WorkerProgressEventRecord | None = None
+        if submission.progress is not None:
+            progress_event_record = WorkerProgressEventRecord(
+                progress_event_id=uuid4(),
+                ordinal=0,  # placeholder -- server-assigned via nextval() on insert
+                observation_batch_id=observation_batch_id,
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                attempt=job.attempt,
+                stage=submission.progress.stage,
+                units_total=submission.progress.units_total,
+                units_completed=submission.progress.units_completed,
+                observations_emitted=submission.progress.observations_emitted,
+                batch_sequence=submission.progress.batch_sequence,
+                message_code=submission.progress.message_code,
+                occurred_at=submission.progress.occurred_at,
+                created_at=context.now,
+            )
+
+        try:
+            persisted_progress_event = await self._repository.submit_observation_batch(
+                batch=batch_record,
+                observations=observation_records,
+                transformations=transformation_records,
+                progress_event=progress_event_record,
+                graph_projection_max_attempts=self._graph_projection_max_attempts,
+            )
+        except sqlalchemy.exc.IntegrityError:
+            return await self._resolve_batch_conflict(job.job_id, submission, context)
+        except Exception:
+            logger.error(
+                "worker.observation_batch.persistence_failed",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                batch_id=submission.batch_id,
+            )
+            raise
+
+        progress_summary = _progress_contract(persisted_progress_event)
+        if progress_summary is None:
+            progress_summary = _progress_contract(
+                await self._repository.get_latest_progress_event(job.job_id)
+            )
+
+        logger.info(
+            "worker.observation_batch.accepted",
+            request_id=context.request_id,
+            job_id=str(job.job_id),
+            batch_id=submission.batch_id,
+            observation_count=len(observation_records),
+        )
+        return ObservationBatchOutcome(
+            job_id=job.job_id,
+            batch_id=submission.batch_id,
+            status=BatchAcceptanceStatus.ACCEPTED,
+            accepted_observation_count=len(observation_records),
+            progress=progress_summary,
+        )
+
+    async def _replay_or_conflict_batch(
+        self,
+        existing: ObservationBatchRecord,
+        submission: ObservationBatchSubmissionV1,
+        context: UploadContext,
+    ) -> ObservationBatchOutcome:
+        if existing.payload_hash != canonical_sha256(submission):
+            logger.warning(
+                "worker.observation_batch.conflict",
+                request_id=context.request_id,
+                job_id=str(existing.job_id),
+                batch_id=existing.batch_id,
+            )
+            raise ObservationBatchConflictError(
+                "a different payload was already accepted for this batch_id"
+            )
+        logger.info(
+            "worker.observation_batch.accepted",
+            request_id=context.request_id,
+            job_id=str(existing.job_id),
+            batch_id=existing.batch_id,
+            idempotent_replay=True,
+        )
+        latest_progress = await self._repository.get_latest_progress_event(existing.job_id)
+        return ObservationBatchOutcome(
+            job_id=existing.job_id,
+            batch_id=existing.batch_id,
+            status=BatchAcceptanceStatus.REPLAYED,
+            accepted_observation_count=existing.observation_count,
+            progress=_progress_contract(latest_progress),
+        )
+
+    async def _resolve_batch_conflict(
+        self, job_id: UUID, submission: ObservationBatchSubmissionV1, context: UploadContext
+    ) -> ObservationBatchOutcome:
+        """Disambiguate an `IntegrityError` raised by `submit_observation_batch`.
+
+        Mirrors `submit_result`'s re-read-then-decide pattern. Three root
+        causes share this one exception, each resolved by re-querying:
+        a `(job_id, batch_id)` race (replay-or-conflict, same as a
+        pre-existing batch found up front), a `(job_id, idempotency_key)`
+        collision under a different `batch_id` (always a conflict), or an
+        `observation_id` already accepted under a completely different
+        batch/result (always a conflict) -- see
+        `docs/architecture/phase-3-decisions.md`.
+        """
+        existing = await self._repository.get_batch_by_job_and_batch_id(job_id, submission.batch_id)
+        if existing is not None:
+            return await self._replay_or_conflict_batch(existing, submission, context)
+
+        existing_by_key = await self._repository.get_batch_by_job_and_idempotency_key(
+            job_id, submission.idempotency_key
+        )
+        if existing_by_key is not None:
+            logger.warning(
+                "worker.observation_batch.conflict",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="idempotency_key_reused_for_different_batch_id",
+            )
+            raise ObservationBatchConflictError(
+                "idempotency_key was already used for a different batch_id"
+            )
+
+        logger.warning(
+            "worker.observation_batch.conflict",
+            request_id=context.request_id,
+            job_id=str(job_id),
+            reason="duplicate_observation_id",
+        )
+        raise ObservationBatchConflictError(
+            "one or more observation_id values in this batch were already accepted under a "
+            "different batch or result"
+        )
+
+    async def get_job_progress_summary(self, job_id: UUID) -> ObservationBatchProgressV1 | None:
+        """The safe, current progress summary for a job -- its latest accepted event, if any."""
+        return _progress_contract(await self._repository.get_latest_progress_event(job_id))
+
 
 def _build_job(
     *,
@@ -872,3 +1206,19 @@ def _validate_result_scope(job: WorkerJobRecord, result: WorkerResultV1) -> None
             raise ResultValidationError(
                 "an observation does not belong to the claimed job's case/evidence"
             )
+
+
+def _progress_contract(
+    record: WorkerProgressEventRecord | None,
+) -> ObservationBatchProgressV1 | None:
+    if record is None:
+        return None
+    return ObservationBatchProgressV1(
+        stage=record.stage,
+        units_total=record.units_total,
+        units_completed=record.units_completed,
+        observations_emitted=record.observations_emitted,
+        batch_sequence=record.batch_sequence,
+        message_code=record.message_code,
+        occurred_at=record.occurred_at,
+    )

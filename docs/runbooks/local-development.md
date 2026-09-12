@@ -439,17 +439,42 @@ curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/result \
   -d '{"schema_version": "v1", "job_id": "<job_id>", "case_id": "<case_id>", "evidence_id": "<evidence_id>", "status": "succeeded", "observations": [], "derived_artifacts": [], "checkpoint": null, "error": null, "completed_at": "2026-01-01T12:00:00Z"}'
 ```
 
-The user-facing `GET /api/v1/cases/<case_id>/jobs/<job_id>` reflects the result once submitted (`status`, `claimed_at`, `completed_at`, `observation_count`) — never the claim token or object URI.
+The user-facing `GET /api/v1/cases/<case_id>/jobs/<job_id>` reflects the result once submitted (`status`, `claimed_at`, `completed_at`, `observation_count`, `latest_progress`) — never the claim token or object URI.
+
+### Observation-batch (partial micro-batch) submission (Phase 3)
+
+See `docs/architecture/phase-3-decisions.md` and `docs/architecture/evidence-lifecycle.md`'s "Observation-batch ingestion" section for the full design. While a claimed job is still `running`, a worker may submit any number of partial batches before its one terminal `/result` call:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/internal/worker-jobs/<job_id>/observations \
+  -H "Authorization: Bearer <WORKER_TOKEN>" \
+  -H "X-Claim-Token: <claim_token from the claim response>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema_version": "v1", "job_id": "<job_id>", "case_id": "<case_id>", "evidence_id": "<evidence_id>",
+    "batch_id": "page-1", "batch_sequence": 0, "idempotency_key": "page-1",
+    "observations": [], "transformations": [],
+    "progress": {"schema_version": "v1", "stage": "parsing", "units_total": 10, "units_completed": 1,
+                 "observations_emitted": 0, "batch_sequence": 0, "message_code": "PAGE_PARSED",
+                 "occurred_at": "2026-01-01T12:00:00Z"},
+    "submitted_at": "2026-01-01T12:00:00Z", "is_final_batch": false
+  }'
+# -> {"job_id": "...", "batch_id": "page-1", "status": "accepted", "accepted_observation_count": 0,
+#     "progress": {...}, "request_id": "..."}
+```
+
+An identical retry of the same `batch_id` returns `"status": "replayed"` with no duplicate rows. `is_final_batch` is bookkeeping metadata only — the worker still submits exactly one terminal `/result` as before to complete the job.
 
 Running its test suites specifically:
 
 ```bash
+uv run pytest tests/contract/test_observation_batch.py -v                     # contract validation, no infra
 uv run pytest tests/unit/evidence_lifecycle -v      # no live infra needed (fakes for repository/storage/job-producer)
 uv run pytest tests/security/evidence_lifecycle -v  # module-boundary static checks
 uv run pytest tests/integration/evidence_lifecycle -v   # needs postgres + minio; applies the migration itself
 ```
 
-Like every other `tests/integration/*` suite, the integration suite self-skips (never fabricates a pass) if there's no `.env` at the repo root, or if PostgreSQL/MinIO specifically aren't reachable through it.
+Like every other `tests/integration/*` suite, the integration suite self-skips (never fabricates a pass) if there's no `.env` at the repo root, or if PostgreSQL/MinIO specifically aren't reachable through it. `tests/integration/evidence_lifecycle/test_observation_batch_live.py` additionally needs the live API server itself reachable (`docker compose up --build -d`, or `uv run uvicorn app.main:app` against `docker compose up -d postgres neo4j redis minio`) and Neo4j reachable, since it also runs the real graph projector.
 
 ## Database migrations (Alembic)
 

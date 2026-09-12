@@ -21,6 +21,7 @@ from app.contracts.evidence import (
     EvidenceRecordV1,
     SourceType,
 )
+from app.contracts.observation_batch import TransformationStatus
 from app.contracts.worker import WorkerJobV1, WorkerResultV1, WorkerStatus
 
 #: Terminal `WorkerStatus` values -- a job is only ever transitioned to one
@@ -173,13 +174,98 @@ class ObservationRecord(EvidenceLifecycleModel):
     `canonical_payload` is the observation's own `model_dump(mode="json")`;
     reconstructing it as a contract is `ObservationV1.model_validate(record.canonical_payload)`.
     Immutable and insert-only once persisted -- no `updated_at`.
+
+    Exactly one of `result_id` (a terminal `WorkerResultV1` submission, Phase
+    2.1) / `observation_batch_id` (a partial micro-batch submission, Phase 3)
+    is ever set -- never both, never neither. This is the "equivalent durable
+    linkage" Phase 3 chose over a second, parallel observations table: both
+    submission paths write into this same table, so every downstream reader
+    (`count_observations_for_job`, `app.modules.graph.outbox_repository
+    .get_observation`) needs no change to see observations from either path.
+    See `docs/architecture/phase-3-decisions.md`.
     """
 
     observation_id: UUID
-    result_id: UUID
+    result_id: UUID | None
+    observation_batch_id: UUID | None
     job_id: UUID
     case_id: UUID
     evidence_id: UUID
     observation_type: str
     canonical_payload: dict[str, JsonValue]
+    created_at: datetime
+
+
+class ObservationBatchRecord(EvidenceLifecycleModel):
+    """A full `observation_batches` row -- one accepted partial-batch receipt.
+
+    Immutable and insert-only: a batch is either accepted once (this row is
+    created) or it isn't (nothing persists) -- there is no in-between status
+    to transition later. `payload_hash` is `app.core.canonical.canonical_sha256`
+    of the submitted `ObservationBatchSubmissionV1`, the same idempotency-
+    comparison technique `WorkerResultRecord.payload_hash` already
+    established for terminal results.
+    """
+
+    observation_batch_id: UUID
+    job_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    batch_id: str
+    batch_sequence: int
+    idempotency_key: str
+    is_final_batch: bool
+    observation_count: int
+    payload_hash: str
+    submitted_at: datetime
+    created_at: datetime
+
+
+class ObservationTransformationRecord(EvidenceLifecycleModel):
+    """A full `observation_transformations` row -- one durable provenance step.
+
+    `transformation_id` is worker-supplied (like `ObservationRecord
+    .observation_id`), globally unique, and immutable once persisted --
+    reconstructing it as a contract is
+    `TransformationProvenanceV1.model_validate(record.canonical_payload)`.
+    """
+
+    transformation_id: UUID
+    observation_batch_id: UUID
+    job_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    ordinal: int
+    step_name: str
+    status: TransformationStatus
+    canonical_payload: dict[str, JsonValue]
+    created_at: datetime
+
+
+class WorkerProgressEventRecord(EvidenceLifecycleModel):
+    """A full `worker_progress_events` row -- one durable, ordered progress report.
+
+    `ordinal` is server-assigned (a `BIGSERIAL` column, globally monotonic --
+    not per-job) purely to give a stable, race-free total order to "which
+    event came after which"; it carries no other meaning. `attempt` is the
+    claimed job's `WorkerJobRecord.attempt` at the moment this event was
+    accepted, used to distinguish a genuine progress regression (rejected)
+    from a fresh reclaim's legitimate reset (allowed) -- see
+    `docs/architecture/phase-3-decisions.md`.
+    """
+
+    progress_event_id: UUID
+    ordinal: int
+    observation_batch_id: UUID
+    job_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    attempt: int
+    stage: str
+    units_total: int | None
+    units_completed: int
+    observations_emitted: int
+    batch_sequence: int
+    message_code: str | None
+    occurred_at: datetime
     created_at: datetime

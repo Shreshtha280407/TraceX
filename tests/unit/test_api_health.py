@@ -94,4 +94,7 @@ async def test_contracts_endpoint_reports_exact_supported_versions(
         "event": "EventV1",
         "worker_job": "WorkerJobV1",
         "worker_result": "WorkerResultV1",
+        "observation_batch_submission": "ObservationBatchSubmissionV1",
+        "observation_batch_receipt": "ObservationBatchReceiptV1",
+        "transformation_provenance": "TransformationProvenanceV1",
     }

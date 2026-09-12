@@ -82,3 +82,18 @@ class ResultValidationError(EvidenceLifecycleError):
 
 class ResultConflictError(EvidenceLifecycleError):
     """A different result payload was already accepted for this (already-terminal) job."""
+
+
+class ObservationBatchValidationError(EvidenceLifecycleError):
+    """A submitted `ObservationBatchSubmissionV1` doesn't belong to the claimed job, or the
+    job isn't currently eligible to accept a new batch (not running, or its lease has
+    expired) -- never raised for an idempotent replay of an already-accepted batch, which
+    is allowed regardless of the job's current status.
+    """
+
+
+class ObservationBatchConflictError(EvidenceLifecycleError):
+    """A different payload was already accepted under this batch_id/idempotency_key, or a
+    submitted observation_id collides with one already accepted under a different batch
+    or result entirely. See `docs/architecture/phase-3-decisions.md`.
+    """

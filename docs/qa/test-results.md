@@ -2,6 +2,126 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-12 — Nipun — Phase 3: Canonical Observation Ingestion, Batch Persistence, Progress, and Transformation Provenance build
+
+Environment: same local dev machine as the prior Phase 2 closeout entry, branch `nipun` (clean tree, `origin/main...HEAD` = `0 0` at session start). Docker infra containers (`postgres`/`redis`/`neo4j`/`minio`) were already running and healthy; the `api` image's own *rebuild* was blocked again by the same persistent sandbox-network DNS flakiness documented in the prior Phase 2 closeout entry (this time failing on `sqlalchemy` and, on a second retry, `onnxruntime` — different packages, same transient DNS-resolution root cause, confirmed unrelated to any code in this task). Infra and live verification were **not** blocked — verified via the same documented "Option B" workflow (`docker compose up -d postgres neo4j redis minio` + `uv run uvicorn app.main:app` on the host).
+
+```bash
+$ uv sync --all-groups
+Resolved 71 packages in 1ms
+Checked 69 packages in 0.53ms
+
+$ uv run ruff format --check .
+322 files already formatted
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 137 source files
+
+$ uv run pytest -q
+1417 passed in 40.74s
+
+$ docker compose config
+(valid — no output on success)
+
+$ docker compose up --build -d
+... FAILED: DNS resolution error fetching sqlalchemy/onnxruntime wheels from files.pythonhosted.org
+... (see "Docker image rebuild — blocked, worked around" below)
+
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade ed593db47d8c -> c1c9c1c9d9f1, observation batch ingestion
+```
+
+### New tests added (all passing)
+
+- `tests/contract/test_observation_batch.py` (45 tests) — `ObservationBatchSubmissionV1`/`TransformationProvenanceV1`/`ObservationBatchProgressV1` valid-parse (document page/span, scanned bbox, CDR row/column, finance sheet/row/cell), invalid-`ObservationV1`, malformed batch-id/sequence/timestamp/idempotency-key, empty-batch, duplicate-observation-id, secret-shaped/overlong `safe_metadata`, invalid transformation ordering/status/scope/duplicate-ordinal, and progress-coherence rejections.
+- `tests/unit/evidence_lifecycle/test_observation_batch_submission.py` (12 tests) — repository/service-level persistence, scope rejection with no persistence, identical-retry replay, same-batch-changed-payload conflict, idempotency-key-reused-for-different-batch conflict, duplicate-observation-id-across-batches conflict, replay-enqueues-no-additional-projection-job, failed-transaction-leaves-no-orphans, progress ordering/regression/reset-after-reclaim, and transformation-provenance retrieval by batch linkage.
+- `tests/unit/evidence_lifecycle/test_observation_batch_api.py` (11 tests) — HTTP-layer wiring: valid submit, missing/wrong/different-worker claim token, expired lease, unknown job, path/body mismatch, cross-case/cross-evidence rejection with no persistence, and no-secret-leakage across `401`/`409` responses.
+- `tests/unit/evidence_lifecycle/test_evidence_api.py` — extended with 2 new tests: `latest_progress` correctly surfaced/scoped on the existing `GET .../jobs/{job_id}`, and an unknown-job lookup remains a plain `404`.
+- `tests/unit/test_api_health.py` — updated `CONTRACT_VERSIONS` assertion for the 3 new registered contract names.
+- `tests/integration/evidence_lifecycle/test_observation_batch_live.py` (3 tests, self-skipping) — see below.
+
+Full repository regression after all of the above: **1417 passed, 0 skipped** (0 skipped specifically because the live infra was actually reachable this run — every self-skipping live-only test in the repository ran for real).
+
+### Docker/live verification
+
+Real, running host-`uvicorn` process against the live infra containers (the documented "Option B" workflow, used identically in the prior Phase 2 closeout session for the same DNS-flakiness reason):
+
+```bash
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","service":"tracex-api","version":"0.1.0"}
+$ curl -s http://localhost:8000/readyz
+{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}
+$ curl -s http://localhost:8000/api/v1/meta/contracts
+{"evidence_record":"EvidenceRecordV1","observation":"ObservationV1","entity":"EntityV1","event":"EventV1","worker_job":"WorkerJobV1","worker_result":"WorkerResultV1","observation_batch_submission":"ObservationBatchSubmissionV1","observation_batch_receipt":"ObservationBatchReceiptV1","transformation_provenance":"TransformationProvenanceV1"}
+```
+
+**Pytest live integration test** (`tests/integration/evidence_lifecycle/test_observation_batch_live.py`), run against the live stack — two real partial micro-batches through the real API, durable-row/exactly-once-outbox verification, a real graph-projector run (twice), a direct Neo4j query, and the real HTTP graph API; plus a separate idempotent-replay test and a separate partial-batches-then-final-result test:
+
+```bash
+$ uv run pytest tests/integration/evidence_lifecycle/test_observation_batch_live.py -v
+test_document_micro_batches_reach_graph_outbox_and_project_exactly_once PASSED
+test_identical_batch_replay_against_live_database_is_idempotent PASSED
+test_partial_batches_then_final_result_preserves_existing_lifecycle PASSED
+3 passed in 2.67s
+```
+
+**Manual, literal `curl`-driven end-to-end verification** (not the pytest call above) — a real user registered/logged in through the real running API; a case/membership/worker-credential seeded directly via the repository (no case-CRUD API exists yet, same as every other live verification in this repository); a real document evidence upload, claim, and observation-batch submission, all via real HTTP requests:
+
+```text
+REGISTER/LOGIN OK user_id= 2e8a5dfb-1d93-4bf4-a86b-3f14fee1f2da
+CASE/MEMBERSHIP/WORKER-CRED OK case_id= e555bec7-3a65-454c-9700-df9e0c4a4ef6 worker_id= 6f4f522d-...
+
+UPLOAD  -> job 2f359f5a-13b1-476a-8a62-1f4c2657daf4 processor=fir_report_text_v1 status=queued
+CLAIM   -> claim_token issued, lease_expires_at=2026-09-12T04:26:21Z
+
+SUBMIT  POST .../worker-jobs/{job_id}/observations
+        -> {"job_id":"2f359f5a-...","batch_id":"manual-batch-1","status":"accepted",
+            "accepted_observation_count":1,
+            "progress":{"stage":"parsing","units_total":1,"units_completed":1,
+                        "observations_emitted":1,"batch_sequence":0,
+                        "message_code":"PAGE_PARSED", ...}, "request_id":"..."}
+
+GET     /api/v1/cases/{case_id}/jobs/{job_id}  (real user auth, not worker auth)
+        -> status=running observation_count=1
+           latest_progress={"stage":"parsing","units_completed":1,"units_total":1,
+                             "message_code":"PAGE_PARSED", ...}
+
+PROJECTOR run 1 -> {"claimed": 7, "succeeded": 1, "failed": 6, ...}
+  (the 6 "failed" were pre-existing orphaned graph_projection_jobs rows from earlier
+   live-test runs in this same session, unrelated to this verification's own job --
+   confirmed via a direct SQL join showing observation_not_found for all 6, then swept)
+PROJECTOR run 2 -> {"claimed": 0, "succeeded": 0, "failed": 0, ...}
+  (idempotent -- this job's single observation already terminal, no re-claim)
+
+NEO4J   direct cypher-shell query (real read-only Cypher, not the Python driver):
+        MATCH (o:Observation {case_id: '...', observation_id: '85ffc706-...'})
+        RETURN o.observation_id, o.observation_type, o.case_id, o.evidence_id
+        -> "85ffc706-affb-47f4-bdac-04dd2f5937e8", "document_text_mention",
+           "e555bec7-3a65-454c-9700-df9e0c4a4ef6", "2d272f44-00a0-4064-a92f-0b9f8ef6d82b"
+
+GRAPH-API  GET /api/v1/cases/{case_id}/graph/observations  (real user auth)
+        -> {"items":[{"observation_id":"85ffc706-...","observation_type":"document_text_mention",
+            "extraction_confidence":0.9,"extractor_name":"fir_report_text_v1", "mentions":[]}], ...}
+
+ALL LAYERS CONFIRMED: worker submission -> durable PostgreSQL rows -> real graph
+projector -> direct Neo4j query -> real case-scoped HTTP graph-read API.
+```
+
+No `object_uri`, claim token, or credential appeared in any response body across this manual verification.
+
+### Docker image rebuild — blocked, worked around
+
+`docker compose up --build -d` failed twice in this session with the same transient DNS-resolution error (`files.pythonhosted.org` unreachable) seen repeatedly in the prior Phase 2 closeout session — first on `sqlalchemy`, then on a retry on `onnxruntime` (a different pre-existing dependency each time, confirming environment-level network flakiness rather than anything related to this task's own new dependencies — this task added none). The already-running infra containers (`postgres`/`neo4j`/`redis`/`minio`, healthy throughout) and a host-run `uvicorn app.main:app` process against them (the documented "Option B" workflow) were used instead for every live check above — this exercises the exact same current application code, just not inside a freshly rebuilt container image. Not a blocker; noted in case a future build in this same environment needs a retry.
+
+### Cleanup and final state
+
+All data created by both the pytest live suite and the manual `curl`-driven verification was removed: the case, user, worker credential, evidence, job, observation, and Neo4j nodes created for the manual verification were deleted in a final cleanup pass (repository deletes + a `DETACH DELETE` scoped to the synthetic `case_id`). The 6 pre-existing orphaned `graph_projection_jobs` rows found during projector verification (from earlier live-test runs in this same session, confirmed via `LEFT JOIN worker_observations ... WHERE observation_id IS NULL`) were also swept. Final state confirmed directly: `graph_projection_jobs` holds only `9 succeeded` rows (this session's other live pytest suite's own accepted work), `0 failed`.
+
+`git status --short` at the end of this session shows only working-tree modifications (28 files: 20 modified, 8 new) — no staged files, no commits, no branch switch, still on branch `nipun`. Docker infra containers left running; the host `uvicorn` process left running too (matching the prior session's "Option B" convention) — `docker compose down` / killing the `uvicorn` process removes them cleanly whenever wanted.
+
 ## 2026-09-12 — Nipun — Phase 2 Closeout: Real Local Media Inference and Continuous Worker/Projector Operation build
 
 Environment: same local dev machine as prior Phase 2 entries, branch `nipun` (clean tree, `origin/main...HEAD` = `0 0` at session start, containing every prior Phase 2 module including Gaurav's/Shreshtha's most recent merges). Python 3.12.13 (via `uv`), Docker reachable for infra but the `api` image's *rebuild* specifically was blocked by persistent sandbox-network DNS flakiness this session (see "Docker image rebuild — blocked, worked around" below) — infra (`postgres`/`neo4j`/`redis`/`minio`) and live verification were **not** blocked.
