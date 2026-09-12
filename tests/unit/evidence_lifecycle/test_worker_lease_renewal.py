@@ -57,14 +57,20 @@ def evidence_repository() -> FakeEvidenceLifecycleRepository:
 
 
 @pytest.fixture
+def ac_repository() -> FakeAccessControlRepository:
+    return FakeAccessControlRepository()
+
+
+@pytest.fixture
 def _override_worker_dependencies(
     evidence_repository: FakeEvidenceLifecycleRepository,
+    ac_repository: FakeAccessControlRepository,
 ) -> Iterator[None]:
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = FakeObjectStorage
     app.dependency_overrides[get_job_producer] = FakeJobProducer
     app.dependency_overrides[require_worker_principal] = lambda: _TEST_WORKER_PRINCIPAL
-    app.dependency_overrides[get_access_control_repository] = FakeAccessControlRepository
+    app.dependency_overrides[get_access_control_repository] = lambda: ac_repository
     yield
     app.dependency_overrides.clear()
 
@@ -105,13 +111,20 @@ def _seed_claimed_job(
         processor_name="media_detection_v1",
         processor_version="1.0.0",
         attempt=1,
+        max_attempts=5,
         idempotency_key=f"{case_id}:{evidence_id}:media_detection_v1:1.0.0",
         input_object_uri=evidence.object_uri,
         requested_at=FIXED_TIME,
         status=status,
         queued_at=FIXED_TIME,
         dispatched_at=FIXED_TIME,
-        claimed_at=FIXED_TIME if status is not WorkerStatus.QUEUED else None,
+        # Realistic relative to `datetime.now(UTC)`, not `FIXED_TIME` --
+        # `renew_claim`'s new absolute-lease-lifetime cap is computed from
+        # `claimed_at`, and `renew_claim` itself compares against real
+        # current time (see this function's own comment above), so a
+        # `claimed_at` fixed in the past would make every renewal look like
+        # it's already past its ceiling, regardless of `lease_expires_at`.
+        claimed_at=datetime.now(UTC) if status is not WorkerStatus.QUEUED else None,
         lease_expires_at=lease_expires_at,
         claimed_by="media_detection_v1" if status is not WorkerStatus.QUEUED else None,
         claimed_by_worker_id=claimed_by_worker_id,
@@ -147,6 +160,27 @@ async def test_valid_renewal_extends_the_lease(
     new_lease = datetime.fromisoformat(body["lease_expires_at"])
     assert new_lease > original_lease
     assert evidence_repository.jobs[job.job_id].lease_expires_at == new_lease
+
+
+async def test_valid_renewal_records_a_worker_job_lease_renewed_audit_event(
+    client: AsyncClient,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    ac_repository: FakeAccessControlRepository,
+) -> None:
+    job = _seed_claimed_job(evidence_repository)
+
+    response = await client.post(
+        f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
+        headers={"X-Claim-Token": _CLAIM_TOKEN},
+    )
+    assert response.status_code == 200, response.text
+
+    events = [e for e in ac_repository.audit_events if e.event_type == "worker_job_lease_renewed"]
+    assert len(events) == 1
+    assert events[0].metadata_safe_json["job_id"] == str(job.job_id)
+    assert events[0].metadata_safe_json["worker_id"] == str(_TEST_WORKER_PRINCIPAL.worker_id)
+    assert events[0].case_id_nullable == job.case_id
+    assert _CLAIM_TOKEN not in str(events[0].metadata_safe_json)
 
 
 async def test_renewal_never_leaks_the_claim_token_or_an_object_uri(
@@ -229,12 +263,15 @@ async def test_renewal_rejects_an_already_expired_lease(
 # --- service layer (verification ordering, no HTTP) ---------------------------
 
 
-def _service(repository: FakeEvidenceLifecycleRepository) -> EvidenceLifecycleService:
+def _service(
+    repository: FakeEvidenceLifecycleRepository, *, worker_lease_max_seconds: int = 3600
+) -> EvidenceLifecycleService:
     return EvidenceLifecycleService(
         repository=repository,
         storage=FakeObjectStorage(),
         job_producer=FakeJobProducer(),
         max_evidence_bytes=10 * 1024 * 1024,
+        worker_lease_max_seconds=worker_lease_max_seconds,
     )
 
 
@@ -247,14 +284,17 @@ async def test_service_renew_claim_extends_the_lease() -> None:
     job = _seed_claimed_job(repository)
     service = _service(repository)
 
-    new_lease = await service.renew_claim(
+    renewal = await service.renew_claim(
         job_id=job.job_id,
         claim_token=_CLAIM_TOKEN,
         context=_context(),
         worker_id=_TEST_WORKER_PRINCIPAL.worker_id,
     )
 
-    assert new_lease > job.lease_expires_at  # type: ignore[operator]
+    assert renewal.lease_expires_at > job.lease_expires_at  # type: ignore[operator]
+    assert renewal.case_id == job.case_id
+    assert renewal.evidence_id == job.evidence_id
+    assert renewal.attempt == job.attempt
 
 
 async def test_service_renew_claim_rejects_worker_identity_mismatch() -> None:
@@ -285,6 +325,7 @@ async def test_service_renew_claim_rejects_a_queued_never_claimed_job() -> None:
         processor_name="media_detection_v1",
         processor_version="1.0.0",
         attempt=1,
+        max_attempts=5,
         idempotency_key=f"{case_id}:{evidence_id}:media_detection_v1:1.0.0",
         input_object_uri=evidence.object_uri,
         requested_at=FIXED_TIME,
@@ -312,3 +353,70 @@ async def test_service_renew_claim_rejects_a_queued_never_claimed_job() -> None:
             context=_context(),
             worker_id=_TEST_WORKER_PRINCIPAL.worker_id,
         )
+
+
+# --- Absolute maximum lease lifetime (Phase 3, Aditya) -----------------------
+
+
+async def test_renewal_is_capped_at_the_absolute_maximum_lease_lifetime() -> None:
+    """A renewal request for more time than the ceiling allows is granted only up to
+    the ceiling -- `claimed_at + worker_lease_max_seconds` -- never the full requested
+    extension."""
+    repository = FakeEvidenceLifecycleRepository()
+    now = datetime.now(UTC)
+    job = _seed_claimed_job(
+        repository,
+        lease_expires_at=now + timedelta(seconds=30),
+    )
+    # This job's `claimed_at` was set to (approximately) `now` by
+    # `_seed_claimed_job`. A tiny ceiling (100s) makes the cap bite well
+    # before the requested 5-minute renewal would otherwise land.
+    service = _service(repository, worker_lease_max_seconds=100)
+
+    renewal = await service.renew_claim(
+        job_id=job.job_id,
+        claim_token=_CLAIM_TOKEN,
+        context=UploadContext(now=now, request_id="req-test"),
+        worker_id=_TEST_WORKER_PRINCIPAL.worker_id,
+    )
+
+    assert job.claimed_at is not None
+    ceiling = job.claimed_at + timedelta(seconds=100)
+    assert renewal.lease_expires_at == ceiling
+    # The default per-call lease extension (5 minutes, `_seed_claimed_job`'s
+    # own default doesn't apply to `renew_claim`'s own `worker_lease_seconds`
+    # default of 300s) would have landed well past the ceiling had it not
+    # been capped.
+    assert renewal.lease_expires_at < now + timedelta(minutes=5)
+
+
+async def test_renewal_eventually_stops_extending_once_the_ceiling_is_reached() -> None:
+    """Repeated renewals never push the lease past the absolute ceiling -- once real
+    time passes it, the (uncapped-further) lease naturally falls behind `now` and
+    renewal starts being rejected exactly as if the worker had stopped heartbeating."""
+    repository = FakeEvidenceLifecycleRepository()
+    now = datetime.now(UTC)
+    job = _seed_claimed_job(repository, lease_expires_at=now + timedelta(seconds=30))
+    service = _service(repository, worker_lease_max_seconds=60)
+
+    first = await service.renew_claim(
+        job_id=job.job_id,
+        claim_token=_CLAIM_TOKEN,
+        context=UploadContext(now=now, request_id="req-test"),
+        worker_id=_TEST_WORKER_PRINCIPAL.worker_id,
+    )
+    assert job.claimed_at is not None
+    assert first.lease_expires_at == job.claimed_at + timedelta(seconds=60)
+
+    # Time passes the absolute ceiling entirely -- the lease (still capped at
+    # the ceiling) is now in the past relative to `now`, so renewal is
+    # rejected exactly like any other expired lease, never silently revived.
+    past_ceiling = job.claimed_at + timedelta(seconds=61)
+    with pytest.raises(InvalidClaimTokenError) as excinfo:
+        await service.renew_claim(
+            job_id=job.job_id,
+            claim_token=_CLAIM_TOKEN,
+            context=UploadContext(now=past_ceiling, request_id="req-test"),
+            worker_id=_TEST_WORKER_PRINCIPAL.worker_id,
+        )
+    assert excinfo.value.reason == "lease_expired"

@@ -117,6 +117,7 @@ def _seed_claimed_job(
         processor_name="fir_report_text_v1",
         processor_version="1.0.0",
         attempt=1,
+        max_attempts=5,
         idempotency_key=f"{case_id}:{evidence_id}:fir_report_text_v1:1.0.0",
         input_object_uri=evidence.object_uri,
         requested_at=FIXED_TIME,

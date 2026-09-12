@@ -165,3 +165,98 @@ async def test_expired_lease_is_reclaimed_with_incremented_attempt() -> None:
     stored = repository.jobs[first.job.job_id]
     assert first.claim_token is not None
     assert stored.claim_token_hash != hashlib.sha256(first.claim_token.encode()).hexdigest()
+
+
+# --- Retry exhaustion (Phase 3, Aditya) --------------------------------------
+
+
+async def test_job_at_max_attempts_cannot_be_reclaimed_and_is_marked_failed() -> None:
+    """A job whose lease keeps expiring is reclaimed up to `max_attempts` times, then
+    transitions durably to `failed` (`retry_exhausted`) instead of being reclaimed again."""
+    repository = FakeEvidenceLifecycleRepository()
+    service = EvidenceLifecycleService(
+        repository=repository,
+        storage=FakeObjectStorage(),
+        job_producer=FakeJobProducer(),
+        max_evidence_bytes=10 * 1024 * 1024,
+        worker_lease_seconds=60,
+        worker_job_max_attempts=2,
+    )
+    await _upload_document(service)
+
+    t0 = datetime.now(UTC)
+    first = await service.claim_job(
+        processor_name="fir_report_text_v1", processor_version="1.0.0", context=_context(t0)
+    )
+    assert first.job is not None
+    assert first.job.attempt == 1
+
+    # Lease expires -> reclaimed once, reaching attempt 2 == max_attempts.
+    t1 = t0 + timedelta(seconds=120)
+    second = await service.claim_job(
+        processor_name="fir_report_text_v1", processor_version="1.0.0", context=_context(t1)
+    )
+    assert second.job is not None
+    assert second.job.attempt == 2
+
+    # Lease expires again, but attempt 2 already == max_attempts: no further
+    # reclaim is possible. This same claim call sweeps the job to `failed`.
+    t2 = t1 + timedelta(seconds=120)
+    third = await service.claim_job(
+        processor_name="fir_report_text_v1", processor_version="1.0.0", context=_context(t2)
+    )
+    assert third.job is None
+    assert len(third.retry_exhausted) == 1
+    exhausted_job = third.retry_exhausted[0]
+    assert exhausted_job.job_id == first.job.job_id
+    assert exhausted_job.attempt == 2
+
+    stored = repository.jobs[first.job.job_id]
+    assert stored.status.value == "failed"
+    assert stored.last_error_code == "retry_exhausted"
+
+    result = repository.results[next(iter(repository.results))]
+    assert result.job_id == first.job.job_id
+    assert result.error_code == "retry_exhausted"
+    assert result.status.value == "failed"
+
+    # Permanently unclaimable from here on -- exhausted, not merely expired.
+    fourth = await service.claim_job(
+        processor_name="fir_report_text_v1",
+        processor_version="1.0.0",
+        context=_context(t2 + timedelta(seconds=1)),
+    )
+    assert fourth.job is None
+    assert fourth.retry_exhausted == ()
+
+
+async def test_retry_exhaustion_sweep_is_processor_agnostic() -> None:
+    """The sweep runs on every `claim_job` call, regardless of which processor is being
+    claimed -- an exhausted job for a *different* processor is still swept."""
+    repository = FakeEvidenceLifecycleRepository()
+    service = EvidenceLifecycleService(
+        repository=repository,
+        storage=FakeObjectStorage(),
+        job_producer=FakeJobProducer(),
+        max_evidence_bytes=10 * 1024 * 1024,
+        worker_lease_seconds=60,
+        worker_job_max_attempts=1,
+    )
+    await _upload_document(service)  # routes to fir_report_text_v1
+
+    t0 = datetime.now(UTC)
+    claimed = await service.claim_job(
+        processor_name="fir_report_text_v1", processor_version="1.0.0", context=_context(t0)
+    )
+    assert claimed.job is not None
+    assert claimed.job.attempt == 1  # already == max_attempts=1
+
+    # A completely unrelated processor's claim call still sweeps it.
+    t1 = t0 + timedelta(seconds=120)
+    other = await service.claim_job(
+        processor_name="cdr_generic_v1", processor_version="1.0.0", context=_context(t1)
+    )
+    assert other.job is None
+    assert len(other.retry_exhausted) == 1
+    assert other.retry_exhausted[0].job_id == claimed.job.job_id
+    assert repository.jobs[claimed.job.job_id].status.value == "failed"

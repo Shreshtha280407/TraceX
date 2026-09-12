@@ -104,6 +104,11 @@ class WorkerJobRecord(EvidenceLifecycleModel):
     processor_name: str
     processor_version: str
     attempt: int
+    #: Bounds how many times this job may ever be claimed/reclaimed --
+    #: mirrors `graph_projection_jobs.max_attempts`'s identical policy (see
+    #: `app.modules.graph.outbox_repository`). Set once at job creation from
+    #: `Settings.worker_job_max_attempts`; never changed afterward.
+    max_attempts: int
     idempotency_key: str
     input_object_uri: str
     requested_at: datetime

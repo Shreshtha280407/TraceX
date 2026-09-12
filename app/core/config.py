@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # HS256 wants a key with at least 256 bits of entropy; 32 ASCII characters is
@@ -114,6 +114,28 @@ class Settings(BaseSettings):
     # for another worker to reclaim (see "Lease and retry policy" in
     # docs/architecture/worker-job-lifecycle.md).
     worker_lease_seconds: int = Field(default=300, ge=1)
+    # Absolute ceiling on how far `POST /{job_id}/renew` may ever push a
+    # single attempt's `lease_expires_at`, measured from that attempt's own
+    # `claimed_at` -- regardless of how many times, or how frequently, the
+    # worker heartbeats. Once real time passes `claimed_at +
+    # worker_lease_max_seconds`, renewal stops extending the lease (it is
+    # capped, via `LEAST(...)`, at the ceiling itself) and the lease expires
+    # on schedule, exactly as if the worker had stopped renewing -- a
+    # runaway or stuck worker can never hold a job forever just by calling
+    # `/renew` frequently enough. See "Lease and retry policy" in
+    # docs/architecture/worker-job-lifecycle.md. Must be `>=
+    # worker_lease_seconds` (enforced below) -- otherwise a lease could
+    # never be renewed even once.
+    worker_lease_max_seconds: int = Field(default=3600, ge=1)
+    # A `running` job whose lease keeps expiring (a worker that keeps
+    # crashing or timing out) is reclaimed and retried up to this many times
+    # before `EvidenceLifecycleRepository.sweep_retry_exhausted_jobs`
+    # transitions it durably to `failed` (`error.code="retry_exhausted"`)
+    # rather than leaving it reclaimable forever -- mirrors
+    # `graph_projection_max_attempts`'s identical policy for the graph-
+    # projection outbox. See "Lease and retry policy" in
+    # docs/architecture/worker-job-lifecycle.md.
+    worker_job_max_attempts: int = Field(default=5, ge=1)
     # The base URL a *worker process* (e.g. the structured-processing
     # worker's `--once` CLI runner) uses to reach `/api/v1/internal/
     # worker-jobs/*` over HTTP. Deliberately separate from `app_host`/
@@ -226,6 +248,22 @@ class Settings(BaseSettings):
         if value is not None and not value.get_secret_value().strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _validate_worker_lease_max_covers_base_lease(self) -> Settings:
+        """`worker_lease_max_seconds` must be able to grant at least one real renewal.
+
+        If it were smaller than `worker_lease_seconds`, the very first
+        `/renew` call would already be capped below the lease a job starts
+        with -- a configuration that can never actually renew anything,
+        almost certainly a typo rather than an intentional policy.
+        """
+        if self.worker_lease_max_seconds < self.worker_lease_seconds:
+            raise ValueError(
+                "worker_lease_max_seconds must be >= worker_lease_seconds "
+                f"(got {self.worker_lease_max_seconds} < {self.worker_lease_seconds})"
+            )
+        return self
 
 
 def get_settings() -> Settings:

@@ -125,6 +125,7 @@ def _seed_queued_job(
         processor_name=processor_name,
         processor_version=processor_version,
         attempt=1,
+        max_attempts=5,
         idempotency_key=f"{case_id}:{evidence_id}:{processor_name}:{processor_version}",
         input_object_uri=f"cases/{case_id}/evidence/{evidence_id}/original",
         requested_at=FIXED_TIME,
@@ -264,6 +265,67 @@ async def test_worker_can_claim_an_allowed_processor(
     )
     assert response.status_code == 200
     assert response.json()["job"]["job_id"] == str(job.job_id)
+
+
+async def test_claim_records_a_worker_job_claimed_audit_event(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    worker_id, token = await _provision_worker(
+        ac_repository, allowed_processor_names=("cdr_generic_v1",)
+    )
+    job = _seed_queued_job(evidence_repository, processor_name="cdr_generic_v1")
+
+    response = await client.post(
+        "/api/v1/internal/worker-jobs/claim",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"},
+    )
+    assert response.status_code == 200
+
+    events = [e for e in ac_repository.audit_events if e.event_type == "worker_job_claimed"]
+    assert len(events) == 1
+    assert events[0].metadata_safe_json["job_id"] == str(job.job_id)
+    assert events[0].metadata_safe_json["worker_id"] == str(worker_id)
+    assert events[0].metadata_safe_json["attempt"] == 1
+    assert events[0].case_id_nullable == job.case_id
+    assert not any(e.event_type == "worker_job_reclaimed" for e in ac_repository.audit_events)
+
+
+async def test_reclaim_records_a_worker_job_reclaimed_audit_event(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    _worker_id, token = await _provision_worker(
+        ac_repository, allowed_processor_names=("cdr_generic_v1",)
+    )
+    job = _seed_queued_job(evidence_repository, processor_name="cdr_generic_v1")
+    # Simulate a prior claim whose lease has already expired.
+    evidence_repository.jobs[job.job_id] = job.model_copy(
+        update={
+            "status": WorkerStatus.RUNNING,
+            "claimed_at": FIXED_TIME,
+            "lease_expires_at": datetime(2020, 1, 1, tzinfo=UTC),
+            "claim_token_hash": "stale-hash-from-a-previous-worker",
+            "claimed_by_worker_id": uuid4(),
+        }
+    )
+
+    response = await client.post(
+        "/api/v1/internal/worker-jobs/claim",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"processor_name": "cdr_generic_v1", "processor_version": "1.0.0"},
+    )
+    assert response.status_code == 200
+    assert response.json()["job"]["attempt"] == 2
+
+    events = [e for e in ac_repository.audit_events if e.event_type == "worker_job_reclaimed"]
+    assert len(events) == 1
+    assert events[0].metadata_safe_json["job_id"] == str(job.job_id)
+    assert events[0].metadata_safe_json["attempt"] == 2
+    assert not any(e.event_type == "worker_job_claimed" for e in ac_repository.audit_events)
 
 
 async def test_worker_with_no_scope_for_a_processor_is_denied_and_audited(

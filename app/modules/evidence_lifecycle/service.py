@@ -34,7 +34,7 @@ from app.contracts.observation_batch import (
     ObservationBatchProgressV1,
     ObservationBatchSubmissionV1,
 )
-from app.contracts.worker import WorkerResultV1, WorkerStatus
+from app.contracts.worker import WorkerError, WorkerResultV1, WorkerStatus
 from app.core.canonical import canonical_sha256
 from app.modules.evidence_lifecycle.errors import (
     EmptyUploadError,
@@ -99,11 +99,20 @@ class ClaimOutcome:
 
     `claim_token` is transport metadata only -- never part of `WorkerJobV1`,
     never persisted raw (see `docs/architecture/worker-job-lifecycle.md`).
+    `was_reclaim` distinguishes a job's first-ever claim from a lease-expiry
+    reclaim -- `internal_api.py`'s route reads it to decide which audit
+    event to record (`worker_job_claimed` vs `worker_job_reclaimed`).
+    `retry_exhausted` lists every job this same call durably transitioned to
+    `failed` because it had no attempts remaining -- a side effect of the
+    opportunistic sweep every claim attempt runs first (see `claim_job`'s
+    docstring); the route audits `worker_job_retry_exhausted` once per entry.
     """
 
     job: WorkerJobRecord | None
     claim_token: str | None
     lease_expires_at: datetime | None
+    was_reclaim: bool = False
+    retry_exhausted: tuple[WorkerJobRecord, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,16 @@ class ClaimedEvidenceInput:
     source_type: SourceType
     parser_profile: str | None
     object_uri: str
+
+
+@dataclass(frozen=True)
+class RenewOutcome:
+    """A successful lease renewal, plus the safe job context `internal_api.py` audits with."""
+
+    lease_expires_at: datetime
+    case_id: UUID
+    evidence_id: UUID
+    attempt: int
 
 
 @dataclass(frozen=True)
@@ -155,6 +174,8 @@ class EvidenceLifecycleService:
         job_producer: JobProducer,
         max_evidence_bytes: int,
         worker_lease_seconds: int = 300,
+        worker_lease_max_seconds: int = 3600,
+        worker_job_max_attempts: int = 5,
         graph_projection_max_attempts: int = 5,
     ) -> None:
         self._repository = repository
@@ -162,6 +183,8 @@ class EvidenceLifecycleService:
         self._job_producer = job_producer
         self._max_evidence_bytes = max_evidence_bytes
         self._worker_lease_seconds = worker_lease_seconds
+        self._worker_lease_max_seconds = worker_lease_max_seconds
+        self._worker_job_max_attempts = worker_job_max_attempts
         self._graph_projection_max_attempts = graph_projection_max_attempts
 
     async def upload_evidence(
@@ -249,6 +272,7 @@ class EvidenceLifecycleService:
             processor_version=route.processor_version,
             input_object_uri=object_key,
             now=context.now,
+            max_attempts=self._worker_job_max_attempts,
         )
 
         try:
@@ -377,7 +401,23 @@ class EvidenceLifecycleService:
 
         Returns an empty `ClaimOutcome` (never raises) when nothing is
         eligible right now -- "no work" is a normal outcome, not an error.
+
+        Before attempting the claim itself, opportunistically sweeps every
+        job that is currently `running` with an expired lease and no
+        attempts remaining (`repository.get_retry_exhausted_jobs`),
+        transitioning each to `failed` via the existing `submit_result` path
+        with a synthetic terminal `WorkerResultV1` (`error.code=
+        "retry_exhausted"`) -- the same "reuse the established terminal-
+        write path" reasoning `graph.outbox_repository.claim_batch`'s
+        identical sweep already established for `graph_projection_jobs`.
+        Every call to `claim_job`, regardless of which processor it's for,
+        performs this sweep -- exhausted jobs for a *different* processor
+        than the one being claimed right now are still swept, since nothing
+        else in this repository ever calls it otherwise (mirrors
+        `graph.outbox_repository`'s unscoped sweep too).
         """
+        exhausted = await self._sweep_retry_exhausted_jobs(context)
+
         logger.info(
             "worker.job.claim_attempted",
             request_id=context.request_id,
@@ -401,7 +441,9 @@ class EvidenceLifecycleService:
                 processor_name=processor_name,
                 processor_version=processor_version,
             )
-            return ClaimOutcome(job=None, claim_token=None, lease_expires_at=None)
+            return ClaimOutcome(
+                job=None, claim_token=None, lease_expires_at=None, retry_exhausted=exhausted
+            )
 
         job, was_reclaim = claimed
         if was_reclaim:
@@ -418,7 +460,79 @@ class EvidenceLifecycleService:
             processor_name=processor_name,
             attempt=job.attempt,
         )
-        return ClaimOutcome(job=job, claim_token=claim_token, lease_expires_at=job.lease_expires_at)
+        return ClaimOutcome(
+            job=job,
+            claim_token=claim_token,
+            lease_expires_at=job.lease_expires_at,
+            was_reclaim=was_reclaim,
+            retry_exhausted=exhausted,
+        )
+
+    async def _sweep_retry_exhausted_jobs(
+        self, context: UploadContext
+    ) -> tuple[WorkerJobRecord, ...]:
+        candidates = await self._repository.get_retry_exhausted_jobs(now=context.now)
+        exhausted: list[WorkerJobRecord] = []
+        for job in candidates:
+            if job.claim_token_hash is None:  # pragma: no cover - defensive: running => claimed
+                continue
+            result = WorkerResultV1(
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                status=WorkerStatus.FAILED,
+                observations=[],
+                derived_artifacts=[],
+                checkpoint=None,
+                error=WorkerError(
+                    code="retry_exhausted",
+                    message=(
+                        f"job exceeded its maximum of {job.max_attempts} claim/reclaim attempts"
+                    ),
+                    retryable=False,
+                ),
+                completed_at=context.now,
+            )
+            payload = result.model_dump(mode="json")
+            result_record = WorkerResultRecord(
+                result_id=uuid4(),
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                attempt=job.attempt,
+                status=WorkerStatus.FAILED,
+                derived_artifacts=[],
+                checkpoint=None,
+                error_code="retry_exhausted",
+                error_message=result.error.message if result.error else None,
+                error_retryable=False,
+                canonical_payload=payload,
+                payload_hash=canonical_sha256(result),
+                completed_at=context.now,
+                created_at=context.now,
+                updated_at=context.now,
+            )
+            try:
+                await self._repository.submit_result(
+                    job_id=job.job_id,
+                    expected_claim_token_hash=job.claim_token_hash,
+                    result=result_record,
+                    observations=[],
+                    graph_projection_max_attempts=self._graph_projection_max_attempts,
+                )
+            except sqlalchemy.exc.IntegrityError:
+                # A concurrent sweep (or the worker's own late /result call)
+                # already made this job terminal -- not this call's problem.
+                continue
+            logger.warning(
+                "worker.job.retry_exhausted",
+                request_id=context.request_id,
+                job_id=str(job.job_id),
+                attempt=job.attempt,
+                max_attempts=job.max_attempts,
+            )
+            exhausted.append(job)
+        return tuple(exhausted)
 
     async def submit_result(
         self,
@@ -704,7 +818,7 @@ class EvidenceLifecycleService:
         claim_token: str,
         context: UploadContext,
         worker_id: UUID | None = None,
-    ) -> datetime:
+    ) -> RenewOutcome:
         """Extend a currently-claimed, still-`running` job's lease -- a heartbeat for a
         worker whose real processing (e.g. sampling and analyzing a long video, or a
         graph-projection batch) may outlast the lease window it was claimed under.
@@ -765,7 +879,10 @@ class EvidenceLifecycleService:
             raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
 
         new_lease_expires_at = await self._repository.renew_lease(
-            job_id, now=context.now, lease_seconds=self._worker_lease_seconds
+            job_id,
+            now=context.now,
+            lease_seconds=self._worker_lease_seconds,
+            max_lease_seconds=self._worker_lease_max_seconds,
         )
         if new_lease_expires_at is None:
             # Lost a race with a lease-expiry reclaim between the check above
@@ -786,7 +903,12 @@ class EvidenceLifecycleService:
             job_id=str(job_id),
             lease_expires_at=new_lease_expires_at.isoformat(),
         )
-        return new_lease_expires_at
+        return RenewOutcome(
+            lease_expires_at=new_lease_expires_at,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            attempt=job.attempt,
+        )
 
     # --- observation batches (Phase 3: partial micro-batch submission) ------
 
@@ -1110,6 +1232,7 @@ def _build_job(
     processor_version: str,
     input_object_uri: str,
     now: datetime,
+    max_attempts: int,
 ) -> WorkerJobRecord:
     idempotency_key = f"{case_id}:{evidence_id}:{processor_name}:{processor_version}"
     return WorkerJobRecord(
@@ -1120,6 +1243,7 @@ def _build_job(
         processor_name=processor_name,
         processor_version=processor_version,
         attempt=1,
+        max_attempts=max_attempts,
         idempotency_key=idempotency_key,
         input_object_uri=input_object_uri,
         requested_at=now,

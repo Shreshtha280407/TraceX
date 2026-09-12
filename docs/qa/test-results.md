@@ -1928,3 +1928,99 @@ All data created by both the pytest live suite and the manual subprocess script 
 Persistent, intentionally-kept rows (matching the established live-test convention every sibling module's own live suite already follows — `structured-processing-worker-live-test`/`communication-processing-worker-live-test` credentials also persist across runs): the `media-processing-worker-live-test` worker credential provisioned by `test_media_worker_live.py`'s `_ensure_worker_credential` helper.
 
 `git status --short` at the end of this session shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `gaurav`, HEAD unchanged at `1d3d885` plus this session's uncommitted changes. Docker stack left running; `docker compose down` removes it cleanly whenever wanted.
+
+## 2026-09-12 — Aditya — Phase 3 Secure Worker Submission, Case-Scoped Claims, Lease/Heartbeat Control, Retry Limits, and Audit Events
+
+Branch `aditya`. Started stale (`05897b0`, 6 commits behind the cached `origin/main`) — reported to the user per this task's own "confirm `origin/main...HEAD` is `0 0`, if not report and do not build" rule; the user then manually updated the branch. Re-verified before any work began: `git status --short` clean, `git rev-list --left-right --count origin/main...HEAD` → `0	0`, HEAD at `d922b0e` ("Complteted nipun/phase-3 (#22)"), confirmed to actually contain Nipun's Phase 3 observation-batch work (`app/contracts/observation_batch.py`, the `/observations` route, migration `c1c9c1c9d9f1`). Note: `git fetch origin --prune` failed in this sandbox both before and after (`fatal: could not read Username for 'https://github.com'` — no HTTPS credentials configured here) — the `0 0` check is against the last cached remote-tracking ref, not a fresh fetch.
+
+### Inspection findings before any code was written
+
+The existing worker-submission boundary (much of it Aditya's own prior Phase 2 work, `05897b0`, plus subsequent merges) was already extremely mature: `require_worker_principal` (fail-closed authentication), processor-scope enforcement at claim time, claim-token-hash + worker-identity verification on every mutating route (`/result`, `/input`, `/renew`, and Nipun's `/observations`), case/evidence scope validation against request bodies, `FOR UPDATE SKIP LOCKED` claim concurrency, and denial-path auditing were all already correct. Genuine, real gaps found by inspection (matching `docs/architecture/worker-job-lifecycle.md`'s own "Lease and retry policy" section, which literally named the missing pieces):
+
+1. **No max-attempt cutoff at all** — `attempt` incremented without bound on every reclaim; nothing ever transitioned an endlessly-reclaimed job to `failed`.
+2. **No absolute lease-renewal ceiling** — `/renew` (already implemented) could extend a lease indefinitely, forever, with no configured cap.
+3. **No audit trail for any worker action that *succeeds*** — only `worker_authentication_denied`/`worker_processor_scope_denied`/`worker_job_access_denied` were ever recorded; a successful claim, reclaim, renewal, or retry-exhaustion event left no operational trail at all.
+
+### A real bug caught and fixed during development (before shipping)
+
+The first implementation of the `max_attempts` claim-eligibility filter applied `attempt < max_attempts` uniformly across both the `QUEUED` and `RUNNING`-with-expired-lease branches of the eligibility query. Since `attempt` starts at `1` (not `0`) and is never incremented on a first claim, this incorrectly blocked a job's very first claim whenever `max_attempts == 1` (`1 < 1` is false) — caught by this session's own `test_retry_exhaustion_sweep_is_processor_agnostic` test during development, never shipped. Fixed by nesting the `attempt < max_attempts` predicate only inside the reclaim branch of the `OR`, in both the real `EvidenceLifecycleRepository.claim_job` (PostgreSQL) and the in-memory `FakeEvidenceLifecycleRepository` test double. See `docs/architecture/phase-3-decisions.md`'s "Why a job's first-ever claim is exempt from the `max_attempts` check".
+
+### Commands run and results
+
+```bash
+$ uv sync --all-groups
+Resolved 71 packages in 1ms
+Checked 69 packages in 0.89ms
+
+$ uv run ruff format --check .
+324 files already formatted
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 137 source files
+
+$ uv run pytest -q
+1432 passed in ~37s (run repeatedly; stable)
+
+$ docker compose config
+(valid — no output on success)
+```
+
+### Test summary
+
+New/extended unit and integration coverage (all passing): `tests/unit/evidence_lifecycle/test_worker_claim.py` (+2 retry-exhaustion tests, 1 real bug found and fixed as above), `test_worker_lease_renewal.py` (+2 absolute-ceiling tests, +1 renewal-audit test, +1 `claimed_at` realism fix to an existing fixture that the new ceiling logic exposed), `test_worker_identity_api.py` (+2 claim/reclaim-audit tests), `test_worker_internal_api.py` (+2 completed/failed-audit tests), `test_worker_result.py` (+1 expired-lease-rejects-result test), `test_observation_batch_submission.py` (+1 stale-token-after-reclaim test) — plus a brand-new live-integration file, `tests/integration/evidence_lifecycle/test_worker_retry_and_lease_live.py` (4 tests: absolute lease ceiling, reclaim invalidates old token, real retry exhaustion, genuinely concurrent (`asyncio.gather`) terminal-result race), all passing against real PostgreSQL, re-run 3× for stability. Full repository suite: **1432 passed**, 0 failed, 0 unexpectedly skipped.
+
+### Docker/live verification
+
+```bash
+$ docker compose up --build -d
+... Container tracex-api-1 Started (rebuilt — the previously-running container was ~12h stale, predating this session's branch update to d922b0e; confirmed by a real 404 on /observations before the rebuild, gone after)
+
+$ uv run alembic upgrade head
+$ uv run alembic current
+d3f1a6c9b8e2 (head)
+```
+
+`GET /healthz` → `{"status":"ok",...}`; `GET /readyz` → all four dependencies `"ok"`; `GET /api/v1/meta/contracts` → includes `observation_batch_submission`/`observation_batch_receipt`/`transformation_provenance` alongside the Phase 1 contracts.
+
+**Manual real-HTTP verification round** (temporarily set `WORKER_LEASE_SECONDS=3`, `WORKER_LEASE_MAX_SECONDS=8`, `WORKER_JOB_MAX_ATTEMPTS=2` in `.env` for this run only, restored to defaults and the container restarted afterward) — every item in the task's required-verification checklist, via genuine HTTP requests against the rebuilt live container:
+
+```text
+[PASS] register
+[PASS] upload evidence
+[PASS] valid claim
+[PASS] wrong worker denied (input)
+[PASS] wrong processor scope denied (claim)
+[PASS] claim input access
+[PASS] valid lease renewal
+[PASS] valid observation-batch submission
+[PASS] expired lease denied (renew)
+[PASS] reclaim after expiry
+[PASS] stale token denied after reclaim (batch)
+[PASS] stale token denied after reclaim (result)
+[PASS] terminal result submission
+[PASS] terminal result observation_count == 1
+[PASS] retry-exhaustion setup: claim 1
+[PASS] retry-exhaustion setup: reclaim (attempt 2 == max)
+[PASS] retry exhaustion: no further claim
+[PASS] retry-exhausted job is durably failed
+[PASS] retry-exhausted error code is safe
+[PASS] graph outbox handoff exactly once (one projection job for the one terminal-succeeded job)
+[PASS] safe audit events persisted for this case
+[PASS] worker_job_access_denied audit events persisted for this job
+[PASS] worker_job_retry_exhausted audit event persisted
+[PASS] no claim token in any audit metadata
+[PASS] no worker token in any audit metadata
+
+ALL CHECKS PASSED
+```
+
+Re-run twice for stability — identical result both times. Two real script bugs were found and fixed while building this verification round (both in the *verification script*, not application code): an empty observation batch (`observations: []`, `transformations: []`, `progress: None`) is correctly rejected by Nipun's own contract validator ("an empty observation batch must carry a progress or transformation update") — fixed by giving the batch a real `progress` object; and the graph-outbox-exactly-once check initially found `0` because the terminal result it checked against had also been submitted with zero observations — fixed by submitting one real `ObservationV1`.
+
+**Cleanup**: all data created by both the manual script and its two earlier failed attempts (cleaned up separately via direct queries after each failure) was removed — cases, users, worker credentials, evidence, jobs, results, batches, transformations, progress events, graph-projection-outbox rows, audit events, and Neo4j nodes. Final state confirmed directly: `0` matching cases/credentials/users, `0` failed `graph_projection_jobs` rows, `0` Neo4j nodes.
+
+### Final state
+
+`git status --short` shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `aditya`, HEAD unchanged at `d922b0e` plus this session's uncommitted changes. Docker stack left running with `.env` restored to its original (non-shortened-lease) values; `docker compose down` removes it cleanly whenever wanted.

@@ -157,9 +157,20 @@ any number of times while the job is still `running`, then complete with exactly
 
 Full design reasoning: `docs/architecture/phase-3-decisions.md`. Producer contract for Jasraj's real document/OCR/CDR/finance workers: the same document's "Producer contract for Jasraj's Phase 3 document/OCR/CDR/finance workers" section.
 
+## Securing the worker submission boundary (Phase 3 — Aditya)
+
+Every worker-facing route (`claim`, `input`, `renew`, `observations`, `result`) shares one authorization shape end to end: an authenticated `WorkerPrincipal` (a real, active, non-revoked `WorkerCredentialRecord`) whose `allowed_processor_names` covers the job's processor (checked at claim time only — a claimed job is thereafter bound to a specific worker *identity*, not re-checked against processor scope), the exact claim token issued for the job's *current* attempt, and — for every mutating action — the caller being the worker identity currently bound to the job (`worker_jobs.claimed_by_worker_id`). Request-body `case_id`/`evidence_id`, where present (`/observations`, `/result`), are validated against the claimed job's own authoritative values and never trusted alone. None of this is new *shape* — Nipun's `/observations` route above already required it byte-for-byte; this phase's job was closing the gaps in what backs that shape:
+
+- **Lease renewal, an absolute lease ceiling, and a bounded max-attempt cutoff** now exist and are database-enforced (`FOR UPDATE SKIP LOCKED` for every claim/reclaim, a unique constraint for every terminal result) — see `docs/architecture/worker-job-lifecycle.md`'s "Lease and retry policy". `/observations`/`/result` automatically inherit the new ceiling and cutoff, since both check the same `worker_jobs.lease_expires_at`/`attempt`/`max_attempts` columns `/claim`/`/renew` maintain — no code in the batch/result paths themselves needed to change.
+- **A worker that has exhausted its retry budget is transitioned durably to `failed`** (`error.code="retry_exhausted"`) by reusing the existing `submit_result` write path with a synthetic terminal `WorkerResultV1` — not a second "mark terminal" mechanism, and not a silently dropped job.
+- **Every worker-lifecycle state change is now audited**, not only denials — see `docs/architecture/worker-identity-and-security.md`'s "Audit event policy" for the complete, current event table (`worker_job_claimed`/`reclaimed`/`lease_renewed`/`completed`/`failed`/`retry_exhausted`, alongside the pre-existing denial events).
+
+Full design reasoning: `docs/architecture/phase-3-decisions.md`'s "Aditya Phase 3" section.
+
 ## Intentional deferrals (this phase only; see `docs/qa/known-limitations.md` for the full list)
 
 - No worker daemon/consumer loop — Phase 2.1 adds the claim/submit primitives a future worker would call, not the worker itself. See `docs/architecture/worker-job-lifecycle.md`.
 - No document/OCR/ASR/video/CDR/financial extraction, no entity resolution, no graph projection, no correlation/scoring/hypothesis engine, no human-review workflow, no Merkle roots or signatures.
 - No case CRUD API — cases/memberships are seeded via `app.modules.access_control.repository` directly (the existing minimal access-control anchor), exactly as every other integration test in this repository already does.
 - `EvidenceRecordV1.processing_status` starts directly at `queued`, never `uploaded`, because evidence and its job are created in one atomic transaction — there is no separately observable intermediate state in this phase. It also does not yet reflect job completion (`processed`/`failed`) once a worker result comes in — see `docs/qa/known-limitations.md`.
+- No worker-credential expiry (active/revoked only, permanent revocation), no maximum-concurrent-credential cap, and no cryptographic tamper-evidence over the audit trail (Merkle roots, hash chains, signatures — Phase 6's responsibility). See `docs/architecture/worker-identity-and-security.md`'s "Explicit non-goals".
