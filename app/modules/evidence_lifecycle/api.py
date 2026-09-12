@@ -32,6 +32,7 @@ from fastapi import (
 )
 
 from app.contracts.evidence import EvidenceClassification, SourceType
+from app.contracts.observation_batch import ObservationBatchProgressV1
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import record_audit_event
 from app.modules.access_control.dependencies import (
@@ -96,6 +97,7 @@ def _job_view(
     *,
     result: WorkerResultRecord | None = None,
     observation_count: int = 0,
+    latest_progress: ObservationBatchProgressV1 | None = None,
 ) -> JobView:
     return JobView(
         job_id=job.job_id,
@@ -113,6 +115,7 @@ def _job_view(
         observation_count=observation_count,
         last_error_code=job.last_error_code,
         last_error_message=job.last_error_message,
+        latest_progress=latest_progress,
     )
 
 
@@ -233,4 +236,10 @@ async def get_job(
     except JobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found") from exc
     result, observation_count = await service.get_job_result_summary(job_id)
-    return _job_view(record, result=result, observation_count=observation_count)
+    latest_progress = await service.get_job_progress_summary(job_id)
+    return _job_view(
+        record,
+        result=result,
+        observation_count=observation_count,
+        latest_progress=latest_progress,
+    )

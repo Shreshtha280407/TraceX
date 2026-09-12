@@ -4,6 +4,8 @@
 
 **As of Aditya's Phase 2 worker-identity hardening**, `worker_jobs` also carries `claimed_by_worker_id` (nullable, set on every successful claim/reclaim), and `/result`/`/input` additionally require the caller to be that verified identity, not just hold the job's claim token. Every claim/result/input request now authenticates against a real, revocable per-worker credential (`require_worker_principal`), not the temporary shared secret this document previously described. See `docs/architecture/worker-identity-and-security.md` for the full design; the upload → durable-job-creation flow this document covers is otherwise unchanged.
 
+**As of Phase 3 (Nipun)**, this module also implements the **partial observation micro-batch** submission path — a worker may submit any number of provenance-rich partial batches while a job is still running, in addition to (not instead of) the terminal `/result` submission above. See "Observation-batch ingestion (Phase 3 — Nipun)" below.
+
 ## Lifecycle, end to end
 
 ```
@@ -127,6 +129,33 @@ X-TraceX-Parser-Profile: <evidence.parser_profile, when set>
 - `MAX_EVIDENCE_BYTES` (default 200 MiB, `.env`-configurable) bounds a single upload; enforced incrementally during the streaming hash pass, not after a full read.
 - The content-type table above is the complete Phase 2 allow-list — anything else (including `source_type=other`, and any content type not listed for a given source type) is rejected `422`.
 - `original_filename` is required, trimmed, and capped at 255 characters; never validated for "looks like a real filename" beyond that (it's display metadata only).
+
+## Observation-batch ingestion (Phase 3 — Nipun)
+
+`app/modules/evidence_lifecycle/` also implements the **partial**-submission counterpart to Phase 2.1's terminal `WorkerResultV1` path: a worker processing a large document/CDR/finance source may call
+
+```
+POST /api/v1/internal/worker-jobs/{job_id}/observations
+Authorization: Bearer <WORKER_TOKEN>
+X-Claim-Token: <claim_token from /claim>
+Body: ObservationBatchSubmissionV1
+```
+
+any number of times while the job is still `running`, then complete with exactly one terminal `POST /{job_id}/result` as before — `is_final_batch` on a submission is bookkeeping metadata only and never transitions the job's status itself. Authorization, claim-token verification, and worker-identity binding are byte-for-byte the same checks `/result`/`/renew` already use (see "Result validation, in order" in `docs/architecture/worker-job-lifecycle.md`) — this endpoint invents no new security boundary.
+
+**Persistence**: one atomic transaction inserts an `observation_batches` receipt row, every submitted `ObservationV1` (into the same `worker_observations` table Phase 2.1 already uses — see below), every `TransformationProvenanceV1` (into `observation_transformations`), at most one `worker_progress_events` row, and one `graph_projection_jobs` row per newly accepted observation — all or nothing, exactly like `submit_result`'s own transaction.
+
+**Equivalent durable linkage, not a second observations table**: `worker_observations.result_id` is now nullable, and a new nullable `worker_observations.observation_batch_id` was added (FK to `observation_batches`), with a `CHECK` constraint enforcing exactly one of the two is ever set. Both the terminal-result path and the partial-batch path write into the same table, so `count_observations_for_job` and `app.modules.graph.outbox_repository.get_observation` needed no code changes at all to see observations from either source. See `docs/architecture/phase-3-decisions.md` for the full reasoning.
+
+**Replay and conflict**: `(job_id, batch_id)` and `(job_id, idempotency_key)` are each unique. An exact-payload resubmission of an already-accepted `batch_id` returns the original receipt (`status: "replayed"`), creating no new rows and enqueuing no additional graph-projection job, regardless of whether the job has since gone terminal via a separate `/result` call. A different payload under the same `batch_id`, or the same `idempotency_key` reused for a different `batch_id`, is a safe `409`. An `observation_id` reused from a genuinely different, already-accepted batch or result is also a safe `409` — never a second row, never a second projection job. A **brand-new** `batch_id` is only accepted while the job is currently `running` with an unexpired lease.
+
+**Progress**: `ObservationBatchProgressV1` (optional per batch) is stored as an ordered, append-only `worker_progress_events` row; `GET /api/v1/cases/{case_id}/jobs/{job_id}` (`JobView.latest_progress`) surfaces the most recent one, case-scoped and authorized exactly like every other field on that existing response. A progress update that would move `units_completed`/`observations_emitted` backwards within the same job `attempt` is rejected — a fresh reclaim (a new `attempt`) is explicitly allowed to reset.
+
+**Transformation provenance**: `TransformationProvenanceV1` records are immutable once accepted, retrievable via `EvidenceLifecycleRepository.list_transformations_for_batch` (no public read endpoint yet — not required by this phase). `safe_metadata` is contract-validated to reject secret-shaped keys and long string values, so raw document/media content, credentials, and stack traces can never enter it.
+
+**Never calls Neo4j directly**: exactly like `submit_result`, this endpoint only ever writes to PostgreSQL — the existing graph projector remains the sole path that touches Neo4j, asynchronously, off the same durable outbox.
+
+Full design reasoning: `docs/architecture/phase-3-decisions.md`. Producer contract for Jasraj's real document/OCR/CDR/finance workers: the same document's "Producer contract for Jasraj's Phase 3 document/OCR/CDR/finance workers" section.
 
 ## Intentional deferrals (this phase only; see `docs/qa/known-limitations.md` for the full list)
 

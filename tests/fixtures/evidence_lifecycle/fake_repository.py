@@ -19,8 +19,11 @@ import sqlalchemy.exc
 from app.contracts.worker import WorkerStatus
 from app.modules.evidence_lifecycle.models import (
     EvidenceRecord,
+    ObservationBatchRecord,
     ObservationRecord,
+    ObservationTransformationRecord,
     WorkerJobRecord,
+    WorkerProgressEventRecord,
     WorkerResultRecord,
 )
 
@@ -51,6 +54,10 @@ class FakeEvidenceLifecycleRepository:
         self.results: dict[UUID, WorkerResultRecord] = {}
         self.observations: dict[UUID, ObservationRecord] = {}
         self.graph_projection_jobs: dict[UUID, FakeGraphProjectionJob] = {}
+        self.observation_batches: dict[UUID, ObservationBatchRecord] = {}
+        self.transformations: dict[UUID, ObservationTransformationRecord] = {}
+        self.progress_events: dict[UUID, WorkerProgressEventRecord] = {}
+        self._next_progress_ordinal = 1
 
     async def close(self) -> None:
         pass
@@ -237,3 +244,112 @@ class FakeEvidenceLifecycleRepository:
                 "updated_at": result.updated_at,
             }
         )
+
+    # --- observation batches (Phase 3) --------------------------------------
+
+    async def get_batch_by_job_and_batch_id(
+        self, job_id: UUID, batch_id: str
+    ) -> ObservationBatchRecord | None:
+        return next(
+            (
+                b
+                for b in self.observation_batches.values()
+                if b.job_id == job_id and b.batch_id == batch_id
+            ),
+            None,
+        )
+
+    async def get_batch_by_job_and_idempotency_key(
+        self, job_id: UUID, idempotency_key: str
+    ) -> ObservationBatchRecord | None:
+        return next(
+            (
+                b
+                for b in self.observation_batches.values()
+                if b.job_id == job_id and b.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+
+    async def list_observations_for_batch(
+        self, observation_batch_id: UUID
+    ) -> list[ObservationRecord]:
+        return [
+            o for o in self.observations.values() if o.observation_batch_id == observation_batch_id
+        ]
+
+    async def list_transformations_for_batch(
+        self, observation_batch_id: UUID
+    ) -> list[ObservationTransformationRecord]:
+        return sorted(
+            (
+                t
+                for t in self.transformations.values()
+                if t.observation_batch_id == observation_batch_id
+            ),
+            key=lambda t: t.ordinal,
+        )
+
+    async def get_latest_progress_event(self, job_id: UUID) -> WorkerProgressEventRecord | None:
+        candidates = sorted(
+            (p for p in self.progress_events.values() if p.job_id == job_id),
+            key=lambda p: p.ordinal,
+        )
+        return candidates[-1] if candidates else None
+
+    async def submit_observation_batch(
+        self,
+        *,
+        batch: ObservationBatchRecord,
+        observations: list[ObservationRecord],
+        transformations: list[ObservationTransformationRecord],
+        progress_event: WorkerProgressEventRecord | None,
+        graph_projection_max_attempts: int,
+    ) -> WorkerProgressEventRecord | None:
+        if any(
+            b.job_id == batch.job_id and b.batch_id == batch.batch_id
+            for b in self.observation_batches.values()
+        ):
+            raise sqlalchemy.exc.IntegrityError(
+                "duplicate observation_batches.(job_id, batch_id)",
+                {},
+                Exception("unique violation"),
+            )
+        if any(
+            b.job_id == batch.job_id and b.idempotency_key == batch.idempotency_key
+            for b in self.observation_batches.values()
+        ):
+            raise sqlalchemy.exc.IntegrityError(
+                "duplicate observation_batches.(job_id, idempotency_key)",
+                {},
+                Exception("unique violation"),
+            )
+        for observation in observations:
+            if observation.observation_id in self.observations:
+                raise sqlalchemy.exc.IntegrityError(
+                    "duplicate worker_observations.observation_id",
+                    {},
+                    Exception("unique violation"),
+                )
+
+        self.observation_batches[batch.observation_batch_id] = batch
+        for observation in observations:
+            self.observations[observation.observation_id] = observation
+            self.graph_projection_jobs[observation.observation_id] = FakeGraphProjectionJob(
+                projection_id=uuid4(),
+                case_id=observation.case_id,
+                evidence_id=observation.evidence_id,
+                observation_id=observation.observation_id,
+                status="queued",
+                attempt=0,
+                max_attempts=graph_projection_max_attempts,
+            )
+        for transformation in transformations:
+            self.transformations[transformation.transformation_id] = transformation
+
+        if progress_event is None:
+            return None
+        persisted = progress_event.model_copy(update={"ordinal": self._next_progress_ordinal})
+        self._next_progress_ordinal += 1
+        self.progress_events[persisted.progress_event_id] = persisted
+        return persisted

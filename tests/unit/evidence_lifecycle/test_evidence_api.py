@@ -34,7 +34,12 @@ from app.modules.evidence_lifecycle.dependencies import (
     get_object_storage,
 )
 from app.modules.evidence_lifecycle.jobs import FakeJobProducer
-from app.modules.evidence_lifecycle.models import ObservationRecord, WorkerResultRecord
+from app.modules.evidence_lifecycle.models import (
+    ObservationBatchRecord,
+    ObservationRecord,
+    WorkerProgressEventRecord,
+    WorkerResultRecord,
+)
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
 from tests.fixtures.access_control.factories import make_case_record, make_membership_record
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
@@ -216,6 +221,7 @@ async def test_completed_job_status_exposes_safe_fields_only(
     evidence_repository.observations[observation_id] = ObservationRecord(
         observation_id=observation_id,
         result_id=result_id,
+        observation_batch_id=None,
         job_id=UUID(job_id),
         case_id=case_id,
         evidence_id=UUID(evidence_id),
@@ -236,6 +242,89 @@ async def test_completed_job_status_exposes_safe_fields_only(
     assert "claim_token_hash" not in response.text
     assert "object_uri" not in response.text
     assert "a" * 64 not in response.text  # the claim_token_hash value itself
+
+
+# --- Scenario 23: job progress is case-scoped and contains only safe fields --
+
+
+async def test_job_status_exposes_latest_progress_summary_scoped_and_safe(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    """Simulates a worker having submitted a partial observation batch (Phase 3)."""
+    token, case_id = await _authenticated_member(client, ac_repository)
+    headers = {"Authorization": f"Bearer {token}"}
+    upload = await client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        headers=headers,
+        files=_upload_files(),
+        data={"source_type": "document", "classification": "unclassified"},
+    )
+    job_id = UUID(upload.json()["job"]["job_id"])
+    evidence_id = UUID(upload.json()["evidence"]["evidence_id"])
+    now = datetime.now(UTC)
+
+    observation_batch_id = uuid4()
+    evidence_repository.observation_batches[observation_batch_id] = ObservationBatchRecord(
+        observation_batch_id=observation_batch_id,
+        job_id=job_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        batch_id="batch-1",
+        batch_sequence=0,
+        idempotency_key="idem-1",
+        is_final_batch=False,
+        observation_count=3,
+        payload_hash="c" * 64,
+        submitted_at=now,
+        created_at=now,
+    )
+    progress_id = uuid4()
+    evidence_repository.progress_events[progress_id] = WorkerProgressEventRecord(
+        progress_event_id=progress_id,
+        ordinal=1,
+        observation_batch_id=observation_batch_id,
+        job_id=job_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        attempt=1,
+        stage="parsing",
+        units_total=10,
+        units_completed=3,
+        observations_emitted=3,
+        batch_sequence=0,
+        message_code="PAGE_PARSED",
+        occurred_at=now,
+        created_at=now,
+    )
+
+    response = await client.get(f"/api/v1/cases/{case_id}/jobs/{job_id}", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_progress"]["stage"] == "parsing"
+    assert body["latest_progress"]["units_completed"] == 3
+    assert body["latest_progress"]["message_code"] == "PAGE_PARSED"
+    # Never leaked, regardless of what's stored internally.
+    assert "object_uri" not in response.text
+    assert "claim_token" not in response.text
+
+
+async def test_job_progress_lookup_for_an_unknown_job_is_a_plain_404(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    """A job with no progress events (or no job at all) never crashes or leaks -- a plain 404.
+
+    Exercises the same `get_job` route now also calling `get_job_progress_summary`
+    -- a job that doesn't exist for this case must still fail exactly as before.
+    """
+    token, case_id = await _authenticated_member(client, ac_repository)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = await client.get(f"/api/v1/cases/{case_id}/jobs/{uuid4()}", headers=headers)
+    assert response.status_code == 404
 
 
 # --- Idempotency-Key header behavior -----------------------------------------

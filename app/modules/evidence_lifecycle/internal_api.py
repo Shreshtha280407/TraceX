@@ -32,6 +32,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 
+from app.contracts.observation_batch import (
+    BatchAcceptanceStatus,
+    ObservationBatchReceiptV1,
+    ObservationBatchSubmissionV1,
+)
 from app.contracts.worker import WorkerResultV1
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import record_audit_event, record_audit_event_safely
@@ -46,6 +51,8 @@ from app.modules.evidence_lifecycle.dependencies import (
 )
 from app.modules.evidence_lifecycle.errors import (
     InvalidClaimTokenError,
+    ObservationBatchConflictError,
+    ObservationBatchValidationError,
     ResultConflictError,
     ResultValidationError,
 )
@@ -192,6 +199,92 @@ async def submit_result(
         result_id=outcome.result_id,
         observation_count=len(outcome.observation_ids),
         observation_ids=outcome.observation_ids,
+    )
+
+
+@router.post("/{job_id}/observations", response_model=ObservationBatchReceiptV1)
+async def submit_observation_batch(
+    job_id: UUID,
+    submission: ObservationBatchSubmissionV1,
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> ObservationBatchReceiptV1:
+    """Submit one partial, provenance-rich observation micro-batch for a claimed job.
+
+    Phase 3 (Nipun): the micro-batch counterpart to `/result` -- a worker
+    processing a large document/CDR/finance source may call this any number
+    of times while the job is still `running`, then submit exactly one
+    terminal `WorkerResultV1` via `/result` as before (unchanged; this
+    endpoint never transitions a job's status, `is_final_batch` is metadata
+    only). Same authorization shape as `/result`/`/renew`: a real per-worker
+    credential plus this exact job's claim token, and the caller must be the
+    worker identity currently bound to the job.
+
+    Idempotent: an exact-payload resubmission of an already-accepted
+    `batch_id` returns the original accepted outcome (never a duplicate
+    write, regardless of whether the job has since gone terminal); a
+    different payload for the same `batch_id`, or the same
+    `idempotency_key` reused for a different `batch_id`, is a safe `409`.
+    See `docs/architecture/phase-3-decisions.md`.
+    """
+    if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+
+    context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    try:
+        outcome = await service.submit_observation_batch(
+            job_id=job_id,
+            claim_token=claim_token,
+            submission=submission,
+            context=context,
+            worker_id=principal.worker_id,
+        )
+    except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except ObservationBatchValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except ObservationBatchConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if outcome.status is BatchAcceptanceStatus.ACCEPTED:
+        await record_audit_event(
+            audit_repository,
+            event_type="worker.observation_batch.accepted",
+            outcome=AuditOutcome.SUCCESS,
+            now=context.now,
+            request_id=context.request_id,
+            user_id=None,
+            case_id=submission.case_id,
+            metadata={
+                "job_id": str(outcome.job_id),
+                "batch_id": outcome.batch_id,
+                "accepted_observation_count": outcome.accepted_observation_count,
+            },
+        )
+
+    return ObservationBatchReceiptV1(
+        job_id=outcome.job_id,
+        batch_id=outcome.batch_id,
+        status=outcome.status,
+        accepted_observation_count=outcome.accepted_observation_count,
+        progress=outcome.progress,
+        request_id=context.request_id,
     )
 
 

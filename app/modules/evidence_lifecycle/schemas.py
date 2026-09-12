@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
+from app.contracts.observation_batch import ObservationBatchProgressV1
 from app.contracts.worker import WorkerJobV1, WorkerStatus
 
 
@@ -58,6 +59,10 @@ class JobView(_ResponseModel):
     observation_count: int
     last_error_code: str | None
     last_error_message: str | None
+    #: The job's most recently accepted micro-batch progress event, if any
+    #: (Phase 3) -- `None` for a job that never received a progress-bearing
+    #: `ObservationBatchSubmissionV1`. Never a raw human-readable message.
+    latest_progress: ObservationBatchProgressV1 | None = None
 
 
 class EvidenceUploadResponse(_ResponseModel):
