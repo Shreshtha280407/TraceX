@@ -79,6 +79,7 @@ from app.contracts.evidence import EvidenceRecordV1
 from app.contracts.observation import ExtractedEntityMention, ObservationV1
 from app.core.canonical import canonical_bytes
 from app.core.ids import deterministic_uuid
+from app.modules.graph.mapping import GraphProjectionPlan, MappingStatus
 from app.modules.graph.models import (
     EntityMentionProjectionResult,
     EventProjectionResult,
@@ -135,6 +136,10 @@ OBSERVATION_ALLOWED_PROPERTIES = frozenset(
         "source_locator_time_start_ms",
         "source_locator_time_end_ms",
         "source_locator_message_id",
+        "mapping_status",
+        "mapping_reason",
+        "mapping_version",
+        "mapping_config_hash",
     }
 )
 
@@ -196,7 +201,9 @@ def _evidence_properties(record: EvidenceRecordV1) -> dict[str, Any]:
     }
 
 
-def _observation_properties(observation: ObservationV1) -> dict[str, Any]:
+def _observation_properties(
+    observation: ObservationV1, mapping_plan: GraphProjectionPlan | None = None
+) -> dict[str, Any]:
     props: dict[str, Any] = {
         "observation_id": str(observation.observation_id),
         "case_id": str(observation.case_id),
@@ -254,6 +261,11 @@ def _observation_properties(observation: ObservationV1) -> dict[str, Any]:
         props["source_locator_time_end_ms"] = locator.time_end_ms
     if locator.message_id is not None:
         props["source_locator_message_id"] = locator.message_id
+    if mapping_plan is not None:
+        props["mapping_status"] = mapping_plan.status.value
+        props["mapping_reason"] = mapping_plan.reason
+        props["mapping_version"] = mapping_plan.mapping_version
+        props["mapping_config_hash"] = mapping_plan.mapping_config_hash
     return props
 
 
@@ -306,7 +318,9 @@ def _build_evidence_merge_query(record: EvidenceRecordV1) -> tuple[str, dict[str
     return query, params
 
 
-def _build_observation_merge_query(observation: ObservationV1) -> tuple[str, dict[str, Any]]:
+def _build_observation_merge_query(
+    observation: ObservationV1, mapping_plan: GraphProjectionPlan | None = None
+) -> tuple[str, dict[str, Any]]:
     # The leading MATCH on Evidence makes this query an atomic no-op when the
     # evidence hasn't been projected yet: if it matches nothing, every clause
     # after it (including both MERGEs) executes zero times, so no Case,
@@ -324,7 +338,7 @@ def _build_observation_merge_query(observation: ObservationV1) -> tuple[str, dic
         "case_id": str(observation.case_id),
         "evidence_id": str(observation.evidence_id),
         "observation_id": str(observation.observation_id),
-        "properties": _observation_properties(observation),
+        "properties": _observation_properties(observation, mapping_plan),
     }
     return query, params
 
@@ -415,14 +429,16 @@ async def project_evidence(
 
 
 async def project_observation(
-    repository: Neo4jGraphRepository, observation: ObservationV1
+    repository: Neo4jGraphRepository,
+    observation: ObservationV1,
+    mapping_plan: GraphProjectionPlan | None = None,
 ) -> ObservationProjectionResult:
     """Idempotently MERGE an `ObservationV1` into the graph.
 
     Defers (writes nothing) if `observation.evidence_id` has not been
     projected as an `Evidence` node in this case yet.
     """
-    query, params = _build_observation_merge_query(observation)
+    query, params = _build_observation_merge_query(observation, mapping_plan)
     rows = await repository.write(query, params)
     if rows:
         return ObservationProjectionResult(
@@ -615,4 +631,138 @@ async def project_event(repository: Neo4jGraphRepository, event: EventV1) -> Eve
         domain_id=event.event_id,
         relationships_upserted=0,
         missing_participant_entity_ids=tuple(missing),
+    )
+
+
+def _mapping_claim_properties(
+    observation: ObservationV1, plan: GraphProjectionPlan, claim: Any
+) -> dict[str, Any]:
+    """The bounded properties for a source claim; never project attributes bags."""
+    return {
+        "claim_id": str(claim.claim_id),
+        "case_id": str(observation.case_id),
+        "evidence_id": str(observation.evidence_id),
+        "observation_id": str(observation.observation_id),
+        "source_observation_type": observation.observation_type,
+        "claim_type": claim.claim_type,
+        "display_label": claim.display_label,
+        "extraction_confidence": observation.extraction_confidence,
+        "extractor_name": observation.extractor.name,
+        "extractor_version": observation.extractor.version,
+        "extractor_config_hash": observation.extractor.config_hash,
+        "extractor_model_version": observation.extractor.model_version,
+        "mapping_version": plan.mapping_version,
+        "mapping_config_hash": plan.mapping_config_hash,
+    }
+
+
+async def project_specialized_mapping(
+    repository: Neo4jGraphRepository, observation: ObservationV1, plan: GraphProjectionPlan
+) -> ProjectionResult | None:
+    """Apply a pure mapping plan after its canonical observation is present.
+
+    An unsupported/deferred plan creates no specialised nodes, but its stable
+    outcome is already stored on the parent ``Observation`` by
+    ``project_observation``.  Every specialised query begins at the existing
+    case-scoped Evidence -> Observation chain, so it cannot create an orphan.
+    """
+    if plan.status is not MappingStatus.APPLIED:
+        return None
+
+    claims = [
+        {
+            "claim_id": str(claim.claim_id),
+            "role": claim.role,
+            "properties": _mapping_claim_properties(observation, plan, claim),
+        }
+        for claim in plan.claims
+    ]
+    if claims:
+        claims_query = (
+            "MATCH (e:Evidence {case_id: $case_id, evidence_id: $evidence_id}) "
+            "-[:YIELDED_OBSERVATION]->"
+            "(o:Observation {case_id: $case_id, observation_id: $observation_id}) "
+            "UNWIND $claims AS claim "
+            "MERGE (s:SourceClaim {case_id: $case_id, claim_id: claim.claim_id}) "
+            "SET s += claim.properties "
+            "MERGE (o)-[r:PROJECTS_CLAIM "
+            "{mapping_version: $mapping_version, role: claim.role}]->(s) "
+            "SET r.observation_id = $observation_id, r.evidence_id = $evidence_id "
+            "RETURN count(s) AS claim_count"
+        )
+        await repository.write(
+            claims_query,
+            {
+                "case_id": str(observation.case_id),
+                "evidence_id": str(observation.evidence_id),
+                "observation_id": str(observation.observation_id),
+                "mapping_version": plan.mapping_version,
+                "claims": claims,
+            },
+        )
+
+    if plan.event is None:
+        return ProjectionResult(
+            outcome=ProjectionOutcome.APPLIED,
+            node_kind=GraphNodeKind.SOURCE_CLAIM,
+            case_id=observation.case_id,
+            domain_id=plan.claims[0].claim_id,
+            relationships_upserted=len(claims),
+        )
+
+    event_properties: dict[str, Any] = {
+        "projection_id": str(plan.event.projection_id),
+        "case_id": str(observation.case_id),
+        "evidence_id": str(observation.evidence_id),
+        "observation_id": str(observation.observation_id),
+        "source_observation_type": observation.observation_type,
+        "event_type": plan.event.event_type,
+        "event_time": plan.event.event_time,
+        "extraction_confidence": observation.extraction_confidence,
+        "extractor_name": observation.extractor.name,
+        "extractor_version": observation.extractor.version,
+        "extractor_config_hash": observation.extractor.config_hash,
+        "extractor_model_version": observation.extractor.model_version,
+        "mapping_version": plan.mapping_version,
+        "mapping_config_hash": plan.mapping_config_hash,
+        **plan.event.properties,
+    }
+    event_query = (
+        "MATCH (e:Evidence {case_id: $case_id, evidence_id: $evidence_id}) "
+        "-[:YIELDED_OBSERVATION]->"
+        "(o:Observation {case_id: $case_id, observation_id: $observation_id}) "
+        "UNWIND $claims AS claim "
+        "OPTIONAL MATCH (s:SourceClaim {case_id: $case_id, claim_id: claim.claim_id}) "
+        "WITH o, collect({node: s, role: claim.role}) AS participants, count(s) AS found, "
+        "count(claim) AS requested "
+        "WHERE found = requested "
+        "MERGE (v:TemporalEvent {case_id: $case_id, projection_id: $projection_id}) "
+        "SET v += $properties "
+        "MERGE (o)-[source:PROJECTS_EVENT {mapping_version: $mapping_version}]->(v) "
+        "SET source.observation_id = $observation_id, source.evidence_id = $evidence_id "
+        "WITH v, participants "
+        "UNWIND participants AS participant "
+        "WITH v, participant.node AS source_claim, participant.role AS participant_role "
+        "MERGE (v)-[r:HAS_CLAIM_PARTICIPANT {role: participant_role}]->(source_claim) "
+        "SET r.mapping_version = $mapping_version "
+        "RETURN v.projection_id AS projection_id"
+    )
+    await repository.write(
+        event_query,
+        {
+            "case_id": str(observation.case_id),
+            "evidence_id": str(observation.evidence_id),
+            "observation_id": str(observation.observation_id),
+            "projection_id": str(plan.event.projection_id),
+            "mapping_version": plan.mapping_version,
+            "claims": [{"claim_id": c["claim_id"], "role": c["role"]} for c in claims],
+            "properties": event_properties,
+        },
+    )
+    return ProjectionResult(
+        outcome=ProjectionOutcome.APPLIED,
+        node_kind=GraphNodeKind.TEMPORAL_EVENT,
+        case_id=observation.case_id,
+        domain_id=plan.event.projection_id,
+        relationships_upserted=1 + len(claims),
     )

@@ -26,6 +26,16 @@ Canonical ObservationV1 persisted by worker-result acceptance
 
 ## Graph model
 
+### Phase 3 specialised mappings
+
+The Phase 3 registry adds case-scoped `SourceClaim` and `TemporalEvent`
+representations for explicit document, CDR, and financial observation types.
+They are always rooted at an already projected `Evidence -> Observation`
+chain, and CDR/finance endpoints are unresolved `SourceClaim`s, never
+`Entity` nodes. See [phase-3-graph-mapping.md](phase-3-graph-mapping.md) for
+the full mapping table, validation rules, deterministic identities, and
+reprojection policy.
+
 Reuses the existing Phase 1 taxonomy (`Case`/`Evidence`/`Observation`, `HAS_EVIDENCE`/`HAS_OBSERVATION`/`YIELDED_OBSERVATION`) unchanged — see `docs/architecture/graph-taxonomy-v1.md` for the full node/relationship reference and *why* `YIELDED_OBSERVATION` (not `HAS_OBSERVATION`) is the Evidence→Observation edge name. This phase adds exactly one new node kind and one new relationship:
 
 ```text

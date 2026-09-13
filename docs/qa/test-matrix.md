@@ -4,6 +4,11 @@ Each row is a tracked QA item: what it verifies, who owns it, how to run it, and
 
 | ID | Owner | Expected behavior | Test command | Status | Result |
 |---|---|---|---|---|---|
+| GRAPH-MAPPING-P3-001 | Shreshtha | Deterministic document/CDR/finance plans; explicit incomplete/unsupported results; no I/O or entity resolution | `uv run pytest -q tests/unit/graph/test_mapping.py` | Passing | `docs/qa/test-results.md` |
+| GRAPH-MAPPING-P3-002 | Shreshtha | Live case scope, evidence traversal, event-first temporal shape, repeat idempotency | `uv run pytest -q tests/integration/graph/test_phase_3_mapping_live.py` | Passing | `docs/qa/test-results.md` |
+
+| ID | Owner | Expected behavior | Test command | Status | Result |
+|---|---|---|---|---|---|
 | CORE-CONTRACT-001 | Nipun | Every canonical contract (`EvidenceRecordV1`, `ObservationV1`, `EntityV1`, `EventV1`, `WorkerJobV1`, `WorkerResultV1`) parses a valid fixture, round-trips through JSON without semantic change, and rejects an unsupported `schema_version`. | `uv run pytest tests/contract/test_evidence.py tests/contract/test_observation.py tests/contract/test_entity.py tests/contract/test_event.py tests/contract/test_worker.py` | Passing | See `docs/qa/test-results.md` |
 | CORE-CONTRACT-002 | Nipun | Field-level contract validation rules hold: empty `source_locator` rejected; `time_end_ms < time_start_ms` rejected; confidence outside `[0,1]` rejected; invalid/degenerate normalized bounding box rejected; `EventV1` requires `event_time` or `time_window`; malformed worker idempotency key rejected; `WorkerResultV1` status/error consistency enforced. | `uv run pytest tests/contract/test_common.py tests/contract/test_observation.py tests/contract/test_event.py tests/contract/test_worker.py` | Passing | See `docs/qa/test-results.md` |
 | CORE-ID-001 | Nipun | `deterministic_uuid` is stable for identical normalized input, changes when input changes, and doesn't collide across part boundaries; `canonical_bytes`/`canonical_sha256` are stable regardless of dict/key insertion order and handle UUID/datetime/enum/nested-model values deterministically. | `uv run pytest tests/unit/test_ids.py tests/unit/test_canonical.py` | Passing | See `docs/qa/test-results.md` |

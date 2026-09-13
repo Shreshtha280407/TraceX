@@ -2,6 +2,17 @@
 
 Record of the concrete choices made while building the Phase 3 batch-submission foundation, and the reasoning behind each — so later contributors (starting with Jasraj's real document/OCR/CDR/finance workers) know what was deliberate versus what's still open.
 
+## Shreshtha — deterministic graph mapping
+
+Document mentions and documented relation claims map only to evidence-local
+`SourceClaim` nodes. Canonical CDR and financial records map to temporal
+events only when all mandatory source-backed endpoint and canonical-time
+fields are present. Unsupported or incomplete records are retained in
+PostgreSQL and their safe deterministic mapping result is recorded on the
+projected canonical observation; they do not fail the graph outbox. No
+identity resolution or cross-observation join is permitted. Full policy:
+`docs/architecture/phase-3-graph-mapping.md`.
+
 ## Scope, restated
 
 This phase gives an authorized worker one stable, durable path to submit **partial** observation micro-batches while processing a large source, alongside the existing Phase 2.1 path for a single **terminal** `WorkerResultV1`. It does not implement any real extraction, entity resolution, graph mapping, or scoring — see "Non-goals" in the task brief and `docs/qa/known-limitations.md`.

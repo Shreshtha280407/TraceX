@@ -202,6 +202,10 @@ def normalize_cdr_records(records: list[RawRecord]) -> list[RawMention]:
         if call_type_field is not None:
             record_attrs["call_type"] = call_type_field[1]
 
+        tower_field = _resolve_alias(record, "cell_tower_id")
+        if tower_field is not None:
+            record_attrs["cell_tower_id"] = tower_field[1]
+
         duration_field = _resolve_alias(record, "duration_seconds")
         if duration_field is not None:
             record_attrs["duration_seconds_raw"] = duration_field[1]

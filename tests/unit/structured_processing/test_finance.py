@@ -58,6 +58,18 @@ def test_finance_emits_amount_mention_and_account_mentions() -> None:
     assert "transaction_reference_mention" in types
 
 
+def test_finance_transaction_record_retains_source_backed_instruments() -> None:
+    data = b"amount,currency,sender_account,receiver_account\n500,INR,SYNTH-SOURCE,SYNTH-DEST\n"
+    record = next(
+        mention
+        for mention in normalize_financial_records(parse_csv(data))
+        if mention.observation_type == "financial_transaction_record"
+    )
+
+    assert record.attributes["sender_account"] == "SYNTH-SOURCE"
+    assert record.attributes["receiver_account"] == "SYNTH-DEST"
+
+
 def test_finance_never_infers_shared_account_ownership() -> None:
     """No entity/identity linkage is ever produced by this module."""
     data = b"amount,currency,sender_account,receiver_account\n500,INR,111,222\n"

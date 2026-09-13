@@ -236,6 +236,9 @@ def test_relationship_kind_enum_has_no_entity_to_entity_kind() -> None:
         "SUPPORTS",
         "HAS_PARTICIPANT",
         "MENTIONS",
+        "PROJECTS_CLAIM",
+        "PROJECTS_EVENT",
+        "HAS_CLAIM_PARTICIPANT",
     }
 
 

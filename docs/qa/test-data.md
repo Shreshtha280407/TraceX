@@ -2,6 +2,11 @@
 
 ## No real evidence
 
+Phase 3 graph-mapping fixtures use labelled synthetic values such as
+`SYNTH-SOURCE-001`, `SYNTH-DEST-002`, synthetic endpoints, and a fixed 2026
+timestamp. They contain no real evidence, accounts, phone numbers, people,
+or documents.
+
 Nothing in this repository — fixtures, tests, or documentation examples — uses real, sensitive, or production investigative material. TraceX handles genuinely sensitive data once later phases start real ingestion; until then, every value below is synthetic and safe to commit.
 
 ## Synthetic fixtures

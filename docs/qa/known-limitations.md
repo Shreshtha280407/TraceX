@@ -2,6 +2,15 @@
 
 These are intentional, scoped-out gaps, not oversights. Each belongs to a later phase.
 
+- **No graph entity resolution.** Phase 3 graph mapping leaves document,
+  endpoint, and instrument values as evidence-local `SourceClaim`s. It does
+  not join separately emitted observations. A CDR or finance event is
+  deferred unless its own canonical record supplies every required
+  source-backed field.
+- **Raw document dates remain non-temporal claims.** A document relation
+  observation with raw date text does not become a temporal event until a
+  later explicit canonical date-normalisation policy exists.
+
 - **No real ingestion pipeline.** `EvidenceRecordV1` is a contract only; there is no upload endpoint, no MinIO write path, and no real SHA-256 computation over uploaded bytes.
 - **No real OCR engine.** `app/modules/structured_processing/document/ocr_routing.py` only makes the *routing decision* (which pages need OCR) and returns a `DEFERRED` result with a checkpoint naming them — no Tesseract, cloud OCR API, or OCR model is invoked. A later phase must consume that checkpoint and actually run OCR.
 - **No NER/NLP/LLM-based extraction.** `document/fir_report.py` is fixed regex patterns only (explicit labels or structurally-distinctive formats); it will miss anything not matching those patterns (an unlabelled FIR number, a name written in free prose, a non-Indian phone/vehicle format). No source extractor for video/image/audio/social-chat exists either.

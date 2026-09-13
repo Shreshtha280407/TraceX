@@ -2,6 +2,13 @@
 
 Team: Nipun (Phase 1 — core foundation), Shreshtha, Aditya, Jasraj, Gaurav, Sarthak (later-phase modules building on the Phase 1 contracts).
 
+## Phase 3 — Shreshtha graph mapping
+
+Deterministic, versioned document/CDR/finance mapping plans now project
+case-scoped source claims and event-first CDR/financial temporal events
+through the existing durable graph outbox. See
+`docs/architecture/phase-3-graph-mapping.md`.
+
 ## Phase 1 — Nipun core foundation: Complete
 
 All acceptance criteria below are verified as of 2026-09-10 — see `docs/qa/test-results.md` for actual command output, including the full-stack `docker compose up --build` run with all five services healthy and all three endpoints hit live.

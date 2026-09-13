@@ -98,6 +98,18 @@ Like `tests/integration/test_readiness_live.py`, this suite self-skips (never fa
 
 ## Graph projection (Phase 2.5 — durable observation-to-Neo4j pipeline)
 
+### Phase 3 mapping verification
+
+After applying the graph schema, run the graph projector twice for the same
+accepted document, CDR, or finance observation batch. `TemporalEvent` and
+`SourceClaim` counts must remain unchanged, and every specialised node must
+traverse through its parent `Observation` to same-case `Evidence`. The live
+check self-skips when Neo4j is unavailable:
+
+```bash
+uv run pytest -q tests/integration/graph/test_phase_3_mapping_live.py
+```
+
 See `docs/architecture/graph-projection.md` for the full design. After applying the graph schema above and running the usual migration (`uv run alembic upgrade head` — includes `graph_projection_jobs`), accepted worker results automatically enqueue durable projection jobs; nothing further is needed to *create* them. To actually project queued jobs into Neo4j:
 
 ```bash
