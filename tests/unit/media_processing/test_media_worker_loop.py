@@ -47,6 +47,7 @@ class _LoopFakeClient:
     on_claim_call: Callable[[int], None] | None = None
     claim_calls: int = 0
     submit_calls: list[UUID] = field(default_factory=list)
+    submit_batch_calls: list[UUID] = field(default_factory=list)
     renew_calls: list[UUID] = field(default_factory=list)
 
     def claim(self, *, processor_name: str, processor_version: str) -> ClaimResult:  # noqa: ARG002
@@ -64,6 +65,9 @@ class _LoopFakeClient:
             job_id=job_id, status="succeeded", result_id=uuid4(), observation_count=1,
             observation_ids=(uuid4(),),
         )  # fmt: skip
+
+    def submit_batch(self, *, job_id: UUID, claim_token: str, submission: object) -> None:  # noqa: ARG002
+        self.submit_batch_calls.append(job_id)
 
     def renew(self, job_id: UUID, *, claim_token: str) -> datetime:  # noqa: ARG002
         self.renew_calls.append(job_id)

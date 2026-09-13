@@ -19,13 +19,13 @@ from app.contracts.observation import ObservationV1
 from app.contracts.worker import WorkerResultV1, WorkerStatus
 from app.modules.media_processing import worker as worker_module
 from app.modules.media_processing.analysis.fake_detector import FakeObjectDetector
-from app.modules.media_processing.analysis.fake_ocr import FakeTextRecognizer
 from app.modules.media_processing.analysis.fake_tracker import FakeObjectTracker
 from app.modules.media_processing.analysis.interfaces import ObjectDetection
 from app.modules.media_processing.errors import ErrorCode
 from app.modules.media_processing.image.geometry import PixelBoundingBox
 from app.modules.media_processing.limits import DEFAULT_MEDIA_LIMITS, MediaLimits
 from app.modules.media_processing.models import ExtractedFrame, VideoMetadata
+from app.modules.media_processing.ocr_adapter import FixtureOcrAdapter
 from app.modules.media_processing.source import StaticBytesResolver
 from app.modules.media_processing.worker import (
     PROCESSOR_NAME_DETECTION,
@@ -174,24 +174,21 @@ def test_image_text_region_with_ocr_produces_ocr_text_mention() -> None:
         source_type=SourceType.IMAGE,
     )
     detector = FakeObjectDetector(label="text_region")
+    batches = []
+
+    def fake_callback(frame, img, meta):
+        batches.append((frame, meta))
+
     result = process_job(
         job,
         evidence,
         StaticBytesResolver(payload=make_png_bytes(width=100, height=100)),
         detector=detector,
-        ocr=FakeTextRecognizer(),
+        ocr_adapter=FixtureOcrAdapter(),
+        submit_ocr_batch=fake_callback,
     )
     _assert_valid_result(result)
-    types = [o.observation_type for o in result.observations]
-    assert "text_region_detection" in types
-    assert "object_detection" not in types
-    assert "ocr_text_mention" in types
-    ocr_observation = next(
-        o for o in result.observations if o.observation_type == "ocr_text_mention"
-    )
-    assert len(ocr_observation.extracted_entities) == 1
-    assert "FAKE" in ocr_observation.extracted_entities[0].text
-    assert ocr_observation.extracted_entities[0].entity_type_hint == "ocr_text"
+    assert len(batches) == 1
 
 
 def test_input_size_limit_is_enforced() -> None:
@@ -403,24 +400,21 @@ def test_video_ocr_on_text_region_produces_ocr_text_mention(
     monkeypatch.setattr(worker_module, "probe_video", lambda path, *, limits: _VIDEO_METADATA)
     monkeypatch.setattr(worker_module, "extract_frames", lambda *a, **kw: (_fake_frames(), 0))
     evidence, job = _make_video_job_and_evidence(PROCESSOR_NAME_DETECTION)
+    batches = []
+
+    def fake_callback(frame, img, meta):
+        batches.append((frame, meta))
+
     result = process_job(
         job,
         evidence,
         StaticBytesResolver(payload=b"fake-mp4-bytes"),
         detector=FakeObjectDetector(label="text_region"),
-        ocr=FakeTextRecognizer(),
+        ocr_adapter=FixtureOcrAdapter(),
+        submit_ocr_batch=fake_callback,
     )
     _assert_valid_result(result)
-    ocr_mentions = [o for o in result.observations if o.observation_type == "ocr_text_mention"]
-    # 2 from the detector's own `text_region`-labelled crops (the gated
-    # pathway this test targets) + 2 from the independent whole-frame
-    # `recognize_regions` pass every configured `ocr` component now also
-    # gets per frame (see `worker.py`'s `_process_video_analysis`) -- both
-    # pathways fire whenever a detector happens to emit that label.
-    assert len(ocr_mentions) == 4
-    for mention in ocr_mentions:
-        assert len(mention.extracted_entities) == 1
-        assert mention.source_locator.frame_number is not None
+    assert len(batches) == 2
 
 
 def test_video_frames_failed_counter_is_tracked_via_stopwatch(

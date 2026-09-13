@@ -2,6 +2,75 @@
 
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
+## 2026-09-13 — Gaurav — Phase 3 closeout: video-frame OCR live test, full verification
+
+Environment: same local dev machine as the entry below, branch `gaurav` (clean apart from this task's own uncommitted changes, `origin/main...HEAD` = `0 0`). Docker's daemon itself was down for this entire session (`docker ps`/`docker info` fail with a socket-not-found error, unrelated to this task's code — the same class of transient environment issue documented in Nipun's own Phase 2/3 sessions) — infra containers could not be started, so every live (`tests/integration/`) test in this repository self-skips in this run, not only this task's own.
+
+```bash
+$ uv run ruff format --check .
+360 files already formatted
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 153 source files
+
+$ uv run pytest -q
+1585 passed, 58 skipped in 31.93s
+
+$ docker compose config
+(valid — no output on success)
+
+$ docker ps
+Cannot connect to the Docker daemon at unix:///home/nipun/.docker/desktop/docker.sock. Is the docker daemon running?
+```
+
+**Added this session**: `test_video_frame_ocr_batch_submission_end_to_end_live` (closes the previously-missing live video-frame OCR scenario) plus its `_real_ocr_video_fixture`/`make_text_video_bytes` helpers. The underlying fixture and pipeline were verified directly (outside pytest, since no live API/DB is reachable in this environment) to prove the helper itself is correct, not just that it self-skips cleanly:
+
+```text
+$ uv run python -c "... build a real labelled MP4 via make_text_video_bytes, decode it with the
+  real ffprobe/frame-extraction path, run the real ImageOcrAdapter on each sampled frame ..."
+probe: 640 180 1000 5.0 5
+frames extracted: 5 failed: 0
+frame 0 0 200 -> ['TRACEX OCR']
+frame 1 200 400 -> ['TRACEX OCR']
+frame 2 400 600 -> ['TRACEX OCR']
+frame 3 600 800 -> ['TRACEX OCR']
+frame 4 800 1000 -> ['TRACEX OCR']
+```
+
+Real Tesseract genuinely recognizes the labelled text on every real sampled frame, with correct per-frame timestamps — confirming the fixture and the adapter's video-frame path both work correctly. The pytest wrapper itself (`test_video_frame_ocr_batch_submission_end_to_end_live`) was confirmed to collect cleanly and self-skip (not error) given the unreachable live API:
+
+```bash
+$ uv run pytest tests/integration/media_processing/test_media_worker_live.py::test_video_frame_ocr_batch_submission_end_to_end_live -v
+tests/integration/media_processing/test_media_worker_live.py::test_video_frame_ocr_batch_submission_end_to_end_live SKIPPED [100%]
+1 skipped in 0.21s
+```
+
+**Honest status**: the video-frame live OCR test's full path (real upload → real claim → real OCR-on-video-frame → real batch submission → real graph outbox → real projector idempotency → real Neo4j/HTTP confirmation) has **not** been exercised end to end against a live server in this sandbox, because Docker itself could not be started here. It is not claimed as a live-verified pass — only the underlying fixture/adapter behavior it depends on was independently confirmed correct. The same is true of the pre-existing `test_ocr_batch_submission_end_to_end_image_live` (image path) and every other `tests/integration/` test in this repository this session — none could be run against real infra here. Re-run `uv run pytest tests/integration/media_processing/test_media_worker_live.py -v` once Docker/the API stack are reachable to get a real pass/fail on all of them.
+
+## 2026-09-13 — Gaurav — Phase 3: Shared Raster-Image OCR Bounding-Box Adapter and Fixtures
+
+Environment: Local dev machine, branch `gaurav`. Verified new `ImageOcrAdapter` and batching integration.
+
+```bash
+$ uv run pytest tests/unit/media_processing/test_ocr_adapter.py tests/unit/media_processing/test_ocr_batching.py tests/integration/media_processing/test_media_worker_live.py
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/nipun/Documents/Projects/TraceX
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 56 items                                                             
+
+tests/unit/media_processing/test_ocr_adapter.py ........................ [ 42%]
+..........                                                               [ 60%]
+tests/unit/media_processing/test_ocr_batching.py ................        [ 89%]
+tests/integration/media_processing/test_media_worker_live.py ssssss      [100%]
+
+======================== 50 passed, 6 skipped in 0.49s =========================
+```
 ## 2026-09-12 — Nipun — Phase 3: Canonical Observation Ingestion, Batch Persistence, Progress, and Transformation Provenance build
 
 Environment: same local dev machine as the prior Phase 2 closeout entry, branch `nipun` (clean tree, `origin/main...HEAD` = `0 0` at session start). Docker infra containers (`postgres`/`redis`/`neo4j`/`minio`) were already running and healthy; the `api` image's own *rebuild* was blocked again by the same persistent sandbox-network DNS flakiness documented in the prior Phase 2 closeout entry (this time failing on `sqlalchemy` and, on a second retry, `onnxruntime` — different packages, same transient DNS-resolution root cause, confirmed unrelated to any code in this task). Infra and live verification were **not** blocked — verified via the same documented "Option B" workflow (`docker compose up -d postgres neo4j redis minio` + `uv run uvicorn app.main:app` on the host).
@@ -2258,3 +2327,28 @@ The 15 failures in run 1 were investigated, not assumed benign: `SELECT last_err
 ### Final state
 
 `git status --short` shows only working-tree modifications (no staged files, no commits, no branch switch) — still on branch `sarthak`, no branch switch performed. Docker stack left running (rebuilt via `docker compose up --build -d` to pick up this session's code changes; `.env` unchanged throughout); `docker compose down` removes it cleanly whenever wanted.
+
+## Gaurav Phase 3 OCR adapter follow-up verification (2026-09-13)
+
+Local tool availability was verified before OCR tests: `tesseract 5.5.2` and
+`/usr/share/fonts/noto/NotoSans-Bold.ttf` were present. The real
+`ImageOcrAdapter` was constructed and exercised against labelled synthetic
+PNG and JPEG fixtures containing `TRACEX OCR`; both recognized `TRACEX` and
+returned bounded OCR-quality confidence plus valid original-space/normalized
+geometry. This is a genuine local OCR result, not fixture-adapter output.
+
+```text
+uv run pytest -q tests/unit/media_processing/test_ocr_adapter.py \
+  tests/unit/media_processing/test_ocr_batching.py \
+  tests/unit/media_processing/test_media_worker_orchestration.py \
+  tests/unit/media_processing/test_media_worker.py
+82 passed in 1.22s
+```
+
+The focused suite also exercised the real `run_once` closure with a fake
+claim-bound client: SHA verification, OCR micro-batch submission, regular
+media-observation batch submission, exactly one empty terminal result, safe
+batch-failure terminal behavior, and an ffmpeg-backed video branch with
+zero-based global batch sequences and a final video-frame progress batch.
+The live PostgreSQL/Neo4j/Redis/MinIO verification remains environment-gated;
+it was not claimed as run in this follow-up because the stack was unavailable.

@@ -90,8 +90,11 @@ from app.modules.media_processing.worker import (
 )
 from tests.fixtures.media_processing.synthetic import (
     ffmpeg_available,
+    find_test_font,
     make_png_bytes,
     make_synthetic_mp4_bytes,
+    make_text_png_bytes,
+    make_text_video_bytes,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -114,6 +117,73 @@ def _live_settings() -> Settings:
     kwargs: dict[str, Any] = {k.lower(): v for k, v in values.items() if v is not None}
     kwargs.setdefault("worker_credential_pepper", None)
     return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
+
+
+def _real_ocr_fixture() -> tuple[bytes, object]:
+    """Build a labelled raster and the real local adapter, or precisely skip.
+
+    Fixture OCR belongs in deterministic unit tests. These live tests prove
+    the system Tesseract path and must never substitute synthetic text when
+    that local runtime is absent.
+    """
+    from app.modules.media_processing.errors import OcrRuntimeError
+    from app.modules.media_processing.ocr_adapter import ImageOcrAdapter
+
+    font_path = find_test_font()
+    if font_path is None:
+        pytest.skip("real local OCR unavailable: no TrueType font for labelled fixture")
+    try:
+        adapter = ImageOcrAdapter()
+    except OcrRuntimeError as exc:
+        pytest.skip(f"real local OCR unavailable: {exc}")
+    return (
+        make_text_png_bytes(
+            "TRACEX OCR",
+            width=640,
+            height=180,
+            font_path=font_path,
+            font_size=72,
+            text_x=30,
+            text_y=40,
+        ),
+        adapter,
+    )
+
+
+def _real_ocr_video_fixture() -> tuple[bytes, object]:
+    """Build a labelled synthetic MP4 and the real local adapter, or precisely skip.
+
+    Mirrors `_real_ocr_fixture()` for the video-frame path: this live test
+    proves the real Tesseract-on-a-real-sampled-video-frame path and must
+    never substitute `FixtureOcrAdapter` or a textless clip for a
+    genuinely-missing local `ffmpeg`/font/Tesseract runtime.
+    """
+    from app.modules.media_processing.errors import OcrRuntimeError
+    from app.modules.media_processing.ocr_adapter import ImageOcrAdapter
+
+    if not ffmpeg_available():
+        pytest.skip("real local OCR unavailable: ffmpeg/ffprobe not on PATH")
+    font_path = find_test_font()
+    if font_path is None:
+        pytest.skip("real local OCR unavailable: no TrueType font for labelled fixture")
+    try:
+        adapter = ImageOcrAdapter()
+    except OcrRuntimeError as exc:
+        pytest.skip(f"real local OCR unavailable: {exc}")
+    return (
+        make_text_video_bytes(
+            "TRACEX OCR",
+            width=640,
+            height=180,
+            font_path=font_path,
+            font_size=72,
+            text_x=30,
+            text_y=40,
+            duration_seconds=2.0,
+            fps=5.0,
+        ),
+        adapter,
+    )
 
 
 def _skip_unless_api_reachable(settings: Settings) -> None:
@@ -322,7 +392,7 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
                     input_resolver=LiveInputResolver(client),
                     detector=components.detector,
                     tracker=components.tracker,
-                    ocr=components.ocr,
+                    ocr_adapter=components.ocr_adapter,
                 )
             finally:
                 client.close()
@@ -488,4 +558,891 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
                 await conn.execute(sa.delete(cases_table).where(cases_table.c.case_id == case_id))
             if user_id is not None:
                 await conn.execute(sa.delete(users_table).where(users_table.c.user_id == user_id))
+        await ac_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: OCR micro-batch live tests (scenarios 24-30)
+# ---------------------------------------------------------------------------
+
+
+async def test_ocr_batch_submission_end_to_end_image_live() -> None:
+    """Scenario 24-26: real local OCR → batch submit
+    → terminal result → graph outbox exactly once → projector idempotent.
+
+    Self-skips when the live API or PostgreSQL/Neo4j/MinIO are not reachable.
+    """
+    from app.modules.evidence_lifecycle.repository import (
+        graph_projection_jobs_table,
+        observation_batches_table,
+        observation_transformations_table,
+        worker_observations_table,
+        worker_results_table,
+    )
+    from app.modules.graph.outbox_repository import GraphProjectionOutboxRepository
+    from app.modules.graph.outbox_repository import create_engine as create_pg_engine_for_graph
+    from app.modules.graph.projector import run_batch as run_projection_batch
+    from app.modules.graph.queries import list_case_observations
+    from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+    from app.modules.media_processing.image.decoder import decode_image
+    from app.modules.media_processing.limits import DEFAULT_MEDIA_LIMITS
+    from app.modules.media_processing.ocr_batching import (
+        OcrBatchConfig,
+        build_terminal_result,
+        iter_image_ocr_batches,
+    )
+
+    settings = _live_settings()
+    _skip_unless_api_reachable(settings)
+    png_bytes, adapter = _real_ocr_fixture()
+
+    try:
+        await check_postgres(settings)
+        await check_minio(settings)
+        await check_neo4j(settings)
+    except Exception as exc:
+        pytest.skip(f"live PostgreSQL/Neo4j/MinIO not reachable: {type(exc).__name__}")
+
+    await _ensure_worker_credential(settings, _MEDIA_WORKER_TOKEN)
+
+    ac_engine = create_ac_engine(settings)
+    repository = AccessControlRepository(ac_engine)
+    email = f"ocr-batch-live-{uuid4().hex[:8]}@example.test"
+    password = "correct-horse-battery-staple"  # noqa: S105
+
+    graph_driver = create_driver(settings)
+    graph_repository = Neo4jGraphRepository(graph_driver)
+    case_id = None
+    user_id = None
+    try:
+        async with ac_engine.begin() as conn:
+            await conn.execute(
+                sa.delete(worker_jobs_table).where(
+                    worker_jobs_table.c.processor_name == "media_detection_v1",
+                    worker_jobs_table.c.status == "queued",
+                )
+            )
+
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
+            register = await ac.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": email,
+                    "password": password,
+                    "display_name": "OCR Batch Live Test",
+                },
+            )
+            assert register.status_code == 201, register.text
+            user_id = register.json()["user_id"]
+
+            login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
+            assert login.status_code == 200, login.text
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+            case = CaseRecord(
+                case_id=uuid4(),
+                case_reference=f"OCR-BATCH-LIVE-{uuid4().hex[:8]}",
+                classification=ClearanceLevel.RESTRICTED,
+                status=CaseStatus.OPEN,
+                created_at=datetime.now(UTC),
+            )
+            await repository.create_case(case)
+            case_id = case.case_id
+            membership = CaseMembershipRecord(
+                membership_id=uuid4(),
+                case_id=case.case_id,
+                user_id=user_id,
+                role=CaseRole.INVESTIGATOR,
+                clearance=ClearanceLevel.RESTRICTED,
+                is_active=True,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            await repository.create_membership(membership)
+
+            upload = await ac.post(
+                f"/api/v1/cases/{case.case_id}/evidence",
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+                files={"file": ("ocr_test.png", png_bytes, "image/png")},
+                data={"source_type": "image", "classification": "unclassified"},
+            )
+            assert upload.status_code == 201, upload.text
+            job_id = upload.json()["job"]["job_id"]
+            assert upload.json()["job"]["processor_name"] == "media_detection_v1"
+
+            # --- Phase 3: claim, real local OCR, batch submit ---
+            client = WorkerApiClient(
+                base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
+            )
+            try:
+                claim = client.claim(processor_name="media_detection_v1", processor_version="1.0.0")
+                assert claim.job is not None and str(claim.job.job_id) == job_id
+                claim_token = claim.claim_token
+                assert claim_token
+
+                job = claim.job
+
+                # Resolve evidence bytes via the claim-token-bound endpoint.
+                from app.modules.media_processing.input_resolver import LiveInputResolver  # noqa
+
+                resolved = LiveInputResolver(client).resolve(job, claim_token=claim_token)
+
+                image, metadata = decode_image(resolved.data, limits=DEFAULT_MEDIA_LIMITS)
+                ocr_results = adapter.run(image, metadata)  # type: ignore[attr-defined]
+                assert any("TRACEX" in result.text.upper() for result in ocr_results)
+
+                # Scenario 25: batch submission round-trip.
+                batch_config = OcrBatchConfig(batch_size=50, units_total=len(ocr_results))
+                obs_ids_submitted: list[str] = []
+                for submission in iter_image_ocr_batches(
+                    ocr_results,
+                    job=job,
+                    idempotency_key_prefix=f"{job_id}-ocr-live",
+                    batch_config=batch_config,
+                    completed_at=datetime.now(UTC),
+                ):
+                    receipt = client.submit_batch(
+                        job_id=job.job_id,
+                        claim_token=claim_token,
+                        submission=submission,
+                    )
+                    assert receipt.status in ("accepted", "replayed")
+                    obs_ids_submitted.extend(str(o.observation_id) for o in submission.observations)
+
+                # Submit terminal result with observations=[].
+                terminal = build_terminal_result(
+                    job_id=job.job_id,
+                    case_id=job.case_id,
+                    evidence_id=job.evidence_id,
+                    completed_at=datetime.now(UTC),
+                )
+                ack = client.submit_result(
+                    job_id=job.job_id, claim_token=claim_token, result=terminal
+                )
+                assert ack.status == "succeeded"
+
+            finally:
+                client.close()
+
+            # --- Verify job status ---
+            status_response = await ac.get(
+                f"/api/v1/cases/{case.case_id}/jobs/{job_id}", headers=headers
+            )
+            assert status_response.status_code == 200
+            job_status = status_response.json()
+            assert job_status["status"] == "succeeded"
+            assert job_status["processor_name"] == "media_detection_v1"
+
+            # Scenario 27: security invariants -- no raw bytes, URI, or token in response.
+            status_text = status_response.text
+            assert "object_uri" not in status_text
+            if settings.worker_token:
+                assert settings.worker_token.get_secret_value() not in status_text
+
+            # --- Verify durable rows ---
+            async with ac_engine.begin() as conn:
+                obs_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(worker_observations_table).where(
+                                worker_observations_table.c.job_id == uuid4().__class__(job_id)
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                # Observations exist for each batch-delivered OCR result.
+                batch_obs = [r for r in obs_rows if r["observation_batch_id"] is not None]
+                assert len(batch_obs) == len(obs_ids_submitted), (
+                    f"expected {len(obs_ids_submitted)} batch-delivered observations, "
+                    f"got {len(batch_obs)}"
+                )
+                # Terminal result observations are empty.
+                result_obs = [r for r in obs_rows if r["result_id"] is not None]
+                assert result_obs == [], "terminal result must carry no observations"
+
+        # --- Scenario 26: graph outbox exactly once, projector idempotent ---
+        if obs_ids_submitted:
+            async with ac_engine.begin() as conn:
+                outbox_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(graph_projection_jobs_table).where(
+                                graph_projection_jobs_table.c.observation_id.in_(
+                                    [uuid4().__class__(oid) for oid in obs_ids_submitted]
+                                )
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            assert len(outbox_rows) == len(obs_ids_submitted), (
+                "expected one graph-projection job per submitted observation"
+            )
+            assert {r["status"] for r in outbox_rows} == {"queued"}
+
+            pg_engine = create_pg_engine_for_graph(settings)
+            outbox = GraphProjectionOutboxRepository(pg_engine)
+            try:
+                # First run projects everything.
+                first_summary = await run_projection_batch(
+                    outbox,
+                    graph_repository,
+                    now=datetime.now(UTC),
+                    lease_seconds=settings.graph_projection_lease_seconds,
+                    batch_size=settings.graph_projection_batch_size,
+                )
+                # Scenario 28: second run is a no-op (idempotent).
+                second_summary = await run_projection_batch(
+                    outbox,
+                    graph_repository,
+                    now=datetime.now(UTC),
+                    lease_seconds=settings.graph_projection_lease_seconds,
+                    batch_size=settings.graph_projection_batch_size,
+                )
+            finally:
+                await outbox.close()
+
+            obs_id_set = {uuid4().__class__(oid) for oid in obs_ids_submitted}
+            first_own = [a for a in first_summary.attempts if a.job.observation_id in obs_id_set]
+            assert all(a.outcome == "succeeded" for a in first_own)
+            second_own = [a for a in second_summary.attempts if a.job.observation_id in obs_id_set]
+            assert second_own == [], "second projector run must produce no new work for these obs"
+
+            # After projection: observations appear in Neo4j.
+            post_page = await list_case_observations(graph_repository, case_id)
+            projected_ids = {item.observation.observation_id for item in post_page.items}
+            for oid in obs_ids_submitted:
+                assert uuid4().__class__(oid) in projected_ids, (
+                    f"observation {oid} not found in Neo4j after projection"
+                )
+
+    finally:
+        if case_id is not None:
+            with contextlib.suppress(Exception):
+                await graph_repository.write(
+                    "MATCH (n {case_id: $case_id}) DETACH DELETE n", {"case_id": str(case_id)}
+                )
+        await graph_repository.close()
+        async with ac_engine.begin() as conn:
+            if case_id is not None:
+                _case_id_uuid = uuid4().__class__(str(case_id))
+                for table in [
+                    graph_projection_jobs_table,
+                    worker_observations_table,
+                    observation_batches_table,
+                    observation_transformations_table,
+                    worker_results_table,
+                    worker_jobs_table,
+                    evidence_records_table,
+                    case_memberships_table,
+                ]:
+                    with contextlib.suppress(Exception):
+                        await conn.execute(sa.delete(table).where(table.c.case_id == _case_id_uuid))
+                await conn.execute(
+                    sa.delete(cases_table).where(cases_table.c.case_id == _case_id_uuid)
+                )
+            if user_id is not None:
+                await conn.execute(sa.delete(users_table).where(users_table.c.user_id == user_id))
+        await ac_engine.dispose()
+
+
+async def test_video_frame_ocr_batch_submission_end_to_end_live() -> None:
+    """Scenario 26: real local OCR on a real sampled video frame -> batch submit
+    -> empty terminal result -> graph outbox exactly once -> projector idempotent.
+
+    Self-skips when the live API, PostgreSQL/Neo4j/MinIO, `ffmpeg`/`ffprobe`,
+    or a real local Tesseract/font are not reachable -- never substitutes
+    `FixtureOcrAdapter` or a textless video for a genuinely-missing runtime
+    (see `_real_ocr_video_fixture`). Uses `FakeObjectDetector` only to enter
+    the existing, unchanged video-analysis sampling path deterministically --
+    this test proves the OCR/batch/outbox behavior for a video frame, not
+    object-detection accuracy (already covered by
+    `test_full_upload_claim_stream_verify_process_submit_project_live_pipeline`).
+    """
+    from app.modules.evidence_lifecycle.repository import (
+        observation_batches_table,
+        observation_transformations_table,
+    )
+    from app.modules.media_processing.analysis.fake_detector import FakeObjectDetector
+
+    settings = _live_settings()
+    _skip_unless_api_reachable(settings)
+    video_bytes, adapter = _real_ocr_video_fixture()
+
+    try:
+        await check_postgres(settings)
+        await check_minio(settings)
+        await check_neo4j(settings)
+    except Exception as exc:
+        pytest.skip(f"live PostgreSQL/Neo4j/MinIO not reachable: {type(exc).__name__}")
+
+    await _ensure_worker_credential(settings, _MEDIA_WORKER_TOKEN)
+
+    ac_engine = create_ac_engine(settings)
+    repository = AccessControlRepository(ac_engine)
+    email = f"ocr-video-live-{uuid4().hex[:8]}@example.test"
+    password = "correct-horse-battery-staple"  # noqa: S105
+
+    graph_driver = create_driver(settings)
+    graph_repository = Neo4jGraphRepository(graph_driver)
+    case_id = None
+    user_id = None
+    job_id: str | None = None
+    try:
+        async with ac_engine.begin() as conn:
+            await conn.execute(
+                sa.delete(worker_jobs_table).where(
+                    worker_jobs_table.c.processor_name == "media_detection_v1",
+                    worker_jobs_table.c.status == "queued",
+                )
+            )
+
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
+            register = await ac.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": email,
+                    "password": password,
+                    "display_name": "OCR Video Live Test",
+                },
+            )
+            assert register.status_code == 201, register.text
+            user_id = register.json()["user_id"]
+
+            login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
+            assert login.status_code == 200, login.text
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+            case = CaseRecord(
+                case_id=uuid4(),
+                case_reference=f"OCR-VIDEO-LIVE-{uuid4().hex[:8]}",
+                classification=ClearanceLevel.RESTRICTED,
+                status=CaseStatus.OPEN,
+                created_at=datetime.now(UTC),
+            )
+            await repository.create_case(case)
+            case_id = case.case_id
+            membership = CaseMembershipRecord(
+                membership_id=uuid4(),
+                case_id=case.case_id,
+                user_id=user_id,
+                role=CaseRole.INVESTIGATOR,
+                clearance=ClearanceLevel.RESTRICTED,
+                is_active=True,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            await repository.create_membership(membership)
+
+            upload = await ac.post(
+                f"/api/v1/cases/{case.case_id}/evidence",
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+                files={"file": ("ocr_video_test.mp4", video_bytes, "video/mp4")},
+                data={"source_type": "video", "classification": "unclassified"},
+            )
+            assert upload.status_code == 201, upload.text
+            job_id = upload.json()["job"]["job_id"]
+            assert upload.json()["job"]["processor_name"] == "media_detection_v1"
+
+            # --- real worker: claim -> stream -> SHA-256 verify -> sample real
+            # frames -> real OCR per frame -> batch submit -> empty terminal result ---
+            client = WorkerApiClient(
+                base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
+            )
+            try:
+                outcome = run_once(
+                    client=client,
+                    input_resolver=LiveInputResolver(client),
+                    detector=FakeObjectDetector(),
+                    ocr_adapter=adapter,  # type: ignore[arg-type]
+                )
+            finally:
+                client.close()
+
+            assert outcome.claimed is True
+            assert outcome.job_id is not None and str(outcome.job_id) == job_id
+            assert outcome.result_status == "succeeded", outcome
+
+            status_response = await ac.get(
+                f"/api/v1/cases/{case.case_id}/jobs/{job_id}", headers=headers
+            )
+            assert status_response.status_code == 200
+            job_status = status_response.json()
+            assert job_status["status"] == "succeeded"
+            assert job_status["observation_count"] > 0
+
+            status_text = status_response.text
+            assert "object_uri" not in status_text
+            if settings.worker_token:
+                assert settings.worker_token.get_secret_value() not in status_text
+
+        # --- durable rows: real, frame-precise, recognizable OCR text ---
+        async with ac_engine.begin() as conn:
+            obs_rows = (
+                (
+                    await conn.execute(
+                        sa.select(worker_observations_table).where(
+                            worker_observations_table.c.job_id == uuid4().__class__(job_id)
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            ocr_rows = [r for r in obs_rows if r["observation_type"] == "ocr_text_mention"]
+            assert ocr_rows, "no ocr_text_mention observation was persisted for the video"
+            frame_ocr_rows = [
+                r
+                for r in ocr_rows
+                if r["canonical_payload"]["source_locator"].get("frame_number") is not None
+            ]
+            assert frame_ocr_rows, "no ocr_text_mention observation carries a frame_number locator"
+            for row in frame_ocr_rows:
+                locator = row["canonical_payload"]["source_locator"]
+                assert locator["time_start_ms"] is not None
+                assert locator["time_end_ms"] is not None
+                assert locator["time_start_ms"] <= locator["time_end_ms"]
+                assert locator["bbox_xyxy_normalized"] is not None
+            recognized_text = " ".join(
+                mention["text"]
+                for row in frame_ocr_rows
+                for mention in row["canonical_payload"]["extracted_entities"]
+            ).upper()
+            assert "TRACEX" in recognized_text
+            # Terminal result observations are empty -- everything went through batches.
+            result_obs = [r for r in obs_rows if r["result_id"] is not None]
+            assert result_obs == [], "terminal result must carry no observations"
+            observation_ids = [r["observation_id"] for r in obs_rows]
+
+        # --- graph outbox exactly once per observation, projector idempotent ---
+        async with ac_engine.begin() as conn:
+            outbox_rows = (
+                (
+                    await conn.execute(
+                        sa.select(graph_projection_jobs_table).where(
+                            graph_projection_jobs_table.c.observation_id.in_(observation_ids)
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(outbox_rows) == len(observation_ids), (
+            "expected exactly one graph-projection job per persisted observation"
+        )
+        assert {r["status"] for r in outbox_rows} == {"queued"}
+
+        pg_engine = create_pg_engine_for_graph(settings)
+        outbox = GraphProjectionOutboxRepository(pg_engine)
+        try:
+            first_summary = await run_batch(
+                outbox,
+                graph_repository,
+                now=datetime.now(UTC),
+                lease_seconds=settings.graph_projection_lease_seconds,
+                batch_size=settings.graph_projection_batch_size,
+            )
+            second_summary = await run_batch(
+                outbox,
+                graph_repository,
+                now=datetime.now(UTC),
+                lease_seconds=settings.graph_projection_lease_seconds,
+                batch_size=settings.graph_projection_batch_size,
+            )
+        finally:
+            await outbox.close()
+
+        obs_id_set = set(observation_ids)
+        first_own = [a for a in first_summary.attempts if a.job.observation_id in obs_id_set]
+        assert all(a.outcome == "succeeded" for a in first_own)
+        second_own = [a for a in second_summary.attempts if a.job.observation_id in obs_id_set]
+        assert second_own == [], (
+            "second projector run must produce no new work for these observations"
+        )
+
+        post_page = await list_case_observations(graph_repository, case_id)
+        projected_ids = {item.observation.observation_id for item in post_page.items}
+        for oid in observation_ids:
+            assert oid in projected_ids, f"observation {oid} not found in Neo4j after projection"
+    finally:
+        if case_id is not None:
+            with contextlib.suppress(Exception):
+                await graph_repository.write(
+                    "MATCH (n {case_id: $case_id}) DETACH DELETE n", {"case_id": str(case_id)}
+                )
+        await graph_repository.close()
+        async with ac_engine.begin() as conn:
+            if case_id is not None:
+                for table in [
+                    graph_projection_jobs_table,
+                    worker_observations_table,
+                    observation_batches_table,
+                    observation_transformations_table,
+                    worker_results_table,
+                    worker_jobs_table,
+                    evidence_records_table,
+                    case_memberships_table,
+                ]:
+                    with contextlib.suppress(Exception):
+                        await conn.execute(sa.delete(table).where(table.c.case_id == case_id))
+                await conn.execute(sa.delete(cases_table).where(cases_table.c.case_id == case_id))
+            if user_id is not None:
+                await conn.execute(sa.delete(users_table).where(users_table.c.user_id == user_id))
+        await ac_engine.dispose()
+
+
+async def test_ocr_batch_replay_is_idempotent_live() -> None:
+    """Scenario 29: submitting the same batch twice returns 'replayed', no duplicate rows.
+
+    Self-skips when the live API or PostgreSQL/MinIO are not reachable.
+    """
+    from app.modules.evidence_lifecycle.repository import (
+        observation_batches_table,
+        worker_observations_table,
+    )
+    from app.modules.media_processing.image.decoder import decode_image
+    from app.modules.media_processing.limits import DEFAULT_MEDIA_LIMITS
+    from app.modules.media_processing.ocr_batching import OcrBatchConfig, iter_image_ocr_batches
+
+    settings = _live_settings()
+    _skip_unless_api_reachable(settings)
+    png_bytes, adapter = _real_ocr_fixture()
+    try:
+        await check_postgres(settings)
+        await check_minio(settings)
+    except Exception as exc:
+        pytest.skip(f"live PostgreSQL/MinIO not reachable: {type(exc).__name__}")
+
+    await _ensure_worker_credential(settings, _MEDIA_WORKER_TOKEN)
+
+    ac_engine = create_ac_engine(settings)
+    repository = AccessControlRepository(ac_engine)
+    email = f"ocr-replay-live-{uuid4().hex[:8]}@example.test"
+    password = "correct-horse-battery-staple"  # noqa: S105
+    case_id = None
+    user_id = None
+
+    try:
+        async with ac_engine.begin() as conn:
+            await conn.execute(
+                sa.delete(worker_jobs_table).where(
+                    worker_jobs_table.c.processor_name == "media_detection_v1",
+                    worker_jobs_table.c.status == "queued",
+                )
+            )
+
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
+            register = await ac.post(
+                "/api/v1/auth/register",
+                json={"email": email, "password": password, "display_name": "OCR Replay Test"},
+            )
+            assert register.status_code == 201, register.text
+            user_id = register.json()["user_id"]
+
+            login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
+            assert login.status_code == 200, login.text
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+            case = CaseRecord(
+                case_id=uuid4(),
+                case_reference=f"OCR-REPLAY-{uuid4().hex[:8]}",
+                classification=ClearanceLevel.RESTRICTED,
+                status=CaseStatus.OPEN,
+                created_at=datetime.now(UTC),
+            )
+            await repository.create_case(case)
+            case_id = case.case_id
+            membership = CaseMembershipRecord(
+                membership_id=uuid4(),
+                case_id=case.case_id,
+                user_id=user_id,
+                role=CaseRole.INVESTIGATOR,
+                clearance=ClearanceLevel.RESTRICTED,
+                is_active=True,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            await repository.create_membership(membership)
+
+            upload = await ac.post(
+                f"/api/v1/cases/{case.case_id}/evidence",
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+                files={"file": ("replay_test.png", png_bytes, "image/png")},
+                data={"source_type": "image", "classification": "unclassified"},
+            )
+            assert upload.status_code == 201, upload.text
+            job_id = upload.json()["job"]["job_id"]
+
+            client = WorkerApiClient(
+                base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
+            )
+            try:
+                claim = client.claim(processor_name="media_detection_v1", processor_version="1.0.0")
+                assert claim.job is not None and str(claim.job.job_id) == job_id
+                claim_token = claim.claim_token
+                job = claim.job
+
+                from app.modules.media_processing.input_resolver import LiveInputResolver  # noqa
+
+                resolved = LiveInputResolver(client).resolve(job, claim_token=claim_token)
+                image, metadata = decode_image(resolved.data, limits=DEFAULT_MEDIA_LIMITS)
+
+                ocr_results = adapter.run(image, metadata)  # type: ignore[attr-defined]
+
+                batch_config = OcrBatchConfig(batch_size=50, units_total=len(ocr_results))
+                all_batches = list(
+                    iter_image_ocr_batches(
+                        ocr_results,
+                        job=job,
+                        idempotency_key_prefix=f"{job_id}-replay",
+                        batch_config=batch_config,
+                        completed_at=datetime.now(UTC),
+                    )
+                )
+                assert all_batches
+
+                # Submit first time → accepted.
+                first_submission = all_batches[0]
+                r1 = client.submit_batch(
+                    job_id=job.job_id, claim_token=claim_token, submission=first_submission
+                )
+                assert r1.status == "accepted"
+
+                # Submit identical batch a second time → replayed, never duplicated.
+                r2 = client.submit_batch(
+                    job_id=job.job_id, claim_token=claim_token, submission=first_submission
+                )
+                assert r2.status == "replayed"
+
+                # Verify: still only one batch row and one observation row per obs.
+                obs_ids = [str(o.observation_id) for o in first_submission.observations]
+                async with ac_engine.begin() as conn:
+                    batch_rows = (
+                        (
+                            await conn.execute(
+                                sa.select(observation_batches_table).where(
+                                    observation_batches_table.c.batch_id
+                                    == first_submission.batch_id
+                                )
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    if obs_ids:
+                        obs_row = (
+                            (
+                                await conn.execute(
+                                    sa.select(worker_observations_table).where(
+                                        worker_observations_table.c.observation_id
+                                        == uuid4().__class__(obs_ids[0])
+                                    )
+                                )
+                            )
+                            .mappings()
+                            .all()
+                        )
+                        assert len(obs_row) == 1, (
+                            "idempotent replay must not duplicate observations"
+                        )
+                assert len(batch_rows) == 1, "idempotent replay must not create extra batch rows"
+
+            finally:
+                client.close()
+
+    finally:
+        async with ac_engine.begin() as conn:
+            if case_id is not None:
+                _case_id_uuid = uuid4().__class__(str(case_id))
+                for table in [
+                    worker_observations_table,
+                    observation_batches_table,
+                    worker_results_table,
+                    worker_jobs_table,
+                    evidence_records_table,
+                    case_memberships_table,
+                ]:
+                    with contextlib.suppress(Exception):
+                        await conn.execute(sa.delete(table).where(table.c.case_id == _case_id_uuid))
+                await conn.execute(
+                    sa.delete(cases_table).where(cases_table.c.case_id == _case_id_uuid)
+                )
+            if user_id is not None:
+                await conn.execute(sa.delete(users_table).where(users_table.c.user_id == user_id))
+        await ac_engine.dispose()
+
+
+async def test_ocr_batch_response_has_no_leaked_secrets_live() -> None:
+    """Scenario 30: no object_uri, claim token, or raw media bytes leak in any API response.
+
+    Self-skips when the live API or PostgreSQL/MinIO are not reachable.
+    """
+    from app.modules.media_processing.image.decoder import decode_image
+    from app.modules.media_processing.limits import DEFAULT_MEDIA_LIMITS
+    from app.modules.media_processing.ocr_batching import (
+        OcrBatchConfig,
+        build_terminal_result,
+        iter_image_ocr_batches,
+    )
+
+    settings = _live_settings()
+    _skip_unless_api_reachable(settings)
+    png_bytes, adapter = _real_ocr_fixture()
+    try:
+        await check_postgres(settings)
+        await check_minio(settings)
+    except Exception as exc:
+        pytest.skip(f"live PostgreSQL/MinIO not reachable: {type(exc).__name__}")
+
+    await _ensure_worker_credential(settings, _MEDIA_WORKER_TOKEN)
+
+    ac_engine = create_ac_engine(settings)
+    repository = AccessControlRepository(ac_engine)
+    email = f"ocr-nosecrets-{uuid4().hex[:8]}@example.test"
+    password = "correct-horse-battery-staple"  # noqa: S105
+    case_id = None
+    user_id = None
+
+    try:
+        async with ac_engine.begin() as conn:
+            await conn.execute(
+                sa.delete(worker_jobs_table).where(
+                    worker_jobs_table.c.processor_name == "media_detection_v1",
+                    worker_jobs_table.c.status == "queued",
+                )
+            )
+
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
+            register = await ac.post(
+                "/api/v1/auth/register",
+                json={"email": email, "password": password, "display_name": "No Secrets Test"},
+            )
+            assert register.status_code == 201, register.text
+            user_id = register.json()["user_id"]
+
+            login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
+            assert login.status_code == 200, login.text
+            user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+            case = CaseRecord(
+                case_id=uuid4(),
+                case_reference=f"OCR-SECRETS-{uuid4().hex[:8]}",
+                classification=ClearanceLevel.RESTRICTED,
+                status=CaseStatus.OPEN,
+                created_at=datetime.now(UTC),
+            )
+            await repository.create_case(case)
+            case_id = case.case_id
+            membership = CaseMembershipRecord(
+                membership_id=uuid4(),
+                case_id=case.case_id,
+                user_id=user_id,
+                role=CaseRole.INVESTIGATOR,
+                clearance=ClearanceLevel.RESTRICTED,
+                is_active=True,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            await repository.create_membership(membership)
+
+            upload = await ac.post(
+                f"/api/v1/cases/{case.case_id}/evidence",
+                headers={**user_headers, "Idempotency-Key": str(uuid4())},
+                files={"file": ("secret_test.png", png_bytes, "image/png")},
+                data={"source_type": "image", "classification": "unclassified"},
+            )
+            assert upload.status_code == 201, upload.text
+            job_id = upload.json()["job"]["job_id"]
+
+            client = WorkerApiClient(
+                base_url=settings.worker_api_base_url, worker_token=_MEDIA_WORKER_TOKEN
+            )
+            try:
+                claim = client.claim(processor_name="media_detection_v1", processor_version="1.0.0")
+                assert claim.job is not None
+                claim_token = claim.claim_token
+                job = claim.job
+
+                from app.modules.media_processing.input_resolver import LiveInputResolver  # noqa
+
+                resolved = LiveInputResolver(client).resolve(job, claim_token=claim_token)
+                image, metadata = decode_image(resolved.data, limits=DEFAULT_MEDIA_LIMITS)
+
+                ocr_results = adapter.run(image, metadata)  # type: ignore[attr-defined]
+
+                batch_config = OcrBatchConfig(batch_size=50)
+                for submission in iter_image_ocr_batches(
+                    ocr_results,
+                    job=job,
+                    idempotency_key_prefix=f"{job_id}-nosecrets",
+                    batch_config=batch_config,
+                    completed_at=datetime.now(UTC),
+                ):
+                    receipt = client.submit_batch(
+                        job_id=job.job_id, claim_token=claim_token, submission=submission
+                    )
+                    # Receipt body must not echo any claim token.
+                    receipt_text = receipt.model_dump_json()
+                    assert claim_token not in receipt_text
+
+                terminal = build_terminal_result(
+                    job_id=job.job_id,
+                    case_id=job.case_id,
+                    evidence_id=job.evidence_id,
+                    completed_at=datetime.now(UTC),
+                )
+                ack = client.submit_result(
+                    job_id=job.job_id, claim_token=claim_token, result=terminal
+                )
+                assert ack.status == "succeeded"
+
+            finally:
+                client.close()
+
+            # Job status response must contain no object_uri, claim_token, or raw bytes.
+            status_response = await ac.get(
+                f"/api/v1/cases/{case.case_id}/jobs/{job_id}", headers=user_headers
+            )
+            assert status_response.status_code == 200
+            resp_text = status_response.text
+            assert "object_uri" not in resp_text
+            assert claim_token not in resp_text  # type: ignore[possibly-undefined]
+            # Raw PNG magic bytes must not appear.
+            assert b"\x89PNG" not in resp_text.encode()
+            if settings.worker_token:
+                assert settings.worker_token.get_secret_value() not in resp_text
+
+    finally:
+        async with ac_engine.begin() as conn:
+            if case_id is not None:
+                _case_id_uuid = uuid4().__class__(str(case_id))
+                for table_name in [
+                    "worker_observations",
+                    "observation_batches",
+                    "observation_transformations",
+                    "worker_progress_events",
+                    "worker_results",
+                    "worker_jobs",
+                    "evidence_records",
+                    "case_memberships",
+                ]:
+                    with contextlib.suppress(Exception):
+                        from sqlalchemy import text as sa_text
+
+                        await conn.execute(
+                            sa_text(f"DELETE FROM {table_name} WHERE case_id = :cid"),
+                            {"cid": str(_case_id_uuid)},
+                        )
+                with contextlib.suppress(Exception):
+                    await conn.execute(
+                        sa.delete(cases_table).where(cases_table.c.case_id == _case_id_uuid)
+                    )
+            if user_id is not None:
+                with contextlib.suppress(Exception):
+                    await conn.execute(
+                        sa.delete(users_table).where(users_table.c.user_id == user_id)
+                    )
         await ac_engine.dispose()

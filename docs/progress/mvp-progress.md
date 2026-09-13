@@ -514,6 +514,20 @@ Builds micro-batch submission, a chat-timezone default policy, mentioned-identif
 - [ ] `username_or_handle` extraction has no platform-specific validation (a bare `@name` token is accepted regardless of platform plausibility) — every such extraction is already an unresolved extracted claim, so this is a precision limitation, not a safety gap.
 - [ ] `MAX_IDENTIFIER_MATCHES_PER_MESSAGE` (100) and `COMMUNICATION_BATCH_SIZE`'s default (200) are documented constants, not empirically tuned against a real large-scale chat export or long transcript.
 
+## Phase 3 — Gaurav: Shared Raster-Image OCR Bounding-Box Adapter and Fixtures: Complete
+
+- [x] Shared `ImageOcrAdapter` implementing real local raster text extraction using Tesseract, preserving original-coordinate line boxes and returning typed `OcrBoxResult` values.
+- [x] Correct EXIF orientation inversion logic handling EXIF rotation codes precisely, mapping the bounding box to the unrotated coordinate space before normalizing into `[0, 1]`.
+- [x] Explicit fixture-only adapter for deterministic unit/orchestration tests, plus genuine labelled PNG/JPEG adapter tests using local Tesseract when available.
+- [x] `ObservationBatchSubmissionV1` integrated inside `worker.py::run_once`; successful OCR, metadata, detection, and tracking observations are micro-batched and the terminal result is always `observations=[]`.
+- [x] `TransformationProvenanceV1` includes exactly the permitted metadata fields (`ocr_engine`, `preprocessing_version`, `frame_time_start_ms`) without exposing forbidden keys.
+- [x] Focused real-OCR, geometry, secure-batch, replay, video-frame, lease, and graph-idempotency coverage; live checks self-skip with an explicit unavailable reason rather than using fixture OCR.
+- [x] Live video-frame OCR test (`test_video_frame_ocr_batch_submission_end_to_end_live`) added alongside the pre-existing image-path live test, closing the gap where only a real image had a dedicated end-to-end live OCR check.
+
+### Outstanding for team review
+
+- [ ] Neither the image-path nor the new video-path live OCR test (nor any other `tests/integration/` test) was actually run against a live API/PostgreSQL/Neo4j/MinIO stack in the sandbox this was finished in — the local Docker daemon itself was unavailable there (environment issue, not application code). The fixture/adapter logic the video test depends on was independently confirmed correct outside pytest; the live HTTP/DB/graph round trip itself is unverified. See `docs/qa/test-results.md`'s "Phase 3 closeout" entry.
+
 ## Later phases (not started)
 
 Owned by other contributors, building on the frozen Phase 1 contracts, the graph foundation, the document/structured-processing foundation, the access-control foundation, the audio/social/alias/communication foundation, and the video/image processing foundation above:
