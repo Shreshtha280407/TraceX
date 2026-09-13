@@ -1,5 +1,13 @@
 # Runbook: Local Development
 
+## Phase 3 final acceptance note
+
+Run `uv run alembic upgrade head` before live worker acceptance: a stale local
+database missing the Phase 3 retry-limit migration causes upload-time 500s.
+For a media worker, frame OCR progress is monotonic selected-frame work;
+subsequent aggregate media batches intentionally carry no incomparable progress
+event. Run the full commands and known limits in `docs/qa/phase-3-acceptance.md`.
+
 ## First-time setup
 
 ```bash

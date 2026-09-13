@@ -1,5 +1,12 @@
 # Phase 1 Test Matrix
 
+## Phase 3 final integration acceptance
+
+| ID | Owner | Expected behavior | Test command | Status | Result |
+|---|---|---|---|---|---|
+| P3-INTEGRATION-001 | Nipun | All producer batches, lifecycle, security, and graph replay remain coherent | `uv run pytest -q` | Passing | 1656 passed, 1 skipped; `docs/qa/phase-3-acceptance.md` |
+| P3-MEDIA-422-001 | Nipun/Gaurav | Multiple frame OCR progress never regresses at the aggregate media batch | `uv run pytest -q tests/unit/media_processing/test_media_worker_orchestration.py` | Passing | Regression and real-Tesseract live test passed |
+
 Each row is a tracked QA item: what it verifies, who owns it, how to run it, and where the current result is recorded. Actual run output/history lives in `docs/qa/test-results.md` — this file defines the matrix, that file records outcomes.
 
 | ID | Owner | Expected behavior | Test command | Status | Result |

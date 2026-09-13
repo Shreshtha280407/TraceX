@@ -417,6 +417,14 @@ def build_media_observation_batch(
     ``observations=[]``.  The transformation contains no OCR payload or
     source content: it is only safe bookkeeping for the observations emitted
     by the pre-existing media analysis stages.
+
+    This batch intentionally does not emit a progress event.  OCR frame
+    progress counts selected frames, whereas the pre-existing media-analysis
+    result is a distinct, single aggregate.  Reporting ``1 / 1`` after two
+    or more selected frames would regress the job-attempt progress enforced
+    by the lifecycle service.  The surrounding OCR batches already provide
+    the meaningful monotonic progress signal; an absent event is preferable
+    to mixing incompatible units.
     """
     now = completed_at or datetime.now(UTC)
     batch_id = f"{idempotency_key_prefix}-media-b{batch_sequence}"
@@ -454,15 +462,7 @@ def build_media_observation_batch(
         idempotency_key=f"{idempotency_key_prefix}-media-ik{batch_sequence}",
         observations=list(observations),
         transformations=[transformation],
-        progress=ObservationBatchProgressV1(
-            stage="media_observation_submission",
-            units_total=1,
-            units_completed=1,
-            observations_emitted=observations_emitted_before + len(observations),
-            batch_sequence=batch_sequence,
-            message_code="MEDIA_OBSERVATIONS_SUBMITTED",
-            occurred_at=now,
-        ),
+        progress=None,
         submitted_at=now,
         is_final_batch=is_final,
     )

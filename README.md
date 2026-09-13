@@ -1,5 +1,10 @@
 # TraceX
 
+> Phase 3 final integration status (2026-09-13): code/test acceptance is green
+> (`1656 passed, 1 skipped`), including real local-Tesseract image/video paths.
+> Fresh five-service Compose image acceptance remains blocked only by this
+> environment's Docker Hub connectivity; see `docs/qa/phase-3-acceptance.md`.
+
 TraceX is an evidence-first criminal-network intelligence backend built for SIH 2026 (Problem Statement 26189). It ingests heterogeneous investigative material — documents, CDRs, financial records, surveillance video, images, audio, and social/chat exports — turns it into provenance-rich observations, and assembles a temporal, auditable graph of entities and events that investigators can review without losing sight of the underlying evidence.
 
 ## Scope

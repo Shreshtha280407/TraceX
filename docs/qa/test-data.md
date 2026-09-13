@@ -1,5 +1,12 @@
 # Test Data
 
+## Phase 3 final acceptance fixtures
+
+The image/video OCR checks use generated labelled PNG/JPEG/MP4 fixtures with
+the text `TRACEX OCR`; they are synthetic, non-sensitive, and are cleaned up
+with their task-created live case data. No raw evidence, object URI, claim
+token, credential, or OCR payload is recorded in acceptance documentation.
+
 ## No real evidence
 
 Phase 3 graph-mapping fixtures use labelled synthetic values such as
