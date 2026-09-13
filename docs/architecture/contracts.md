@@ -1,5 +1,10 @@
 # Shared Contracts Reference
 
+Phase 3 final acceptance confirms that optional batch progress is omitted when
+a new aggregate unit cannot be compared honestly with a preceding stage.
+Producers must never lower same-attempt progress counters. See
+`docs/qa/phase-3-acceptance.md`.
+
 This document is the canonical field-level reference for every Phase 1 shared contract in `app/contracts/`. If this document and the code ever disagree, the code + its tests in `tests/contract/` are authoritative — file a fix to this document.
 
 ## Versioning policy

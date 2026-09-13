@@ -1,5 +1,10 @@
 # Canonical Observation-to-Neo4j Graph Projection (Phase 2.5)
 
+Phase 3 acceptance reran projection for real video-frame OCR batches: the first
+pass completed one outbox job per observation and the second found no duplicate
+work. Producers remain PostgreSQL-batch-only; this projector is the sole Neo4j
+writer. See `docs/qa/phase-3-acceptance.md`.
+
 Owner: Shreshtha. Extends the Phase 1 graph foundation (`docs/architecture/neo4j-graph-foundation.md`, `docs/architecture/graph-taxonomy-v1.md`) with the piece that was explicitly deferred then: a durable, retryable path that takes an accepted canonical `ObservationV1` (persisted by Nipun's `evidence_lifecycle` worker-result acceptance flow) and reliably projects it into a case-scoped Neo4j graph — without ever risking the canonical PostgreSQL record, without ever exposing raw evidence through the graph, and without silently discarding a result if Neo4j happens to be down.
 
 **PostgreSQL is authoritative. Neo4j is derived and rebuildable.** Every fact this module writes into Neo4j already exists, more completely, in `evidence_lifecycle`'s `worker_observations`/`evidence_records` tables. If the entire graph database were dropped and every `graph_projection_jobs` row reset to `queued`, re-running the projector would reconstruct an identical graph. Nothing about case authorization, evidence storage, or worker identity depends on Neo4j being up.

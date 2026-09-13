@@ -240,7 +240,11 @@ def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_ma
         processor_name=PROCESSOR_NAME_DETECTION,
         source_type=SourceType.VIDEO,
     )
-    payload = make_synthetic_mp4_bytes(width=96, height=64, duration_seconds=1.0, fps=5.0)
+    # The default sampler selects at least two frames from this clip.  That
+    # makes this a regression proof for the old third-batch 422: the media
+    # aggregate must not report a new ``1 / 1`` progress event after frame
+    # OCR has already reported two completed units.
+    payload = make_synthetic_mp4_bytes(width=96, height=64, duration_seconds=3.0, fps=5.0)
     client = _FakeClient(
         claim_responses=[ClaimResult(job=job, claim_token="tok-abc", lease_expires_at=None)],
         submit_ack=_ack(job.job_id),
@@ -266,7 +270,9 @@ def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_ma
     assert [batch.batch_sequence for batch in batches] == list(range(len(batches)))
     assert batches[-1].is_final_batch is True
     assert batches[-1].progress.stage == "video_frame_ocr"  # type: ignore[union-attr]
-    frame_batches = [batch for batch in batches if batch.progress.stage == "video_frame_ocr"]  # type: ignore[union-attr]
+    frame_batches = [
+        batch for batch in batches if batch.progress and batch.progress.stage == "video_frame_ocr"
+    ]
     assert frame_batches
     for batch in frame_batches[:-1]:
         for observation in batch.observations:
@@ -276,6 +282,12 @@ def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_ma
             assert locator.time_end_ms is not None
             assert locator.time_start_ms <= locator.time_end_ms
             assert locator.bbox_xyxy_normalized is not None
+    progress_events = [batch.progress for batch in batches if batch.progress is not None]
+    assert [event.units_completed for event in progress_events] == sorted(
+        event.units_completed for event in progress_events
+    )
+    media_batches = [batch for batch in batches if batch.progress is None]
+    assert len(media_batches) == 1
     assert client.submit_calls[0][2].observations == []  # type: ignore[attr-defined]
 
 

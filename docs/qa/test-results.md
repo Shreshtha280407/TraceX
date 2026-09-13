@@ -1,5 +1,22 @@
 # Phase 1 Test Results
 
+## 2026-09-13 — Nipun — Phase 3 final integration acceptance
+
+- `uv sync --all-groups`, `uv run ruff format --check .`, `uv run ruff check .`,
+  and `uv run mypy app`: passed.
+- `uv run pytest -q`: **1656 passed, 1 skipped** in 68.80s.
+- The reported video OCR 422 was a valid lifecycle rejection of regressing
+  progress (`1,2` selected frames followed by aggregate `1/1`); the aggregate
+  now has no incomparable progress event. Focused unit regression and genuine
+  local-Tesseract video live test both passed.
+- `uv run alembic upgrade head`: passed, applying `d3f1a6c9b8e2`; the prior
+  live upload 500 was the stale local database missing `worker_jobs.max_attempts`.
+- Health/readiness/contracts endpoints passed against healthy Compose
+  PostgreSQL, Neo4j, Redis, and MinIO via the documented host API path.
+- `docker compose config` passed. Fresh `docker compose up --build -d` remains
+  blocked by Docker Desktop network access to Docker Hub; this is recorded as
+  an environment limitation, not a passing Compose result.
+
 ## 2026-09-13 — Shreshtha — Phase 3 deterministic graph mapping
 
 - `uv sync --all-groups`: passed (`Resolved 101 packages`, `Checked 99 packages`).

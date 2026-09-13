@@ -1,5 +1,14 @@
 # MVP Progress
 
+## Phase 3 — In progress — blocked by fresh five-service Compose image rebuild
+
+All six merged Phase 3 producer/lifecycle paths are test-accepted (`1656
+passed, 1 skipped`), the video batch 422 is fixed, and real local-Tesseract
+image/video lifecycle coverage passed. Do not mark deployment acceptance
+complete until `docker compose up --build -d` succeeds on a host with Docker
+Hub access; the local Docker Desktop registry connection was unreachable.
+Details: `docs/qa/phase-3-acceptance.md`.
+
 Team: Nipun (Phase 1 — core foundation), Shreshtha, Aditya, Jasraj, Gaurav, Sarthak (later-phase modules building on the Phase 1 contracts).
 
 ## Phase 3 — Shreshtha graph mapping

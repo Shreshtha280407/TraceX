@@ -1,5 +1,10 @@
 # Evidence Lifecycle (Phase 2 — Nipun)
 
+Final Phase 3 integration verified real local OCR through the canonical
+claim-bound batch lifecycle and graph outbox. A valid aggregate batch may omit
+optional progress rather than regress a preceding stage's work-unit counter.
+See `docs/qa/phase-3-acceptance.md`.
+
 `app/modules/evidence_lifecycle/` implements the real, case-scoped evidence ingestion foundation: authorized upload → streamed SHA-256 hashing → private object storage → immutable metadata persistence → a durable worker-job record → best-effort dispatch. As of Phase 2.1, this module also implements the job **claim** and **result-submission** half of the lifecycle — see `docs/architecture/worker-job-lifecycle.md` for that part in full; this document covers upload through durable job creation. It is the common foundation every later source-processing module (Jasraj's `structured_processing`, Sarthak's `communication_processing`, Gaurav's `media_processing`) will eventually consume jobs from, and that Shreshtha's `graph` module will eventually see reviewed observations flow past. This module does not implement any actual worker execution, entity resolution, correlation, review workflows, or Merkle/signature chains — see "Non-goals" below.
 
 **As of Aditya's Phase 2 worker-identity hardening**, `worker_jobs` also carries `claimed_by_worker_id` (nullable, set on every successful claim/reclaim), and `/result`/`/input` additionally require the caller to be that verified identity, not just hold the job's claim token. Every claim/result/input request now authenticates against a real, revocable per-worker credential (`require_worker_principal`), not the temporary shared secret this document previously described. See `docs/architecture/worker-identity-and-security.md` for the full design; the upload → durable-job-creation flow this document covers is otherwise unchanged.

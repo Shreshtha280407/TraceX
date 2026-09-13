@@ -1,5 +1,15 @@
 # Known Limitations — Phase 1
 
+## Phase 3 acceptance environment limitation (2026-09-13)
+
+The complete test suite is green, but a fresh five-service Compose image build
+could not be verified here because Docker Desktop could not reach Docker Hub
+while resolving `python:3.12-slim`. PostgreSQL, Neo4j, Redis, and MinIO were
+healthy and the documented host API path completed live verification. Re-run
+`docker compose up --build -d` on a networked host before release packaging.
+This does not change deliberate product limits: no real ASR/diarization, entity
+resolution, scoring, hypotheses, cloud OCR, or automatic model downloads.
+
 These are intentional, scoped-out gaps, not oversights. Each belongs to a later phase.
 
 - **No graph entity resolution.** Phase 3 graph mapping leaves document,

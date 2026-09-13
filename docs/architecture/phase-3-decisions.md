@@ -1,5 +1,14 @@
 # Phase 3 Decisions — Nipun Canonical Observation Ingestion, Batch Persistence, Progress, and Transformation Provenance
 
+## Final integration closeout (2026-09-13)
+
+The media aggregate batch no longer reports a synthetic `1/1` progress event
+after selected-frame OCR has reported multiple frame units. The lifecycle
+correctly rejects that decrease; the aggregate uses safe transformation
+provenance with `progress=null`, while OCR remains the meaningful monotonic
+stream. This is implemented by the `run_once` orchestration closure (there is
+no `run_once_with_ocr_batches` function). See `docs/qa/phase-3-acceptance.md`.
+
 Record of the concrete choices made while building the Phase 3 batch-submission foundation, and the reasoning behind each — so later contributors (starting with Jasraj's real document/OCR/CDR/finance workers) know what was deliberate versus what's still open.
 
 ## Shreshtha — deterministic graph mapping
