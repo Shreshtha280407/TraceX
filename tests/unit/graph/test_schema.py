@@ -60,6 +60,9 @@ def test_expected_indexes_are_present() -> None:
         "entity_case_id_idx",
         "entity_entity_type_idx",
         "entity_mention_case_id_idx",
+        "source_claim_case_id_idx",
+        "temporal_event_case_id_idx",
+        "temporal_event_event_time_idx",
     }
 
 

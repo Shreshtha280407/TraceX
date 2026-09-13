@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.modules.graph.errors import GraphConnectionError
+from app.modules.graph.mapping import map_observation
 from app.modules.graph.models import (
     GraphProjectionJobRecord,
     GraphProjectionJobStatus,
@@ -52,6 +53,7 @@ from app.modules.graph.projection import (
     project_evidence,
     project_observation,
     project_observation_mentions,
+    project_specialized_mapping,
 )
 from app.modules.graph.repository import Neo4jGraphRepository
 
@@ -104,7 +106,8 @@ async def _project_one(
 
     try:
         await project_evidence(graph, evidence)
-        observation_result = await project_observation(graph, observation)
+        mapping_plan = map_observation(observation)
+        observation_result = await project_observation(graph, observation, mapping_plan)
         if observation_result.outcome is ProjectionOutcome.DEFERRED:
             await outbox.mark_retryable_failure(
                 job.projection_id,
@@ -125,6 +128,7 @@ async def _project_one(
                 requeue_status=GraphProjectionJobStatus.DEFERRED,
             )
             return "deferred"
+        await project_specialized_mapping(graph, observation, mapping_plan)
     except GraphConnectionError:
         await outbox.mark_retryable_failure(
             job.projection_id,

@@ -1,5 +1,22 @@
 # Phase 1 Test Results
 
+## 2026-09-13 — Shreshtha — Phase 3 deterministic graph mapping
+
+- `uv sync --all-groups`: passed (`Resolved 101 packages`, `Checked 99 packages`).
+- `uv run ruff format --check .`: passed (`364 files already formatted`).
+- `uv run ruff check .`: passed (`154 source files`).
+- `uv run mypy app`: passed.
+- Focused mapping, projector/schema, and live Neo4j checks: passed; the final
+  `tests/integration/graph/test_phase_3_mapping_live.py` run passed (`1 passed`).
+- `docker compose config`, `docker compose up --build -d`, and `uv run alembic
+  upgrade head`: passed. Rebuilt Compose API/Neo4j/PostgreSQL/Redis/MinIO are
+  healthy. `/healthz`, `/readyz`, and `/api/v1/meta/contracts` returned 200.
+- `uv run pytest -q`: not fully green due to the unrelated live-media test
+  `tests/integration/media_processing/test_media_worker_live.py::test_video_frame_ocr_batch_submission_end_to_end_live`.
+  Its third media observation batch returned HTTP 422 and the worker correctly
+  submitted a failed terminal result. This failure is outside the graph mapper;
+  document/CDR/finance specialised mapping coverage passed.
+
 Actual command output from verification runs. Updated by whoever runs verification — do not hand-edit a "passing" result without having actually run the command.
 
 ## 2026-09-13 — Gaurav — Phase 3 closeout: video-frame OCR live test, full verification

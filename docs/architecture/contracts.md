@@ -51,6 +51,11 @@ Contract-only in Phase 1. As of Phase 2, `app/modules/evidence_lifecycle/` is a 
 
 ### `ObservationV1` (`app/contracts/observation.py`)
 
+Phase 3 graph mapping consumes this frozen contract without changing it. The
+canonical attributes remain authoritative in PostgreSQL; graph projection
+uses only documented bounded allow-list values and keeps source locator and
+evidence provenance traversable through the canonical observation.
+
 The canonical output of every source extractor/worker.
 
 | Field | Type | Notes |

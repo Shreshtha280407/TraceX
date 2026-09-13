@@ -91,6 +91,22 @@ CONSTRAINT_STATEMENTS: tuple[SchemaStatement, ...] = (
             "FOR (m:EntityMention) REQUIRE (m.case_id, m.mention_id) IS UNIQUE"
         ),
     ),
+    SchemaStatement(
+        name="source_claim_case_claim_unique",
+        kind="constraint",
+        cypher=(
+            "CREATE CONSTRAINT source_claim_case_claim_unique IF NOT EXISTS "
+            "FOR (s:SourceClaim) REQUIRE (s.case_id, s.claim_id) IS UNIQUE"
+        ),
+    ),
+    SchemaStatement(
+        name="temporal_event_case_projection_unique",
+        kind="constraint",
+        cypher=(
+            "CREATE CONSTRAINT temporal_event_case_projection_unique IF NOT EXISTS "
+            "FOR (v:TemporalEvent) REQUIRE (v.case_id, v.projection_id) IS UNIQUE"
+        ),
+    ),
 )
 
 INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
@@ -137,6 +153,29 @@ INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
         cypher=(
             "CREATE INDEX entity_mention_case_id_idx IF NOT EXISTS "
             "FOR (m:EntityMention) ON (m.case_id)"
+        ),
+    ),
+    SchemaStatement(
+        name="source_claim_case_id_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX source_claim_case_id_idx IF NOT EXISTS FOR (s:SourceClaim) ON (s.case_id)"
+        ),
+    ),
+    SchemaStatement(
+        name="temporal_event_case_id_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX temporal_event_case_id_idx IF NOT EXISTS "
+            "FOR (v:TemporalEvent) ON (v.case_id)"
+        ),
+    ),
+    SchemaStatement(
+        name="temporal_event_event_time_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX temporal_event_event_time_idx IF NOT EXISTS "
+            "FOR (v:TemporalEvent) ON (v.event_time)"
         ),
     ),
 )

@@ -196,6 +196,16 @@ def normalize_financial_records(records: list[RawRecord]) -> list[RawMention]:
             if field is not None:
                 record_attrs[canonical] = field[1]
 
+        # Keep the source-backed instruments on their parent transaction
+        # observation as well as emitting their individual mentions below.
+        # A graph mapper must never join separate observations merely because
+        # their row locators happen to agree, so this is the only safe way to
+        # make a transaction event's endpoints available to a pure mapper.
+        for canonical in ("sender_account", "receiver_account"):
+            field = _resolve_alias(record, canonical)
+            if field is not None:
+                record_attrs[canonical] = field[1]
+
         mentions.append(
             RawMention(
                 observation_type="financial_transaction_record",
