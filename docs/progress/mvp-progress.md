@@ -559,3 +559,11 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - MFA, SSO, external identity provider, production secret management.
 - Merkle checkpointing and signatures.
 - Frontend (including any future cookie/CSRF/CORS decisions).
+# Phase 5 - Nipun graph/correlation integration: In progress
+
+- [x] Additive case-scoped correlation/candidate/feature-snapshot persistence
+  plus transactional typed graph-update outbox.
+- [x] Typed replay handler seam, deterministic projection key, safe
+  case-scoped integration read endpoints, and focused fixture tests.
+- [ ] Shreshtha semantic correlation projection handler and intelligence
+  producers; Aditya write/review authorization policy.

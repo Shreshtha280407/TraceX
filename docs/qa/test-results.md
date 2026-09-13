@@ -2386,3 +2386,13 @@ batch-failure terminal behavior, and an ffmpeg-backed video branch with
 zero-based global batch sequences and a final video-frame progress batch.
 The live PostgreSQL/Neo4j/Redis/MinIO verification remains environment-gated;
 it was not claimed as run in this follow-up because the stack was unavailable.
+# Phase 5 Nipun graph/correlation integration (2026-09-14)
+
+- `ruff format --check`, `ruff check`, and `mypy app/modules/graph` passed
+  for the changed Phase 5 paths.
+- Focused unit/contract/API coverage plus existing graph
+  mapping/projection/projector/security coverage: `109 passed in 0.24s`.
+- The Docker-backed Phase 5 PostgreSQL/Neo4j test was invoked, but the local
+  service check did not finish in the bounded verification window (it emitted
+  a skip marker before timeout). It is not recorded as a pass; run it against
+  a healthy Compose stack during the Phase 5 merge wave.

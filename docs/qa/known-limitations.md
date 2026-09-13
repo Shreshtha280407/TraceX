@@ -116,3 +116,14 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 - **`SourceType.DOCUMENT` still has no route to a structured-JSON report export shape.** Only PDF/DOCX/TXT are accepted for documents (unchanged since Phase 1) — a hypothetical JSON-based report export format was not added in this phase (no such shape is defined anywhere in this codebase), consistent with the task's "smallest additive routing change" instruction and the fact that no routing change was needed for any format this phase actually processes.
 - **Media OCR is line-level and English-first.** `ImageOcrAdapter` preserves the original image/frame geometry exactly, but it does not yet deskew, denoise, threshold, crop, upscale, or emit word-level observations. Small, blurred, rotated, low-contrast, or non-English text may be missed; additional language packs must be installed by an operator and selected explicitly. No language/model is downloaded by startup, Docker build, or a normal test.
 - **Live media OCR verification requires local infrastructure and local tooling.** The live suite deliberately self-skips when the API stack, Tesseract/language pack, readable local font, or (for video) ffmpeg/ffprobe is unavailable. A skip is reported as unavailable, never as a fixture-backed real OCR pass.
+# Phase 5 graph/correlation integration
+
+- The Phase 5 foundation ships a typed `CorrelationProjectionContext` and
+  replay worker seam, but no semantic correlation Cypher handler. That is
+  Shreshtha's ownership; queued events are durable and replayable until one
+  is registered.
+- No public write/review route is exposed. Existing `GRAPH_READ` protects the
+  read endpoints; Aditya must define the write/review authorization policy.
+- A graph-update event has no automatic retry ceiling for a connection outage
+  by design, preserving replayability. Operational alerting/backoff scheduling
+  beyond the bounded claim invocation remains future worker operations work.

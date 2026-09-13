@@ -10,12 +10,26 @@ this module).
 from __future__ import annotations
 
 from app.core.config import get_settings
+from app.modules.graph.integration_repository import (
+    GraphCorrelationIntegrationRepository,
+)
+from app.modules.graph.integration_repository import (
+    create_engine as create_integration_engine,
+)
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
 
 _settings = get_settings()
 _driver = create_driver(_settings)
 _repository = Neo4jGraphRepository(_driver)
+_integration_repository = GraphCorrelationIntegrationRepository(
+    create_integration_engine(_settings)
+)
 
 
 def get_graph_repository() -> Neo4jGraphRepository:
     return _repository
+
+
+def get_graph_correlation_integration_repository() -> GraphCorrelationIntegrationRepository:
+    """The PostgreSQL-backed Phase 5 read/integration seam."""
+    return _integration_repository
