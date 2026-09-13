@@ -22,8 +22,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.modules.access_control.dependencies import require_graph_read
 from app.modules.access_control.models import AuthorizedCasePrincipal
-from app.modules.graph.dependencies import get_graph_repository
+from app.modules.graph.dependencies import (
+    get_graph_correlation_integration_repository,
+    get_graph_repository,
+)
 from app.modules.graph.errors import GraphConnectionError, GraphValidationError
+from app.modules.graph.integration_models import (
+    CandidateListResponse,
+    CorrelationIntegrationView,
+    CorrelationListResponse,
+    HypothesisIntegrationListResponse,
+    HypothesisIntegrationView,
+)
+from app.modules.graph.integration_repository import GraphCorrelationIntegrationRepository
 from app.modules.graph.queries import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, list_case_observations
 from app.modules.graph.repository import Neo4jGraphRepository
 from app.modules.graph.schemas import (
@@ -65,3 +76,81 @@ async def list_graph_observations(
             detail="graph service temporarily unavailable",
         ) from exc
     return case_graph_observations_response(page)
+
+
+@router.get("/{case_id}/graph/correlations", response_model=CorrelationListResponse)
+async def list_graph_correlations(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[
+        GraphCorrelationIntegrationRepository,
+        Depends(get_graph_correlation_integration_repository),
+    ],
+) -> CorrelationListResponse:
+    """List durable reviewable propositions, never asserted relationships."""
+    correlations = await repository.list_correlations(case_id)
+    items = []
+    for correlation in correlations:
+        event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
+        if event is not None:
+            items.append(CorrelationIntegrationView(correlation=correlation, projection=event))
+    return CorrelationListResponse(items=tuple(items))
+
+
+@router.get(
+    "/{case_id}/graph/correlations/{correlation_id}", response_model=CorrelationIntegrationView
+)
+async def get_graph_correlation(
+    case_id: UUID,
+    correlation_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[
+        GraphCorrelationIntegrationRepository,
+        Depends(get_graph_correlation_integration_repository),
+    ],
+) -> CorrelationIntegrationView:
+    correlation = await repository.get_correlation(case_id, correlation_id)
+    event = await repository.get_event_for_correlation(case_id, correlation_id)
+    if correlation is None or event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="correlation not found")
+    return CorrelationIntegrationView(correlation=correlation, projection=event)
+
+
+@router.get("/{case_id}/graph/candidates", response_model=CandidateListResponse)
+async def list_graph_candidates(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[
+        GraphCorrelationIntegrationRepository,
+        Depends(get_graph_correlation_integration_repository),
+    ],
+) -> CandidateListResponse:
+    """Return candidate links as candidates; no endpoint confirms or merges them."""
+    return CandidateListResponse(items=tuple(await repository.list_candidates(case_id)))
+
+
+@router.get("/{case_id}/graph/hypotheses", response_model=HypothesisIntegrationListResponse)
+async def list_hypothesis_integration_refs(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[
+        GraphCorrelationIntegrationRepository,
+        Depends(get_graph_correlation_integration_repository),
+    ],
+) -> HypothesisIntegrationListResponse:
+    """Expose supplied hypothesis references only; this module generates none."""
+    items = []
+    for correlation in await repository.list_correlations(case_id):
+        if correlation.hypothesis_reference is None:
+            continue
+        event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
+        if event is not None:
+            items.append(
+                HypothesisIntegrationView(
+                    correlation_id=correlation.correlation_id,
+                    hypothesis_reference=correlation.hypothesis_reference,
+                    status=correlation.status,
+                    projection=event,
+                )
+            )
+    return HypothesisIntegrationListResponse(items=tuple(items))

@@ -177,3 +177,13 @@ Each row is a tracked QA item: what it verifies, who owns it, how to run it, and
 ```bash
 uv run pytest
 ```
+# Phase 5 graph/correlation integration
+
+| ID | Scenario | Coverage |
+|---|---|---|
+| GRAPH-CORR-001 | Atomic correlation/candidate/snapshot + graph-update event persistence | `test_phase5_correlation_integration_live.py` |
+| GRAPH-CORR-002 | Duplicate submission and deterministic replay identity | unit projector + live integration test |
+| GRAPH-CORR-003 | Neo4j outage leaves durable event retryable; later replay succeeds | unit projector + live integration test |
+| GRAPH-CORR-004 | Missing referenced correlation fails with a safe fixed error code | `test_integration_projector.py` |
+| GRAPH-CORR-005 | Cross-case observation references are rejected | live integration test |
+| GRAPH-CORR-006 | Candidate-only API semantics and case-scoped safe responses | `test_integration_api.py`, `test_integration_models.py` |

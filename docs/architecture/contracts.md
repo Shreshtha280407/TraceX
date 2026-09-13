@@ -32,6 +32,23 @@ This document is the canonical field-level reference for every Phase 1 shared co
 - Graph construction and cross-modal correlation consume canonical `ObservationV1`/`EntityV1`/`EventV1` records — never raw source bytes.
 - Raw source data (the original PDF, audio file, CDR spreadsheet, etc.) is **not** written into Neo4j as the primary evidence payload. Neo4j holds the graph of entities/events/observation references; the bytes live in object storage (MinIO), addressed by `object_uri`.
 
+## Phase 5 internal integration contracts
+
+Phase 5 adds versioned internal graph-integration models in
+`app.modules.graph.integration_models`, not a change to frozen public V1
+contracts. `CorrelationSubmission` is a case-scoped, evidence-backed
+proposition with an idempotency key, supporting/contradictory observation
+references, optional candidate links and feature snapshot, mapping/config
+versions, and optional upstream hypothesis reference. Its only lifecycle
+statuses are `candidate`, `needs_review`, and `rejected`.
+
+The durable `GraphUpdateEventRecord` envelope is schema version `v1`, event
+type `correlation.upserted.v1`, and holds an event ID, case/aggregate/payload
+reference, mapping/config versions, provenance observation IDs, canonical
+projection key, idempotency key, timestamps, and delivery state. It contains
+no raw evidence content. See `docs/architecture/phase-5-integration.md` for
+the transactional/replay semantics and endpoints.
+
 ## Contracts
 
 ### `EvidenceRecordV1` (`app/contracts/evidence.py`)
