@@ -121,7 +121,7 @@ def run_benchmark(path: Path, *, content_type: str | None = None) -> dict[str, A
         StaticBytesResolver(payload=data),
         detector=components.detector,
         tracker=components.tracker,
-        ocr=components.ocr,
+        ocr_adapter=components.ocr_adapter,
         stopwatch=sw,
     )
     performance = build_performance_report(sw.timings)
@@ -165,7 +165,7 @@ def run_benchmark(path: Path, *, content_type: str | None = None) -> dict[str, A
             "detector_device": (
                 getattr(components.detector, "device", None) if components.detector else None
             ),
-            "ocr_loaded": components.ocr is not None,
+            "ocr_loaded": components.ocr_adapter is not None,
             "cpu_only": performance.capability.cpu_only,
             "gpu_visible": performance.capability.gpu_visible,
             "gpu_name": performance.capability.gpu_name,

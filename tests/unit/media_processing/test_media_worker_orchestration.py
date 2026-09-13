@@ -17,12 +17,15 @@ import hashlib
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
+import pytest
+
 from app.contracts.evidence import SourceType
 from app.contracts.worker import WorkerStatus
 from app.modules.media_processing.analysis.fake_detector import FakeObjectDetector
 from app.modules.media_processing.client import ClaimResult, SubmitResultAck
-from app.modules.media_processing.errors import InputResolutionUnavailableError
+from app.modules.media_processing.errors import InputResolutionUnavailableError, WorkerApiError
 from app.modules.media_processing.input_resolver import ResolvedMediaInput, StaticInputResolver
+from app.modules.media_processing.ocr_adapter import FixtureOcrAdapter
 from app.modules.media_processing.worker import (
     CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE,
     PROCESSOR_NAME_DETECTION,
@@ -34,7 +37,11 @@ from app.modules.media_processing.worker import (
     run_once,
 )
 from tests.fixtures.media_processing.factory import make_evidence_and_job
-from tests.fixtures.media_processing.synthetic import make_png_bytes
+from tests.fixtures.media_processing.synthetic import (
+    ffmpeg_available,
+    make_png_bytes,
+    make_synthetic_mp4_bytes,
+)
 
 
 @dataclass
@@ -44,7 +51,9 @@ class _FakeClient:
     claim_responses: list[ClaimResult]
     submit_ack: SubmitResultAck | None = None
     submit_exception: Exception | None = None
+    submit_batch_exception: Exception | None = None
     submit_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
+    submit_batch_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
     _claim_calls: int = 0
 
     def claim(self, *, processor_name: str, processor_version: str) -> ClaimResult:  # noqa: ARG002
@@ -58,6 +67,11 @@ class _FakeClient:
             raise self.submit_exception
         assert self.submit_ack is not None
         return self.submit_ack
+
+    def submit_batch(self, *, job_id: UUID, claim_token: str, submission: object) -> None:
+        self.submit_batch_calls.append((job_id, claim_token, submission))
+        if self.submit_batch_exception is not None:
+            raise self.submit_batch_exception
 
     def close(self) -> None:
         pass
@@ -134,7 +148,135 @@ def test_run_once_happy_path_image() -> None:
     assert submitted_job_id == job.job_id
     assert submitted_token == "tok-abc"
     assert submitted_result.status is WorkerStatus.SUCCEEDED  # type: ignore[attr-defined]
-    assert submitted_result.observations[0].observation_type == "media_metadata"  # type: ignore[attr-defined]
+    assert submitted_result.observations == []  # type: ignore[attr-defined]
+    assert len(client.submit_batch_calls) == 1
+
+
+def test_run_once_submits_ocr_and_media_observations_in_batches_before_empty_terminal() -> None:
+    """Exercise the real ``run_once`` OCR closure without live infrastructure."""
+    _metadata, job = make_evidence_and_job(
+        content_type="image/png",
+        filename="photo.png",
+        processor_name=PROCESSOR_NAME_DETECTION,
+        source_type=SourceType.IMAGE,
+    )
+    payload = make_png_bytes(width=200, height=100)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-abc", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id),
+    )
+    resolver = StaticInputResolver(
+        ResolvedMediaInput(
+            content_type="image/png",
+            original_filename="photo.png",
+            data=payload,
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+        )
+    )
+
+    outcome = run_once(
+        client=client,  # type: ignore[arg-type]
+        input_resolver=resolver,
+        detector=FakeObjectDetector(),
+        ocr_adapter=FixtureOcrAdapter(),  # real orchestration; fixture OCR is explicit
+    )
+
+    assert outcome.result_status == "succeeded"
+    assert len(client.submit_batch_calls) == 2
+    ocr_batch = client.submit_batch_calls[0][2]
+    media_batch = client.submit_batch_calls[1][2]
+    assert ocr_batch.batch_sequence == 0  # type: ignore[attr-defined]
+    assert ocr_batch.is_final_batch is False  # type: ignore[attr-defined]
+    assert [o.observation_type for o in ocr_batch.observations] == ["ocr_text_mention"]  # type: ignore[attr-defined]
+    assert media_batch.batch_sequence == 1  # type: ignore[attr-defined]
+    assert media_batch.is_final_batch is True  # type: ignore[attr-defined]
+    assert {o.observation_type for o in media_batch.observations} == {  # type: ignore[attr-defined]
+        "media_metadata",
+        "object_detection",
+    }
+    assert client.submit_calls[0][2].observations == []  # type: ignore[attr-defined]
+
+
+def test_run_once_batch_submission_failure_sends_safe_failed_terminal_result() -> None:
+    _metadata, job = make_evidence_and_job(
+        content_type="image/png",
+        filename="photo.png",
+        processor_name=PROCESSOR_NAME_DETECTION,
+        source_type=SourceType.IMAGE,
+    )
+    payload = make_png_bytes(width=200, height=100)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-abc", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id, status="failed"),
+        submit_batch_exception=WorkerApiError("batch submission failed: HTTP 503"),
+    )
+    outcome = run_once(
+        client=client,  # type: ignore[arg-type]
+        input_resolver=StaticInputResolver(
+            ResolvedMediaInput(
+                content_type="image/png",
+                original_filename="photo.png",
+                data=payload,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        ),
+        detector=FakeObjectDetector(),
+        ocr_adapter=FixtureOcrAdapter(),
+    )
+
+    assert outcome.result_status == "failed"
+    terminal = client.submit_calls[0][2]
+    assert terminal.status is WorkerStatus.FAILED  # type: ignore[attr-defined]
+    assert terminal.error.code == "media_batch_submission_failed"  # type: ignore[attr-defined]
+    assert terminal.observations == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg/ffprobe unavailable")
+def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_marker() -> None:
+    """Run the video branch of the production callback without live services."""
+    _metadata, job = make_evidence_and_job(
+        content_type="video/mp4",
+        filename="clip.mp4",
+        processor_name=PROCESSOR_NAME_DETECTION,
+        source_type=SourceType.VIDEO,
+    )
+    payload = make_synthetic_mp4_bytes(width=96, height=64, duration_seconds=1.0, fps=5.0)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-abc", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id),
+    )
+
+    outcome = run_once(
+        client=client,  # type: ignore[arg-type]
+        input_resolver=StaticInputResolver(
+            ResolvedMediaInput(
+                content_type="video/mp4",
+                original_filename="clip.mp4",
+                data=payload,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        ),
+        detector=FakeObjectDetector(),
+        ocr_adapter=FixtureOcrAdapter(),
+    )
+
+    assert outcome.result_status == "succeeded"
+    batches = [call[2] for call in client.submit_batch_calls]
+    assert len(batches) >= 3  # one or more frame OCR batches, media, completion
+    assert [batch.batch_sequence for batch in batches] == list(range(len(batches)))
+    assert batches[-1].is_final_batch is True
+    assert batches[-1].progress.stage == "video_frame_ocr"  # type: ignore[union-attr]
+    frame_batches = [batch for batch in batches if batch.progress.stage == "video_frame_ocr"]  # type: ignore[union-attr]
+    assert frame_batches
+    for batch in frame_batches[:-1]:
+        for observation in batch.observations:
+            locator = observation.source_locator
+            assert locator.frame_number is not None
+            assert locator.time_start_ms is not None
+            assert locator.time_end_ms is not None
+            assert locator.time_start_ms <= locator.time_end_ms
+            assert locator.bbox_xyxy_normalized is not None
+    assert client.submit_calls[0][2].observations == []  # type: ignore[attr-defined]
 
 
 def test_run_once_skips_sha_verification_when_resolver_supplies_none() -> None:

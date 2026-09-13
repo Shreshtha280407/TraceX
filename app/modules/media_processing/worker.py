@@ -39,7 +39,9 @@ import logging
 import signal
 import sys
 import threading
+import typing
 from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable as TypingCallable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -64,22 +66,15 @@ from app.modules.media_processing.analysis.interfaces import (
     ObjectDetection,
     ObjectDetector,
     ObjectTracker,
-    RecognizedText,
-    TextRecognizer,
     TrackSegment,
 )
 from app.modules.media_processing.analysis.iou_tracker import IoUTracker
 from app.modules.media_processing.analysis.onnx_detector import DetectorConfig, OnnxObjectDetector
-from app.modules.media_processing.analysis.tesseract_ocr import (
-    TesseractOcrConfig,
-    TesseractTextRecognizer,
-)
 from app.modules.media_processing.client import WorkerApiClient
 from app.modules.media_processing.errors import (
     ErrorCode,
     InputResolutionUnavailableError,
     ModelAssetError,
-    OcrRuntimeError,
     ProcessingError,
     WorkerApiError,
     WorkerAuthenticationError,
@@ -107,13 +102,21 @@ from app.modules.media_processing.models import (
     SamplingStrategy,
     VideoMetadata,
 )
+from app.modules.media_processing.ocr_adapter import ImageOcrAdapter, OcrAdapterConfig
+from app.modules.media_processing.ocr_batching import (
+    OcrBatchConfig,
+    build_media_observation_batch,
+    build_terminal_result,
+    build_terminal_result_failed,
+    build_video_frame_ocr_batch,
+    iter_image_ocr_batches,
+)
 from app.modules.media_processing.performance import Stopwatch
 from app.modules.media_processing.provenance import (
     CONFIDENCE_METADATA_PROBED,
     OBSERVATION_ANONYMOUS_TRACK_SEGMENT,
     OBSERVATION_MEDIA_METADATA,
     OBSERVATION_OBJECT_DETECTION,
-    OBSERVATION_OCR_TEXT_MENTION,
     OBSERVATION_TEXT_REGION_DETECTION,
     build_extractor,
     draft_to_observation,
@@ -130,6 +133,10 @@ from app.modules.media_processing.source import (
 from app.modules.media_processing.video.frames import extract_frames
 from app.modules.media_processing.video.probe import probe_video
 from app.modules.media_processing.video.sampling import build_sample_plan
+
+OcrBatchCallback = TypingCallable[
+    [ExtractedFrame | None, Frame, ImageMetadata | VideoMetadata], None
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -158,7 +165,8 @@ def process_job(
     sampling: SamplingRequest | None = None,
     detector: ObjectDetector | None = None,
     tracker: ObjectTracker | None = None,
-    ocr: TextRecognizer | None = None,
+    ocr_adapter: ImageOcrAdapter | None = None,
+    submit_ocr_batch: OcrBatchCallback | None = None,
     stopwatch: Stopwatch | None = None,
 ) -> WorkerResultV1:
     """Process one video/image evidence source into a `WorkerResultV1`.
@@ -175,7 +183,17 @@ def process_job(
     try:
         with sw.total():
             observations = _process(
-                job, evidence, resolver, limits, sampling, detector, tracker, ocr, sw, completed_at
+                job,
+                evidence,
+                resolver,
+                limits,
+                sampling,
+                detector,
+                tracker,
+                ocr_adapter,
+                sw,
+                completed_at,
+                submit_ocr_batch,
             )
         return WorkerResultV1(
             job_id=job.job_id,
@@ -210,9 +228,10 @@ def _process(
     sampling: SamplingRequest | None,
     detector: ObjectDetector | None,
     tracker: ObjectTracker | None,
-    ocr: TextRecognizer | None,
+    ocr_adapter: ImageOcrAdapter | None,
     sw: Stopwatch,
     completed_at: datetime,
+    submit_ocr_batch: OcrBatchCallback | None = None,
 ) -> list[ObservationV1]:
     kind = classify_media(evidence.content_type, evidence.original_filename)
     _check_source_type(kind, evidence.source_type)
@@ -247,9 +266,10 @@ def _process(
                         sampling or _DEFAULT_SAMPLING,
                         detector,
                         tracker,
-                        ocr,
+                        ocr_adapter,
                         sw,
                         completed_at,
+                        submit_ocr_batch,
                     )
                 )
             return observations
@@ -268,38 +288,9 @@ def _process(
                 )
                 if observation is not None:
                     observations.append(observation)
-                if detection.label == _TEXT_REGION_LABEL and ocr is not None:
-                    ocr_observation = _ocr_observation_image(
-                        job, detection, image, image_metadata, ocr, completed_at
-                    )
-                    if ocr_observation is not None:
-                        observations.append(ocr_observation)
-        if ocr is not None:
-            observations.extend(
-                _whole_image_ocr_observations(job, ocr, image, image_metadata, sw, completed_at)
-            )
-    return observations
 
-
-def _whole_image_ocr_observations(
-    job: WorkerJobV1,
-    ocr: TextRecognizer,
-    image: Frame,
-    metadata: ImageMetadata,
-    sw: Stopwatch,
-    completed_at: datetime,
-) -> list[ObservationV1]:
-    """OCR the whole image directly -- independent of the general object
-    detector's own output (see `interfaces.TextRecognizer`'s docstring for
-    why: a COCO-class detector has no "text region" class to gate on)."""
-    with sw.stage("analysis_ms"):
-        regions = [r for r in ocr.recognize_regions(image) if is_valid_confidence(r.confidence)]
-    observations: list[ObservationV1] = []
-    with sw.stage("observation_construction_ms"):
-        for region in regions:
-            observation = _ocr_region_observation_image(job, region, metadata, completed_at)
-            if observation is not None:
-                observations.append(observation)
+        if ocr_adapter is not None and submit_ocr_batch is not None:
+            submit_ocr_batch(None, image, image_metadata)
     return observations
 
 
@@ -468,159 +459,6 @@ def _detection_observation_image(
     )
 
 
-def _ocr_observation_image(
-    job: WorkerJobV1,
-    detection: ObjectDetection,
-    image: Frame,
-    metadata: ImageMetadata,
-    ocr: TextRecognizer,
-    completed_at: datetime,
-) -> ObservationV1 | None:
-    recognized = ocr.recognize(_crop(image, detection.box))
-    if recognized is None or not is_valid_confidence(recognized.confidence):
-        return None
-    try:
-        normalized = to_normalized(
-            detection.box, image_width=metadata.width, image_height=metadata.height
-        )
-    except ProcessingError:
-        return None
-    draft = MediaObservationDraft(
-        observation_type=OBSERVATION_OCR_TEXT_MENTION,
-        locator=SourceLocator(bbox_xyxy_normalized=normalized),
-        confidence=recognized.confidence,
-        entity_text=recognized.text,
-        entity_type_hint="ocr_text",
-        attributes={"media_width": metadata.width, "media_height": metadata.height},
-    )
-    return draft_to_observation(
-        case_id=job.case_id,
-        evidence_id=job.evidence_id,
-        draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(recognized.attributes))),
-        created_at=completed_at,
-    )
-
-
-def _ocr_observation_video(
-    job: WorkerJobV1,
-    detection: ObjectDetection,
-    frame: ExtractedFrame,
-    metadata: VideoMetadata,
-    sampling: SamplingRequest,
-    ocr: TextRecognizer,
-    completed_at: datetime,
-) -> ObservationV1 | None:
-    recognized = ocr.recognize(_crop(frame.image, detection.box))
-    if recognized is None or not is_valid_confidence(recognized.confidence):
-        return None
-    try:
-        normalized = to_normalized(
-            detection.box, image_width=metadata.width, image_height=metadata.height
-        )
-    except ProcessingError:
-        return None
-    draft = MediaObservationDraft(
-        observation_type=OBSERVATION_OCR_TEXT_MENTION,
-        locator=SourceLocator(
-            frame_number=frame.frame_number,
-            time_start_ms=frame.time_start_ms,
-            time_end_ms=frame.time_end_ms,
-            bbox_xyxy_normalized=normalized,
-        ),
-        confidence=recognized.confidence,
-        entity_text=recognized.text,
-        entity_type_hint="ocr_text",
-        attributes={
-            "media_width": metadata.width,
-            "media_height": metadata.height,
-            "sampling_strategy": sampling.strategy.value,
-        },
-    )
-    return draft_to_observation(
-        case_id=job.case_id,
-        evidence_id=job.evidence_id,
-        draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(recognized.attributes))),
-        created_at=completed_at,
-    )
-
-
-def _ocr_region_observation_image(
-    job: WorkerJobV1, region: RecognizedText, metadata: ImageMetadata, completed_at: datetime
-) -> ObservationV1 | None:
-    """Build an observation from a whole-image `recognize_regions` result.
-
-    Unlike `_ocr_observation_image` (which locates its observation using
-    the *detection's* box, since `recognize`'s returned box is relative to
-    the crop it was given), `region.box` here is already in full-image
-    pixel coordinates -- `recognize_regions` operates on the whole image.
-    """
-    try:
-        normalized = to_normalized(
-            region.box, image_width=metadata.width, image_height=metadata.height
-        )
-    except ProcessingError:
-        return None
-    draft = MediaObservationDraft(
-        observation_type=OBSERVATION_OCR_TEXT_MENTION,
-        locator=SourceLocator(bbox_xyxy_normalized=normalized),
-        confidence=region.confidence,
-        entity_text=region.text,
-        entity_type_hint="ocr_text",
-        attributes={"media_width": metadata.width, "media_height": metadata.height},
-    )
-    return draft_to_observation(
-        case_id=job.case_id,
-        evidence_id=job.evidence_id,
-        draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(region.attributes))),
-        created_at=completed_at,
-    )
-
-
-def _ocr_region_observation_video(
-    job: WorkerJobV1,
-    region: RecognizedText,
-    frame: ExtractedFrame,
-    metadata: VideoMetadata,
-    sampling: SamplingRequest,
-    completed_at: datetime,
-) -> ObservationV1 | None:
-    """Video counterpart of `_ocr_region_observation_image` -- `region.box` is
-    already in the full sampled frame's pixel coordinates."""
-    try:
-        normalized = to_normalized(
-            region.box, image_width=metadata.width, image_height=metadata.height
-        )
-    except ProcessingError:
-        return None
-    draft = MediaObservationDraft(
-        observation_type=OBSERVATION_OCR_TEXT_MENTION,
-        locator=SourceLocator(
-            frame_number=frame.frame_number,
-            time_start_ms=frame.time_start_ms,
-            time_end_ms=frame.time_end_ms,
-            bbox_xyxy_normalized=normalized,
-        ),
-        confidence=region.confidence,
-        entity_text=region.text,
-        entity_type_hint="ocr_text",
-        attributes={
-            "media_width": metadata.width,
-            "media_height": metadata.height,
-            "sampling_strategy": sampling.strategy.value,
-        },
-    )
-    return draft_to_observation(
-        case_id=job.case_id,
-        evidence_id=job.evidence_id,
-        draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(region.attributes))),
-        created_at=completed_at,
-    )
-
-
 def _track_observation(
     job: WorkerJobV1,
     segment: TrackSegment,
@@ -671,9 +509,10 @@ def _process_video_analysis(
     sampling: SamplingRequest,
     detector: ObjectDetector,
     tracker: ObjectTracker | None,
-    ocr: TextRecognizer | None,
+    ocr_adapter: ImageOcrAdapter | None,
     sw: Stopwatch,
     completed_at: datetime,
+    submit_ocr_batch: OcrBatchCallback | None = None,
 ) -> list[ObservationV1]:
     with sw.stage("sampling_plan_ms"):
         plan = build_sample_plan(metadata, sampling)
@@ -699,12 +538,6 @@ def _process_video_analysis(
                 )
                 if observation is not None:
                     observations.append(observation)
-                if detection.label == _TEXT_REGION_LABEL and ocr is not None:
-                    ocr_observation = _ocr_observation_video(
-                        job, detection, frame, metadata, sampling, ocr, completed_at
-                    )
-                    if ocr_observation is not None:
-                        observations.append(ocr_observation)
 
         if tracker is not None:
             for segment in tracker.track(detections_by_time):
@@ -713,19 +546,9 @@ def _process_video_analysis(
                         _track_observation(job, segment, metadata, sampling, completed_at)
                     )
 
-        if ocr is not None:
+        if ocr_adapter is not None and submit_ocr_batch is not None:
             for frame in frames:
-                regions = [
-                    r
-                    for r in ocr.recognize_regions(frame.image)
-                    if is_valid_confidence(r.confidence)
-                ]
-                for region in regions:
-                    region_observation = _ocr_region_observation_video(
-                        job, region, frame, metadata, sampling, completed_at
-                    )
-                    if region_observation is not None:
-                        observations.append(region_observation)
+                submit_ocr_batch(frame, frame.image, metadata)
 
     return observations
 
@@ -828,7 +651,7 @@ def run_once(
     processors: Sequence[tuple[str, str]] = SUPPORTED_PROCESSORS,
     detector: ObjectDetector | None = None,
     tracker: ObjectTracker | None = None,
-    ocr: TextRecognizer | None = None,
+    ocr_adapter: ImageOcrAdapter | None = None,
     renew_interval_seconds: float | None = None,
 ) -> RunOnceOutcome:
     """Claim at most one job, process it, submit its result, and return what happened.
@@ -896,20 +719,160 @@ def run_once(
                 )
                 return RunOnceOutcome(claimed=True, job_id=job.job_id, result_status=ack.status)
 
-        evidence = _shim_evidence_record(job, resolved)
-        heartbeat = (
+        evidence_record = _shim_evidence_record(job, resolved)
+
+        batches_submitted = 0
+        total_observations = 0
+        video_frames_seen = 0
+        last_video_frame: ExtractedFrame | None = None
+        last_video_metadata: VideoMetadata | None = None
+
+        def _submit_ocr_batch(
+            frame: ExtractedFrame | None, image: Frame, meta: ImageMetadata | VideoMetadata
+        ) -> None:
+            nonlocal batches_submitted, total_observations
+            nonlocal video_frames_seen, last_video_frame, last_video_metadata
+            if ocr_adapter is None:
+                return
+
+            if frame is not None:
+                ocr_meta = ImageMetadata(
+                    width=meta.width,
+                    height=meta.height,
+                    format="mp4",
+                    color_mode="RGB",
+                    orientation=1,
+                )
+            else:
+                ocr_meta = typing.cast(ImageMetadata, meta)
+
+            if frame is not None:
+                video_frames_seen += 1
+                last_video_frame = frame
+                last_video_metadata = typing.cast("VideoMetadata", meta)
+
+            results = ocr_adapter.run(image, ocr_meta)
+            if not results:
+                return
+
+            if frame is None:
+                batch_config = OcrBatchConfig(batch_size=50, units_total=len(results))
+                idempotency_prefix = f"{job.job_id}-ocr"
+                for batch_submission in iter_image_ocr_batches(
+                    results,
+                    job=job,
+                    idempotency_key_prefix=idempotency_prefix,
+                    batch_config=batch_config,
+                    completed_at=datetime.now(UTC),
+                    mark_final_batch=False,
+                ):
+                    client.submit_batch(
+                        job_id=job.job_id, claim_token=claim_token, submission=batch_submission
+                    )
+                    batches_submitted += 1
+                    total_observations += len(batch_submission.observations)
+            else:
+                video_meta = typing.cast("VideoMetadata", meta)
+                batch_submission = build_video_frame_ocr_batch(
+                    results,
+                    job=job,
+                    frame=frame,
+                    metadata=video_meta,
+                    batch_id=f"{job.job_id}-frame-{frame.frame_number or frame.time_start_ms}",
+                    batch_sequence=batches_submitted,
+                    idempotency_key=(
+                        f"{job.job_id}-frame-{frame.frame_number or frame.time_start_ms}"
+                    ),
+                    units_completed=video_frames_seen,
+                    units_total=None,
+                    observations_emitted_before=total_observations,
+                    completed_at=datetime.now(UTC),
+                )
+                client.submit_batch(
+                    job_id=job.job_id, claim_token=claim_token, submission=batch_submission
+                )
+                batches_submitted += 1
+                total_observations += len(batch_submission.observations)
+
+        heartbeat_ctx = (
             _lease_heartbeat(client, job.job_id, claim_token, renew_interval_seconds)
             if renew_interval_seconds is not None
             else nullcontext()
         )
-        with heartbeat:
-            result = process_job(
-                job,
-                evidence,
-                StaticBytesResolver(payload=resolved.data),
-                detector=detector,
-                tracker=tracker,
-                ocr=ocr,
+        try:
+            with heartbeat_ctx:
+                result = process_job(
+                    job,
+                    evidence=evidence_record,
+                    resolver=StaticBytesResolver(payload=resolved.data),
+                    detector=detector,
+                    tracker=tracker,
+                    ocr_adapter=ocr_adapter,
+                    submit_ocr_batch=_submit_ocr_batch,
+                    stopwatch=None,
+                )
+
+                if result.status is WorkerStatus.SUCCEEDED:
+                    media_batch = build_media_observation_batch(
+                        result.observations,
+                        job=job,
+                        batch_sequence=batches_submitted,
+                        idempotency_key_prefix=str(job.job_id),
+                        observations_emitted_before=total_observations,
+                        completed_at=clock(),
+                        is_final=last_video_frame is None,
+                    )
+                    client.submit_batch(
+                        job_id=job.job_id, claim_token=claim_token, submission=media_batch
+                    )
+                    batches_submitted += 1
+                    total_observations += len(media_batch.observations)
+
+                    # Frames are discovered incrementally.  A final, empty
+                    # video-frame progress batch records completion only once
+                    # frame extraction has finished, without buffering frames
+                    # or pretending an earlier frame was known to be last.
+                    if last_video_frame is not None and last_video_metadata is not None:
+                        final_video_batch = build_video_frame_ocr_batch(
+                            [],
+                            job=job,
+                            frame=last_video_frame,
+                            metadata=last_video_metadata,
+                            batch_id=f"{job.job_id}-frame-ocr-final",
+                            batch_sequence=batches_submitted,
+                            idempotency_key=f"{job.job_id}-frame-ocr-final",
+                            units_completed=video_frames_seen,
+                            units_total=video_frames_seen,
+                            observations_emitted_before=total_observations,
+                            completed_at=clock(),
+                            is_final=True,
+                        )
+                        client.submit_batch(
+                            job_id=job.job_id,
+                            claim_token=claim_token,
+                            submission=final_video_batch,
+                        )
+                        batches_submitted += 1
+
+                    result = build_terminal_result(
+                        job_id=job.job_id,
+                        case_id=job.case_id,
+                        evidence_id=job.evidence_id,
+                        completed_at=clock(),
+                    )
+        except WorkerApiError:
+            # A failed batch acknowledgement must not escape uncaught from a
+            # claimed worker run.  The server may safely replay a retry of the
+            # deterministic batch, while this attempt records one safe,
+            # retryable terminal failure when `/result` remains reachable.
+            result = build_terminal_result_failed(
+                job_id=job.job_id,
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                error_code="media_batch_submission_failed",
+                error_message="media observation batch submission failed",
+                retryable=True,
+                completed_at=clock(),
             )
         ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=result)
         logger.info(
@@ -1035,7 +998,7 @@ class AnalysisComponents:
 
     detector: ObjectDetector | None
     tracker: ObjectTracker | None
-    ocr: TextRecognizer | None
+    ocr_adapter: ImageOcrAdapter | None
 
 
 def _build_analysis_components(settings: Settings) -> AnalysisComponents:
@@ -1057,7 +1020,6 @@ def _build_analysis_components(settings: Settings) -> AnalysisComponents:
     """
     detector: ObjectDetector | None = None
     tracker: ObjectTracker | None = None
-    ocr: TextRecognizer | None = None
     try:
         detector = OnnxObjectDetector(
             config=DetectorConfig(
@@ -1073,16 +1035,17 @@ def _build_analysis_components(settings: Settings) -> AnalysisComponents:
     except ModelAssetError as exc:
         logger.warning("worker.analysis.detector_unavailable", reason=str(exc))
     try:
-        ocr = TesseractTextRecognizer(
-            config=TesseractOcrConfig(
+        ocr_adapter = ImageOcrAdapter(
+            config=OcrAdapterConfig(
                 language=settings.media_ocr_language,
                 min_confidence=settings.media_ocr_min_confidence,
             )
         )
-        logger.info("worker.analysis.ocr_loaded", language=settings.media_ocr_language)
-    except OcrRuntimeError as exc:
-        logger.warning("worker.analysis.ocr_unavailable", reason=str(exc))
-    return AnalysisComponents(detector=detector, tracker=tracker, ocr=ocr)
+        logger.info("worker.analysis.ocr_adapter_loaded", language=settings.media_ocr_language)
+    except Exception as exc:
+        logger.warning("worker.analysis.ocr_adapter_unavailable", reason=str(exc))
+        ocr_adapter = None
+    return AnalysisComponents(detector=detector, tracker=tracker, ocr_adapter=ocr_adapter)
 
 
 @dataclass(frozen=True)
@@ -1120,7 +1083,7 @@ def run_loop(
     processors: Sequence[tuple[str, str]] = SUPPORTED_PROCESSORS,
     detector: ObjectDetector | None = None,
     tracker: ObjectTracker | None = None,
-    ocr: TextRecognizer | None = None,
+    ocr_adapter: ImageOcrAdapter | None = None,
     poll_interval_seconds: float = 5.0,
     max_backoff_seconds: float = 60.0,
     max_consecutive_failures: int = 5,
@@ -1160,7 +1123,7 @@ def run_loop(
                 processors=processors,
                 detector=detector,
                 tracker=tracker,
-                ocr=ocr,
+                ocr_adapter=ocr_adapter,
                 renew_interval_seconds=renew_interval_seconds,
             )
         except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
@@ -1249,7 +1212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 processors=processors,
                 detector=components.detector,
                 tracker=components.tracker,
-                ocr=components.ocr,
+                ocr_adapter=components.ocr_adapter,
                 renew_interval_seconds=settings.media_worker_renew_interval_seconds,
             )
         except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
@@ -1275,7 +1238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             processors=processors,
             detector=components.detector,
             tracker=components.tracker,
-            ocr=components.ocr,
+            ocr_adapter=components.ocr_adapter,
             poll_interval_seconds=settings.media_worker_poll_interval_seconds,
             max_backoff_seconds=settings.media_worker_max_backoff_seconds,
             max_consecutive_failures=settings.media_worker_max_consecutive_failures,

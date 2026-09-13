@@ -301,3 +301,44 @@ Before this phase, a naive chat timestamp with no explicit signal left `timestam
 - Whether `MAX_IDENTIFIER_MATCHES_PER_MESSAGE` (100 per observation type per message) is a reasonable ceiling for a real large chat export — not empirically tuned against a real corpus of that scale in this sandbox.
 - Whether `COMMUNICATION_BATCH_SIZE`'s default (200) and the "renew every 5 batches" lease-heartbeat cadence (identical to Jasraj's `structured_batch_size`/renewal cadence) are reasonable for a real, large chat export or long transcript — not empirically tuned against a real file of that scale in this sandbox.
 - Whether a future phase should add attachment-reference support (a new `ChatMessageRecord` field, per-platform detection, a new observation type/attribute) — the task brief's approved observation-type list for social/chat evidence includes it, but no parser currently reads or models any attachment-related field. Judged out of scope this phase alongside the other deliberately-deferred additions (real ASR/diarization, non-WAV audio) rather than implemented as a new capability under time pressure — see `docs/qa/known-limitations.md`.
+
+# Phase 3 Decisions — Gaurav Shared Raster-Image OCR Bounding-Box Adapter and Fixtures
+
+Record of the choices made while implementing the OCR bounding-box adapter, precise raster-image/frame provenance, and integration with the secure worker + ObservationV1 micro-batch flow.
+
+## Scope
+
+This implements Gaurav's Phase 3 ownership: precisely locating text within standalone images and video frames, extracting it via Tesseract, normalizing the bounding boxes to the required `[0, 1]` scale, building correct `ObservationV1` and `TransformationProvenanceV1` records, and batching them through the existing worker infrastructure. 
+
+## Reused, not duplicated
+
+- **Worker pipeline**: the existing `worker.py::run_once` owns claim, claim-token-bound input fetch, SHA-256 verification, lease heartbeat, batch submission, and terminal status. There is no `run_once_with_ocr_batches` function.
+- **Batching infrastructure**: `ocr_batching.py` reuses Nipun's existing `ObservationBatchSubmissionV1`, `TransformationProvenanceV1`, and `ObservationBatchProgressV1` models and limits.
+- **Client**: `client.submit_batch` (built by Nipun/Jasraj) is reused verbatim to submit the `ObservationBatchSubmissionV1` batches.
+- **OCR Engine**: Tesseract (via `pytesseract`) is reused, identical to Phase 2, but wrapped in a new `ImageOcrAdapter` that preserves bounding boxes.
+- **Fixtures**: The synthetic image generator renders labelled high-contrast PNG/JPEG text. `FixtureOcrAdapter` is explicitly fixture-only; genuine adapter and live tests construct `ImageOcrAdapter` and self-skip with the precise local-runtime reason if Tesseract or a readable local font is unavailable.
+
+## New implementations
+
+- **`ocr_adapter.py`**: Introduced `ImageOcrAdapter` to run local Tesseract and emit ordered line-level bounding boxes with text, OCR-quality confidence, source dimensions, engine/version, language/configuration hash, and preprocessing version.
+- **`FixtureOcrAdapter`**: A pure-Python fallback for testing that generates fake bounding boxes, ensuring CI and tests don't fail if Tesseract is missing.
+- **EXIF Orientation Handling**: Bounding boxes are inverted/rotated back to the *original* unrotated coordinate space before being normalized, ensuring `ObservationV1` locators are always relative to the original bytes, not the arbitrarily rotated pixel buffer.
+- **`ocr_batching.py`**: `iter_image_ocr_batches` and `build_video_frame_ocr_batch` create bounded OCR micro-batches and safe `TransformationProvenanceV1` records. `build_media_observation_batch` moves existing metadata/detection/tracking observations through the secure batch endpoint, leaving every successful terminal result with `observations=[]`.
+
+## Bounding Box Normalization
+
+`worker.py` explicitly drops bounding boxes that fall outside the `[0, 1]` range instead of clamping them, adhering to the strict "never fabricate or silently fix" rule. The coordinates are mapped back to the original image dimensions.
+
+## Safe Metadata
+
+`TransformationProvenanceV1.safe_metadata` is populated with `ocr_engine`, `ocr_engine_version`, `ocr_language`, `preprocessing_version`, `source_width`, and `source_height` (and `frame_time_start_ms` for video). This explicitly omits raw OCR text or sensitive keys, passing the contract's `_validate_safe_metadata` checks.
+
+## Batch order and terminal behavior
+
+Batch sequences are job-global and zero-based. Image OCR chunks occupy the first sequence values; the resulting metadata/detection/tracking observations are submitted in a final media-observation batch. Video frames are processed incrementally without buffering them: each non-empty frame OCR batch is submitted in order, then a final empty video-frame progress batch marks the last sampled frame after extraction completes. This preserves memory bounds and gives the final video OCR batch `is_final_batch=true`. A batch-submission transport/API failure is converted into one safe, retryable terminal failure (`media_batch_submission_failed`) if the terminal endpoint remains reachable; no raw HTTP body, URI, token, or OCR payload is recorded.
+
+## Live verification now covers a real video frame, not only a real image
+
+`test_video_frame_ocr_batch_submission_end_to_end_live` (plus its `_real_ocr_video_fixture`/`make_text_video_bytes` helpers) proves the same real-Tesseract-through-the-adapter path for a genuine sampled video frame, submitted through the batch endpoint, with a full graph-outbox/projector-idempotency/no-leaked-secrets check — mirroring `test_ocr_batch_submission_end_to_end_image_live`'s image-path coverage exactly, closing the gap where only the image path had a dedicated live OCR test. `make_text_video_bytes` builds the labelled clip by looping one `make_text_png_bytes` frame through `ffmpeg` (`-loop 1 -i frame.png`) rather than `ffmpeg`'s `drawtext` filter, which needs a fontconfig/freetype build not guaranteed present — this reuses the exact rendering already proven correct for the image-path tests instead of a second, independent text-rendering mechanism. `FakeObjectDetector` (not the real bootstrapped model) is used to enter the existing video-analysis sampling path deterministically in every environment; this test proves the OCR/batch/outbox behavior for a video frame, not detection accuracy, which the pre-existing pipeline test already covers separately.
+
+The fixture and the adapter's video-frame path were independently confirmed correct (real `ffprobe`/frame-extraction, real Tesseract recognizing the labelled text on every sampled frame) — see `docs/qa/test-results.md`'s "Phase 3 closeout" entry. Whether this specific live test (and the pre-existing image one) actually passes end to end against a real running API/PostgreSQL/Neo4j/MinIO stack was not verified in the sandbox this was built in, because the local Docker daemon itself was unavailable there — this is reported honestly as "not run", never fabricated as a passing live result.

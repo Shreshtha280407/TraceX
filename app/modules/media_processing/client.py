@@ -30,6 +30,7 @@ from uuid import UUID
 import httpx
 import structlog
 
+from app.contracts.observation_batch import ObservationBatchReceiptV1, ObservationBatchSubmissionV1
 from app.contracts.worker import WorkerJobV1, WorkerResultV1
 from app.modules.media_processing.errors import (
     InputResolutionUnavailableError,
@@ -46,6 +47,7 @@ _SHA256_HEADER = "X-TraceX-Evidence-SHA256"
 _CLAIM_PATH = "/api/v1/internal/worker-jobs/claim"
 _INPUT_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/input"
 _RENEW_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/renew"
+_OBSERVATIONS_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/observations"
 
 #: RFC 6266 `filename*=UTF-8''<percent-encoded>` -- preferred when present
 #: (correct for any non-ASCII original filename); `filename="..."` is the
@@ -170,6 +172,46 @@ class WorkerApiClient:
             observation_count=body["observation_count"],
             observation_ids=tuple(UUID(o) for o in body["observation_ids"]),
         )
+
+    def submit_batch(
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        submission: ObservationBatchSubmissionV1,
+    ) -> ObservationBatchReceiptV1:
+        """Submit one partial observation micro-batch via Nipun's ``/observations`` endpoint.
+
+        Idempotent on the caller's side too: retrying the exact same
+        ``submission`` (same ``batch_id``/``idempotency_key``/content) after a
+        transport failure is always safe -- the server replays rather than
+        duplicates (see ``app/contracts/observation_batch.py``).
+
+        Mirrors ``communication_processing.client.WorkerApiClient.submit_batch``
+        exactly -- same wire format, same error handling, per the per-module-
+        ownership convention (each module owns its own copy of the HTTP client).
+
+        Never logs the claim token or a raw response body.
+        """
+        logger.info(
+            "worker.client.submit_batch_attempted",
+            job_id=str(job_id),
+            batch_id=submission.batch_id,
+            batch_sequence=submission.batch_sequence,
+        )
+        response = self._post_safely(
+            _OBSERVATIONS_PATH_TEMPLATE.format(job_id=job_id),
+            content=submission.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"batch submission conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(f"batch submission rejected for job {job_id}: validation failed")
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"batch submission failed: HTTP {response.status_code}")
+        return ObservationBatchReceiptV1.model_validate(response.json())
 
     def renew(self, job_id: UUID, *, claim_token: str) -> datetime:
         """Extend this job's lease -- a heartbeat for processing that may outlast the
