@@ -125,6 +125,16 @@ Phase 5 contributors have merged their work.
 Trained ranking, entity resolution, automatic merges, hypotheses, criminality conclusions, and external AI
 APIs are deferred. Algorithm quality and operational performance remain unmeasured.
 
+## Visual producer compatibility (Phase 5B)
+
+Visual observation types remain excluded from retrieval descriptors unless a
+future source adapter explicitly defines a safe, validated identifier mapping.
+The producer may attach `visual_signal_validation` metadata; only an
+`accepted` outcome is correlation-ready, and source-local tracks/OCR text are
+not identity claims. Phase 5 consumers must retain the canonical evidence ID,
+source locator, extractor and quality outcome rather than infer identity from
+appearance, a vehicle, or reappearance.
+
 ## Phase 5B secure read boundary
 
 Every externally reachable Phase 5 graph/correlation read uses the established

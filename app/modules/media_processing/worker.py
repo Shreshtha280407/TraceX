@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
+from typing import cast
 from uuid import UUID, uuid4
 
 import structlog
@@ -134,6 +135,10 @@ from app.modules.media_processing.source import (
 from app.modules.media_processing.video.frames import extract_frames
 from app.modules.media_processing.video.probe import probe_video
 from app.modules.media_processing.video.sampling import build_sample_plan
+from app.modules.media_processing.visual_validation import (
+    VisualSignalOutcome,
+    validate_visual_signal,
+)
 
 OcrBatchCallback = TypingCallable[
     [ExtractedFrame | None, Frame, ImageMetadata | VideoMetadata], None
@@ -402,27 +407,35 @@ def _detection_observation_video(
         if detection.label == _TEXT_REGION_LABEL
         else OBSERVATION_OBJECT_DETECTION
     )
+    extractor = _analysis_extractor(_model_interface_version(dict(detection.attributes)))
+    locator = SourceLocator(
+        frame_number=frame.frame_number,
+        time_start_ms=frame.time_start_ms,
+        time_end_ms=frame.time_end_ms,
+        bbox_xyxy_normalized=normalized,
+    )
+    validation = validate_visual_signal(
+        locator=locator, extractor=extractor, video_metadata=metadata, require_bbox=True
+    )
+    if validation.outcome is VisualSignalOutcome.REJECTED:
+        return None
     draft = MediaObservationDraft(
         observation_type=observation_type,
-        locator=SourceLocator(
-            frame_number=frame.frame_number,
-            time_start_ms=frame.time_start_ms,
-            time_end_ms=frame.time_end_ms,
-            bbox_xyxy_normalized=normalized,
-        ),
+        locator=locator,
         confidence=detection.confidence,
         attributes={
             "detected_label": detection.label,
             "media_width": metadata.width,
             "media_height": metadata.height,
             "sampling_strategy": sampling.strategy.value,
+            "visual_signal_validation": validation.attribute_value(),
         },
     )
     return draft_to_observation(
         case_id=job.case_id,
         evidence_id=job.evidence_id,
         draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(detection.attributes))),
+        extractor=extractor,
         created_at=completed_at,
     )
 
@@ -441,21 +454,27 @@ def _detection_observation_image(
         if detection.label == _TEXT_REGION_LABEL
         else OBSERVATION_OBJECT_DETECTION
     )
+    extractor = _analysis_extractor(_model_interface_version(dict(detection.attributes)))
+    locator = SourceLocator(bbox_xyxy_normalized=normalized)
+    validation = validate_visual_signal(locator=locator, extractor=extractor, require_bbox=True)
+    if validation.outcome is VisualSignalOutcome.REJECTED:
+        return None
     draft = MediaObservationDraft(
         observation_type=observation_type,
-        locator=SourceLocator(bbox_xyxy_normalized=normalized),
+        locator=locator,
         confidence=detection.confidence,
         attributes={
             "detected_label": detection.label,
             "media_width": metadata.width,
             "media_height": metadata.height,
+            "visual_signal_validation": validation.attribute_value(),
         },
     )
     return draft_to_observation(
         case_id=job.case_id,
         evidence_id=job.evidence_id,
         draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(detection.attributes))),
+        extractor=extractor,
         created_at=completed_at,
     )
 
@@ -479,9 +498,22 @@ def _track_observation(
             {"time_ms": time_ms, "bbox_xyxy_normalized": normalized.model_dump(mode="json")}
         )
 
+    extractor = _analysis_extractor(_model_interface_version(dict(segment.attributes)))
+    locator = SourceLocator(time_start_ms=segment.start_time_ms, time_end_ms=segment.end_time_ms)
+    validation = validate_visual_signal(
+        locator=locator, extractor=extractor, video_metadata=metadata
+    )
+    if validation.outcome is VisualSignalOutcome.REJECTED or not track_boxes:
+        raise ValueError("invalid visual track segment")
+    lifecycle_value = segment.attributes.get("track_lifecycle_conditions")
+    lifecycle_conditions = (
+        [value for value in lifecycle_value if isinstance(value, str)]
+        if isinstance(lifecycle_value, list)
+        else ["source_local"]
+    )
     draft = MediaObservationDraft(
         observation_type=OBSERVATION_ANONYMOUS_TRACK_SEGMENT,
-        locator=SourceLocator(time_start_ms=segment.start_time_ms, time_end_ms=segment.end_time_ms),
+        locator=locator,
         confidence=segment.quality,
         discriminator=segment.local_track_id,
         attributes={
@@ -491,13 +523,16 @@ def _track_observation(
             "media_height": metadata.height,
             "sampling_strategy": sampling.strategy.value,
             "track_boxes": track_boxes,
+            "track_scope": "evidence_local",
+            "track_lifecycle_conditions": cast(list[JsonValue], lifecycle_conditions),
+            "visual_signal_validation": validation.attribute_value(),
         },
     )
     return draft_to_observation(
         case_id=job.case_id,
         evidence_id=job.evidence_id,
         draft=draft,
-        extractor=_analysis_extractor(_model_interface_version(dict(segment.attributes))),
+        extractor=extractor,
         created_at=completed_at,
     )
 
@@ -543,9 +578,12 @@ def _process_video_analysis(
         if tracker is not None:
             for segment in tracker.track(detections_by_time):
                 if is_valid_confidence(segment.quality):
-                    observations.append(
-                        _track_observation(job, segment, metadata, sampling, completed_at)
-                    )
+                    try:
+                        observations.append(
+                            _track_observation(job, segment, metadata, sampling, completed_at)
+                        )
+                    except ValueError:
+                        continue
 
         if ocr_adapter is not None and submit_ocr_batch is not None:
             for frame in frames:

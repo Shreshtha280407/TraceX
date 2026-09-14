@@ -229,6 +229,11 @@ URIs, case material, or production identifiers.
 Planning tests use synthetic metadata, generated UUIDs, and tiny in-memory
 arrays only. No video, image, model bundle, OCR text, URI, credential, or case
 evidence is included.
+
+Phase 5B visual-validation tests use only synthetic frame numbers, duration,
+chunk boundaries, normalized boxes, and short bounded OCR labels. They contain
+no frame crops, sensitive video, plate ownership data, biometric data, or real
+case evidence.
 # Phase 4 audio/social planning fixtures (Sarthak)
 
 Tests use generated UUIDs, synthetic source-relative intervals, short Unicode

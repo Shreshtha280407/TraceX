@@ -100,7 +100,7 @@ def _make_ocr_result(
 
 def _make_extracted_frame(
     *,
-    frame_number: int | None = 5,
+    frame_number: int | None = 25,
     time_start_ms: int = 1000,
     time_end_ms: int = 1200,
     width: int = 400,
@@ -213,7 +213,7 @@ def test_iter_image_ocr_batches_empty_results_yields_one_empty_batch() -> None:
 def test_video_frame_ocr_batch_locator_has_all_required_fields() -> None:
     """Scenario 18: video-frame batch locator has frame_number, time bounds, bbox."""
     job = _make_job(source_type="video")
-    frame = _make_extracted_frame(frame_number=5, time_start_ms=1000, time_end_ms=1200)
+    frame = _make_extracted_frame(frame_number=25, time_start_ms=1000, time_end_ms=1200)
     meta = _make_video_metadata()
     results = [_make_ocr_result("FRAME TEXT")]
 
@@ -235,7 +235,7 @@ def test_video_frame_ocr_batch_locator_has_all_required_fields() -> None:
     assert len(batch.observations) == 1
     obs = batch.observations[0]
     loc = obs.source_locator
-    assert loc.frame_number == 5
+    assert loc.frame_number == 25
     assert loc.time_start_ms == 1000
     assert loc.time_end_ms == 1200
     assert loc.bbox_xyxy_normalized is not None
