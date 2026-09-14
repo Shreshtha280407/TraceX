@@ -594,3 +594,9 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Source-relative/absolute temporal precision policy, bounded provenance,
   and safe manifest/chunk/artifact identifier lineage.
 - [ ] Merge-wave real-media, GPU, LAN, Docker/Compose, and dataset validation.
+
+# Phase 4 - Jasraj shared extracted-text utilities: In progress
+
+- [x] Pure typed OCR-fragment cleanup and deterministic unresolved identifier
+  candidates with span/locator/lineage provenance.
+- [ ] Real OCR, GPU/media, LAN, and dataset validation at merge wave.

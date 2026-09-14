@@ -2425,3 +2425,12 @@ it was not claimed as run in this follow-up because the stack was unavailable.
 # Phase 4 media orchestration (Nipun)
 
 - `UV_CACHE_DIR=/tmp/tracex-uv-cache uv run pytest -q tests/unit/evidence_lifecycle/test_media_orchestration.py`: **5 passed** (2026-09-14). Synthetic manifest/observation fixtures only; no Docker, GPU, LAN worker, real media, or Neo4j service was invoked.
+
+# Phase 4 Jasraj extracted-text utilities (2026-09-14)
+
+- Focused synthetic OCR-fragment utility coverage: **8 passed in 0.04s**.
+- Existing Phase 3 text normalization, Nipun Phase 4 media orchestration, and
+  Shreshtha Phase 4 media graph mapping compatibility coverage: **20 passed
+  in 0.16s**.
+- No real OCR engine, GPU/video workload, LAN worker, real dataset, Docker,
+  or end-to-end graph validation was run.

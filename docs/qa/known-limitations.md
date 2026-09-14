@@ -164,3 +164,14 @@ absolute time. Candidate contributor references that are absent or outside the
 case do not create cross-case graph links. Real GPU/audio/LAN/dataset and full
 Compose acceptance validation are intentionally deferred to the Phase 4 merge
 wave and post-Phase-5 validation gate.
+# Phase 4 extracted-text utility limitations (Jasraj)
+
+- The utility does not execute OCR, select ROIs, decode image/video, or test a
+  real OCR engine, GPU worker, LAN deployment, or media dataset.
+- Plate-like matching is structural and India-style only; it does not validate
+  a registration or correct ambiguous OCR glyphs. Phone matching is Indian
+  mobile format only. Account/reference extraction requires an explicit label.
+- Candidate results are review-only unresolved text claims. Mapping them to a
+  canonical observation is a future worker's explicit responsibility; graph
+  projection, correlation, entity resolution, and identity verification remain
+  out of scope.
