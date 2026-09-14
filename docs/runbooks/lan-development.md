@@ -1,5 +1,12 @@
 # Runbook: LAN Development (Local Network Demo Setup)
 
+## Phase 4 release-gate prerequisite
+
+The Phase 4 release gate must first pass on one isolated local Compose project
+with synthetic evidence only. A LAN deployment, GPU worker, or model asset is
+not a substitute for that gate. Do not point LAN workers at PostgreSQL, Neo4j,
+Redis, or MinIO; they publish only through the authenticated coordinator API.
+
 For a small team (e.g. three laptops on the same Wi-Fi/LAN) that wants to demo or jointly test TraceX without every laptop running its own full stack. **This is a demo/development configuration, not a production deployment** — see the warning at the end.
 
 ## Topology
@@ -91,6 +98,11 @@ managed and must never be committed. Local demo HTTP requires the explicit
 
 Workers use only the API and must never receive PostgreSQL, Neo4j, Redis,
 MinIO, object-store, or object URI credentials.
+
+Before any LAN Phase 4 demonstration, first complete the dedicated local
+Compose release gate in `docs/architecture/phase-4-integration-release-gate.md`.
+Its synthetic-only flow validates lease/replay and graph-outbox behavior before
+any worker connects over the LAN; it does not authorize real evidence use.
 
 ## This is not production deployment
 

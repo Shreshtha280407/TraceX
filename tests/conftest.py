@@ -10,9 +10,11 @@ skip themselves when the real service isn't reachable).
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 
+import anyio.to_thread
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -59,7 +61,35 @@ _TEST_ENV_DEFAULTS = {
 for _key, _value in _TEST_ENV_DEFAULTS.items():
     os.environ.setdefault(_key, _value)
 
-from app.main import app  # noqa: E402  (must follow env setup above)
+from app.main import app  # noqa: E402, I001  (must follow env setup above)
+
+
+_ANYIO_RUN_SYNC = anyio.to_thread.run_sync
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _allow_anyio_worker_startup() -> AsyncIterator[None]:
+    """Keep AnyIO worker execution off pytest-asyncio's root task.
+
+    With the locked pytest-asyncio/AnyIO versions, direct root-task calls to
+    ``anyio.to_thread.run_sync`` can stall before a worker receives its first
+    item.  FastAPI's synchronous dependencies and Starlette's ``UploadFile``
+    both use that primitive, so the failure prevents existing ASGI tests from
+    exercising their assertions.  Production servers already invoke requests
+    in child tasks; this test-only shim recreates that scheduling shape.
+    """
+
+    async def run_sync_in_child_task(*args: object, **kwargs: object) -> object:
+        task = asyncio.create_task(_ANYIO_RUN_SYNC(*args, **kwargs))
+        await asyncio.sleep(0.1)
+        return await task
+
+    original = anyio.to_thread.run_sync
+    anyio.to_thread.run_sync = run_sync_in_child_task  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        anyio.to_thread.run_sync = original
 
 
 @pytest_asyncio.fixture

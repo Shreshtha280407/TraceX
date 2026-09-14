@@ -1,5 +1,17 @@
 # Known Limitations — Phase 1
 
+## Phase 4 final release-gate environment blockers (2026-09-14)
+
+The final Phase 4 gate remains in progress. A test-only AnyIO/pytest-asyncio
+compatibility fixture now avoids the former root-task worker stall, and the
+complete local suite passes (1693 passed, 61 conditionally skipped). Docker
+Engine is reachable, but the fresh dedicated API image cannot complete its
+locked dependency install because Docker-build DNS cannot resolve
+`files.pythonhosted.org` (observed separately for `neo4j` and `lxml`). Thus
+the required dedicated Compose API, clean-database migration, readiness
+outage/recovery, and synthetic live E2E evidence remains unverified. This is
+not evidence that a Phase 4 pipeline is complete.
+
 ## Phase 3 acceptance environment limitation (2026-09-13)
 
 The complete test suite is green, but a fresh five-service Compose image build
