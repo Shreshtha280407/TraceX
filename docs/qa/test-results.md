@@ -2411,6 +2411,17 @@ it was not claimed as run in this follow-up because the stack was unavailable.
 - `.venv/bin/mypy app/modules/graph` passed.
 - Formatting, lint, and strict graph-package typing passed; synthetic focused mapping/projector and existing Phase 3/Phase 5 compatibility coverage: **89 passed in 0.19s**.
 - No Docker/Compose, GPU, LAN worker, real media/audio dataset, external ASR/OCR, or end-to-end acceptance check was run.
+
+# Phase 4 Aditya LAN worker security and reliability (2026-09-14)
+
+- Focused transport/security guard plus configuration tests: **8 passed in 0.06s**.
+- Nipun's focused media-orchestration compatibility suite: **5 passed in 0.07s**;
+  the direct existing lease-renewal service check also passed (**1 passed in
+  0.02s**).
+- Static formatting/lint/type checks for changed worker-control paths passed.
+- `docker compose config -q` passed. Existing broader HTTP lifecycle tests
+  were not claimed: the focused renewal-route check hung in this sandbox
+  after the request began and needs merge-wave follow-up.
 # Phase 4 media orchestration (Nipun)
 
 - `UV_CACHE_DIR=/tmp/tracex-uv-cache uv run pytest -q tests/unit/evidence_lifecycle/test_media_orchestration.py`: **5 passed** (2026-09-14). Synthetic manifest/observation fixtures only; no Docker, GPU, LAN worker, real media, or Neo4j service was invoked.

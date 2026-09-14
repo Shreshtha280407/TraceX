@@ -11,6 +11,7 @@ detail) never leak into the contract surface.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -23,6 +24,15 @@ from app.contracts.evidence import (
 )
 from app.contracts.observation_batch import TransformationStatus
 from app.contracts.worker import WorkerJobV1, WorkerResultV1, WorkerStatus
+
+
+class WorkerAvailabilityStatus(StrEnum):
+    ACTIVE = "active"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+    RECOVERING = "recovering"
+    DEGRADED = "degraded"
+
 
 #: Terminal `WorkerStatus` values -- a job is only ever transitioned to one
 #: of these by a submitted `WorkerResultV1`; `queued`/`running` are never

@@ -30,6 +30,7 @@ from app.modules.access_control.api import router as auth_router
 from app.modules.evidence_lifecycle.api import router as evidence_router
 from app.modules.evidence_lifecycle.dependencies import get_object_storage
 from app.modules.evidence_lifecycle.internal_api import router as worker_jobs_router
+from app.modules.evidence_lifecycle.worker_security import WorkerControlPlaneGuardMiddleware
 from app.modules.graph.api import router as graph_router
 
 logger = structlog.get_logger(__name__)
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     application = FastAPI(title=settings.app_name, version="0.1.0", lifespan=_lifespan)
     application.add_middleware(RequestIDMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(WorkerControlPlaneGuardMiddleware, settings=settings)
     application.add_exception_handler(StarletteHTTPException, http_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(Exception, unhandled_exception_handler)

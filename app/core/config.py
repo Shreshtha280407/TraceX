@@ -168,6 +168,21 @@ class Settings(BaseSettings):
     # unkeyed in that environment.
     worker_credential_pepper: SecretStr | None = Field(default=None)
 
+    # --- Phase 4 LAN worker control plane ---
+    # HTTP is deliberately allowed only when this switch is false (the
+    # documented local-development exception).  A production/LAN deployment
+    # terminates TLS at an explicitly trusted proxy or serves HTTPS directly.
+    worker_secure_transport_required: bool = Field(default=False)
+    # Comma-separated literal proxy IPs.  Forwarded protocol headers are
+    # ignored unless the immediate peer is on this allow-list.
+    worker_trusted_proxy_ips: str = Field(default="")
+    worker_internal_request_max_bytes: int = Field(default=2_097_152, ge=1024)
+    worker_internal_request_timeout_seconds: float = Field(default=30.0, gt=0)
+    worker_batch_max_observations: int = Field(default=500, ge=1)
+    worker_batch_max_transformations: int = Field(default=500, ge=1)
+    worker_media_chunk_max_artifacts: int = Field(default=100, ge=0)
+    worker_heartbeat_stale_seconds: int = Field(default=120, ge=1)
+
     # --- Graph projection (Phase 2 -- Shreshtha) ---
     # How many durable `graph_projection_jobs` rows one `graph.worker --once`
     # invocation claims and processes before exiting. Bounded so a single
@@ -310,6 +325,8 @@ class Settings(BaseSettings):
                 "worker_lease_max_seconds must be >= worker_lease_seconds "
                 f"(got {self.worker_lease_max_seconds} < {self.worker_lease_seconds})"
             )
+        if self.worker_heartbeat_stale_seconds > self.worker_lease_seconds:
+            raise ValueError("worker_heartbeat_stale_seconds must be <= worker_lease_seconds")
         return self
 
 

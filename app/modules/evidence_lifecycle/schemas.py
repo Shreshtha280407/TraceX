@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
 from app.contracts.observation_batch import ObservationBatchProgressV1
 from app.contracts.worker import WorkerJobV1, WorkerStatus
+from app.modules.evidence_lifecycle.models import WorkerAvailabilityStatus
 
 
 class _ResponseModel(BaseModel):
@@ -115,4 +116,12 @@ class RenewLeaseResponse(_ResponseModel):
     """Safe acknowledgement of a lease renewal -- the new expiry only, nothing else."""
 
     job_id: UUID
+    lease_expires_at: datetime
+
+
+class WorkerHeartbeatResponse(_ResponseModel):
+    """Safe worker availability acknowledgement; contains no network/token data."""
+
+    job_id: UUID
+    availability: WorkerAvailabilityStatus
     lease_expires_at: datetime

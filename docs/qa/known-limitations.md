@@ -146,6 +146,14 @@ Rules weights are preliminary and unmeasured. Operation Nightfall truth evaluati
 false-link rate, P99 bridge validation, final rules-weight freeze, full real-dataset validation, and LAN end-to-end
 validation will run after all Phase 5 contributors have merged their work.
 
+## Phase 4 LAN worker security
+
+No real multi-machine TLS, proxy, LAN, GPU, or dataset validation was run in
+this change. TLS certificate issuance/rotation and trusted-proxy deployment are
+operator responsibilities. The control-plane deadline configuration is
+documented for deployment use; end-to-end dependency timeout behaviour needs
+merge-wave verification.
+
 ## Phase 4 Shreshtha media graph mapping
 
 This layer does not decode media, infer timestamps from FPS, run ASR/diarization,

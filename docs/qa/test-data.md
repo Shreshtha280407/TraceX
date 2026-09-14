@@ -172,6 +172,12 @@ short time boundaries, and synthetic canonical observations. They contain no
 audio/video/image bytes, object-store credentials, biometric material, or
 real-case provenance.
 
+# Phase 4 LAN worker-security fixtures
+
+Transport tests use in-memory ASGI apps, localhost/proxy-shaped synthetic
+addresses, and bounded placeholder bytes only. They contain no bearer token,
+claim token, evidence, object URI, credential, or real network endpoint.
+
 # Phase 4 media graph-mapping fixtures
 
 `tests/unit/graph/test_phase_4_media_mapping.py` uses only synthetic UUIDs,

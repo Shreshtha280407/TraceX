@@ -66,6 +66,7 @@ from app.modules.evidence_lifecycle.models import (
     ObservationBatchRecord,
     ObservationRecord,
     ObservationTransformationRecord,
+    WorkerAvailabilityStatus,
     WorkerJobRecord,
     WorkerProgressEventRecord,
     WorkerResultRecord,
@@ -227,6 +228,25 @@ class EvidenceLifecycleService:
             if existing is None or existing.manifest_hash != manifest.manifest_hash:
                 raise MediaPublicationConflictError("a different manifest already exists")
         return MediaManifestOutcome(manifest_id=manifest.manifest_id, created=created)
+
+    async def worker_availability(
+        self, *, job_id: UUID, now: datetime, stale_seconds: int
+    ) -> WorkerAvailabilityStatus:
+        """Derive safe availability from the durable claim/lease state.
+
+        Lease renewal already durably updates ``worker_jobs.updated_at``;
+        this deliberately avoids a second competing worker-state machine.
+        Partial observations remain immutable regardless of this derived
+        operational state.
+        """
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.status is not WorkerStatus.RUNNING:
+            return WorkerAvailabilityStatus.UNAVAILABLE
+        if job.lease_expires_at is None or job.lease_expires_at < now:
+            return WorkerAvailabilityStatus.STALE
+        if (now - job.updated_at).total_seconds() > stale_seconds:
+            return WorkerAvailabilityStatus.DEGRADED
+        return WorkerAvailabilityStatus.ACTIVE
 
     async def get_media_resume_checkpoint(
         self, *, case_id: UUID, job_id: UUID, manifest_id: UUID
