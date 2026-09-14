@@ -50,7 +50,7 @@ def _tokens(item: ObservationDescriptor) -> tuple[str, ...]:
     return tuple(token.casefold() for value in values for token in _TOKEN.findall(value))
 
 
-def _normalise_identifier(identifier_type: str, value: str) -> str | None:
+def normalise_identifier(identifier_type: str, value: str) -> str | None:
     """Comparison key for stable, source-backed identifier claims only."""
     if identifier_type not in _IDENTIFIER_TYPES:
         return None
@@ -99,8 +99,8 @@ def retrieve_candidates(
         identifier_types: set[str] = set()
         contradictions: set[str] = set()
         for kind, value in left.identifiers.items():
-            left_value = _normalise_identifier(kind, value)
-            right_value = _normalise_identifier(kind, right.identifiers.get(kind, ""))
+            left_value = normalise_identifier(kind, value)
+            right_value = normalise_identifier(kind, right.identifiers.get(kind, ""))
             if left_value is not None and left_value == right_value:
                 reasons.add(RetrievalReason.EXACT_IDENTIFIER)
                 identifier_types.add(kind)
@@ -118,7 +118,18 @@ def retrieve_candidates(
             alias.casefold().strip() for alias in right.aliases
         }:
             reasons.add(RetrievalReason.NORMALIZED_ALIAS)
-        if set(left.transliterations) & (set(right.aliases) | set(right.transliterations)):
+        # Symmetric in both directions: a transliteration candidate on
+        # *either* side may match the other side's alias or transliteration
+        # set. `_ordered` fixes which descriptor is "left" independently of
+        # random observation-ID generation, so checking only
+        # `left.transliterations` against `right`'s fields would make this
+        # reason's presence depend on which of the two happened to sort
+        # first -- a genuine, order-dependent bug, not an intentional
+        # asymmetry (transliteration/alias overlap has no natural
+        # direction).
+        if (set(left.transliterations) & (set(right.aliases) | set(right.transliterations))) or (
+            set(right.transliterations) & set(left.aliases)
+        ):
             reasons.add(RetrievalReason.TRANSLITERATION)
         vector_score = _cosine(vectors[left.observation_id], vectors[right.observation_id])
         if vector_score >= vector_threshold and vector_score < 1.0:

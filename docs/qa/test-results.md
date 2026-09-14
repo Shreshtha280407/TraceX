@@ -2508,3 +2508,47 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   attempted but Docker denied access to
   `/home/nipun/.docker/desktop/docker.sock`; no container, health, migration,
   readiness, or live E2E pass is claimed.
+
+# Phase 5A Shreshtha graph-intelligence baseline and Phase 4 integration (2026-09-15)
+
+- `uv sync --all-groups`: resolved/checked, no changes needed.
+- `uv run ruff format --check` and `uv run ruff check` on every changed/new
+  path (`app/modules/graph/intelligence/{__init__.py,retrieval.py,sourcing.py,pipeline.py}`,
+  `app/modules/graph/intelligence_worker.py`,
+  `tests/unit/graph/test_intelligence_{sourcing,pipeline,vector_store}.py`,
+  `tests/integration/graph/test_intelligence_{pipeline,vector_store}_live.py`,
+  `tests/integration/graph/test_phase5_correlation_integration_live.py`):
+  **all files already formatted / all checks passed**.
+- `uv run mypy app/modules/graph`: **Success: no issues found in 29 source
+  files**.
+- `uv run alembic heads`: one coherent head, `f4a1c9e0d2b3`. `uv run alembic
+  history` confirms an unbroken chain including the Phase 5 correlation
+  (`b5f8d7c2a1e0`) and pgvector (`e4f7a8b9c0d1`) revisions added in an earlier
+  session; no new migration was added this session.
+- `uv run pytest tests/unit/graph/ tests/integration/graph/ -v`: **195
+  passed**, covering every new Phase 5A sourcing/pipeline/vector-store unit
+  test, the new live end-to-end correlation-submit/replay/project/analytics/
+  motif integration tests, and all pre-existing Phase 2.5-5 graph tests
+  (projection, projector, queries, schema, worker loop, case isolation,
+  outbox, Phase 3/4 mapping) with no regressions.
+- `uv run pytest tests/unit/evidence_lifecycle/ -q`: **181 passed in
+  119.40s** (compute-bound, not a hang) — confirms Phase 5A changes did not
+  regress Phase 4 evidence-lifecycle behavior.
+- `uv run pytest tests/integration/evidence_lifecycle/ -q`: **12 passed in
+  6.75s**.
+- `git diff --check`: exit code 0, no whitespace errors.
+- `docker compose config -q`: passed (no Compose changes were made this
+  session; `pgvector/pgvector:pg16` for the `postgres` service was already
+  declared from a prior session).
+- Local infrastructure repair required for live verification (environment
+  fix, not a code change): the running `tracex-postgres-1` container was
+  still on the older `postgres:16-alpine` image. `docker compose up -d
+  postgres` recreated it against the already-declared `pgvector/pgvector:pg16`
+  image, preserving the existing named volume (row counts and the
+  `alembic_version` row were confirmed unchanged before/after); `uv run
+  alembic upgrade head` then applied the 3 pending migrations. `tracex-api-1`
+  held a stale connection pool from before the recreation and was restarted
+  (`docker compose restart api`), confirmed healthy via `/readyz`.
+- No final relationship-score weights, real-dataset metrics, Operation
+  Nightfall evaluation, or Phase 5 completion is claimed. This is a Phase 5A
+  baseline/integration verification only.

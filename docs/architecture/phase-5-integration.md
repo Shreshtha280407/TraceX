@@ -77,8 +77,18 @@ defines an authorization policy for writes and reviews.
 
 Shreshtha owns correlation creation/scoring/ranking, link reasons,
 hypothesis-generation semantics, and the registered correlation Neo4j handler.
-That handler consumes `CorrelationProjectionContext` and must implement its
-own idempotent Cypher using `projection_key`. Nipun owns the durable schema,
-idempotency, case/provenance validation, outbox mechanics, and safe read
-surface. Aditya owns any new write/review authorization policy; this work only
-reuses the existing graph-read dependency.
+That handler consumes `CorrelationProjectionContext` and implements its own
+idempotent Cypher using `projection_key` (`intelligence/projection.py`).
+Nipun owns the durable schema, idempotency, case/provenance validation,
+outbox mechanics, and safe read surface. Aditya owns any new write/review
+authorization policy; this work only reuses the existing graph-read
+dependency.
+
+**Resolved (Phase 5A reconciliation)**: the handler above now has a real,
+reachable registration path -- `app/modules/graph/intelligence_worker.py
+--replay-once`/`--replay-loop` compose it with `replay_graph_updates` in a
+real process, mirroring `graph.worker`'s existing `--once`/`--loop` CLI
+shape for the separate `graph_projection_jobs` outbox. Before this, the
+handler existed and was unit-tested but nothing in `app/` ever invoked it
+outside a test -- see `docs/qa/known-limitations.md` for the corrected
+record of that gap.

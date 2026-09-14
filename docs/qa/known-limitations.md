@@ -140,10 +140,16 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 
 # Phase 5 graph/correlation integration
 
-- The Phase 5 foundation ships a typed `CorrelationProjectionContext` and
-  replay worker seam, but no semantic correlation Cypher handler. That is
-  Shreshtha's ownership; queued events are durable and replayable until one
-  is registered.
+- **Resolved (Phase 5A reconciliation, Shreshtha).** The Phase 5 foundation ships a typed
+  `CorrelationProjectionContext` and replay worker seam; the semantic correlation Cypher handler
+  (`intelligence/projection.py::make_correlation_projection_handler`) is now registered into a reachable
+  process via `app/modules/graph/intelligence_worker.py --replay-once`/`--replay-loop`. Before this fix,
+  the handler existed and was fully unit-tested but no code under `app/` ever composed it with
+  `replay_graph_updates` outside a test -- queued events were durable and replayable, but nothing in a
+  real process ever claimed and projected them. A live end-to-end test
+  (`tests/integration/graph/test_intelligence_pipeline_live.py`) now proves a real submission is
+  replayed and projected into a real `Correlation` node exactly once, and that replaying twice never
+  duplicates it.
 - No public write/review route is exposed. Existing `GRAPH_READ` protects the
   read endpoints; Aditya must define the write/review authorization policy.
 - A graph-update event has no automatic retry ceiling for a connection outage
@@ -157,6 +163,32 @@ Leiden uses a fixed seed and deterministic snapshot ordering, but its quality an
 Rules weights are preliminary and unmeasured. Operation Nightfall truth evaluation, measured Precision@K/Recall@K/
 false-link rate, P99 bridge validation, final rules-weight freeze, full real-dataset validation, and LAN end-to-end
 validation will run after all Phase 5 contributors have merged their work.
+
+**Resolved (Phase 5A reconciliation).** A prior progress-log checkbox described the "semantic typed-outbox
+handler" as done; the handler's *logic* was indeed complete and tested, but it was not registered into any
+reachable process -- see the corrected entry above. `retrieval.py`'s transliteration-vs-alias overlap check
+also had a genuine, order-dependent bug (only `left.transliterations` was checked against `right`'s fields,
+never the reverse, so the result depended on which of two randomly-generated observation IDs happened to
+sort first) -- fixed to check both directions, with a permanent regression test
+(`tests/unit/graph/test_intelligence_sourcing.py::test_transliteration_match_is_symmetric_regardless_of_observation_id_ordering`).
+
+**New, deliberate Phase 5A scoping limitations** (not defects):
+
+- `PgvectorCandidateStore` had zero test coverage before this phase; it now has both unit (fake-engine)
+  and live (real pgvector) coverage, including case isolation and upsert idempotency.
+- `normalise_identifier`'s phone rule strips non-digits and prepends `+` but never reconciles a country
+  code -- a CDR's E.164 `+919876543210` and a bare-digit `9876543210` extracted elsewhere are correctly
+  treated as distinct, not incorrectly merged. A future phase could add country-code-aware normalization
+  if cross-format phone matching becomes a real need.
+- `sourcing.descriptor_from_observation`'s mapping scope is intentionally bounded to observation types
+  already confirmed to carry a genuinely stable identifier, alias, or handle (see the module's own
+  docstring for the exact list). A `cdr_call_record`/`financial_transaction_record`'s second party
+  (callee/receiver) is not independently exact-blockable from that one combined record, since
+  `ObservationDescriptor.identifiers` holds one value per stable-identifier kind.
+- The temporal motif's "movement/meeting" hop only fires for a `meeting_candidate` media observation
+  whose own `contributing_observation_ids` cites a call/transfer this same adapter run recognized -- a
+  real, evidence-backed link, never fabricated, but real cross-modal chains need a shared identifier
+  (e.g. a phone number visible in an OCR frame) the media pipeline does not yet extract.
 
 ## Phase 4 LAN worker security
 
