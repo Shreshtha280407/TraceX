@@ -567,3 +567,9 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
   case-scoped integration read endpoints, and focused fixture tests.
 - [ ] Shreshtha semantic correlation projection handler and intelligence
   producers; Aditya write/review authorization policy.
+
+# Phase 5 - Shreshtha graph intelligence and rules baseline: In progress
+
+- [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.
+- [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
+- [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.

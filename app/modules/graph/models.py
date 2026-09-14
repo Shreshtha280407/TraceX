@@ -33,6 +33,7 @@ class GraphNodeKind(StrEnum):
     ENTITY_MENTION = "EntityMention"
     SOURCE_CLAIM = "SourceClaim"
     TEMPORAL_EVENT = "TemporalEvent"
+    CORRELATION = "Correlation"
 
 
 class GraphRelationshipKind(StrEnum):
@@ -58,6 +59,7 @@ class GraphRelationshipKind(StrEnum):
     PROJECTS_CLAIM = "PROJECTS_CLAIM"
     PROJECTS_EVENT = "PROJECTS_EVENT"
     HAS_CLAIM_PARTICIPANT = "HAS_CLAIM_PARTICIPANT"
+    SUPPORTED_BY_OBSERVATION = "SUPPORTED_BY_OBSERVATION"
 
 
 class AssertionKind(StrEnum):

@@ -14,6 +14,7 @@ _CASE_SCOPED_LABELS = {
     "Entity": "entity_id",
     "Event": "event_id",
     "EntityMention": "mention_id",
+    "Correlation": "projection_key",
 }
 
 
@@ -63,6 +64,7 @@ def test_expected_indexes_are_present() -> None:
         "source_claim_case_id_idx",
         "temporal_event_case_id_idx",
         "temporal_event_event_time_idx",
+        "correlation_case_id_idx",
     }
 
 
