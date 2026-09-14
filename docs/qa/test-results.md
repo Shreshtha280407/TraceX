@@ -2552,3 +2552,14 @@ it was not claimed as run in this follow-up because the stack was unavailable.
 - No final relationship-score weights, real-dataset metrics, Operation
   Nightfall evaluation, or Phase 5 completion is claimed. This is a Phase 5A
   baseline/integration verification only.
+
+# Phase 5B secure case-scoped graph/correlation reads (2026-09-15)
+
+- Focused format/lint coverage for changed access-control and graph paths:
+  **all checks passed**.
+- Focused authorization, route, integration-read, and vector-scope coverage:
+  `uv run pytest -q tests/unit/access_control/test_case_access_audit.py
+  tests/unit/graph/test_graph_api.py tests/unit/graph/test_integration_api.py
+  tests/unit/graph/test_intelligence.py` → **28 passed in 21.07s**.
+- This record does not claim Docker-backed secure-read validation, a full
+  regression suite, or Phase 5 completion; those remain merge-wave checks.

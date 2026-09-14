@@ -21,6 +21,8 @@ from typing import Annotated
 from uuid import UUID
 
 import redis.asyncio as redis
+import sqlalchemy as sa
+import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -48,6 +50,7 @@ _login_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _refresh_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+logger = structlog.get_logger(__name__)
 
 _INVALID_TOKEN_DETAIL = "invalid or expired access token"
 
@@ -120,8 +123,20 @@ async def require_authenticated_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    session = await repository.get_session_by_id(claims.sid)
-    user = await repository.get_user_by_id(claims.sub) if session is not None else None
+    try:
+        session = await repository.get_session_by_id(claims.sid)
+        user = await repository.get_user_by_id(claims.sub) if session is not None else None
+    except sa.exc.SQLAlchemyError as exc:
+        logger.warning(
+            "authorization.authentication_dependency_unavailable",
+            request_id=get_request_id() or None,
+            principal_ref=str(claims.sub),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="authentication service temporarily unavailable",
+        ) from exc
 
     if session is None or session.revoked_at is not None or session.user_id != claims.sub:
         raise HTTPException(
@@ -154,8 +169,22 @@ def require_case_action(
         principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
         repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     ) -> AuthorizedCasePrincipal:
-        membership = await repository.get_active_membership(case_id, principal.user_id)
-        case = await repository.get_case(case_id)
+        try:
+            membership = await repository.get_active_membership(case_id, principal.user_id)
+            case = await repository.get_case(case_id)
+        except sa.exc.SQLAlchemyError as exc:
+            logger.warning(
+                "authorization.case_dependency_unavailable",
+                request_id=get_request_id() or None,
+                principal_ref=str(principal.user_id),
+                requested_case_id=str(case_id),
+                action=action.value,
+                exc_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authorization service temporarily unavailable",
+            ) from exc
         allowed = authorize_case_action(
             case_id=case_id,
             action=action,
@@ -178,7 +207,26 @@ def require_case_action(
                 metadata={"action": action.value},
             )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
-        return AuthorizedCasePrincipal(principal=principal, case_id=case_id, membership=membership)
+        # The security audit is deliberately independent of the access decision:
+        # a telemetry outage cannot turn an allowed request into a denial.  The
+        # record contains only the policy action and identifiers, never route
+        # parameters or evidence/graph payloads.
+        await record_audit_event_safely(
+            repository,
+            event_type="case_access_granted",
+            outcome=AuditOutcome.SUCCESS,
+            now=datetime.now(UTC),
+            request_id=get_request_id() or None,
+            user_id=principal.user_id,
+            case_id=case_id,
+            metadata={"action": action.value},
+        )
+        return AuthorizedCasePrincipal(
+            principal=principal,
+            case_id=case_id,
+            action=action,
+            membership=membership,
+        )
 
     return _dependency
 

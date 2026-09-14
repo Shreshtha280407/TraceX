@@ -602,6 +602,22 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
   deliberately-scoped Phase 5A limitations.
 - [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.
 
+# Phase 5B - Aditya secure graph/correlation reads: In progress
+
+- [x] Reused the existing case-membership authorization seam with
+  `CaseAction.GRAPH_READ`; successful decisions now carry their required action
+  and are safely audited alongside non-enumerating denials.
+- [x] Protected all currently exposed Phase 5 graph/correlation/candidate/
+  hypothesis reads before Neo4j or PostgreSQL access. Durable correlation and
+  vector read queries retain their `case_id` predicate as defense in depth;
+  internal outbox event lookup is case-scoped too.
+- [x] Added focused unauthenticated, cross-case, object-ID probing,
+  safe-audit, PostgreSQL/authorization-outage, parameterized Neo4j, and
+  pgvector case-predicate coverage.
+- [ ] Docker-backed secure-read and full merge-wave regression verification;
+  Phase 5 write/review policy, public feature snapshots/analytics/motifs/vector
+  routes, and any frontend flow are intentionally not implemented here.
+
 # Phase 4 - Aditya LAN worker security and reliability: In progress
 
 - [x] Existing worker credential, claim-token, and lease path extended with

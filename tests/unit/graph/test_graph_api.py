@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
@@ -26,7 +27,10 @@ from app.modules.access_control.dependencies import (
 from app.modules.access_control.models import CaseRole, ClearanceLevel
 from app.modules.access_control.password import MIN_PASSWORD_LENGTH
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
-from app.modules.graph.dependencies import get_graph_repository
+from app.modules.graph.dependencies import (
+    get_graph_correlation_integration_repository,
+    get_graph_repository,
+)
 from tests.fixtures.access_control.factories import make_case_record, make_membership_record
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 
@@ -49,6 +53,33 @@ class _FakeGraphRepository:
         return self._read_results.pop(0) if self._read_results else []
 
 
+class _FakeIntegrationRepository:
+    """The route guard must run before this inert PostgreSQL boundary."""
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+
+    def _raise_if_needed(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    async def list_correlations(self, case_id: Any) -> list[Any]:
+        self._raise_if_needed()
+        return []
+
+    async def get_correlation(self, case_id: Any, correlation_id: Any) -> None:
+        self._raise_if_needed()
+        return None
+
+    async def get_event_for_correlation(self, case_id: Any, correlation_id: Any) -> None:
+        self._raise_if_needed()
+        return None
+
+    async def list_candidates(self, case_id: Any) -> list[Any]:
+        self._raise_if_needed()
+        return []
+
+
 @pytest.fixture
 def ac_repository() -> FakeAccessControlRepository:
     return FakeAccessControlRepository()
@@ -60,13 +91,23 @@ def graph_repository() -> _FakeGraphRepository:
 
 
 @pytest.fixture
+def integration_repository() -> _FakeIntegrationRepository:
+    return _FakeIntegrationRepository()
+
+
+@pytest.fixture
 def _override_dependencies(
-    ac_repository: FakeAccessControlRepository, graph_repository: _FakeGraphRepository
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+    integration_repository: _FakeIntegrationRepository,
 ) -> Iterator[None]:
     app.dependency_overrides[get_access_control_repository] = lambda: ac_repository
     app.dependency_overrides[get_login_rate_limiter] = lambda: InMemoryRateLimiter()
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: InMemoryRateLimiter()
     app.dependency_overrides[get_graph_repository] = lambda: graph_repository
+    app.dependency_overrides[get_graph_correlation_integration_repository] = lambda: (
+        integration_repository
+    )
     yield
     app.dependency_overrides.clear()
 
@@ -216,6 +257,64 @@ async def test_case_a_member_cannot_read_case_b_graph(
 async def test_unauthenticated_request_is_denied(client: AsyncClient) -> None:
     response = await client.get(f"/api/v1/cases/{uuid4()}/graph/observations")
     assert response.status_code == 401
+
+
+async def test_all_phase5_integration_reads_require_authentication(client: AsyncClient) -> None:
+    case_id, correlation_id = uuid4(), uuid4()
+    paths = (
+        f"/api/v1/cases/{case_id}/graph/correlations",
+        f"/api/v1/cases/{case_id}/graph/correlations/{correlation_id}",
+        f"/api/v1/cases/{case_id}/graph/candidates",
+        f"/api/v1/cases/{case_id}/graph/hypotheses",
+    )
+    for path in paths:
+        response = await client.get(path)
+        assert response.status_code == 401
+
+
+async def test_cross_case_integration_read_is_denied_before_object_lookup(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    token, _case_a_id = await _authenticated_member(client, ac_repository)
+    _other_token, case_b_id = await _authenticated_member(client, ac_repository)
+    paths = (
+        f"/api/v1/cases/{case_b_id}/graph/correlations",
+        f"/api/v1/cases/{case_b_id}/graph/correlations/{uuid4()}",
+        f"/api/v1/cases/{case_b_id}/graph/candidates",
+        f"/api/v1/cases/{case_b_id}/graph/hypotheses",
+    )
+    for path in paths:
+        response = await client.get(path, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 403
+
+    denials = [
+        event for event in ac_repository.audit_events if event.event_type == "case_access_denied"
+    ]
+    assert len(denials) == len(paths)
+    assert all(event.metadata_safe_json == {"action": "graph_read"} for event in denials)
+
+
+async def test_postgres_outage_on_correlation_read_returns_a_safe_service_error(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    integration_repository: _FakeIntegrationRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    integration_repository.error = sa.exc.OperationalError(
+        "SELECT correlations", {}, RuntimeError("postgresql://user:secret@unavailable")
+    )
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/graph/correlations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["message"] == "graph data temporarily unavailable"
+    lowered = response.text.lower()
+    assert "secret" not in lowered
+    assert "select" not in lowered
+    assert "postgresql" not in lowered
 
 
 async def test_limit_above_maximum_is_rejected(

@@ -13,6 +13,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 from fastapi import HTTPException
 
 from app.modules.access_control.dependencies import require_case_action
@@ -81,7 +82,7 @@ async def test_denied_case_action_audit_never_reveals_which_check_failed() -> No
     )
 
 
-async def test_successful_case_action_does_not_record_a_denial_audit_event() -> None:
+async def test_successful_case_action_records_only_a_safe_grant_audit_event() -> None:
     repository = FakeAccessControlRepository()
     case = make_case_record()
     await repository.create_case(case)
@@ -93,7 +94,14 @@ async def test_successful_case_action_does_not_record_a_denial_audit_event() -> 
     result = await dependency(case_id=case.case_id, principal=principal, repository=repository)
 
     assert result.case_id == case.case_id
-    assert repository.audit_events == []
+    assert result.action is CaseAction.EVIDENCE_READ
+    assert result.allowed is True
+    assert len(repository.audit_events) == 1
+    event = repository.audit_events[0]
+    assert event.event_type == "case_access_granted"
+    assert event.metadata_safe_json == {"action": "evidence_read"}
+    assert event.user_id_nullable == principal.user_id
+    assert event.case_id_nullable == case.case_id
 
 
 async def test_audit_write_failure_never_turns_a_deny_into_a_grant() -> None:
@@ -113,3 +121,21 @@ async def test_audit_write_failure_never_turns_a_deny_into_a_grant() -> None:
     with pytest.raises(HTTPException) as excinfo:
         await dependency(case_id=case.case_id, principal=principal, repository=repository)
     assert excinfo.value.status_code == 403
+
+
+async def test_case_authorization_database_outage_is_a_safe_service_error() -> None:
+    class _UnavailableRepository(FakeAccessControlRepository):
+        async def get_active_membership(self, case_id, user_id):  # type: ignore[override]
+            raise sa.exc.OperationalError(
+                "SELECT memberships", {}, RuntimeError("postgresql://user:secret@unavailable")
+            )
+
+    repository = _UnavailableRepository()
+    principal = AuthenticatedPrincipal(user_id=uuid4(), session_id=uuid4())
+    dependency = require_case_action(CaseAction.EVIDENCE_READ)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await dependency(case_id=uuid4(), principal=principal, repository=repository)
+
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "authorization service temporarily unavailable"

@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.contracts.common import Extractor, SourceLocator
 from app.modules.graph.api import (
+    get_graph_correlation,
     list_graph_candidates,
     list_graph_correlations,
     list_hypothesis_integration_refs,
@@ -134,3 +136,13 @@ async def test_integration_responses_are_case_scoped_safe_and_preserve_candidate
         assert "confirmed" not in lowered
         assert "object_uri" not in lowered
         assert "password" not in lowered
+
+
+async def test_other_case_correlation_identifier_is_not_retrievable(repository) -> None:
+    """A globally valid UUID does not bypass the repository's case predicate."""
+    with pytest.raises(HTTPException) as excinfo:
+        await get_graph_correlation(
+            uuid4(), repository.correlation.correlation_id, object(), repository
+        )
+
+    assert excinfo.value.status_code == 404

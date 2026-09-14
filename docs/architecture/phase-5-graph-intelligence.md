@@ -124,3 +124,25 @@ final rules-weight freeze, full real-dataset validation, and LAN end-to-end vali
 Phase 5 contributors have merged their work.
 Trained ranking, entity resolution, automatic merges, hypotheses, criminality conclusions, and external AI
 APIs are deferred. Algorithm quality and operational performance remain unmeasured.
+
+## Phase 5B secure read boundary
+
+Every externally reachable Phase 5 graph/correlation read uses the established
+`require_graph_read` dependency and `CaseAction.GRAPH_READ`; it returns a typed
+`AuthorizedCasePrincipal` carrying the authenticated principal, requested case,
+required action, and active membership only after the decision permits access.
+The decision is recorded as a safe allow/deny audit event containing request ID,
+principal reference, case ID, and action only. A non-member, inactive member,
+insufficient role/clearance, and unknown case deliberately receive the same
+non-enumerating denial.
+
+The graph observation Cypher binds `$case_id` on each root/traversal node; the
+durable correlation/candidate/event repository includes `case_id` in every
+external read predicate; pgvector retrieval binds `case_id` before ordering or
+returning candidates. There is no Phase 5 graph-read cache today, so no
+cross-case cache key exists. The public surface intentionally does not expose
+feature snapshots, analytics, motifs, or direct vector search routes.
+
+Neo4j and PostgreSQL dependency failures return fixed `503` errors without a
+driver message, query text, topology, DSN, or case-existence signal. Candidate
+links and correlations remain review-only propositions throughout this boundary.

@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.modules.access_control.dependencies import require_graph_read
@@ -43,6 +44,20 @@ from app.modules.graph.schemas import (
 )
 
 router = APIRouter(prefix="/api/v1/cases", tags=["graph"])
+
+
+def _integration_unavailable() -> HTTPException:
+    """A fixed public failure for PostgreSQL-backed graph reads.
+
+    Driver messages can reveal DSNs, table names, or the existence of a
+    resource.  The error handler logs only the exception type for unexpected
+    failures; routes intentionally return this fixed envelope for known
+    database outages.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="graph data temporarily unavailable",
+    )
 
 
 @router.get(
@@ -88,12 +103,15 @@ async def list_graph_correlations(
     ],
 ) -> CorrelationListResponse:
     """List durable reviewable propositions, never asserted relationships."""
-    correlations = await repository.list_correlations(case_id)
-    items = []
-    for correlation in correlations:
-        event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
-        if event is not None:
-            items.append(CorrelationIntegrationView(correlation=correlation, projection=event))
+    try:
+        correlations = await repository.list_correlations(case_id)
+        items = []
+        for correlation in correlations:
+            event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
+            if event is not None:
+                items.append(CorrelationIntegrationView(correlation=correlation, projection=event))
+    except sa.exc.SQLAlchemyError as exc:
+        raise _integration_unavailable() from exc
     return CorrelationListResponse(items=tuple(items))
 
 
@@ -109,8 +127,11 @@ async def get_graph_correlation(
         Depends(get_graph_correlation_integration_repository),
     ],
 ) -> CorrelationIntegrationView:
-    correlation = await repository.get_correlation(case_id, correlation_id)
-    event = await repository.get_event_for_correlation(case_id, correlation_id)
+    try:
+        correlation = await repository.get_correlation(case_id, correlation_id)
+        event = await repository.get_event_for_correlation(case_id, correlation_id)
+    except sa.exc.SQLAlchemyError as exc:
+        raise _integration_unavailable() from exc
     if correlation is None or event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="correlation not found")
     return CorrelationIntegrationView(correlation=correlation, projection=event)
@@ -126,7 +147,10 @@ async def list_graph_candidates(
     ],
 ) -> CandidateListResponse:
     """Return candidate links as candidates; no endpoint confirms or merges them."""
-    return CandidateListResponse(items=tuple(await repository.list_candidates(case_id)))
+    try:
+        return CandidateListResponse(items=tuple(await repository.list_candidates(case_id)))
+    except sa.exc.SQLAlchemyError as exc:
+        raise _integration_unavailable() from exc
 
 
 @router.get("/{case_id}/graph/hypotheses", response_model=HypothesisIntegrationListResponse)
@@ -139,18 +163,21 @@ async def list_hypothesis_integration_refs(
     ],
 ) -> HypothesisIntegrationListResponse:
     """Expose supplied hypothesis references only; this module generates none."""
-    items = []
-    for correlation in await repository.list_correlations(case_id):
-        if correlation.hypothesis_reference is None:
-            continue
-        event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
-        if event is not None:
-            items.append(
-                HypothesisIntegrationView(
-                    correlation_id=correlation.correlation_id,
-                    hypothesis_reference=correlation.hypothesis_reference,
-                    status=correlation.status,
-                    projection=event,
+    try:
+        items = []
+        for correlation in await repository.list_correlations(case_id):
+            if correlation.hypothesis_reference is None:
+                continue
+            event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
+            if event is not None:
+                items.append(
+                    HypothesisIntegrationView(
+                        correlation_id=correlation.correlation_id,
+                        hypothesis_reference=correlation.hypothesis_reference,
+                        status=correlation.status,
+                        projection=event,
+                    )
                 )
-            )
+    except sa.exc.SQLAlchemyError as exc:
+        raise _integration_unavailable() from exc
     return HypothesisIntegrationListResponse(items=tuple(items))

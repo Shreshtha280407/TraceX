@@ -73,6 +73,13 @@ this layer creates no hypothesis. There is intentionally no public mutable
 CRUD API: producers call the internal repository/service seam until Aditya
 defines an authorization policy for writes and reviews.
 
+Phase 5B additionally records safe `case_access_granted` and
+`case_access_denied` decisions with the request ID, principal reference, case
+ID, and `graph_read` action. Correlation repository reads always retain the
+authorized case predicate, including an internal outbox-event lookup; an event
+UUID alone is not a cross-case lookup capability. PostgreSQL read outages are
+reported as a fixed service-unavailable response, not a database error.
+
 ## Ownership boundary
 
 Shreshtha owns correlation creation/scoring/ranking, link reasons,
