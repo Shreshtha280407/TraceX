@@ -2590,3 +2590,17 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   were interrupted after bounded polling. This is a verification-run blocker,
   not a source-signal test failure; rerun in the merge environment before
   release acceptance.
+
+# Phase 5B Gaurav visual-source validation (2026-09-15)
+
+- Focused visual locator/geometry/timeline/track/OCR tests: **50 passed in
+  0.27s**. This includes synthetic chunk-boundary and deterministic
+  frame-time validation; no real media, GPU, biometric, or ownership lookup
+  was used.
+- Repository-wide verification results are recorded only after the commands
+  complete in this session; no Docker stack is started for this work.
+- Required compatibility/regression commands completed: media units **359
+  passed**; graph units **174 passed**; evidence-lifecycle units **181
+  passed**; integration suite **78 passed**; full suite **1831 passed, 1
+  skipped** (one existing `audioop` deprecation warning). `alembic heads`,
+  `docker compose config -q`, and `git diff --check` passed.

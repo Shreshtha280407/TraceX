@@ -245,6 +245,11 @@ wave and post-Phase-5 validation gate.
   media, LAN, and dataset validation are deferred.
 - Scene/motion signals are local frame-difference inputs supplied to planning;
   they do not identify people, vehicles, meetings, or relationships.
+- Frame-number validation is deterministic only for a trustworthy constant-FPS
+  probe. Variable-rate or unavailable mappings are retained as incomplete,
+  non-correlation-ready evidence rather than guessed. No face recognition,
+  biometric matching, appearance search, or vehicle/plate ownership lookup is
+  implemented or claimed.
 # Phase 4 audio/social worker limitations (Sarthak)
 
 - The worker supports an offline executable/model bridge, but this repository

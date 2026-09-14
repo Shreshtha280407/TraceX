@@ -27,3 +27,24 @@ OCR text, frames, paths, URIs, and secrets must never become graph attributes.
 
 Actual GPU, model-bundle, LAN, real-media, and quality validation remain
 merge-wave work.
+
+## Phase 5B visual-source validation
+
+`media_processing.visual_validation` is the producer-side gate for visual
+signals. It records deterministic `accepted`, `rejected`, or `incomplete`
+quality metadata with safe reason codes, source locator, and extractor
+identity. A rejected signal is not published; an incomplete signal is retained
+for review with `correlation_ready: false` and never gains fabricated timing
+precision.
+
+Video detections/OCR validate non-negative source-relative frame/time bounds,
+media duration, deterministic CFR frame mapping when available, and optional
+manifest chunk time/frame boundaries. Image/video geometry remains normalized
+and finite (`0 <= x1 < x2 <= 1`, `0 <= y1 < y2 <= 1`) without clamping or
+unrecorded transforms. OCR text regions are bounded; their frame, box, OCR
+extractor, preprocessing, and quality provenance are preserved.
+
+Tracks remain evidence-local technical labels. Their retained frame-level box
+locators and explicit lifecycle conditions (`ended_unmatched`,
+`split_ambiguous`, `reappearance_unlinked`) are review aids only: none
+indicates identity, a relationship, or a permitted cross-evidence stitch.

@@ -38,6 +38,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import cast
+
+from pydantic import JsonValue
 
 from app.core.ids import deterministic_uuid
 from app.modules.media_processing.analysis.interfaces import ObjectDetection, TrackSegment
@@ -83,6 +86,7 @@ class _ActiveTrack:
     last_time_ms: int
     last_box: PixelBoundingBox
     boxes_by_time_ms: dict[int, PixelBoundingBox] = field(default_factory=dict)
+    lifecycle_conditions: set[str] = field(default_factory=lambda: {"source_local"})
 
 
 @dataclass(frozen=True)
@@ -108,15 +112,30 @@ class IoUTracker:
                     if score >= best_iou:
                         best_index, best_iou = index, score
                 if best_index is None:
+                    existing_track.lifecycle_conditions.add("ended_unmatched")
                     finished.append(existing_track)
                     continue
                 detection = unmatched.pop(best_index)
+                if (
+                    sum(
+                        1
+                        for candidate in detections_by_time_ms[time_ms]
+                        if candidate.label == existing_track.label
+                        and _iou(existing_track.last_box, candidate.box)
+                        >= self.config.iou_match_threshold
+                    )
+                    > 1
+                ):
+                    existing_track.lifecycle_conditions.add("split_ambiguous")
                 existing_track.last_time_ms = time_ms
                 existing_track.last_box = detection.box
                 existing_track.boxes_by_time_ms[time_ms] = detection.box
                 still_active.append(existing_track)
 
             for detection in unmatched:
+                conditions = {"source_local"}
+                if any(track.label == detection.label for track in finished):
+                    conditions.add("reappearance_unlinked")
                 track_id = str(
                     deterministic_uuid(
                         IOU_TRACKER_VERSION,
@@ -133,6 +152,7 @@ class IoUTracker:
                         last_time_ms=time_ms,
                         last_box=detection.box,
                         boxes_by_time_ms={time_ms: detection.box},
+                        lifecycle_conditions=conditions,
                     )
                 )
             active = still_active
@@ -146,7 +166,12 @@ class IoUTracker:
                 end_time_ms=track.last_time_ms,
                 boxes_by_time_ms=dict(track.boxes_by_time_ms),
                 quality=1.0 if len(track.boxes_by_time_ms) > 1 else 0.5,
-                attributes={"model_interface_version": IOU_TRACKER_VERSION},
+                attributes={
+                    "model_interface_version": IOU_TRACKER_VERSION,
+                    "track_lifecycle_conditions": cast(
+                        list[JsonValue], sorted(track.lifecycle_conditions)
+                    ),
+                },
             )
             for track in finished
         ]

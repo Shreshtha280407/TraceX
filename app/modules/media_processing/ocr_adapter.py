@@ -226,6 +226,12 @@ class OcrBoxResult:
     #: What preprocessing was applied (for coordinate inversion audit).
     preprocess_transform: OcrPreprocessTransform = field(default_factory=OcrPreprocessTransform)
 
+    def __post_init__(self) -> None:
+        if not self.text.strip() or len(self.text) > 512:
+            raise ValueError("OCR text region must be non-blank and bounded")
+        if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("OCR confidence must be finite and within [0, 1]")
+
 
 # ---------------------------------------------------------------------------
 # Coordinate-inversion helpers

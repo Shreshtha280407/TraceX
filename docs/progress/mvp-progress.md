@@ -633,6 +633,16 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [ ] Full merge-wave, Compose-backed, real-local-OCR and wider regression
   verification remain pending the required verification run/environment.
 
+# Phase 5B - Gaurav visual-source reliability: In progress
+
+- [x] Added deterministic producer-side visual locator, timeline, normalized
+  geometry, and optional chunk-boundary validation with accepted/rejected/
+  incomplete quality outcomes.
+- [x] Preserved evidence-local track lifecycle conditions and bounded OCR
+  provenance without creating identity, candidate, graph-write, or scoring paths.
+- [ ] Real-media/model accuracy, variable-frame-rate validation, and
+  manifest-aware worker publication remain merge-wave work.
+
 # Phase 4 - Aditya LAN worker security and reliability: In progress
 
 - [x] Existing worker credential, claim-token, and lease path extended with

@@ -58,6 +58,7 @@ from app.modules.media_processing.provenance import (
     draft_to_observation,
     is_valid_confidence,
 )
+from app.modules.media_processing.visual_validation import validate_visual_signal
 
 #: Mirrors worker.PROCESSOR_NAME_DETECTION -- kept here as a literal to
 #: avoid a circular import (worker imports ocr_batching via lazy import).
@@ -113,9 +114,13 @@ def build_image_ocr_observation(
     attributes.  Does not include ``page`` -- a raster image is not a
     document page (that's Jasraj's domain).
     """
+    locator = SourceLocator(bbox_xyxy_normalized=result.bbox_xyxy_normalized)
+    validation = validate_visual_signal(locator=locator, extractor=extractor, require_bbox=True)
+    if not validation.correlation_ready:
+        raise ValueError("visual OCR source geometry is not correlation-ready")
     draft = MediaObservationDraft(
         observation_type=OBSERVATION_TYPE_OCR_TEXT,
-        locator=SourceLocator(bbox_xyxy_normalized=result.bbox_xyxy_normalized),
+        locator=locator,
         confidence=result.confidence,
         entity_text=result.text,
         entity_type_hint="ocr_text",
@@ -126,6 +131,7 @@ def build_image_ocr_observation(
             "ocr_engine": result.ocr_engine_name,
             "ocr_language": result.language,
             "preprocessing_version": result.preprocessing_version,
+            "visual_signal_validation": validation.attribute_value(),
         },
     )
     return draft_to_observation(
@@ -154,14 +160,20 @@ def build_video_frame_ocr_observation(
     ``video/frames.py`` from the inter-frame interval), not from video
     ``duration_ms``, so it is always frame-precise.
     """
+    locator = SourceLocator(
+        frame_number=frame.frame_number,
+        time_start_ms=frame.time_start_ms,
+        time_end_ms=frame.time_end_ms,
+        bbox_xyxy_normalized=result.bbox_xyxy_normalized,
+    )
+    validation = validate_visual_signal(
+        locator=locator, extractor=extractor, video_metadata=metadata, require_bbox=True
+    )
+    if not validation.correlation_ready:
+        raise ValueError("visual OCR timeline is not correlation-ready")
     draft = MediaObservationDraft(
         observation_type=OBSERVATION_TYPE_OCR_TEXT,
-        locator=SourceLocator(
-            frame_number=frame.frame_number,
-            time_start_ms=frame.time_start_ms,
-            time_end_ms=frame.time_end_ms,
-            bbox_xyxy_normalized=result.bbox_xyxy_normalized,
-        ),
+        locator=locator,
         confidence=result.confidence,
         entity_text=result.text,
         entity_type_hint="ocr_text",
@@ -174,6 +186,7 @@ def build_video_frame_ocr_observation(
             "ocr_engine": result.ocr_engine_name,
             "ocr_language": result.language,
             "preprocessing_version": result.preprocessing_version,
+            "visual_signal_validation": validation.attribute_value(),
         },
     )
     return draft_to_observation(
