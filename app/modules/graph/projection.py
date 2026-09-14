@@ -656,6 +656,37 @@ def _mapping_claim_properties(
     }
 
 
+def _specialized_locator_properties(observation: ObservationV1) -> dict[str, Any]:
+    """Duplicate the bounded source locator onto a specialised temporal event.
+
+    The parent observation remains authoritative, but retaining this compact
+    allow-list makes an event independently reviewable without copying its
+    open-ended attribute bag or source content.
+    """
+    locator = observation.source_locator
+    props: dict[str, Any] = {}
+    for field, value in (
+        ("source_locator_json_path", locator.json_path),
+        ("source_locator_frame_number", locator.frame_number),
+        ("source_locator_time_start_ms", locator.time_start_ms),
+        ("source_locator_time_end_ms", locator.time_end_ms),
+        ("source_locator_message_id", locator.message_id),
+    ):
+        if value is not None:
+            props[field] = value
+    if locator.bbox_xyxy_normalized is not None:
+        bbox = locator.bbox_xyxy_normalized
+        props.update(
+            {
+                "source_locator_bbox_x_min": bbox.x_min,
+                "source_locator_bbox_y_min": bbox.y_min,
+                "source_locator_bbox_x_max": bbox.x_max,
+                "source_locator_bbox_y_max": bbox.y_max,
+            }
+        )
+    return props
+
+
 async def project_specialized_mapping(
     repository: Neo4jGraphRepository, observation: ObservationV1, plan: GraphProjectionPlan
 ) -> ProjectionResult | None:
@@ -717,7 +748,6 @@ async def project_specialized_mapping(
         "observation_id": str(observation.observation_id),
         "source_observation_type": observation.observation_type,
         "event_type": plan.event.event_type,
-        "event_time": plan.event.event_time,
         "extraction_confidence": observation.extraction_confidence,
         "extractor_name": observation.extractor.name,
         "extractor_version": observation.extractor.version,
@@ -725,28 +755,58 @@ async def project_specialized_mapping(
         "extractor_model_version": observation.extractor.model_version,
         "mapping_version": plan.mapping_version,
         "mapping_config_hash": plan.mapping_config_hash,
+        **_specialized_locator_properties(observation),
         **plan.event.properties,
     }
-    event_query = (
-        "MATCH (e:Evidence {case_id: $case_id, evidence_id: $evidence_id}) "
-        "-[:YIELDED_OBSERVATION]->"
-        "(o:Observation {case_id: $case_id, observation_id: $observation_id}) "
-        "UNWIND $claims AS claim "
-        "OPTIONAL MATCH (s:SourceClaim {case_id: $case_id, claim_id: claim.claim_id}) "
-        "WITH o, collect({node: s, role: claim.role}) AS participants, count(s) AS found, "
-        "count(claim) AS requested "
-        "WHERE found = requested "
-        "MERGE (v:TemporalEvent {case_id: $case_id, projection_id: $projection_id}) "
-        "SET v += $properties "
-        "MERGE (o)-[source:PROJECTS_EVENT {mapping_version: $mapping_version}]->(v) "
-        "SET source.observation_id = $observation_id, source.evidence_id = $evidence_id "
-        "WITH v, participants "
-        "UNWIND participants AS participant "
-        "WITH v, participant.node AS source_claim, participant.role AS participant_role "
-        "MERGE (v)-[r:HAS_CLAIM_PARTICIPANT {role: participant_role}]->(source_claim) "
-        "SET r.mapping_version = $mapping_version "
-        "RETURN v.projection_id AS projection_id"
-    )
+    if plan.event.event_time is not None:
+        event_properties["event_time"] = plan.event.event_time
+    if plan.event.time_window_start is not None:
+        event_properties["time_window_start"] = plan.event.time_window_start
+    if plan.event.time_window_end is not None:
+        event_properties["time_window_end"] = plan.event.time_window_end
+    if plan.media_lineage is not None:
+        event_properties.update(
+            {
+                "media_chunk_id": str(plan.media_lineage.chunk_id),
+                "media_manifest_id": str(plan.media_lineage.manifest_id),
+                "media_manifest_hash": plan.media_lineage.manifest_hash,
+                "media_processor_version": plan.media_lineage.processor_version,
+                "media_configuration_hash": plan.media_lineage.configuration_hash,
+                "media_artifact_ids": [str(value) for value in plan.media_lineage.artifact_ids],
+            }
+        )
+    if claims:
+        event_query = (
+            "MATCH (e:Evidence {case_id: $case_id, evidence_id: $evidence_id}) "
+            "-[:YIELDED_OBSERVATION]->"
+            "(o:Observation {case_id: $case_id, observation_id: $observation_id}) "
+            "UNWIND $claims AS claim "
+            "OPTIONAL MATCH (s:SourceClaim {case_id: $case_id, claim_id: claim.claim_id}) "
+            "WITH o, collect({node: s, role: claim.role}) AS participants, count(s) AS found, "
+            "count(claim) AS requested "
+            "WHERE found = requested "
+            "MERGE (v:TemporalEvent {case_id: $case_id, projection_id: $projection_id}) "
+            "SET v += $properties "
+            "MERGE (o)-[source:PROJECTS_EVENT {mapping_version: $mapping_version}]->(v) "
+            "SET source.observation_id = $observation_id, source.evidence_id = $evidence_id "
+            "WITH v, participants "
+            "UNWIND participants AS participant "
+            "WITH v, participant.node AS source_claim, participant.role AS participant_role "
+            "MERGE (v)-[r:HAS_CLAIM_PARTICIPANT {role: participant_role}]->(source_claim) "
+            "SET r.mapping_version = $mapping_version "
+            "RETURN v.projection_id AS projection_id"
+        )
+    else:
+        event_query = (
+            "MATCH (e:Evidence {case_id: $case_id, evidence_id: $evidence_id}) "
+            "-[:YIELDED_OBSERVATION]->"
+            "(o:Observation {case_id: $case_id, observation_id: $observation_id}) "
+            "MERGE (v:TemporalEvent {case_id: $case_id, projection_id: $projection_id}) "
+            "SET v += $properties "
+            "MERGE (o)-[source:PROJECTS_EVENT {mapping_version: $mapping_version}]->(v) "
+            "SET source.observation_id = $observation_id, source.evidence_id = $evidence_id "
+            "RETURN v.projection_id AS projection_id"
+        )
     await repository.write(
         event_query,
         {
@@ -759,6 +819,31 @@ async def project_specialized_mapping(
             "properties": event_properties,
         },
     )
+    if plan.event.supporting_observation_ids or plan.event.contradictory_observation_ids:
+        references = [
+            {"observation_id": str(value), "kind": "supporting"}
+            for value in plan.event.supporting_observation_ids
+        ] + [
+            {"observation_id": str(value), "kind": "contradictory"}
+            for value in plan.event.contradictory_observation_ids
+        ]
+        reference_query = (
+            "MATCH (v:TemporalEvent {case_id: $case_id, projection_id: $projection_id}) "
+            "UNWIND $references AS reference "
+            "MATCH (o:Observation {case_id: $case_id, observation_id: reference.observation_id}) "
+            "MERGE (v)-[r:SUPPORTED_BY_OBSERVATION {kind: reference.kind}]->(o) "
+            "SET r.mapping_version = $mapping_version "
+            "RETURN count(o) AS reference_count"
+        )
+        await repository.write(
+            reference_query,
+            {
+                "case_id": str(observation.case_id),
+                "projection_id": str(plan.event.projection_id),
+                "mapping_version": plan.mapping_version,
+                "references": references,
+            },
+        )
     return ProjectionResult(
         outcome=ProjectionOutcome.APPLIED,
         node_kind=GraphNodeKind.TEMPORAL_EVENT,

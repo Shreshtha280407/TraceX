@@ -145,3 +145,14 @@ Leiden uses a fixed seed and deterministic snapshot ordering, but its quality an
 Rules weights are preliminary and unmeasured. Operation Nightfall truth evaluation, measured Precision@K/Recall@K/
 false-link rate, P99 bridge validation, final rules-weight freeze, full real-dataset validation, and LAN end-to-end
 validation will run after all Phase 5 contributors have merged their work.
+
+## Phase 4 Shreshtha media graph mapping
+
+This layer does not decode media, infer timestamps from FPS, run ASR/diarization,
+identify people/vehicles/speakers/handles, correlate events, score candidates,
+or declare meetings. A source-relative frame or millisecond range remains
+source-relative unless an upstream canonical observation supplies an aware
+absolute time. Candidate contributor references that are absent or outside the
+case do not create cross-case graph links. Real GPU/audio/LAN/dataset and full
+Compose acceptance validation are intentionally deferred to the Phase 4 merge
+wave and post-Phase-5 validation gate.

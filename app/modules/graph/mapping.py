@@ -19,7 +19,7 @@ from pydantic import Field
 from app.contracts.observation import ObservationV1
 from app.core.canonical import canonical_sha256
 from app.core.ids import deterministic_uuid
-from app.modules.graph.models import GraphModel
+from app.modules.graph.models import GraphModel, MediaProjectionLineage
 
 MAPPING_REGISTRY_VERSION = "phase_3_observation_mapping_v1"
 MAPPING_CONFIG_HASH = canonical_sha256(
@@ -49,6 +49,18 @@ MAPPING_CONFIG_HASH = canonical_sha256(
     }
 )
 
+MEDIA_MAPPING_VERSION = "phase_4_media_temporal_mapping_v1"
+MEDIA_MAPPING_CONFIG_HASH = canonical_sha256(
+    {
+        "version": MEDIA_MAPPING_VERSION,
+        "sighting_types": ["object_detection", "text_region_detection", "anonymous_track_segment"],
+        "speech_types": ["transcript_segment", "diarization_speaker_turn"],
+        "message_types": ["chat_message"],
+        "meeting_candidate_type": "meeting_candidate",
+        "rules": "event-first; source-relative-time-is-not-utc; candidate-only; no-resolution",
+    }
+)
+
 
 class MappingStatus(StrEnum):
     APPLIED = "applied"
@@ -66,8 +78,12 @@ class SourceClaimPlan(GraphModel):
 class TemporalEventPlan(GraphModel):
     projection_id: UUID
     event_type: str
-    event_time: datetime
-    properties: dict[str, str | float | int | bool] = Field(default_factory=dict)
+    event_time: datetime | None = None
+    time_window_start: datetime | None = None
+    time_window_end: datetime | None = None
+    properties: dict[str, str | float | int | bool | tuple[str, ...]] = Field(default_factory=dict)
+    supporting_observation_ids: tuple[UUID, ...] = ()
+    contradictory_observation_ids: tuple[UUID, ...] = ()
 
 
 class GraphProjectionPlan(GraphModel):
@@ -77,6 +93,7 @@ class GraphProjectionPlan(GraphModel):
     mapping_config_hash: str = MAPPING_CONFIG_HASH
     claims: tuple[SourceClaimPlan, ...] = ()
     event: TemporalEventPlan | None = None
+    media_lineage: MediaProjectionLineage | None = None
 
 
 _DOCUMENT_CLAIM_TYPES = frozenset(
@@ -147,8 +164,19 @@ def _claim(
     )
 
 
-def _outcome(status: MappingStatus, reason: str) -> GraphProjectionPlan:
-    return GraphProjectionPlan(status=status, reason=reason)
+def _outcome(
+    status: MappingStatus,
+    reason: str,
+    *,
+    mapping_version: str = MAPPING_REGISTRY_VERSION,
+    mapping_config_hash: str = MAPPING_CONFIG_HASH,
+) -> GraphProjectionPlan:
+    return GraphProjectionPlan(
+        status=status,
+        reason=reason,
+        mapping_version=mapping_version,
+        mapping_config_hash=mapping_config_hash,
+    )
 
 
 def _document_plan(observation: ObservationV1) -> GraphProjectionPlan:
@@ -219,7 +247,7 @@ def _cdr_plan(observation: ObservationV1) -> GraphProjectionPlan:
             "attrs": attributes,
         },
     )
-    properties: dict[str, str | float | int | bool] = {}
+    properties: dict[str, str | float | int | bool | tuple[str, ...]] = {}
     call_type = _string(attributes, "call_type")
     if call_type is not None:
         properties["call_direction"] = call_type
@@ -294,7 +322,10 @@ def _finance_plan(observation: ObservationV1) -> GraphProjectionPlan:
             "attrs": attributes,
         },
     )
-    properties: dict[str, str | float | int | bool] = {"amount": amount, "currency": currency}
+    properties: dict[str, str | float | int | bool | tuple[str, ...]] = {
+        "amount": amount,
+        "currency": currency,
+    }
     for source_name, target_name in (
         ("direction", "transaction_direction"),
         ("transaction_id", "transaction_reference"),
@@ -339,10 +370,286 @@ def _finance_plan(observation: ObservationV1) -> GraphProjectionPlan:
     )
 
 
-def map_observation(observation: ObservationV1) -> GraphProjectionPlan:
+def _bounded_string(attributes: dict[str, Any], name: str, *, maximum: int = 256) -> str | None:
+    value = _string(attributes, name)
+    return value if value is not None and len(value) <= maximum else None
+
+
+def _media_claims(
+    observation: ObservationV1, values: tuple[tuple[str, str, str], ...], fingerprint: str
+) -> tuple[SourceClaimPlan, ...]:
+    return tuple(
+        _claim(
+            observation,
+            claim_type=claim_type,
+            role=role,
+            label=label,
+            fingerprint=fingerprint,
+        )
+        for claim_type, role, label in values
+    )
+
+
+def _media_time_properties(observation: ObservationV1) -> dict[str, str | int | bool]:
+    """Represent canonical time without converting relative offsets into UTC.
+
+    ``ObservationV1`` already validates each range.  This function merely
+    records which already-canonical basis was supplied; it never derives a
+    wall-clock instant from a frame number, FPS, or source-relative offset.
+    """
+    props: dict[str, str | int | bool] = {}
+    locator = observation.source_locator
+    if observation.event_time is not None:
+        props["temporal_precision"] = "exact_instant"
+    elif observation.time_window is not None:
+        if observation.time_window.start is not None and observation.time_window.end is not None:
+            props["temporal_precision"] = "bounded_window"
+        else:
+            props["temporal_precision"] = "partial_window"
+    elif locator.time_start_ms is not None or locator.time_end_ms is not None:
+        props["temporal_precision"] = "source_relative_ms"
+    else:
+        props["temporal_precision"] = "unknown"
+        props["temporal_precision_insufficient"] = True
+    if locator.time_start_ms is not None:
+        props["source_time_start_ms"] = locator.time_start_ms
+    if locator.time_end_ms is not None:
+        props["source_time_end_ms"] = locator.time_end_ms
+    if locator.frame_number is not None:
+        props["source_frame_number"] = locator.frame_number
+    if observation.event_time is not None and observation.time_window is not None:
+        start, end = observation.time_window.start, observation.time_window.end
+        if (start is not None and observation.event_time < start) or (
+            end is not None and observation.event_time > end
+        ):
+            props["temporal_conflict"] = True
+    return props
+
+
+def _media_event(
+    observation: ObservationV1,
+    *,
+    event_type: str,
+    fingerprint_values: dict[str, Any],
+    properties: dict[str, str | float | int | bool | tuple[str, ...]],
+    supporting_observation_ids: tuple[UUID, ...] = (),
+    contradictory_observation_ids: tuple[UUID, ...] = (),
+) -> TemporalEventPlan:
+    fingerprint = _fingerprint(observation, fingerprint_values)
+    return TemporalEventPlan(
+        projection_id=deterministic_uuid(
+            "phase_4_temporal_event",
+            str(observation.case_id),
+            str(observation.observation_id),
+            MEDIA_MAPPING_VERSION,
+            fingerprint,
+        ),
+        event_type=event_type,
+        event_time=observation.event_time,
+        time_window_start=observation.time_window.start if observation.time_window else None,
+        time_window_end=observation.time_window.end if observation.time_window else None,
+        properties={**_media_time_properties(observation), **properties},
+        supporting_observation_ids=supporting_observation_ids,
+        contradictory_observation_ids=contradictory_observation_ids,
+    )
+
+
+def _media_plan(observation: ObservationV1) -> GraphProjectionPlan:
+    attributes = dict(observation.attributes)
+    observation_type = observation.observation_type
+    base = {
+        "type": observation_type,
+        "locator": observation.source_locator.model_dump(mode="json"),
+        "event_time": observation.event_time.isoformat() if observation.event_time else None,
+        "time_window": observation.time_window.model_dump(mode="json")
+        if observation.time_window
+        else None,
+    }
+
+    if observation_type in {
+        "object_detection",
+        "text_region_detection",
+        "anonymous_track_segment",
+    }:
+        label = _bounded_string(attributes, "detected_label", maximum=128)
+        # Tracking labels are source-local classifications, never identities.
+        claims: tuple[SourceClaimPlan, ...] = ()
+        if label is not None:
+            fingerprint = _fingerprint(observation, {**base, "label": label})
+            claims = _media_claims(
+                observation, (("visual_label", "observed_label", label),), fingerprint
+            )
+        event = _media_event(
+            observation,
+            event_type="sighting",
+            fingerprint_values={**base, "label": label},
+            properties={"sighting_kind": observation_type, "candidate_only": False},
+        )
+        return GraphProjectionPlan(
+            status=MappingStatus.APPLIED,
+            reason="media_sighting_event",
+            mapping_version=MEDIA_MAPPING_VERSION,
+            mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            claims=claims,
+            event=event,
+        )
+
+    if observation_type in {"transcript_segment", "diarization_speaker_turn"}:
+        claims = ()
+        if (
+            observation_type == "diarization_speaker_turn"
+            and len(observation.extracted_entities) == 1
+        ):
+            label = observation.extracted_entities[0].text
+            fingerprint = _fingerprint(observation, {**base, "speaker": label})
+            claims = _media_claims(
+                observation, (("speaker_label_local", "speaker_candidate", label),), fingerprint
+            )
+        language = _bounded_string(attributes, "language_hint", maximum=64)
+        props: dict[str, str | float | int | bool | tuple[str, ...]] = {
+            "segment_kind": observation_type,
+            "candidate_only": False,
+        }
+        if language is not None:
+            props["language_hint"] = language
+        event = _media_event(
+            observation,
+            event_type="speech_segment",
+            fingerprint_values={**base, "segment_kind": observation_type, "language": language},
+            properties=props,
+        )
+        return GraphProjectionPlan(
+            status=MappingStatus.APPLIED,
+            reason="media_speech_segment_event",
+            mapping_version=MEDIA_MAPPING_VERSION,
+            mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            claims=claims,
+            event=event,
+        )
+
+    if observation_type == "chat_message":
+        participant_values: list[tuple[str, str, str]] = []
+        sender = _bounded_string(attributes, "sender")
+        if sender is not None:
+            participant_values.append(("platform_handle_claim", "sender_candidate", sender))
+        participants = attributes.get("participants")
+        if isinstance(participants, list):
+            for index, participant in enumerate(participants):
+                if (
+                    isinstance(participant, str)
+                    and participant.strip()
+                    and len(participant.strip()) <= 256
+                ):
+                    participant_values.append(
+                        (
+                            "platform_handle_claim",
+                            f"recipient_candidate_{index}",
+                            participant.strip(),
+                        )
+                    )
+        fingerprint = _fingerprint(observation, {**base, "participants": participant_values})
+        claims = _media_claims(observation, tuple(participant_values), fingerprint)
+        props = {"candidate_only": False}
+        for source, target, maximum in (
+            ("platform", "platform", 64),
+            ("conversation_id", "channel_reference", 256),
+            ("timestamp_source_timezone", "timestamp_source_timezone", 128),
+        ):
+            value = _bounded_string(attributes, source, maximum=maximum)
+            if value is not None:
+                props[target] = value
+        event = _media_event(
+            observation,
+            event_type="message",
+            fingerprint_values={**base, "participants": participant_values, "props": props},
+            properties=props,
+        )
+        return GraphProjectionPlan(
+            status=MappingStatus.APPLIED,
+            reason="media_message_event",
+            mapping_version=MEDIA_MAPPING_VERSION,
+            mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            claims=claims,
+            event=event,
+        )
+
+    if observation_type == "meeting_candidate":
+        reason = _bounded_string(attributes, "candidate_reason_category", maximum=128)
+        status = _bounded_string(attributes, "candidate_status", maximum=32)
+        if reason is None or status != "candidate":
+            return _outcome(
+                MappingStatus.DEFERRED,
+                "meeting_candidate_requires_explicit_candidate_status_and_reason",
+                mapping_version=MEDIA_MAPPING_VERSION,
+                mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            )
+
+        def referenced_ids(name: str) -> tuple[UUID, ...] | None:
+            raw = attributes.get(name, [])
+            if not isinstance(raw, list):
+                return None
+            try:
+                values = tuple(UUID(value) for value in raw if isinstance(value, str))
+            except ValueError:
+                return None
+            return values if len(values) == len(raw) and len(set(values)) == len(values) else None
+
+        supporting = referenced_ids("contributing_observation_ids")
+        contradictory = referenced_ids("contradictory_observation_ids")
+        if supporting is None or contradictory is None:
+            return _outcome(
+                MappingStatus.DEFERRED,
+                "meeting_candidate_has_invalid_observation_references",
+                mapping_version=MEDIA_MAPPING_VERSION,
+                mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            )
+        event = _media_event(
+            observation,
+            event_type="meeting_candidate",
+            fingerprint_values={
+                **base,
+                "reason": reason,
+                "supporting": [str(value) for value in supporting],
+                "contradictory": [str(value) for value in contradictory],
+            },
+            properties={
+                "candidate_only": True,
+                "candidate_status": "candidate",
+                "candidate_reason_category": reason,
+                "temporal_precision_insufficient": _media_time_properties(observation).get(
+                    "temporal_precision"
+                )
+                in {"unknown", "partial_window"},
+            },
+            supporting_observation_ids=supporting,
+            contradictory_observation_ids=contradictory,
+        )
+        return GraphProjectionPlan(
+            status=MappingStatus.APPLIED,
+            reason="explicit_meeting_candidate_event",
+            mapping_version=MEDIA_MAPPING_VERSION,
+            mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+            event=event,
+        )
+
+    return _outcome(
+        MappingStatus.UNSUPPORTED,
+        "unsupported_observation_type",
+        mapping_version=MEDIA_MAPPING_VERSION,
+        mapping_config_hash=MEDIA_MAPPING_CONFIG_HASH,
+    )
+
+
+def map_observation(
+    observation: ObservationV1, media_lineage: MediaProjectionLineage | None = None
+) -> GraphProjectionPlan:
     """Return one stable plan or an explicit safe outcome for an observation."""
     if observation.observation_type == "cdr_call_record":
-        return _cdr_plan(observation)
-    if observation.observation_type == "financial_transaction_record":
-        return _finance_plan(observation)
-    return _document_plan(observation)
+        plan = _cdr_plan(observation)
+    elif observation.observation_type == "financial_transaction_record":
+        plan = _finance_plan(observation)
+    elif observation.observation_type in _DOCUMENT_CLAIM_TYPES | _DOCUMENT_RELATION_TYPES:
+        plan = _document_plan(observation)
+    else:
+        plan = _media_plan(observation)
+    return plan.model_copy(update={"media_lineage": media_lineage}) if media_lineage else plan

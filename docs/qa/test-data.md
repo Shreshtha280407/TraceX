@@ -171,3 +171,11 @@ The Phase 4 coordinator tests use synthetic UUIDs, opaque `s3://` references,
 short time boundaries, and synthetic canonical observations. They contain no
 audio/video/image bytes, object-store credentials, biometric material, or
 real-case provenance.
+
+# Phase 4 media graph-mapping fixtures
+
+`tests/unit/graph/test_phase_4_media_mapping.py` uses only synthetic UUIDs,
+short source-relative millisecond ranges, a normalized synthetic bbox, bounded
+handles/speaker labels, and a short synthetic transcript string used solely to
+assert that it is excluded from graph properties. No raw export, credential,
+artifact URI, real audio/video/image, or real-case data is used.

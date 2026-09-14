@@ -136,6 +136,22 @@ class GraphProjectionJobRecord(GraphModel):
     completed_at: datetime | None
 
 
+class MediaProjectionLineage(GraphModel):
+    """Safe, persisted Phase 4 lineage associated with one observation.
+
+    This is deliberately identifiers and version metadata only.  In
+    particular, derived-artifact object references are not copied from the
+    evidence-lifecycle store into Neo4j.
+    """
+
+    chunk_id: UUID
+    manifest_id: UUID
+    manifest_hash: str
+    processor_version: str
+    configuration_hash: str
+    artifact_ids: tuple[UUID, ...] = ()
+
+
 class ProjectionResult(GraphModel):
     """Summary of a single idempotent projection call."""
 
