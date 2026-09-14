@@ -113,6 +113,7 @@ Model bundles remain external to Git. `auto` device selection may fall back to
 CPU; an explicitly unavailable model/tool is a safe deferred/failure outcome.
 
 The existing CLI selects this through `MEDIA_PROCESSING_PROFILE=rapid|deep`
-(default `rapid`); no separate profile-specific command or worker credential
-exists. For example: `MEDIA_PROCESSING_PROFILE=deep uv run python -m
-app.modules.media_processing.worker --once`.
+(default `rapid`). Both profiles permit a configured OCR adapter; `deep` uses
+denser sampling and a larger bounded OCR-region allowance. No separate
+profile-specific command or worker credential exists. For example:
+`MEDIA_PROCESSING_PROFILE=deep uv run python -m app.modules.media_processing.worker --once`.
