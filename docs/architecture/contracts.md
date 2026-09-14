@@ -151,6 +151,17 @@ The only way two entities connect in TraceX. Timeless direct entity-to-entity ed
 
 A worker never needs direct PostgreSQL, Neo4j, or MinIO credentials: it receives `input_object_uri` pre-scoped for reading, and returns `ObservationV1`s for the API/orchestrator to persist.
 
+### Internal media publication (Phase 4)
+
+`ChunkManifest`, `MediaChunkPublication`, `ArtifactRegistration`, and checkpoint
+records live in `app.modules.evidence_lifecycle.media_orchestration`, not in the
+frozen public `app/contracts/` surface. The new route follows the existing
+authenticated internal-worker convention:
+`POST /api/v1/internal/worker-jobs/{job_id}/media-chunks/publish`. It returns
+the existing safe `ObservationBatchReceiptV1`; it never returns artifact
+metadata, object URIs, bytes, credentials, or graph-projection success. See
+`docs/architecture/phase-4-media-orchestration.md`.
+
 ### Observation-batch contracts (`app/contracts/observation_batch.py`)
 
 Phase 3 (Nipun): the partial-micro-batch counterpart to `WorkerResultV1` — a worker processing a large source may submit any number of these while still `running`, then complete with exactly one terminal `WorkerResultV1` as before.

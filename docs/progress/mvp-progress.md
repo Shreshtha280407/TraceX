@@ -1,5 +1,11 @@
 # MVP Progress
 
+## Phase 4 - Nipun progressive media orchestration: In progress
+
+- [x] Deterministic internal manifest/chunk records, partial publication,
+  artifact lineage, and checkpoint/replay foundation.
+- [ ] Gaurav/Sarthak progressive worker adoption and merge-wave validation.
+
 ## Phase 3 — In progress — blocked by fresh five-service Compose image rebuild
 
 All six merged Phase 3 producer/lifecycle paths are test-accepted (`1656

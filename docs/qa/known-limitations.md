@@ -116,6 +116,16 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 - **`SourceType.DOCUMENT` still has no route to a structured-JSON report export shape.** Only PDF/DOCX/TXT are accepted for documents (unchanged since Phase 1) — a hypothetical JSON-based report export format was not added in this phase (no such shape is defined anywhere in this codebase), consistent with the task's "smallest additive routing change" instruction and the fact that no routing change was needed for any format this phase actually processes.
 - **Media OCR is line-level and English-first.** `ImageOcrAdapter` preserves the original image/frame geometry exactly, but it does not yet deskew, denoise, threshold, crop, upscale, or emit word-level observations. Small, blurred, rotated, low-contrast, or non-English text may be missed; additional language packs must be installed by an operator and selected explicitly. No language/model is downloaded by startup, Docker build, or a normal test.
 - **Live media OCR verification requires local infrastructure and local tooling.** The live suite deliberately self-skips when the API stack, Tesseract/language pack, readable local font, or (for video) ffmpeg/ffprobe is unavailable. A skip is reported as unavailable, never as a fixture-backed real OCR pass.
+## Phase 4 media orchestration
+
+- The coordinator persists only media-work metadata. It does not decode media,
+  verify worker-generated artifact bytes, or perform GPU/LAN worker health
+  scheduling. A worker must report existing truthful `deferred`/`failed`
+  terminal status when unavailable; full fleet policy remains Aditya's work.
+- Manifest creation is a trusted coordinator service seam, not a public or
+  worker-self-service API. Real media worker adoption and end-to-end Docker/GPU
+  verification are deliberately deferred to the Phase 4 merge wave.
+
 # Phase 5 graph/correlation integration
 
 - The Phase 5 foundation ships a typed `CorrelationProjectionContext` and

@@ -42,6 +42,8 @@ from app.modules.evidence_lifecycle.errors import (
     IdempotencyConflictError,
     InvalidClaimTokenError,
     JobNotFoundError,
+    MediaManifestValidationError,
+    MediaPublicationConflictError,
     MissingFilenameError,
     ObservationBatchConflictError,
     ObservationBatchValidationError,
@@ -52,9 +54,15 @@ from app.modules.evidence_lifecycle.errors import (
     UnsupportedSourceTypeError,
 )
 from app.modules.evidence_lifecycle.jobs import JobProducer
+from app.modules.evidence_lifecycle.media_orchestration import (
+    ChunkManifest,
+    MediaChunkPublication,
+    chunk_identity,
+)
 from app.modules.evidence_lifecycle.models import (
     TERMINAL_WORKER_STATUSES,
     EvidenceRecord,
+    MediaCheckpointRecord,
     ObservationBatchRecord,
     ObservationRecord,
     ObservationTransformationRecord,
@@ -166,6 +174,12 @@ class ObservationBatchOutcome:
     progress: ObservationBatchProgressV1 | None
 
 
+@dataclass(frozen=True)
+class MediaManifestOutcome:
+    manifest_id: UUID
+    created: bool
+
+
 class EvidenceLifecycleService:
     def __init__(
         self,
@@ -186,6 +200,42 @@ class EvidenceLifecycleService:
         self._worker_lease_max_seconds = worker_lease_max_seconds
         self._worker_job_max_attempts = worker_job_max_attempts
         self._graph_projection_max_attempts = graph_projection_max_attempts
+
+    async def create_media_manifest(
+        self, *, manifest: ChunkManifest, context: UploadContext
+    ) -> MediaManifestOutcome:
+        """Persist an immutable coordinator manifest before workers publish chunks.
+
+        This is intentionally a service seam, rather than a public API: the
+        coordinator constructs no boundaries on a worker's behalf.  A retry
+        with the identical canonical definition is harmless; changed content
+        under its deterministic identity is rejected.
+        """
+        job = await self._repository.get_job_by_id(manifest.job_id)
+        if (
+            job is None
+            or job.case_id != manifest.case_id
+            or job.evidence_id != manifest.evidence_id
+            or job.source_type.value != manifest.source_type
+            or job.processor_name != manifest.processor_name
+            or job.processor_version != manifest.processor_version
+        ):
+            raise MediaManifestValidationError("manifest does not belong to the declared job")
+        created = await self._repository.create_media_manifest(manifest)
+        if not created:
+            existing = await self._repository.get_media_manifest(manifest.manifest_id)
+            if existing is None or existing.manifest_hash != manifest.manifest_hash:
+                raise MediaPublicationConflictError("a different manifest already exists")
+        return MediaManifestOutcome(manifest_id=manifest.manifest_id, created=created)
+
+    async def get_media_resume_checkpoint(
+        self, *, case_id: UUID, job_id: UUID, manifest_id: UUID
+    ) -> MediaCheckpointRecord | None:
+        """Return the latest case-scoped durable checkpoint for a coordinator resume."""
+        manifest = await self._repository.get_media_manifest(manifest_id)
+        if manifest is None or manifest.case_id != case_id or manifest.job_id != job_id:
+            raise MediaManifestValidationError("checkpoint manifest does not belong to this job")
+        return await self._repository.get_latest_media_checkpoint(case_id, job_id, manifest_id)
 
     async def upload_evidence(
         self,
@@ -920,6 +970,7 @@ class EvidenceLifecycleService:
         submission: ObservationBatchSubmissionV1,
         context: UploadContext,
         worker_id: UUID | None = None,
+        media_publication: MediaChunkPublication | None = None,
     ) -> ObservationBatchOutcome:
         """Validate and durably persist one partial observation micro-batch.
 
@@ -983,11 +1034,17 @@ class EvidenceLifecycleService:
                 "submission job_id/case_id/evidence_id does not match the claimed job"
             )
 
+        if media_publication is not None:
+            await self._validate_media_publication(job, submission, media_publication)
+
         existing = await self._repository.get_batch_by_job_and_batch_id(
             job.job_id, submission.batch_id
         )
         if existing is not None:
-            return await self._replay_or_conflict_batch(existing, submission, context)
+            outcome = await self._replay_or_conflict_batch(existing, submission, context)
+            if media_publication is not None:
+                await self._validate_media_replay(media_publication)
+            return outcome
 
         existing_by_key = await self._repository.get_batch_by_job_and_idempotency_key(
             job.job_id, submission.idempotency_key
@@ -1110,9 +1167,13 @@ class EvidenceLifecycleService:
                 transformations=transformation_records,
                 progress_event=progress_event_record,
                 graph_projection_max_attempts=self._graph_projection_max_attempts,
+                media_publication=media_publication,
             )
         except sqlalchemy.exc.IntegrityError:
-            return await self._resolve_batch_conflict(job.job_id, submission, context)
+            outcome = await self._resolve_batch_conflict(job.job_id, submission, context)
+            if media_publication is not None:
+                await self._validate_media_replay(media_publication)
+            return outcome
         except Exception:
             logger.error(
                 "worker.observation_batch.persistence_failed",
@@ -1142,6 +1203,55 @@ class EvidenceLifecycleService:
             accepted_observation_count=len(observation_records),
             progress=progress_summary,
         )
+
+    async def _validate_media_publication(
+        self,
+        job: WorkerJobRecord,
+        submission: ObservationBatchSubmissionV1,
+        publication: MediaChunkPublication,
+    ) -> None:
+        manifest = await self._repository.get_media_manifest(publication.manifest_id)
+        if (
+            manifest is None
+            or manifest.case_id != job.case_id
+            or manifest.evidence_id != job.evidence_id
+            or manifest.job_id != job.job_id
+            or manifest.manifest_hash != publication.manifest_hash
+            or publication.batch != submission
+        ):
+            raise MediaManifestValidationError("media publication does not match its manifest/job")
+        expected_chunk_id = chunk_identity(
+            ChunkManifest.model_validate(manifest.canonical_payload), publication.chunk_index
+        )
+        if expected_chunk_id != publication.chunk_id:
+            raise MediaManifestValidationError("media chunk identity does not match manifest order")
+        if any(
+            artifact.parent_evidence_id != job.evidence_id for artifact in publication.artifacts
+        ):
+            raise MediaManifestValidationError(
+                "derived artifact parent is outside this evidence item"
+            )
+        chunk = await self._repository.get_media_chunk(publication.chunk_id)
+        if (
+            chunk is None
+            or chunk.manifest_id != manifest.manifest_id
+            or chunk.case_id != job.case_id
+            or chunk.evidence_id != job.evidence_id
+            or chunk.job_id != job.job_id
+            or chunk.chunk_index != publication.chunk_index
+        ):
+            raise MediaManifestValidationError("media chunk does not belong to the manifest/job")
+        if chunk.status == "completed" and chunk.publication_hash != canonical_sha256(publication):
+            raise MediaPublicationConflictError(
+                "a different payload was already accepted for this chunk"
+            )
+
+    async def _validate_media_replay(self, publication: MediaChunkPublication) -> None:
+        chunk = await self._repository.get_media_chunk(publication.chunk_id)
+        if chunk is None or chunk.publication_hash != canonical_sha256(publication):
+            raise MediaPublicationConflictError(
+                "media chunk replay does not match accepted content"
+            )
 
     async def _replay_or_conflict_batch(
         self,

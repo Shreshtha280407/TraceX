@@ -51,11 +51,14 @@ from app.modules.evidence_lifecycle.dependencies import (
 )
 from app.modules.evidence_lifecycle.errors import (
     InvalidClaimTokenError,
+    MediaManifestValidationError,
+    MediaPublicationConflictError,
     ObservationBatchConflictError,
     ObservationBatchValidationError,
     ResultConflictError,
     ResultValidationError,
 )
+from app.modules.evidence_lifecycle.media_orchestration import MediaChunkPublication
 from app.modules.evidence_lifecycle.schemas import (
     ClaimRequest,
     ClaimResponse,
@@ -326,6 +329,80 @@ async def submit_observation_batch(
             },
         )
 
+    return ObservationBatchReceiptV1(
+        job_id=outcome.job_id,
+        batch_id=outcome.batch_id,
+        status=outcome.status,
+        accepted_observation_count=outcome.accepted_observation_count,
+        progress=outcome.progress,
+        request_id=context.request_id,
+    )
+
+
+@router.post("/{job_id}/media-chunks/publish", response_model=ObservationBatchReceiptV1)
+async def publish_media_chunk(
+    job_id: UUID,
+    publication: MediaChunkPublication,
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> ObservationBatchReceiptV1:
+    """Accept one media chunk's canonical observations and artifact metadata.
+
+    This is deliberately an authenticated internal worker endpoint.  It
+    neither accepts bytes nor writes Neo4j: observations and the normal
+    projection outbox entries are committed atomically by the coordinator.
+    """
+    if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+    context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    try:
+        outcome = await service.submit_observation_batch(
+            job_id=job_id,
+            claim_token=claim_token,
+            submission=publication.batch,
+            media_publication=publication,
+            context=context,
+            worker_id=principal.worker_id,
+        )
+    except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except (ObservationBatchValidationError, MediaManifestValidationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except (ObservationBatchConflictError, MediaPublicationConflictError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if outcome.status is BatchAcceptanceStatus.ACCEPTED:
+        await record_audit_event(
+            audit_repository,
+            event_type="worker.media_chunk.accepted",
+            outcome=AuditOutcome.SUCCESS,
+            now=context.now,
+            request_id=context.request_id,
+            user_id=None,
+            case_id=publication.batch.case_id,
+            metadata={
+                "job_id": str(job_id),
+                "manifest_id": str(publication.manifest_id),
+                "chunk_id": str(publication.chunk_id),
+                "accepted_observation_count": outcome.accepted_observation_count,
+            },
+        )
     return ObservationBatchReceiptV1(
         job_id=outcome.job_id,
         batch_id=outcome.batch_id,
