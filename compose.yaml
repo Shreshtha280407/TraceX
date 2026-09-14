@@ -82,7 +82,10 @@ x-tracex-app-env: &tracex-app-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector supplies the PostgreSQL extension used only for bounded,
+    # case-scoped Phase 5 candidate retrieval. PostgreSQL remains the
+    # durable source of record; no vector search result is an identity fact.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

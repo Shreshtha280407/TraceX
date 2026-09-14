@@ -159,3 +159,9 @@ No new fixture module was needed: every new unit test reuses the existing `tests
 **ASR/diarization adapter fixtures** (`tests/fixtures/communication_processing/{asr,diarization}_fixture_adapter.py`, new): `AsrFixtureAdapter`/`DiarizationFixtureAdapter` are explicit, test-only `Protocol` implementations that return exactly the (invented, inline-constructed) `TranscriptSegmentInput`/`DiarizationSegmentInput` values they were given — obvious fixture markers (`model_name="fixture_asr_adapter"`/`"fixture_diarization_adapter"`) make a result from either impossible to mistake for a genuine local-model result in a log, test report, or provenance record. Neither is imported by anything under `app/`.
 
 **Multi-batch/provenance test fixtures** (`tests/unit/communication_processing/test_communication_worker_batches.py`, `test_communication_provenance.py`, new files): a small local `_RecordingClient` duck-typing `WorkerApiClient`'s `submit_batch`/`renew_lease` surface, mirroring `structured_processing`'s identical `_RecordingClient` one phase earlier in this same session; a small synthetic WhatsApp export of 12 invented messages (`"message number {i}"`) generated inline to force a multi-batch path deterministically at a monkeypatched, artificially small `communication_batch_size`. No fixture module needed for either.
+
+## Phase 5 Shreshtha graph-intelligence fixtures
+
+Focused tests use inline synthetic UUIDs, invented phone-shaped identifiers, generic Devanagari/Roman aliases,
+and bounded timestamps. The projection test uses one synthetic extractor and source locator with a fake graph
+repository. No Operation Nightfall, reference master, private truth, source evidence, or runtime fixture is read.

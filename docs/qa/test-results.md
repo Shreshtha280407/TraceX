@@ -2396,3 +2396,11 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   service check did not finish in the bounded verification window (it emitted
   a skip marker before timeout). It is not recorded as a pass; run it against
   a healthy Compose stack during the Phase 5 merge wave.
+
+# Phase 5 Shreshtha graph intelligence (2026-09-14)
+
+- `uv run ruff format --check`, `uv run ruff check`, and `uv run mypy` passed for the changed graph-intelligence paths.
+- Focused synthetic graph intelligence plus adjacent graph mapping/projection/outbox/schema checks: `88 passed in 0.15s`.
+- The seeded Leiden-specific focused check passed: `6 passed in 0.14s`.
+- `uv sync --all-groups`, `uv run alembic heads` (single `e4f7a8b9c0d1` head), and `docker compose config` passed.
+- No Operation Nightfall truth, real-dataset, LAN, benchmark, P99, or Precision@K/Recall@K result is claimed here.

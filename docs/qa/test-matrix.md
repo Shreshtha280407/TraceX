@@ -187,3 +187,7 @@ uv run pytest
 | GRAPH-CORR-004 | Missing referenced correlation fails with a safe fixed error code | `test_integration_projector.py` |
 | GRAPH-CORR-005 | Cross-case observation references are rejected | live integration test |
 | GRAPH-CORR-006 | Candidate-only API semantics and case-scoped safe responses | `test_integration_api.py`, `test_integration_models.py` |
+| GRAPH-INTEL-001 | Exact identifiers, aliases, transliterations, local vectors, and bounded time are deterministic and case-scoped candidates | `tests/unit/graph/test_intelligence.py` |
+| GRAPH-INTEL-002 | Rules snapshots retain named contributions and candidate-only status through Nipun's typed submission seam | `tests/unit/graph/test_intelligence.py` |
+| GRAPH-INTEL-003 | The semantic handler requires the projected Evidence → Observation chain and Nipun projection key | `tests/unit/graph/test_intelligence_projection.py` |
+| GRAPH-INTEL-004 | PageRank, betweenness, WCC, community baseline, and temporal motif operate on one synthetic case | `tests/unit/graph/test_intelligence.py` |

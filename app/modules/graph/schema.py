@@ -107,6 +107,14 @@ CONSTRAINT_STATEMENTS: tuple[SchemaStatement, ...] = (
             "FOR (v:TemporalEvent) REQUIRE (v.case_id, v.projection_id) IS UNIQUE"
         ),
     ),
+    SchemaStatement(
+        name="correlation_case_projection_unique",
+        kind="constraint",
+        cypher=(
+            "CREATE CONSTRAINT correlation_case_projection_unique IF NOT EXISTS "
+            "FOR (c:Correlation) REQUIRE (c.case_id, c.projection_key) IS UNIQUE"
+        ),
+    ),
 )
 
 INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
@@ -176,6 +184,13 @@ INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
         cypher=(
             "CREATE INDEX temporal_event_event_time_idx IF NOT EXISTS "
             "FOR (v:TemporalEvent) ON (v.event_time)"
+        ),
+    ),
+    SchemaStatement(
+        name="correlation_case_id_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX correlation_case_id_idx IF NOT EXISTS FOR (c:Correlation) ON (c.case_id)"
         ),
     ),
 )

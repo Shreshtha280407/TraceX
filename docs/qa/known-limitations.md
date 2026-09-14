@@ -127,3 +127,11 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 - A graph-update event has no automatic retry ceiling for a connection outage
   by design, preserving replayability. Operational alerting/backoff scheduling
   beyond the bounded claim invocation remains future worker operations work.
+
+## Phase 5 Shreshtha graph intelligence
+
+The local hashed-token vector is a deterministic retrieval aid, not a semantic embedding model.
+Leiden uses a fixed seed and deterministic snapshot ordering, but its quality and operational performance are unmeasured.
+Rules weights are preliminary and unmeasured. Operation Nightfall truth evaluation, measured Precision@K/Recall@K/
+false-link rate, P99 bridge validation, final rules-weight freeze, full real-dataset validation, and LAN end-to-end
+validation will run after all Phase 5 contributors have merged their work.
