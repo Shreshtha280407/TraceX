@@ -185,3 +185,9 @@ short source-relative millisecond ranges, a normalized synthetic bbox, bounded
 handles/speaker labels, and a short synthetic transcript string used solely to
 assert that it is excluded from graph properties. No raw export, credential,
 artifact URI, real audio/video/image, or real-case data is used.
+# Phase 4 extracted-text utility fixtures (Jasraj)
+
+`tests/unit/extracted_text/test_ocr_postprocessing.py` uses only short
+synthetic strings, generated UUIDs, normalized test boxes, and frame-relative
+locators. It contains no real OCR output, media bytes, credentials, object
+URIs, case material, or production identifiers.
