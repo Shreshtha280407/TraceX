@@ -21,6 +21,10 @@ once, unchanged, from `transcript_segments_to_mentions`.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from hashlib import sha256
+
+from pydantic import JsonValue
 
 from app.contracts.common import SourceLocator
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
@@ -118,6 +122,9 @@ def validate_transcript_segments(
 
 def transcript_segments_to_mentions(
     segments: tuple[TranscriptSegmentInput, ...],
+    *,
+    json_path_prefix: str = "$.segments",
+    provenance_attributes: Mapping[str, JsonValue] | None = None,
 ) -> list[RawMention]:
     """Validate then convert transcript segments into `transcript_segment` mentions.
 
@@ -131,7 +138,7 @@ def transcript_segments_to_mentions(
         locator = SourceLocator(
             time_start_ms=segment.start_ms,
             time_end_ms=segment.end_ms,
-            json_path=f"$.segments[{index}]",
+            json_path=f"{json_path_prefix}[{index}]",
         )
         mentions.append(
             RawMention(
@@ -141,9 +148,14 @@ def transcript_segments_to_mentions(
                 confidence=segment.confidence,
                 entity_type_hint=None,
                 attributes={
-                    "text": segment.text,
+                    # The canonical observation proves which bounded source
+                    # span was processed without carrying raw transcript
+                    # content into graph-facing properties.
+                    "transcript_text_sha256": sha256(segment.text.encode("utf-8")).hexdigest(),
+                    "transcript_text_length": len(segment.text),
                     "source_segment_id": segment.source_segment_id,
                     "language_hint": segment.language_hint,
+                    **(provenance_attributes or {}),
                 },
             )
         )

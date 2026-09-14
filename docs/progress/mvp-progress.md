@@ -606,3 +606,10 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Deterministic rapid/deep profile, chunk-plan, adaptive sampling, and
   authenticated staged-media publication seam added over existing local worker.
 - [ ] GPU/model-bundle/LAN/real-media validation at merge wave.
+
+# Phase 4 - Sarthak audio and social evidence worker: In progress
+
+- [x] Deterministic rapid/deep profile, local PCM/VAD execution, offline
+  command ASR/diarization adapters, and claimed-worker canonical batch
+  publication over existing social parsers.
+- [ ] Real model-bundle, LAN, Docker, dataset, and merge-wave validation.

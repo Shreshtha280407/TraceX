@@ -293,6 +293,18 @@ class Settings(BaseSettings):
     # `structured_default_timezone` -- both modules process the same class
     # of India-context evidence.
     communication_default_timezone: str = Field(default="Asia/Kolkata")
+    # Phase 4 local-only audio backends.  Each command is an operator-owned
+    # executable path (not a shell fragment); models stay outside Git and
+    # are never downloaded by the worker.  Missing paths yield a truthful
+    # deferred audio outcome.
+    communication_audio_profile: Literal["rapid", "deep"] = Field(default="rapid")
+    communication_asr_command: Path | None = Field(default=None)
+    communication_asr_model_path: Path | None = Field(default=None)
+    communication_asr_language: str = Field(default="auto")
+    communication_asr_timeout_seconds: float = Field(default=120.0, gt=0)
+    communication_diarization_command: Path | None = Field(default=None)
+    communication_diarization_model_path: Path | None = Field(default=None)
+    communication_diarization_timeout_seconds: float = Field(default=120.0, gt=0)
 
     @field_validator("worker_token", "worker_credential_pepper")
     @classmethod

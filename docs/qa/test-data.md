@@ -197,3 +197,9 @@ URIs, case material, or production identifiers.
 Planning tests use synthetic metadata, generated UUIDs, and tiny in-memory
 arrays only. No video, image, model bundle, OCR text, URI, credential, or case
 evidence is included.
+# Phase 4 audio/social planning fixtures (Sarthak)
+
+Tests use generated UUIDs, synthetic source-relative intervals, short Unicode
+strings, and a tiny in-memory constant-amplitude WAV fixture. Fixture ASR text
+is short and synthetic; no real transcript, chat export, credential, object
+URI, model asset, or case evidence is included.

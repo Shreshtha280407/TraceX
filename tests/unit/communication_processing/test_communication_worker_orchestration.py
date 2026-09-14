@@ -29,12 +29,18 @@ from app.contracts.observation_batch import (
     ObservationBatchSubmissionV1,
 )
 from app.contracts.worker import WorkerStatus
+from app.modules.communication_processing.audio.asr_adapter import UnavailableAsrAdapter
 from app.modules.communication_processing.client import ClaimResult, RenewAck, SubmitResultAck
 from app.modules.communication_processing.errors import (
     InputResolutionUnavailableError,
     WorkerApiError,
 )
 from app.modules.communication_processing.input_resolver import ResolvedInput, StaticInputResolver
+from app.modules.communication_processing.models import (
+    DiarizationSegmentInput,
+    TranscriptSegmentInput,
+)
+from app.modules.communication_processing.phase4 import DEEP_AUDIO_PROFILE, RAPID_AUDIO_PROFILE
 from app.modules.communication_processing.worker import (
     AUDIO_METADATA_V1,
     CHECKPOINT_INPUT_RESOLUTION_UNAVAILABLE,
@@ -47,10 +53,14 @@ from app.modules.communication_processing.worker import (
     main,
     run_once,
 )
+from tests.fixtures.communication_processing.asr_fixture_adapter import AsrFixtureAdapter
 from tests.fixtures.communication_processing.builders import (
     build_generic_json_export,
     build_wav_bytes,
     build_whatsapp_export,
+)
+from tests.fixtures.communication_processing.diarization_fixture_adapter import (
+    DiarizationFixtureAdapter,
 )
 from tests.fixtures.communication_processing.factory import make_job
 
@@ -135,6 +145,108 @@ def test_run_once_happy_path_audio_metadata() -> None:
     assert submitted_job_id == job.job_id
     assert submitted_token == "tok-abc"
     assert submitted_result.status is WorkerStatus.SUCCEEDED  # type: ignore[attr-defined]
+
+
+def test_run_once_invokes_explicit_local_asr_path_and_keeps_transcript_out_of_attributes() -> None:
+    job = make_job(processor_name=AUDIO_METADATA_V1.name, source_type=SourceType.AUDIO)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-audio", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id),
+    )
+    resolver = StaticInputResolver(
+        ResolvedInput(
+            content_type="audio/wav",
+            original_filename="signal.wav",
+            data=build_wav_bytes(amplitude=2_000),
+        )
+    )
+    outcome = run_once(
+        client=client,
+        input_resolver=resolver,
+        audio_profile=RAPID_AUDIO_PROFILE,
+        asr_adapter=AsrFixtureAdapter(
+            segments=(
+                TranscriptSegmentInput(0, 500, "synthetic transcript", "en", 0.8, "segment-1"),
+            )
+        ),
+        diarization_adapter=DiarizationFixtureAdapter(segments=()),
+    )
+
+    assert outcome.result_status == "succeeded"
+    observations = client.batch_calls[0].observations
+    transcript = next(
+        item for item in observations if item.observation_type == "transcript_segment"
+    )
+    assert transcript.source_locator.time_start_ms == 0
+    assert transcript.source_locator.time_end_ms == 500
+    assert transcript.extractor.config_hash == "fixture"
+    assert "text" not in transcript.attributes
+    assert transcript.attributes["transcript_text_length"] == len("synthetic transcript")
+    assert transcript.attributes["manifest_id"]
+    assert transcript.attributes["chunk_id"]
+
+
+def test_run_once_missing_local_asr_defers_without_fabricating_a_transcript() -> None:
+    job = make_job(processor_name=AUDIO_METADATA_V1.name, source_type=SourceType.AUDIO)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-audio", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id, status="deferred"),
+    )
+    resolver = StaticInputResolver(
+        ResolvedInput(
+            content_type="audio/wav", original_filename="signal.wav", data=build_wav_bytes()
+        )
+    )
+    outcome = run_once(
+        client=client,
+        input_resolver=resolver,
+        audio_profile=RAPID_AUDIO_PROFILE,
+        asr_adapter=UnavailableAsrAdapter(),
+        diarization_adapter=DiarizationFixtureAdapter(segments=()),
+    )
+
+    assert outcome.result_status == "deferred"
+    assert [item.observation_type for item in client.batch_calls[0].observations] == [
+        "audio_metadata"
+    ]
+    assert client.submit_calls[0][2].checkpoint == "local_asr_unavailable"  # type: ignore[attr-defined]
+
+
+def test_run_once_deep_profile_adds_source_local_diarization_turns() -> None:
+    job = make_job(processor_name=AUDIO_METADATA_V1.name, source_type=SourceType.AUDIO)
+    client = _FakeClient(
+        claim_responses=[ClaimResult(job=job, claim_token="tok-deep", lease_expires_at=None)],
+        submit_ack=_ack(job.job_id),
+    )
+    resolver = StaticInputResolver(
+        ResolvedInput(
+            content_type="audio/wav",
+            original_filename="signal.wav",
+            data=build_wav_bytes(duration_seconds=21, amplitude=2_000),
+        )
+    )
+    outcome = run_once(
+        client=client,
+        input_resolver=resolver,
+        audio_profile=DEEP_AUDIO_PROFILE,
+        asr_adapter=AsrFixtureAdapter(
+            segments=(TranscriptSegmentInput(0, 500, "synthetic", "en", 0.8, "segment-1"),)
+        ),
+        diarization_adapter=DiarizationFixtureAdapter(
+            segments=(DiarizationSegmentInput(0, 1_000, "speaker_1", 0.7, "turn-1"),)
+        ),
+    )
+
+    assert outcome.result_status == "succeeded"
+    turn = next(
+        item
+        for item in client.batch_calls[0].observations
+        if item.observation_type == "diarization_speaker_turn"
+    )
+    assert turn.source_locator.time_start_ms == 0
+    assert turn.source_locator.time_end_ms == 1_000
+    assert turn.extracted_entities[0].entity_type_hint == "speaker_label_local"
+    assert turn.attributes["speaker_identity_status"] == "source_local_unresolved"
 
 
 def test_run_once_happy_path_transcript_import_json_interchange() -> None:

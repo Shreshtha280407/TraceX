@@ -43,6 +43,11 @@ class RawMention:
     entity_type_hint: str | None = None
     attributes: dict[str, JsonValue] = field(default_factory=dict)
     event_time: datetime | None = None
+    # A local model can supply more precise provenance than the worker
+    # profile itself.  These remain optional so existing deterministic
+    # parsers keep their established extractor contract unchanged.
+    extractor_config_hash: str | None = None
+    extractor_model_version: str | None = None
 
 
 @dataclass(frozen=True)

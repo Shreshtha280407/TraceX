@@ -44,6 +44,14 @@ _FORBIDDEN_IMPORTS = {
 # Scenario 22: this module never resolves mentions/labels/aliases to identities.
 _FORBIDDEN_CONTRACT_IMPORTS = {"EntityV1", "EventV1"}
 
+# Phase 4 narrowly authorizes these two offline bridges to invoke an
+# operator-configured local executable with fixed argv.  No other module may
+# spawn a process, and the adapters never use a shell or network client.
+_LOCAL_COMMAND_BACKENDS = {
+    "audio/asr_adapter.py",
+    "audio/diarization_adapter.py",
+}
+
 
 def _python_files() -> list[Path]:
     return sorted(MODULE_ROOT.rglob("*.py"))
@@ -83,6 +91,8 @@ def test_no_forbidden_infra_or_ml_import(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported = _imported_module_roots(tree)
     forbidden = imported & _FORBIDDEN_IMPORTS
+    if str(path.relative_to(MODULE_ROOT)) in _LOCAL_COMMAND_BACKENDS:
+        forbidden.discard("subprocess")
     assert not forbidden, f"{path} imports forbidden module(s): {forbidden}"
 
 
@@ -108,5 +118,8 @@ def test_no_eval_exec_or_pickle(path: Path) -> None:
 def test_no_subprocess_or_shell_execution(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported = _imported_module_roots(tree)
-    assert "subprocess" not in imported, f"{path} imports subprocess"
+    relative_path = str(path.relative_to(MODULE_ROOT))
+    assert "subprocess" not in imported or relative_path in _LOCAL_COMMAND_BACKENDS, (
+        f"{path} imports subprocess"
+    )
     assert "os" not in imported, f"{path} imports os -- this module never needs OS-level access"

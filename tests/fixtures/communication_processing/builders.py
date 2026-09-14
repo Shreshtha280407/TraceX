@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import wave
 
 
@@ -13,6 +14,7 @@ def build_wav_bytes(
     sample_rate: int = 8000,
     channels: int = 1,
     sample_width: int = 2,
+    amplitude: int = 0,
 ) -> bytes:
     """A real, valid, silent PCM WAV file of the given duration."""
     frame_count = round(duration_seconds * sample_rate)
@@ -21,7 +23,11 @@ def build_wav_bytes(
         writer.setnchannels(channels)
         writer.setsampwidth(sample_width)
         writer.setframerate(sample_rate)
-        writer.writeframes(b"\x00" * (frame_count * channels * sample_width))
+        if amplitude and sample_width == 2:
+            frame = struct.pack("<h", amplitude) * channels
+            writer.writeframes(frame * frame_count)
+        else:
+            writer.writeframes(b"\x00" * (frame_count * channels * sample_width))
     return buf.getvalue()
 
 

@@ -17,10 +17,15 @@ today; this module gives it a documented, typed shape.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from pathlib import Path
+from typing import Protocol, cast, runtime_checkable
 
+from app.core.canonical import canonical_sha256
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
 from app.modules.communication_processing.models import DiarizationSegmentInput
 
@@ -58,6 +63,9 @@ class DiarizationResult:
     model_name: str
     model_version: str
     config_hash: str
+    backend_name: str = "unknown"
+    backend_version: str = "unknown"
+    model_identity_hash: str = ""
 
 
 @runtime_checkable
@@ -95,11 +103,145 @@ class UnavailableDiarizationAdapter:
         )
 
 
+class LocalCommandDiarizationAdapter:
+    """Invoke an operator-provisioned offline diarization executable.
+
+    It uses the same fixed ``--model``/``--input`` command boundary as ASR
+    and accepts only JSON speaker-turn metadata on stdout. Labels are
+    validated source-local technical labels, never person identities.
+    """
+
+    def __init__(
+        self, *, command: Path | None, model_path: Path | None, timeout_seconds: float
+    ) -> None:
+        self._command = command
+        self._model_path = model_path
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def state(self) -> DiarizationAdapterState:
+        if (
+            self._command is not None
+            and self._model_path is not None
+            and self._command.is_file()
+            and self._model_path.exists()
+        ):
+            return DiarizationAdapterState.READY
+        return DiarizationAdapterState.UNAVAILABLE
+
+    def diarize(self, audio_bytes: bytes, *, filename: str) -> DiarizationResult:  # noqa: ARG002
+        if self.state is not DiarizationAdapterState.READY:
+            raise ProcessingError(
+                ErrorCode.DIARIZATION_ADAPTER_UNAVAILABLE,
+                "configured local diarization executable or model is unavailable",
+            )
+        assert self._command is not None and self._model_path is not None
+        with tempfile.TemporaryDirectory(prefix="tracex-diarization-") as directory:
+            input_path = Path(directory) / "input.wav"
+            input_path.write_bytes(audio_bytes)
+            try:
+                completed = subprocess.run(  # noqa: S603 - fixed argv, no shell interpolation
+                    [
+                        str(self._command),
+                        "--model",
+                        str(self._model_path),
+                        "--input",
+                        str(input_path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._timeout_seconds,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ProcessingError(
+                    ErrorCode.DIARIZATION_BACKEND_UNAVAILABLE,
+                    "local diarization backend did not complete",
+                    retryable=True,
+                ) from exc
+        if completed.returncode != 0:
+            raise ProcessingError(
+                ErrorCode.DIARIZATION_BACKEND_UNAVAILABLE,
+                "local diarization backend rejected the audio",
+                retryable=True,
+            )
+        try:
+            payload = json.loads(completed.stdout)
+            raw_segments = payload["segments"]
+            if not isinstance(raw_segments, list):
+                raise TypeError
+            segments = tuple(
+                DiarizationSegmentInput(
+                    start_ms=_required_int(item, "start_ms"),
+                    end_ms=_required_int(item, "end_ms"),
+                    speaker_label=_required_str(item, "speaker_label"),
+                    confidence=_required_float(item, "confidence"),
+                    source_segment_id=_optional_str(item, "source_segment_id") or f"diar-{index}",
+                )
+                for index, item in enumerate(raw_segments)
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProcessingError(
+                ErrorCode.DIARIZATION_BACKEND_INVALID_OUTPUT,
+                "local diarization backend returned invalid turn metadata",
+            ) from exc
+        config_hash = canonical_sha256(
+            {
+                "backend": "local_command_diarization.v1",
+                "model_path_identity": str(self._model_path),
+            }
+        )
+        return DiarizationResult(
+            segments=segments,
+            model_name=_optional_str(payload, "model_name") or "local_command_diarization",
+            model_version=_optional_str(payload, "model_version") or "unknown",
+            config_hash=config_hash,
+            backend_name="local_command_diarization",
+            backend_version="1",
+            model_identity_hash=canonical_sha256({"model_path": str(self._model_path)}),
+        )
+
+
+def _required_int(item: object, key: str) -> int:
+    if (
+        not isinstance(item, dict)
+        or not isinstance(item.get(key), int)
+        or isinstance(item[key], bool)
+    ):
+        raise TypeError
+    return cast(int, item[key])
+
+
+def _required_float(item: object, key: str) -> float:
+    if not isinstance(item, dict) or not isinstance(item.get(key), int | float):
+        raise TypeError
+    value = float(item[key])
+    if not 0.0 <= value <= 1.0:
+        raise ValueError
+    return value
+
+
+def _required_str(item: object, key: str) -> str:
+    if not isinstance(item, dict) or not isinstance(item.get(key), str):
+        raise TypeError
+    return cast(str, item[key])
+
+
+def _optional_str(item: object, key: str) -> str | None:
+    if not isinstance(item, dict):
+        raise TypeError
+    value = item.get(key)
+    if value is not None and not isinstance(value, str):
+        raise TypeError
+    return value
+
+
 __all__ = [
     "SEGMENT_SOURCE_METADATA_SUPPLIED",
     "SEGMENT_SOURCE_MODEL_DERIVED",
     "DiarizationAdapter",
     "DiarizationAdapterState",
     "DiarizationResult",
+    "LocalCommandDiarizationAdapter",
     "UnavailableDiarizationAdapter",
 ]

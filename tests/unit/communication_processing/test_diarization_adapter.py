@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from app.modules.communication_processing.audio.diarization_adapter import (
     DiarizationAdapter,
     DiarizationAdapterState,
+    LocalCommandDiarizationAdapter,
     UnavailableDiarizationAdapter,
 )
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
@@ -60,3 +64,31 @@ def test_fixture_adapter_returns_exactly_the_segments_it_was_given() -> None:
     adapter = DiarizationFixtureAdapter(segments=(segment,))
     result = adapter.diarize(b"", filename="evidence.wav")
     assert result.segments == (segment,)
+
+
+def test_local_command_adapter_validates_offline_source_local_turns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    command = tmp_path / "diarization-bridge"
+    model = tmp_path / "model.bin"
+    command.touch()
+    model.touch()
+    adapter = LocalCommandDiarizationAdapter(command=command, model_path=model, timeout_seconds=1)
+    monkeypatch.setattr(
+        "app.modules.communication_processing.audio.diarization_adapter.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=(
+                '{"model_name":"local-test","model_version":"1",'
+                '"segments":[{"start_ms":0,"end_ms":10,"speaker_label":"speaker_1",'
+                '"confidence":0.8}]}'
+            ),
+        ),
+    )
+
+    result = adapter.diarize(b"wav", filename="ignored.wav")
+
+    assert adapter.state is DiarizationAdapterState.READY
+    assert result.segments[0].speaker_label == "speaker_1"
+    assert result.backend_name == "local_command_diarization"

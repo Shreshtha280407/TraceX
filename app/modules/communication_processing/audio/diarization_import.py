@@ -24,6 +24,9 @@ validation remains `validate_diarization_segments`'s job, unchanged.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+
+from pydantic import JsonValue
 
 from app.contracts.common import SourceLocator
 from app.modules.communication_processing.audio.diarization_adapter import (
@@ -106,6 +109,9 @@ def validate_diarization_segments(
 
 def diarization_segments_to_mentions(
     segments: tuple[DiarizationSegmentInput, ...],
+    *,
+    json_path_prefix: str = "$.segments",
+    provenance_attributes: Mapping[str, JsonValue] | None = None,
 ) -> list[RawMention]:
     """Validate then convert diarization segments into `diarization_speaker_turn` mentions.
 
@@ -128,7 +134,7 @@ def diarization_segments_to_mentions(
         locator = SourceLocator(
             time_start_ms=segment.start_ms,
             time_end_ms=segment.end_ms,
-            json_path=f"$.segments[{index}]",
+            json_path=f"{json_path_prefix}[{index}]",
         )
         mentions.append(
             RawMention(
@@ -140,6 +146,7 @@ def diarization_segments_to_mentions(
                 attributes={
                     "source_segment_id": segment.source_segment_id,
                     "segment_source": SEGMENT_SOURCE_METADATA_SUPPLIED,
+                    **(provenance_attributes or {}),
                 },
             )
         )

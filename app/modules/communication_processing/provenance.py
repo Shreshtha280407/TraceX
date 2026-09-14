@@ -142,6 +142,11 @@ def mention_to_observation(
         attributes=mention.attributes,
         extraction_confidence=mention.confidence,
         source_locator=mention.locator,
-        extractor=build_extractor(profile),
+        extractor=Extractor(
+            name=profile.name,
+            version=profile.version,
+            config_hash=mention.extractor_config_hash or profile_config_hash(profile),
+            model_version=mention.extractor_model_version or "n/a",
+        ),
         created_at=created_at,
     )

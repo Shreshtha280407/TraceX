@@ -53,10 +53,19 @@ from app.contracts.observation import ObservationV1
 from app.contracts.observation_batch import TransformationProvenanceV1
 from app.contracts.worker import WorkerError, WorkerJobV1, WorkerResultV1, WorkerStatus
 from app.core.config import Settings, get_settings
+from app.modules.communication_processing.audio.asr_adapter import (
+    AsrAdapter,
+    LocalCommandAsrAdapter,
+)
+from app.modules.communication_processing.audio.diarization_adapter import (
+    DiarizationAdapter,
+    LocalCommandDiarizationAdapter,
+)
 from app.modules.communication_processing.audio.diarization_import import (
     diarization_segments_to_mentions,
     parse_diarization_import_payload,
 )
+from app.modules.communication_processing.audio.local_pipeline import process_local_audio
 from app.modules.communication_processing.audio.metadata import extract_wav_metadata
 from app.modules.communication_processing.audio.routing import (
     AudioRoutingDecision,
@@ -94,6 +103,12 @@ from app.modules.communication_processing.models import (
     SocialExportInput,
     TranscriptImportInput,
 )
+from app.modules.communication_processing.phase4 import (
+    DEEP_AUDIO_PROFILE,
+    RAPID_AUDIO_PROFILE,
+    AudioProcessingProfile,
+    plan_audio_manifest,
+)
 from app.modules.communication_processing.provenance import (
     CONFIDENCE_STRUCTURED_COMPLETE,
     mention_to_observation,
@@ -105,6 +120,7 @@ from app.modules.communication_processing.social.instagram import parse_instagra
 from app.modules.communication_processing.social.json_records import parse_generic_json_export
 from app.modules.communication_processing.social.telegram import parse_telegram_export
 from app.modules.communication_processing.social.whatsapp import parse_whatsapp_export
+from app.modules.evidence_lifecycle.media_orchestration import chunk_identity
 
 logger = structlog.get_logger(__name__)
 
@@ -316,6 +332,66 @@ def _handle_audio_metadata(
     return [mention], None, WorkerStatus.SUCCEEDED
 
 
+def _handle_local_audio(
+    *,
+    job: WorkerJobV1,
+    input_payload: AudioMetadataInput,
+    profile: AudioProcessingProfile,
+    asr_adapter: AsrAdapter,
+    diarization_adapter: DiarizationAdapter,
+    created_at: datetime,
+) -> tuple[list[RawMention], str | None, WorkerStatus]:
+    """Extend the existing raw-audio route without changing its job scope.
+
+    The coordinator owns durable manifest creation and media-chunk
+    checkpointing.  This worker derives the identical deterministic plan for
+    bounded processing and preserves its safe identifiers on observations;
+    publication remains the existing authenticated observation-batch route.
+    It never attempts a direct coordinator/database write.
+    """
+    metadata_mentions, _, _ = _handle_audio_metadata(input_payload)
+    duration_ms = round(extract_wav_metadata(input_payload.data).duration_seconds * 1000)
+    manifest = plan_audio_manifest(
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        job_id=job.job_id,
+        input_object_uri=job.input_object_uri,
+        source_type=job.source_type.value,
+        processor_name=job.processor_name,
+        processor_version=job.processor_version,
+        duration_ms=duration_ms,
+        profile=profile,
+        created_at=created_at,
+    )
+    outcome = process_local_audio(
+        payload=input_payload,
+        profile=profile,
+        asr_adapter=asr_adapter,
+        diarization_adapter=diarization_adapter,
+        manifest_id=manifest.manifest_id,
+        chunk_ids=tuple(chunk_identity(manifest, item.index) for item in manifest.chunks),
+    )
+    metadata = metadata_mentions[0]
+    metadata_mentions[0] = RawMention(
+        observation_type=metadata.observation_type,
+        text=metadata.text,
+        locator=metadata.locator,
+        confidence=metadata.confidence,
+        entity_type_hint=metadata.entity_type_hint,
+        event_time=metadata.event_time,
+        attributes={
+            **metadata.attributes,
+            "audio_profile": profile.name,
+            "audio_profile_config_hash": profile.config_hash(),
+            "manifest_id": str(manifest.manifest_id),
+            "manifest_hash": manifest.manifest_hash,
+            "local_asr_state": asr_adapter.state.value,
+            "local_diarization_state": diarization_adapter.state.value,
+        },
+    )
+    return metadata_mentions + outcome.mentions, outcome.checkpoint, outcome.status
+
+
 def _handle_transcript_import(
     input_payload: InputPayload,
 ) -> tuple[list[RawMention], str | None, WorkerStatus]:
@@ -456,6 +532,9 @@ def run_communication_job_with_batches(
     claim_token: str,
     input_payload: InputPayload,
     clock: Clock = _default_clock,
+    audio_profile: AudioProcessingProfile | None = None,
+    asr_adapter: AsrAdapter | None = None,
+    diarization_adapter: DiarizationAdapter | None = None,
 ) -> WorkerResultV1:
     """Process one communication-processing job, submitting bounded micro-batches.
 
@@ -477,7 +556,23 @@ def run_communication_job_with_batches(
     try:
         profile = _get_profile(job.processor_name)
         _validate_source_type(profile, job.source_type)
-        mentions, checkpoint, status = _dispatch(profile, input_payload)
+        if (
+            profile.name == AUDIO_METADATA_V1.name
+            and isinstance(input_payload, AudioMetadataInput)
+            and audio_profile is not None
+            and asr_adapter is not None
+            and diarization_adapter is not None
+        ):
+            mentions, checkpoint, status = _handle_local_audio(
+                job=job,
+                input_payload=input_payload,
+                profile=audio_profile,
+                asr_adapter=asr_adapter,
+                diarization_adapter=diarization_adapter,
+                created_at=now,
+            )
+        else:
+            mentions, checkpoint, status = _dispatch(profile, input_payload)
     except ProcessingError as exc:
         return WorkerResultV1(
             job_id=job.job_id,
@@ -491,7 +586,7 @@ def run_communication_job_with_batches(
             completed_at=now,
         )
 
-    if status is WorkerStatus.DEFERRED or not mentions:
+    if not mentions:
         return WorkerResultV1(
             job_id=job.job_id,
             case_id=job.case_id,
@@ -558,10 +653,10 @@ def run_communication_job_with_batches(
         job_id=job.job_id,
         case_id=job.case_id,
         evidence_id=job.evidence_id,
-        status=WorkerStatus.SUCCEEDED,
+        status=status,
         observations=[],
         derived_artifacts=[],
-        checkpoint=None,
+        checkpoint=checkpoint,
         error=None,
         completed_at=now,
     )
@@ -605,6 +700,9 @@ def run_once(
     input_resolver: WorkerInputResolver,
     clock: Clock = _default_clock,
     processors: Sequence[tuple[str, str]] = SUPPORTED_PROCESSORS,
+    audio_profile: AudioProcessingProfile | None = None,
+    asr_adapter: AsrAdapter | None = None,
+    diarization_adapter: DiarizationAdapter | None = None,
 ) -> RunOnceOutcome:
     """Claim at most one job, process it, submit its result, and return what happened.
 
@@ -677,6 +775,9 @@ def run_once(
             claim_token=claim_token,
             input_payload=input_payload,
             clock=clock,
+            audio_profile=audio_profile,
+            asr_adapter=asr_adapter,
+            diarization_adapter=diarization_adapter,
         )
         ack = client.submit_result(job_id=job.job_id, claim_token=claim_token, result=result)
         logger.info(
@@ -828,10 +929,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Run exactly one claim-process-submit cycle, then exit.",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--profile",
+        choices=("rapid", "deep"),
+        default=None,
+        help="Override COMMUNICATION_AUDIO_PROFILE for raw-audio jobs only.",
+    )
+    args = parser.parse_args(argv)
 
     _configure_logging()
     settings = get_settings()
+    selected_profile = args.profile or settings.communication_audio_profile
+    audio_profile = RAPID_AUDIO_PROFILE if selected_profile == "rapid" else DEEP_AUDIO_PROFILE
+    asr_adapter = LocalCommandAsrAdapter(
+        command=settings.communication_asr_command,
+        model_path=settings.communication_asr_model_path,
+        language=settings.communication_asr_language,
+        timeout_seconds=settings.communication_asr_timeout_seconds,
+    )
+    diarization_adapter: DiarizationAdapter = LocalCommandDiarizationAdapter(
+        command=settings.communication_diarization_command,
+        model_path=settings.communication_diarization_model_path,
+        timeout_seconds=settings.communication_diarization_timeout_seconds,
+    )
     try:
         client = _build_client(settings)
     except WorkerAuthenticationError as exc:
@@ -839,7 +959,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        outcome = run_once(client=client, input_resolver=LiveInputResolver(client))
+        outcome = run_once(
+            client=client,
+            input_resolver=LiveInputResolver(client),
+            audio_profile=audio_profile,
+            asr_adapter=asr_adapter,
+            diarization_adapter=diarization_adapter,
+        )
     except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
         logger.error("worker.cli.failed", reason=str(exc))
         return 1
