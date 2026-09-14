@@ -238,9 +238,9 @@ _PIPELINE_CASES = [
         "cdr",
         "text/csv",
         "cdr_live_test.csv",
-        b"caller_number,timestamp\n"
-        b"9876543210,2026-01-01 10:00:00\n"
-        b"9876543211,2026-01-01 10:05:00\n",
+        b"caller_number,callee_number,timestamp\n"
+        b"9876543210,9123456789,2026-01-01 10:00:00\n"
+        b"9876543211,9123456788,2026-01-01 10:05:00\n",
         "cdr_generic_v1",
         id="cdr-cdr_generic_v1",
     ),
@@ -248,7 +248,9 @@ _PIPELINE_CASES = [
         "financial",
         "text/csv",
         "finance_live_test.csv",
-        b"amount,currency\n500,INR\n750,INR\n",
+        b"sender_account,receiver_account,amount,currency,timestamp\n"
+        b"sender-A,receiver-B,500,INR,2026-01-01 10:00:00\n"
+        b"sender-A,receiver-B,750,INR,2026-01-01 10:05:00\n",
         "financial_transaction_generic_v1",
         id="financial-financial_transaction_generic_v1",
     ),

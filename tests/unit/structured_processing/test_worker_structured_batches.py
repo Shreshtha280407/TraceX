@@ -66,9 +66,9 @@ def _make_job(processor_name: str, processor_version: str, source_type: SourceTy
 
 
 def _cdr_csv(row_count: int) -> bytes:
-    data = b"caller_number,timestamp\n"
+    data = b"caller_number,callee_number,timestamp\n"
     for i in range(row_count):
-        data += f"98765432{i:02d},2026-01-01 10:{i % 60:02d}:00\n".encode()
+        data += f"98765432{i:02d},91234567{i:02d},2026-01-01 10:{i % 60:02d}:00\n".encode()
     return data
 
 
@@ -140,7 +140,12 @@ def test_malformed_rows_are_reported_under_the_partial_success_policy(
         FINANCIAL_TRANSACTION_GENERIC_V1.version,
         SourceType.FINANCIAL,
     )
-    data = b"amount,currency\n500,INR\n600,INR\nnot-a-number,INR\n"  # 2 valid, 1 malformed
+    data = (
+        b"sender_account,receiver_account,amount,currency,timestamp\n"
+        b"sender-A,receiver-B,500,INR,2026-01-01 10:00:00\n"
+        b"sender-A,receiver-B,600,INR,2026-01-01 10:01:00\n"
+        b"sender-A,receiver-B,not-a-number,INR,2026-01-01 10:02:00\n"
+    )
 
     result = run_structured_batches_job(
         client=client,
@@ -168,7 +173,10 @@ def test_all_rows_malformed_fails_the_job_outright(monkeypatch: pytest.MonkeyPat
         FINANCIAL_TRANSACTION_GENERIC_V1.version,
         SourceType.FINANCIAL,
     )
-    data = b"amount,currency\nnot-a-number,INR\n"
+    data = (
+        b"sender_account,receiver_account,amount,currency,timestamp\n"
+        b"sender-A,receiver-B,not-a-number,INR,2026-01-01 10:00:00\n"
+    )
 
     result = run_structured_batches_job(
         client=client,
@@ -262,8 +270,8 @@ def test_xlsx_cdr_source_preserves_sheet_and_row_provenance(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "CallLog"
-    sheet.append(["caller_number", "timestamp"])
-    sheet.append(["9876543210", "2026-01-01 10:00:00"])
+    sheet.append(["caller_number", "callee_number", "timestamp"])
+    sheet.append(["9876543210", "9123456789", "2026-01-01 10:00:00"])
     buf = io.BytesIO()
     workbook.save(buf)
 
@@ -296,7 +304,17 @@ def test_json_finance_source_preserves_json_path_provenance(
 
     monkeypatch.setattr(worker_module, "get_settings", lambda: Settings(structured_batch_size=500))
 
-    data = json_module.dumps([{"amount": "500", "currency": "INR"}]).encode()
+    data = json_module.dumps(
+        [
+            {
+                "sender_account": "sender-A",
+                "receiver_account": "receiver-B",
+                "amount": "500",
+                "currency": "INR",
+                "timestamp": "2026-01-01 10:00:00",
+            }
+        ]
+    ).encode()
 
     client = _RecordingClient()
     job = _make_job(
@@ -336,7 +354,10 @@ def test_finance_result_never_infers_identity_guilt_or_a_graph_relationship(
         FINANCIAL_TRANSACTION_GENERIC_V1.version,
         SourceType.FINANCIAL,
     )
-    data = b"amount,currency,sender_account,receiver_account\n500,INR,111,222\n"
+    data = (
+        b"amount,currency,sender_account,receiver_account,timestamp\n"
+        b"500,INR,111,222,2026-01-01 10:00:00\n"
+    )
 
     run_structured_batches_job(
         client=client,

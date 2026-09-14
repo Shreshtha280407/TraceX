@@ -87,6 +87,14 @@ class OcrRegion:
     bbox: BoundingBoxNormalized
     word_count: int
 
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("OCR region text must be non-blank")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("OCR region confidence must be within [0, 1]")
+        if self.word_count < 1:
+            raise ValueError("OCR region word_count must be positive")
+
 
 @dataclass(frozen=True)
 class OcrPageResult:
@@ -103,6 +111,25 @@ class OcrPageResult:
     engine_version: str
     tesseract_version: str
     average_confidence: float | None
+    config_hash: str
+
+    def __post_init__(self) -> None:
+        if self.page < 1:
+            raise ValueError("OCR page must be 1-based")
+        if len(self.regions) != len(self.region_spans):
+            raise ValueError("OCR regions and region_spans must have equal length")
+        previous_end = 0
+        confidences: list[float] = []
+        for region, (start, end) in zip(self.regions, self.region_spans, strict=True):
+            if start < previous_end or end <= start or end > len(self.joined_text):
+                raise ValueError("OCR region spans must be ordered, non-empty source text spans")
+            if self.joined_text[start:end] != region.text:
+                raise ValueError("OCR region span must point to its exact joined text")
+            previous_end = end
+            confidences.append(region.confidence)
+        expected_average = sum(confidences) / len(confidences) if confidences else None
+        if self.average_confidence != expected_average:
+            raise ValueError("OCR average_confidence must match the retained regions")
 
 
 @dataclass
@@ -218,6 +245,7 @@ class DocumentPageOcrEngine:
             engine_version=OCR_ENGINE_VERSION,
             tesseract_version=self._tesseract_version,
             average_confidence=average,
+            config_hash=ocr_config_hash(self.config),
         )
 
 

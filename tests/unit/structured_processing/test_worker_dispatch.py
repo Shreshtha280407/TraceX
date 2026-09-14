@@ -1,5 +1,7 @@
 """Worker dispatch across every content kind: scenarios 13, 16, and general routing."""
 
+# ruff: noqa: E501 -- inline synthetic CSV fixtures are deliberately readable as rows.
+
 from __future__ import annotations
 
 from app.contracts.evidence import SourceType
@@ -77,14 +79,14 @@ def test_docx_job_succeeds() -> None:
 
 
 def test_csv_cdr_job_succeeds() -> None:
-    data = b"caller_number,timestamp\n9876543210,2026-01-01 10:00:00\n"
+    data = b"caller_number,callee_number,timestamp\n9876543210,9123456789,2026-01-01 10:00:00\n"
     result = _run("text/csv", "cdr.csv", "cdr_generic_v1", data, source_type=SourceType.CDR)
     assert result.status == WorkerStatus.SUCCEEDED
     assert any(o.observation_type == "cdr_call_record" for o in result.observations)
 
 
 def test_csv_financial_job_succeeds() -> None:
-    data = b"amount,currency\n500,INR\n"
+    data = b"sender_account,receiver_account,amount,currency,timestamp\nSENDER,RECEIVER,500,INR,2026-01-01 10:00:00\n"
     result = _run(
         "text/csv",
         "txns.csv",

@@ -2563,3 +2563,30 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   tests/unit/graph/test_intelligence.py` → **28 passed in 21.07s**.
 - This record does not claim Docker-backed secure-read validation, a full
   regression suite, or Phase 5 completion; those remain merge-wave checks.
+
+# Phase 5B Jasraj source-signal validation (2026-09-15)
+
+- `UV_CACHE_DIR=/tmp/tracex-uv-cache uv sync --all-groups`: passed (105
+  packages resolved/checked).
+- `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy app`:
+  passed (`425 files already formatted`; `177 source files` type-clean).
+- Focused CDR/finance/document/OCR/Phase-5 sourcing coverage:
+  `uv run pytest tests/unit/structured_processing/test_cdr.py
+  tests/unit/structured_processing/test_finance.py
+  tests/unit/structured_processing/test_phase5_signal_validation.py
+  tests/unit/structured_processing/test_worker_dispatch.py
+  tests/unit/graph/test_intelligence_sourcing.py -q` — **64 passed**.
+- Broader producer suites: `tests/unit/structured_processing -q` — **266
+  passed, 1 skipped**; local-file integration plus safety checks — **72
+  passed**. Graph units — **174 passed**. Contract tests — **108 passed**;
+  extracted-text units — **8 passed**.
+- `uv run alembic heads` reported one head (`f4a1c9e0d2b3`); `docker compose
+  config -q` and `git diff --check` passed. No containers were started,
+  stopped, recreated, or removed.
+- The exact `uv run pytest tests/unit -q`, direct
+  `uv run pytest tests/unit/evidence_lifecycle -q`, and consequently the
+  exact full `uv run pytest -q` were not claimed as passes: both unit runs
+  stalled after initial evidence-lifecycle progress with no failure output and
+  were interrupted after bounded polling. This is a verification-run blocker,
+  not a source-signal test failure; rerun in the merge environment before
+  release acceptance.

@@ -129,6 +129,8 @@ def mention_to_observation(
         evidence_id=evidence_id,
         observation_type=mention.observation_type,
         extracted_entities=extracted_entities,
+        event_time=mention.event_time,
+        time_window=mention.time_window,
         attributes=mention.attributes,
         extraction_confidence=mention.confidence,
         source_locator=mention.locator,

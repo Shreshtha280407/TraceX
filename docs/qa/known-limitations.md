@@ -185,6 +185,19 @@ sort first) -- fixed to check both directions, with a permanent regression test
   code -- a CDR's E.164 `+919876543210` and a bare-digit `9876543210` extracted elsewhere are correctly
   treated as distinct, not incorrectly merged. A future phase could add country-code-aware normalization
   if cross-format phone matching becomes a real need.
+- **Phase 5B producer validation does not reconcile phone country codes or validate account ownership.**
+  CDR/finance participant values are source-local opaque identifiers; a supplied `+91...` value and a
+  bare local number are intentionally not made equivalent. No account/phone ownership, counterparty name,
+  identity, relationship, guilt, candidate, or score is inferred from a two-party event.
+- **Only explicitly mapped CSV/XLSX/JSON aliases are supported.** Unknown headers, free-form narration
+  masquerading as a finance reference, missing core parties/time, malformed duration/time/amount/currency,
+  and impossible CDR end ranges are rejected or withheld from correlation-ready attributes. A rejected row
+  has safe worker/chunk diagnostics but no canonical observation; no persistent source-validation review
+  model was introduced.
+- **OCR provenance validation is structural, not a truth assessment.** Bounding boxes are normalized
+  line-level regions, spans are source-relative, and confidence means recognition/extraction quality only.
+  Existing local OCR/NER models may still miss or misread text; this phase adds no model, download, or
+  full-document graph-text storage.
 - `sourcing.descriptor_from_observation`'s mapping scope is intentionally bounded to observation types
   already confirmed to carry a genuinely stable identifier, alias, or handle (see the module's own
   docstring for the exact list). A `cdr_call_record`/`financial_transaction_record`'s second party

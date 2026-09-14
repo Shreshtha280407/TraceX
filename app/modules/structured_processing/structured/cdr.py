@@ -2,12 +2,11 @@
 
 Operates on `RawRecord`s from *any* source format (CSV, XLSX, or JSON —
 see `models.RawRecord`), resolving each canonical field through the
-profile's documented header aliases. Phone numbers are normalized to
-E.164 only when the result is unambiguous (India is this codebase's only
-known country context — see `_normalize_phone`); timestamps are parsed
-only against a documented, fixed set of formats. No `EventV1`, graph
-relationship, or person identity is created here — only
-`ObservationV1`-ready mentions.
+profile's documented header aliases. Participant values stay source-local:
+they are whitespace-trimmed but no country code, name, or counterparty is
+invented. Timestamps are parsed only against a documented, fixed set of
+formats. No `EventV1`, graph relationship, or person identity is created
+here — only `ObservationV1`-ready mentions.
 
 ## Timezone policy
 
@@ -32,6 +31,7 @@ is rejected (`required_field_missing`) rather than silently misinterpreted.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -45,6 +45,7 @@ from app.modules.structured_processing.provenance import (
     CONFIDENCE_NORMALIZATION_CONSERVATIVE,
     CONFIDENCE_STRUCTURED_COMPLETE,
 )
+from app.modules.structured_processing.signal_validation import SignalValidationResult
 from app.modules.structured_processing.structured.profiles import CDR_GENERIC_V1
 
 # Accepted CDR timestamp formats, tried in this order. A value matching
@@ -59,7 +60,6 @@ _TIMESTAMP_FORMATS = (
     "%d/%m/%Y",
 )
 
-_INDIAN_MOBILE = re.compile(r"[6-9]\d{9}")
 _FIXED_OFFSET = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
 
 
@@ -74,17 +74,33 @@ def _resolve_alias(record: RawRecord, canonical: str) -> tuple[str, str] | None:
     return None
 
 
-def _normalize_phone(raw: str) -> str | None:
-    """Return the E.164 form (`+91XXXXXXXXXX`) only for an unambiguous 10-digit
-    Indian mobile number; `None` if the value can't be normalized with confidence
-    (the caller keeps the original value either way — see `*_raw` attributes)."""
-    stripped = re.sub(r"[\s\-()]", "", raw)
-    candidate = stripped
-    if candidate.startswith("+91"):
-        candidate = candidate[3:]
-    elif candidate.startswith("0") and len(candidate) == 11:
-        candidate = candidate[1:]
-    return f"+91{candidate}" if _INDIAN_MOBILE.fullmatch(candidate) else None
+def _participant_value(record: RawRecord, canonical: str) -> tuple[str, str]:
+    """Return `(raw, trimmed)` for a required source-local participant.
+
+    A non-empty printable value is a valid opaque identifier.  This is
+    intentionally not country-code reconciliation: `9876543210` and
+    `+919876543210` remain differently sourced values unless another phase
+    explicitly establishes a reconciliation policy.
+    """
+    resolved = _resolve_alias(record, canonical)
+    if resolved is None:
+        raise ProcessingError(
+            ErrorCode.REQUIRED_FIELD_MISSING,
+            f"record {record.index} is missing required field '{canonical}'",
+        )
+    raw = resolved[1]
+    value = raw.strip()
+    if not value:
+        raise ProcessingError(
+            ErrorCode.REQUIRED_FIELD_MISSING,
+            f"record {record.index} required field '{canonical}' is blank",
+        )
+    if any(ord(char) < 32 for char in value):
+        raise ProcessingError(
+            ErrorCode.INVALID_SOURCE_SIGNAL,
+            f"record {record.index} required field '{canonical}' is malformed",
+        )
+    return raw, value
 
 
 def resolve_timezone(raw: str | None) -> tuple[ZoneInfo | timezone, str]:
@@ -150,26 +166,23 @@ def parse_record_timestamp(
 def normalize_cdr_records(records: list[RawRecord]) -> list[RawMention]:
     """Normalize CDR records into `cdr_*` mentions.
 
-    Raises `required_field_missing` for any record lacking `caller_number`
-    or `timestamp`, or whose timestamp doesn't match a documented format.
+    Raises a safe, deterministic validation error for a record without both
+    participants, a usable timestamp, a malformed duration, or an impossible
+    source-supplied time range.  Invalid records yield no observations.
     """
     mentions: list[RawMention] = []
 
     for record in records:
-        caller = _resolve_alias(record, "caller_number")
+        caller_raw, caller = _participant_value(record, "caller_number")
+        callee_raw, callee = _participant_value(record, "callee_number")
         timestamp_field = _resolve_alias(record, "timestamp")
 
-        missing = [
-            name
-            for name, field in (("caller_number", caller), ("timestamp", timestamp_field))
-            if field is None
-        ]
-        if missing:
+        if timestamp_field is None or not timestamp_field[1].strip():
             raise ProcessingError(
                 ErrorCode.REQUIRED_FIELD_MISSING,
-                f"record {record.index} is missing required field(s): {', '.join(missing)}",
+                f"record {record.index} is missing required field 'timestamp'",
             )
-        assert caller is not None and timestamp_field is not None  # narrowed by the check above
+        assert timestamp_field is not None
 
         timezone_field = _resolve_alias(record, "source_timezone")
         parsed = parse_record_timestamp(
@@ -183,24 +196,45 @@ def normalize_cdr_records(records: list[RawRecord]) -> list[RawMention]:
         utc_timestamp, resolved_tz_name, utc_offset = parsed
 
         record_attrs: dict[str, JsonValue] = {
-            "caller_number_raw": caller[1],
+            "caller_number_raw": caller_raw,
+            "caller_number": caller,
+            "callee_number_raw": callee_raw,
+            "callee_number": callee,
+            "participants": [
+                {"role": "caller", "identifier": caller},
+                {"role": "callee", "identifier": callee},
+            ],
             "timestamp": utc_timestamp.isoformat(),
             "timestamp_raw": timestamp_field[1],
             "timestamp_source_timezone": resolved_tz_name,
             "timestamp_source_utc_offset": utc_offset or None,
         }
-        normalized_caller = _normalize_phone(caller[1])
-        record_attrs["caller_number"] = normalized_caller if normalized_caller else caller[1]
 
-        callee = _resolve_alias(record, "callee_number")
-        if callee is not None:
-            record_attrs["callee_number_raw"] = callee[1]
-            normalized_callee = _normalize_phone(callee[1])
-            record_attrs["callee_number"] = normalized_callee if normalized_callee else callee[1]
+        end_timestamp_field = _resolve_alias(record, "end_timestamp")
+        if end_timestamp_field is not None and end_timestamp_field[1].strip():
+            parsed_end = parse_record_timestamp(
+                end_timestamp_field[1], timezone_field[1] if timezone_field else None
+            )
+            if parsed_end is None:
+                raise ProcessingError(
+                    ErrorCode.INVALID_SOURCE_SIGNAL,
+                    f"record {record.index} end_timestamp does not match a documented format",
+                )
+            utc_end, _, _ = parsed_end
+            if utc_end < utc_timestamp:
+                raise ProcessingError(
+                    ErrorCode.INVALID_SOURCE_SIGNAL,
+                    f"record {record.index} has an impossible call time range",
+                )
+            record_attrs["timestamp_end"] = utc_end.isoformat()
 
         call_type_field = _resolve_alias(record, "call_type")
-        if call_type_field is not None:
-            record_attrs["call_type"] = call_type_field[1]
+        if call_type_field is not None and call_type_field[1].strip():
+            record_attrs["call_type"] = call_type_field[1].strip()
+
+        call_id_field = _resolve_alias(record, "call_id")
+        if call_id_field is not None and call_id_field[1].strip():
+            record_attrs["call_id"] = call_id_field[1].strip()
 
         tower_field = _resolve_alias(record, "cell_tower_id")
         if tower_field is not None:
@@ -211,10 +245,21 @@ def normalize_cdr_records(records: list[RawRecord]) -> list[RawMention]:
             record_attrs["duration_seconds_raw"] = duration_field[1]
             try:
                 duration = float(duration_field[1])
-                if duration >= 0:
-                    record_attrs["duration_seconds"] = duration
-            except ValueError:
-                pass  # not a valid number: keep only the raw value above
+            except ValueError as exc:
+                raise ProcessingError(
+                    ErrorCode.INVALID_SOURCE_SIGNAL,
+                    f"record {record.index} duration_seconds is malformed",
+                ) from exc
+            if not math.isfinite(duration) or duration < 0:
+                raise ProcessingError(
+                    ErrorCode.INVALID_SOURCE_SIGNAL,
+                    f"record {record.index} duration_seconds is invalid",
+                )
+            record_attrs["duration_seconds"] = duration
+
+        record_attrs["source_signal_quality"] = SignalValidationResult.accepted(
+            profile=CDR_GENERIC_V1, source_locator=record.locator_for(None)
+        ).attribute_value()
 
         mentions.append(
             RawMention(
@@ -223,6 +268,7 @@ def normalize_cdr_records(records: list[RawRecord]) -> list[RawMention]:
                 locator=record.locator_for(None),
                 confidence=CONFIDENCE_STRUCTURED_COMPLETE,
                 attributes=record_attrs,
+                event_time=utc_timestamp,
             )
         )
 

@@ -1,5 +1,7 @@
 """Scenario 11: CDR profile handles valid aliases and rejects missing required fields."""
 
+# ruff: noqa: E501 -- inline synthetic CSV fixtures are deliberately readable as rows.
+
 from __future__ import annotations
 
 import pytest
@@ -14,24 +16,27 @@ def test_cdr_resolves_header_aliases_case_and_spacing_insensitively() -> None:
     mentions = normalize_cdr_records(parse_csv(data))
     record_mentions = [m for m in mentions if m.observation_type == "cdr_call_record"]
     assert len(record_mentions) == 1
-    # Phase 3: normalized to E.164 (India is this codebase's only known
-    # country context) -- the original value is always kept alongside.
-    assert record_mentions[0].attributes["caller_number"] == "+919876543210"
+    # Values are source-local opaque identifiers; no country code is inferred.
+    assert record_mentions[0].attributes["caller_number"] == "9876543210"
     assert record_mentions[0].attributes["caller_number_raw"] == "9876543210"
-    assert record_mentions[0].attributes["callee_number"] == "+919123456789"
+    assert record_mentions[0].attributes["callee_number"] == "9123456789"
     assert record_mentions[0].attributes["callee_number_raw"] == "9123456789"
+    assert record_mentions[0].attributes["participants"] == [
+        {"role": "caller", "identifier": "9876543210"},
+        {"role": "callee", "identifier": "9123456789"},
+    ]
 
 
-def test_cdr_normalizes_unambiguous_indian_mobile_number_to_e164() -> None:
-    data = b"caller_number,timestamp\n+91-9876543210,2026-01-01 10:00:00\n"
+def test_cdr_preserves_source_phone_form_without_country_code_inference() -> None:
+    data = b"caller_number,callee_number,timestamp\n+91-9876543210,9123456789,2026-01-01 10:00:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
-    assert record.attributes["caller_number"] == "+919876543210"
+    assert record.attributes["caller_number"] == "+91-9876543210"
     assert record.attributes["caller_number_raw"] == "+91-9876543210"
 
 
 def test_cdr_retains_original_value_when_normalization_is_uncertain() -> None:
-    data = b"caller_number,timestamp\nUNKNOWN-CALLER,2026-01-01 10:00:00\n"
+    data = b"caller_number,callee_number,timestamp\nUNKNOWN-CALLER,UNKNOWN-CALLEE,2026-01-01 10:00:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
     assert record.attributes["caller_number"] == "UNKNOWN-CALLER"
@@ -39,7 +44,7 @@ def test_cdr_retains_original_value_when_normalization_is_uncertain() -> None:
 
 
 def test_cdr_timestamp_uses_the_configured_default_timezone_when_none_is_given() -> None:
-    data = b"caller_number,timestamp\n9876543210,2026-01-01 10:00:00\n"
+    data = b"caller_number,callee_number,timestamp\n9876543210,9123456789,2026-01-01 10:00:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
     # Asia/Kolkata (UTC+05:30) is the configured default; 10:00 IST -> 04:30 UTC.
@@ -49,7 +54,7 @@ def test_cdr_timestamp_uses_the_configured_default_timezone_when_none_is_given()
 
 
 def test_cdr_timestamp_respects_an_explicit_source_timezone() -> None:
-    data = b"caller_number,timestamp,source_timezone\n9876543210,2026-01-01 10:00:00,UTC\n"
+    data = b"caller_number,callee_number,timestamp,source_timezone\n9876543210,9123456789,2026-01-01 10:00:00,UTC\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
     assert record.attributes["timestamp"] == "2026-01-01T10:00:00+00:00"
@@ -57,7 +62,7 @@ def test_cdr_timestamp_respects_an_explicit_source_timezone() -> None:
 
 
 def test_cdr_timestamp_respects_an_explicit_fixed_offset() -> None:
-    data = b"caller_number,timestamp,source_timezone\n9876543210,2026-01-01 10:00:00,+02:00\n"
+    data = b"caller_number,callee_number,timestamp,source_timezone\n9876543210,9123456789,2026-01-01 10:00:00,+02:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     record = next(m for m in mentions if m.observation_type == "cdr_call_record")
     assert record.attributes["timestamp"] == "2026-01-01T08:00:00+00:00"
@@ -72,14 +77,14 @@ def test_cdr_rejects_record_missing_required_fields() -> None:
 
 
 def test_cdr_rejects_unparseable_timestamp() -> None:
-    data = b"caller_number,timestamp\n9876543210,not-a-date\n"
+    data = b"caller_number,callee_number,timestamp\n9876543210,9123456789,not-a-date\n"
     with pytest.raises(ProcessingError) as exc_info:
         normalize_cdr_records(parse_csv(data))
     assert exc_info.value.code == ErrorCode.REQUIRED_FIELD_MISSING
 
 
 def test_cdr_preserves_duration_only_when_numeric() -> None:
-    valid = b"caller_number,timestamp,duration_seconds\n9876543210,2026-01-01 10:00:00,120\n"
+    valid = b"caller_number,callee_number,timestamp,duration_seconds\n9876543210,9123456789,2026-01-01 10:00:00,120\n"
     record = next(
         m
         for m in normalize_cdr_records(parse_csv(valid))
@@ -87,20 +92,16 @@ def test_cdr_preserves_duration_only_when_numeric() -> None:
     )
     assert record.attributes["duration_seconds"] == 120.0
 
-    invalid = b"caller_number,timestamp,duration_seconds\n9876543210,2026-01-01 10:00:00,n/a\n"
-    record2 = next(
-        m
-        for m in normalize_cdr_records(parse_csv(invalid))
-        if m.observation_type == "cdr_call_record"
-    )
-    assert "duration_seconds" not in record2.attributes
-    assert record2.attributes["duration_seconds_raw"] == "n/a"
+    invalid = b"caller_number,callee_number,timestamp,duration_seconds\n9876543210,9123456789,2026-01-01 10:00:00,n/a\n"
+    with pytest.raises(ProcessingError) as exc_info:
+        normalize_cdr_records(parse_csv(invalid))
+    assert exc_info.value.code == ErrorCode.INVALID_SOURCE_SIGNAL
 
 
 def test_cdr_emits_device_subscriber_and_tower_mentions() -> None:
     data = (
-        b"caller_number,timestamp,imei,imsi,cell_tower_id\n"
-        b"9876543210,2026-01-01 10:00:00,356789012345678,404123456789012,TWR-9\n"
+        b"caller_number,callee_number,timestamp,imei,imsi,cell_tower_id\n"
+        b"9876543210,9123456789,2026-01-01 10:00:00,356789012345678,404123456789012,TWR-9\n"
     )
     mentions = normalize_cdr_records(parse_csv(data))
     types = {m.observation_type for m in mentions}
@@ -114,7 +115,7 @@ def test_cdr_emits_device_subscriber_and_tower_mentions() -> None:
 
 def test_cdr_no_event_or_entity_type_is_ever_created() -> None:
     """CDR normalization only ever emits mentions -- never EntityV1/EventV1 shapes."""
-    data = b"caller_number,timestamp\n9876543210,2026-01-01 10:00:00\n"
+    data = b"caller_number,callee_number,timestamp\n9876543210,9123456789,2026-01-01 10:00:00\n"
     mentions = normalize_cdr_records(parse_csv(data))
     for mention in mentions:
         assert mention.observation_type.startswith("cdr_")

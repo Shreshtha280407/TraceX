@@ -618,6 +618,21 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
   Phase 5 write/review policy, public feature snapshots/analytics/motifs/vector
   routes, and any frontend flow are intentionally not implemented here.
 
+# Phase 5B - Jasraj document, CDR, and financial source-signal validation: In progress
+
+- [x] Correlation-ready CDR and financial records now require both explicit,
+  source-local participant roles plus a valid source-backed time; CDR uses
+  caller/callee and finance sender/receiver without swapping, inferring, or
+  resolving either party.
+- [x] Added deterministic role/amount/currency/time/duration/reference checks,
+  source-safe validation metadata, canonical event-time/provenance retention,
+  and structural OCR page/span/bounding-box/confidence validation.
+- [x] Added synthetic CSV/XLSX/JSON and Phase 4-to-Phase 5 motif-boundary tests;
+  no candidate generation, scoring, direct graph write, entity merge, or model
+  change was introduced.
+- [ ] Full merge-wave, Compose-backed, real-local-OCR and wider regression
+  verification remain pending the required verification run/environment.
+
 # Phase 4 - Aditya LAN worker security and reliability: In progress
 
 - [x] Existing worker credential, claim-token, and lease path extended with

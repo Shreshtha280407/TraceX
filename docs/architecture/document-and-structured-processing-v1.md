@@ -39,9 +39,11 @@ CSV (stdlib `csv`), XLSX (`openpyxl`, `data_only=False`), and JSON (stdlib `json
 
 Both `structured/cdr.py` (`cdr_generic_v1`) and `structured/finance.py` (`financial_transaction_generic_v1`) operate on `models.RawRecord` — a shape produced identically by the CSV, XLSX, and JSON-array parsers, so the same normalization code handles all three source formats. Header aliases are matched case- and separator-insensitively (`models.normalize_header`: `"Caller Number"`, `"caller-number"`, and `"caller_number"` all resolve to the canonical `caller_number` alias) against the explicit alias lists in `structured/profiles.py`.
 
-- **Phone numbers** are normalized only when the result is an unambiguous 10-digit Indian mobile number after stripping a `+91`/leading-`0` prefix; anything else is kept exactly as written (`docs/decisions/ADR-002...md` explains why "keep the original when uncertain" beats a wrong normalization).
-- **Timestamps** are parsed only against a fixed, documented format list (`cdr._TIMESTAMP_FORMATS`); a value matching none of them is `required_field_missing`, not a guess.
-- **Money** is never passed through `float`. `finance._normalize_amount` uses `decimal.Decimal`, and the original source string is always preserved alongside the normalized value (`amount` next to `amount_raw`). Currency is required and never invented — a record without one fails safely.
+- **Participant roles** are explicit and source-local: CDR records require `caller_number` + `callee_number` and emit `participants=[{"role":"caller",...},{"role":"callee",...}]`; transfers require `sender_account` + `receiver_account` and emit the corresponding `sender`/`receiver` roles. Legacy role-specific attributes remain the Phase 5 sourcing keys: `caller_number`, `callee_number`, `sender_account`, `receiver_account`. No country code, person name, owner, counterparty, identity, link, or score is inferred.
+- **Timestamps** are parsed only against a fixed, documented format list (`cdr._TIMESTAMP_FORMATS`) and retained as both canonical `event_time` and provenance-rich attributes. A mapped CDR end time cannot precede its start; a correlation-ready transfer requires a valid timestamp.
+- **Money** is never passed through `float`. `finance._normalize_amount` uses `decimal.Decimal`; it rejects non-finite and negative transfer amounts without rounding or currency conversion. Currency is required, three-letter shaped, and never invented.
+- **Quality metadata**: accepted records include bounded `source_signal_quality` metadata (`accepted`, reason codes, explanation, extractor/profile/config identity). Rejected or incomplete validation results remain producer-local and safe; malformed core inputs publish no event observation, so they cannot become correlation-ready evidence. Locator/case/evidence IDs remain the frozen canonical fields rather than duplicated in attributes.
+- **Document/OCR provenance**: source page, source span, and a normalized bounding box are contract-validated. OCR region spans must be ordered and map exactly to retained text; OCR confidence is extraction quality only. OCR-derived mention attributes contain only OCR engine/version/model/config identity, never page transcript text.
 
 ## Deterministic confidence policy
 
@@ -61,4 +63,4 @@ Every confidence value is a fixed constant (`provenance.py`), never a model outp
 
 ## Deferred to a later phase
 
-Real OCR (Tesseract/cloud OCR/any OCR model), NER/NLP/LLM-based extraction, entity resolution, graph projection/cross-linking, actual MinIO reads (a real `SourceResolver` implementation), and any ML/embeddings work are all explicitly out of scope for this phase — see `CLAUDE.md` and `docs/qa/known-limitations.md`.
+Entity resolution, graph projection/cross-linking, cloud OCR or new OCR/NER/ML models, actual MinIO reads outside the approved worker boundary, and embeddings are out of scope for this producer validation work. Existing local OCR/NER plumbing is validated only for provenance/quality handling; no model capability, truth claim, or identity decision is added.

@@ -90,6 +90,7 @@ from app.modules.structured_processing.document.normalization import (
     normalize_text,
 )
 from app.modules.structured_processing.document.ocr import (
+    OCR_ENGINE_NAME,
     DocumentPageOcrEngine,
     OcrConfig,
     OcrPageResult,
@@ -445,8 +446,25 @@ def _extract_page_mentions(
     ner_mentions = _ner_mentions_to_raw(list(ner_raw), normalized.offset_map, page, ocr_result)
     combined = regex_mentions + ner_mentions
     relation_mentions = extract_relations(combined)
+    all_mentions = combined + relation_mentions
+    if ocr_result is not None:
+        all_mentions = [
+            replace(
+                mention,
+                attributes={
+                    **mention.attributes,
+                    "ocr_extractor": {
+                        "name": OCR_ENGINE_NAME,
+                        "version": ocr_result.engine_version,
+                        "model_version": ocr_result.tesseract_version,
+                        "config_hash": ocr_result.config_hash,
+                    },
+                },
+            )
+            for mention in all_mentions
+        ]
     return _PageExtraction(
-        mentions=combined + relation_mentions,
+        mentions=all_mentions,
         normalization_config_hash=normalization_config_hash(),
     )
 

@@ -146,3 +146,26 @@ feature snapshots, analytics, motifs, or direct vector search routes.
 Neo4j and PostgreSQL dependency failures return fixed `503` errors without a
 driver message, query text, topology, DSN, or case-existence signal. Candidate
 links and correlations remain review-only propositions throughout this boundary.
+
+## Phase 5B source-signal contract (Jasraj)
+
+The Phase 5 sourcing boundary consumes only source-backed role-specific producer
+attributes: CDR `caller_number`/`callee_number` and finance
+`sender_account`/`receiver_account`. Each producer also emits the equivalent
+ordered `participants` array with the explicit roles `caller`/`callee` or
+`sender`/`receiver`; it is an evidence-local representation, not an entity
+assertion. `sourcing.py` continues to use those legacy role-specific keys for
+its bounded descriptor and motif adapters. A future adapter extension that
+needs one descriptor per participant must emit separate evidence-local
+descriptors with the same observation/evidence/locator provenance; it must not
+invent a second party or alter `ObservationV1`.
+
+Valid events preserve `case_id`, `evidence_id`, source locator, extractor
+identity/config hash, and canonical event time. CDR optionally preserves
+duration, type/direction, call ID, and an end time only when source-supplied;
+finance preserves exact decimal amount, supplied currency, reference ID, and
+channel only when validated and safe. `source_signal_quality` describes source
+validation/extraction only, never identity, truth, guilt, or score. A blank,
+malformed, impossible, or incomplete core event is rejected before canonical
+publication and therefore cannot reach descriptor retrieval, candidate links,
+Neo4j, correlation persistence, or scoring.
