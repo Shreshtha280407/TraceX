@@ -578,6 +578,31 @@ uv run alembic upgrade head                                 # apply pending migr
 
 ## Troubleshooting
 
+### Phase 4 local audio/social worker
+
+The audio worker uses only the established worker token, claim token, input
+stream, observation-batch endpoint, and terminal result endpoint. It receives
+no database, Neo4j, Redis, MinIO, object-store, cloud, or model-download
+credential. To enable offline ASR, install a reviewed local bridge executable
+and model bundle outside this repository, then set only non-secret paths in
+your uncommitted `.env`:
+
+```bash
+COMMUNICATION_AUDIO_PROFILE=deep
+COMMUNICATION_ASR_COMMAND=/opt/tracex-local-asr-bridge
+COMMUNICATION_ASR_MODEL_PATH=/opt/tracex-models/asr-model.bin
+COMMUNICATION_DIARIZATION_COMMAND=/opt/tracex-local-diarization-bridge
+COMMUNICATION_DIARIZATION_MODEL_PATH=/opt/tracex-models/diarization-model.bin
+uv run python -m app.modules.communication_processing.worker --once
+```
+
+The ASR bridge must accept `--model`, `--input`, and `--language`; the
+diarization bridge accepts `--model` and `--input`; both write documented
+timestamped JSON to stdout. Do not put arguments, shell fragments, tokens, or
+URLs in the command setting. Leave any path unset to obtain a safe deferred
+raw-audio result. `--profile rapid|deep` temporarily overrides the environment
+selection for one CLI invocation.
+
 - **`/readyz` stuck at 503`**: check `docker compose ps` — a service still starting (especially Neo4j, which is slower to become healthy) will show as `starting`/`unhealthy`. Check `docker compose logs <service>`.
 - **Port already in use**: another process is bound to one of `8000/5432/7474/7687/6379/9000/9001`. Either stop it or change the corresponding `*_PORT` in `.env`.
 - **`uv sync` fails to resolve**: confirm you're on the committed `uv.lock` (`git status`); if you intentionally changed dependencies, re-run `uv lock` then `uv sync`.

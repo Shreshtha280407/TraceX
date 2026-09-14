@@ -2441,3 +2441,10 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   mapping tests: **50 passed in 0.23s**.
 - No GPU, configured model bundle, real media, LAN worker, Docker, or end-to-
   end acceptance was run.
+# Phase 4 Sarthak audio/social worker (2026-09-14)
+
+- `UV_CACHE_DIR=/tmp/tracex-uv-cache uv run --no-sync pytest -q
+  tests/unit/communication_processing tests/unit/graph/test_phase_4_media_mapping.py
+  tests/unit/evidence_lifecycle/test_media_orchestration.py`: **361 passed**.
+- No configured real local ASR/diarization model, audio dataset, LAN worker,
+  Docker, or end-to-end acceptance is claimed.

@@ -40,10 +40,15 @@ module's docstring, and Scenario 7 in `docs/qa/test-matrix.md`).
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from pathlib import Path
+from typing import Protocol, cast, runtime_checkable
 
+from app.core.canonical import canonical_sha256
 from app.modules.communication_processing.errors import ErrorCode, ProcessingError
 from app.modules.communication_processing.models import TranscriptSegmentInput
 
@@ -76,6 +81,9 @@ class AsrTranscriptionResult:
     model_name: str
     model_version: str
     config_hash: str
+    backend_name: str = "unknown"
+    backend_version: str = "unknown"
+    model_identity_hash: str = ""
 
 
 @runtime_checkable
@@ -113,9 +121,154 @@ class UnavailableAsrAdapter:
         )
 
 
+class LocalCommandAsrAdapter:
+    """Invoke an operator-provisioned offline ASR executable.
+
+    The fixed command contract is ``--model <path> --input <temporary-wav>
+    --language <hint>``.  The executable must emit JSON on stdout with
+    timestamped ``segments``.  No model is downloaded and neither command
+    output nor filesystem paths are logged or persisted.
+    """
+
+    def __init__(
+        self,
+        *,
+        command: Path | None,
+        model_path: Path | None,
+        language: str,
+        timeout_seconds: float,
+    ) -> None:
+        self._command = command
+        self._model_path = model_path
+        self._language = language
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def state(self) -> AsrAdapterState:
+        if (
+            self._command is not None
+            and self._model_path is not None
+            and self._command.is_file()
+            and self._model_path.exists()
+        ):
+            return AsrAdapterState.READY
+        return AsrAdapterState.UNAVAILABLE
+
+    def transcribe(self, audio_bytes: bytes, *, filename: str) -> AsrTranscriptionResult:  # noqa: ARG002
+        if self.state is not AsrAdapterState.READY:
+            raise ProcessingError(
+                ErrorCode.ASR_ADAPTER_UNAVAILABLE,
+                "configured local ASR executable or model is unavailable",
+            )
+        assert self._command is not None and self._model_path is not None
+        with tempfile.TemporaryDirectory(prefix="tracex-asr-") as directory:
+            input_path = Path(directory) / "input.wav"
+            input_path.write_bytes(audio_bytes)
+            try:
+                completed = subprocess.run(  # noqa: S603 - fixed argv, no shell interpolation
+                    [
+                        str(self._command),
+                        "--model",
+                        str(self._model_path),
+                        "--input",
+                        str(input_path),
+                        "--language",
+                        self._language,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._timeout_seconds,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ProcessingError(
+                    ErrorCode.ASR_BACKEND_UNAVAILABLE,
+                    "local ASR backend did not complete",
+                    retryable=True,
+                ) from exc
+        if completed.returncode != 0:
+            raise ProcessingError(
+                ErrorCode.ASR_BACKEND_UNAVAILABLE,
+                "local ASR backend rejected the audio",
+                retryable=True,
+            )
+        try:
+            payload = json.loads(completed.stdout)
+            raw_segments = payload["segments"]
+            if not isinstance(raw_segments, list):
+                raise TypeError
+            segments = tuple(
+                TranscriptSegmentInput(
+                    start_ms=_required_int(item, "start_ms"),
+                    end_ms=_required_int(item, "end_ms"),
+                    text=_required_str(item, "text"),
+                    language_hint=_optional_str(item, "language_hint") or self._language,
+                    confidence=_required_float(item, "confidence"),
+                    source_segment_id=_optional_str(item, "source_segment_id") or f"asr-{index}",
+                )
+                for index, item in enumerate(raw_segments)
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProcessingError(
+                ErrorCode.ASR_BACKEND_INVALID_OUTPUT,
+                "local ASR backend returned invalid segment metadata",
+            ) from exc
+        config_hash = canonical_sha256(
+            {
+                "backend": "local_command_asr.v1",
+                "language": self._language,
+                "model_path_identity": str(self._model_path),
+            }
+        )
+        return AsrTranscriptionResult(
+            segments=segments,
+            model_name=_optional_str(payload, "model_name") or "local_command_asr",
+            model_version=_optional_str(payload, "model_version") or "unknown",
+            config_hash=config_hash,
+            backend_name="local_command_asr",
+            backend_version="1",
+            model_identity_hash=canonical_sha256({"model_path": str(self._model_path)}),
+        )
+
+
+def _required_int(item: object, key: str) -> int:
+    if (
+        not isinstance(item, dict)
+        or not isinstance(item.get(key), int)
+        or isinstance(item[key], bool)
+    ):
+        raise TypeError
+    return cast(int, item[key])
+
+
+def _required_float(item: object, key: str) -> float:
+    if not isinstance(item, dict) or not isinstance(item.get(key), int | float):
+        raise TypeError
+    value = float(item[key])
+    if not 0.0 <= value <= 1.0:
+        raise ValueError
+    return value
+
+
+def _required_str(item: object, key: str) -> str:
+    if not isinstance(item, dict) or not isinstance(item.get(key), str):
+        raise TypeError
+    return cast(str, item[key])
+
+
+def _optional_str(item: object, key: str) -> str | None:
+    if not isinstance(item, dict):
+        raise TypeError
+    value = item.get(key)
+    if value is not None and not isinstance(value, str):
+        raise TypeError
+    return value
+
+
 __all__ = [
     "AsrAdapter",
     "AsrAdapterState",
     "AsrTranscriptionResult",
+    "LocalCommandAsrAdapter",
     "UnavailableAsrAdapter",
 ]

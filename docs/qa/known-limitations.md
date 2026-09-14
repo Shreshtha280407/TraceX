@@ -183,3 +183,12 @@ wave and post-Phase-5 validation gate.
   media, LAN, and dataset validation are deferred.
 - Scene/motion signals are local frame-difference inputs supplied to planning;
   they do not identify people, vehicles, meetings, or relationships.
+# Phase 4 audio/social worker limitations (Sarthak)
+
+- The worker supports an offline executable/model bridge, but this repository
+  ships neither executable nor model bundle. Missing configuration defers raw
+  audio truthfully; real model quality, WER, diarization quality, and LAN
+  validation remain merge-wave work.
+- VAD thresholds/script hints are deterministic policy aids, not measured
+  accuracy claims. `audioop` is used only for Python 3.12 PCM normalization;
+  a supported replacement is needed before a Python 3.13 upgrade.

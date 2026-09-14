@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from zoneinfo import ZoneInfo
 
 from pydantic import JsonValue
@@ -184,6 +185,7 @@ def chat_message_to_mention(record: ChatMessageRecord) -> RawMention:
     identity resolution, and never auto-attached to any entity's aliases.
     """
     sender = bounded_handle(record.sender)
+    message_text = truncate_text(record.text)
     attributes: dict[str, JsonValue] = {
         "platform": record.platform,
         "conversation_id": record.conversation_id,
@@ -196,8 +198,14 @@ def chat_message_to_mention(record: ChatMessageRecord) -> RawMention:
         "timestamp_raw": record.timestamp_raw,
         "timestamp_source_timezone": record.timestamp_source_timezone,
         "reply_to": record.reply_to,
-        "text": truncate_text(record.text),
         "text_present": record.text is not None,
+        # A source record remains reviewable through the protected evidence
+        # system; graph-facing canonical attributes carry only a commitment
+        # and length, never message/export content.
+        "message_text_sha256": (
+            sha256(message_text.encode("utf-8")).hexdigest() if message_text is not None else None
+        ),
+        "message_text_length": len(message_text or ""),
     }
     return RawMention(
         observation_type=OBSERVATION_TYPE,

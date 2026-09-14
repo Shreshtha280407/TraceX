@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -37,7 +38,9 @@ def test_valid_segment_produces_correct_provenance_and_observation() -> None:
     assert mention.locator.time_end_ms == 1000
     assert mention.locator.json_path == "$.segments[0]"
     assert mention.confidence == 0.9
-    assert mention.attributes["text"] == "hello world"
+    assert mention.attributes["transcript_text_length"] == len("hello world")
+    assert mention.attributes["transcript_text_sha256"] == sha256(b"hello world").hexdigest()
+    assert "text" not in mention.attributes
 
     observation = mention_to_observation(
         case_id=uuid4(),
@@ -55,7 +58,7 @@ def test_language_hint_normalized_not_translated() -> None:
         (_segment(language_hint="  EN-US "),)
     )
     assert mentions[0].attributes["language_hint"] == "en-us"
-    assert mentions[0].attributes["text"] == "hello world"  # never translated
+    assert mentions[0].attributes["transcript_text_length"] == len("hello world")
 
 
 @pytest.mark.parametrize(

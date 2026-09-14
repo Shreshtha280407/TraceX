@@ -60,6 +60,10 @@ class ErrorCode:
     #: `audio/diarization_adapter.py`.
     ASR_ADAPTER_UNAVAILABLE = "asr_adapter_unavailable"
     DIARIZATION_ADAPTER_UNAVAILABLE = "diarization_adapter_unavailable"
+    ASR_BACKEND_UNAVAILABLE = "asr_backend_unavailable"
+    ASR_BACKEND_INVALID_OUTPUT = "asr_backend_invalid_output"
+    DIARIZATION_BACKEND_UNAVAILABLE = "diarization_backend_unavailable"
+    DIARIZATION_BACKEND_INVALID_OUTPUT = "diarization_backend_invalid_output"
 
 
 class ProcessingError(Exception):
