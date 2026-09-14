@@ -151,7 +151,12 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
   replayed and projected into a real `Correlation` node exactly once, and that replaying twice never
   duplicates it.
 - No public write/review route is exposed. Existing `GRAPH_READ` protects the
-  read endpoints; Aditya must define the write/review authorization policy.
+  read endpoints; write/review authorization remains intentionally deferred.
+- Phase 5B secures the currently exposed graph/correlation read routes. Feature
+  snapshots, analytics, motifs, and direct vector retrieval intentionally have
+  no public route; if exposed later, they must use the same `GRAPH_READ` seam
+  and case-bound repository predicate rather than relying only on a route
+  parameter.
 - A graph-update event has no automatic retry ceiling for a connection outage
   by design, preserving replayability. Operational alerting/backoff scheduling
   beyond the bounded claim invocation remains future worker operations work.

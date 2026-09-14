@@ -482,13 +482,20 @@ class GraphCorrelationIntegrationRepository:
             )
         return [_candidate(row) for row in rows]
 
-    async def get_event(self, event_id: UUID) -> GraphUpdateEventRecord | None:
+    async def get_event(self, case_id: UUID, event_id: UUID) -> GraphUpdateEventRecord | None:
+        """Load an outbox event only through its known case scope.
+
+        This internal worker helper is intentionally case-scoped too, so a
+        future caller cannot accidentally turn a globally valid event UUID
+        into a cross-case lookup primitive.
+        """
         async with self._engine.connect() as conn:
             row = (
                 (
                     await conn.execute(
                         sa.select(graph_update_events_table).where(
-                            graph_update_events_table.c.event_id == event_id
+                            graph_update_events_table.c.case_id == case_id,
+                            graph_update_events_table.c.event_id == event_id,
                         )
                     )
                 )

@@ -267,7 +267,7 @@ async def test_correlation_write_is_atomic_idempotent_and_replayable_after_graph
         outage = await replay_graph_updates(repository, unavailable, now=_NOW)
         assert outage.retrying == 1
         assert (
-            await repository.get_event(receipt.event.event_id)
+            await repository.get_event(case_id, receipt.event.event_id)
         ).status is GraphUpdateEventStatus.QUEUED  # type: ignore[union-attr]
 
         projection_keys: set[str] = set()

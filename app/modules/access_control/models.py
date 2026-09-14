@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
@@ -372,8 +373,10 @@ class AuthenticatedPrincipal(AccessControlModel):
 
 
 class AuthorizedCasePrincipal(AccessControlModel):
-    """The result of a successful case-scoped authorization check."""
+    """Typed allow decision for a principal, requested case, and required action."""
 
     principal: AuthenticatedPrincipal
     case_id: UUID
+    action: CaseAction
     membership: CaseMembershipRecord
+    allowed: Literal[True] = True

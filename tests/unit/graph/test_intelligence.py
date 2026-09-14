@@ -22,7 +22,7 @@ from app.modules.graph.intelligence.models import (
 )
 from app.modules.graph.intelligence.retrieval import retrieve_candidates
 from app.modules.graph.intelligence.scoring import score_candidates
-from app.modules.graph.intelligence.vector_store import source_snapshot_hash
+from app.modules.graph.intelligence.vector_store import PgvectorCandidateStore, source_snapshot_hash
 
 
 def _item(case_id, *, phone: str, alias: str, at: int = 0) -> ObservationDescriptor:
@@ -70,6 +70,51 @@ def test_local_vector_snapshot_is_deterministic_and_case_bound() -> None:
     assert source_snapshot_hash(item) == source_snapshot_hash(item)
     changed_case = item.model_copy(update={"case_id": uuid4()})
     assert source_snapshot_hash(item) != source_snapshot_hash(changed_case)
+
+
+class _VectorResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self._rows
+
+
+class _VectorConnection:
+    def __init__(self) -> None:
+        self.statement = None
+        self.parameters = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    async def execute(self, statement, parameters):
+        self.statement = statement
+        self.parameters = parameters
+        return _VectorResult([])
+
+
+class _VectorEngine:
+    def __init__(self) -> None:
+        self.connection = _VectorConnection()
+
+    def connect(self):
+        return self.connection
+
+
+async def test_pgvector_search_binds_the_descriptor_case_before_returning_candidates() -> None:
+    descriptor = _item(uuid4(), phone="+919999000009", alias="Nisha")
+    engine = _VectorEngine()
+
+    results = await PgvectorCandidateStore(engine).search(descriptor)  # type: ignore[arg-type]
+
+    assert results == []
+    assert "WHERE case_id = :case_id" in str(engine.connection.statement)
+    assert engine.connection.parameters["case_id"] == descriptor.case_id
+    assert engine.connection.parameters["observation_id"] == descriptor.observation_id
 
 
 def test_conflicting_source_backed_identifier_is_retained_as_a_contradiction() -> None:
