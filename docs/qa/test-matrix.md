@@ -1,5 +1,9 @@
 # Phase 1 Test Matrix
 
+| ID | Owner | Expected behavior | Test command | Status | Result |
+|---|---|---|---|---|---|
+| P4-MEDIA-ORCH-001 | Nipun | Deterministic manifests; duplicate-free chunk replay; partial observations/artifacts/checkpoints retain exact scope | `uv run pytest -q tests/unit/evidence_lifecycle/test_media_orchestration.py` | Passing | Focused synthetic fixture run; no media decoding/GPU required |
+
 ## Phase 3 final integration acceptance
 
 | ID | Owner | Expected behavior | Test command | Status | Result |

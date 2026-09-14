@@ -25,9 +25,18 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.contracts.worker import WorkerStatus
+from app.core.canonical import canonical_sha256
 from app.core.config import Settings
+from app.modules.evidence_lifecycle.media_orchestration import (
+    ChunkManifest,
+    MediaChunkPublication,
+    chunk_identity,
+)
 from app.modules.evidence_lifecycle.models import (
     EvidenceRecord,
+    MediaCheckpointRecord,
+    MediaChunkRecord,
+    MediaManifestRecord,
     ObservationBatchRecord,
     ObservationRecord,
     ObservationTransformationRecord,
@@ -227,6 +236,80 @@ graph_projection_jobs_table = sa.Table(
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
 )
 
+# Phase 4 media orchestration records.  These hold only canonical metadata
+# and opaque object references; source/derived bytes remain in object storage.
+media_chunk_manifests_table = sa.Table(
+    "media_chunk_manifests",
+    metadata,
+    sa.Column("manifest_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("version", sa.Text(), nullable=False),
+    sa.Column("manifest_hash", sa.Text(), nullable=False),
+    sa.Column("processor_name", sa.Text(), nullable=False),
+    sa.Column("processor_version", sa.Text(), nullable=False),
+    sa.Column("configuration_hash", sa.Text(), nullable=False),
+    sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+media_chunks_table = sa.Table(
+    "media_chunks",
+    metadata,
+    sa.Column("chunk_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("manifest_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("chunk_index", sa.Integer(), nullable=False),
+    sa.Column("canonical_boundary", postgresql.JSONB(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("publication_hash", sa.Text(), nullable=True),
+    sa.Column("observation_batch_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+media_derived_artifacts_table = sa.Table(
+    "media_derived_artifacts",
+    metadata,
+    sa.Column("artifact_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("manifest_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("chunk_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=False),
+    sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+media_chunk_observations_table = sa.Table(
+    "media_chunk_observations",
+    metadata,
+    sa.Column("chunk_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", postgresql.UUID(as_uuid=True), nullable=False),
+)
+
+media_checkpoints_table = sa.Table(
+    "media_checkpoints",
+    metadata,
+    sa.Column("checkpoint_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("manifest_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("manifest_hash", sa.Text(), nullable=False),
+    sa.Column("processor_version", sa.Text(), nullable=False),
+    sa.Column("configuration_hash", sa.Text(), nullable=False),
+    sa.Column("completed_chunk_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("observation_batch_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("artifact_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 #: The one status this module ever writes -- every later transition
 #: (`running`/`succeeded`/`failed`/`deferred`) is `app/modules/graph/`'s.
 _GRAPH_PROJECTION_STATUS_QUEUED = "queued"
@@ -265,6 +348,18 @@ def _progress_event_from_row(row: sa.RowMapping) -> WorkerProgressEventRecord:
     return WorkerProgressEventRecord.model_validate(dict(row))
 
 
+def _media_manifest_from_row(row: sa.RowMapping) -> MediaManifestRecord:
+    return MediaManifestRecord.model_validate(dict(row))
+
+
+def _media_chunk_from_row(row: sa.RowMapping) -> MediaChunkRecord:
+    return MediaChunkRecord.model_validate(dict(row))
+
+
+def _media_checkpoint_from_row(row: sa.RowMapping) -> MediaCheckpointRecord:
+    return MediaCheckpointRecord.model_validate(dict(row))
+
+
 class EvidenceLifecycleRepository:
     """Typed async persistence for evidence metadata and durable worker jobs.
 
@@ -279,6 +374,105 @@ class EvidenceLifecycleRepository:
 
     async def close(self) -> None:
         await self._engine.dispose()
+
+    # --- media orchestration (Phase 4) -----------------------------------
+
+    async def create_media_manifest(self, manifest: ChunkManifest) -> bool:
+        """Create an immutable manifest and all ordered chunks in one transaction.
+
+        `False` means the deterministic manifest identity already exists; the
+        service compares its canonical hash before treating that as a replay.
+        """
+        manifest_record = MediaManifestRecord(
+            manifest_id=manifest.manifest_id,
+            case_id=manifest.case_id,
+            evidence_id=manifest.evidence_id,
+            job_id=manifest.job_id,
+            version=manifest.version,
+            manifest_hash=manifest.manifest_hash,
+            processor_name=manifest.processor_name,
+            processor_version=manifest.processor_version,
+            configuration_hash=manifest.configuration_hash,
+            canonical_payload=manifest.model_dump(mode="json"),
+            created_at=manifest.created_at,
+        )
+        values = _dump_for_insert(manifest_record)
+        chunk_values = [
+            {
+                "chunk_id": chunk_identity(manifest, item.index),
+                "manifest_id": manifest.manifest_id,
+                "case_id": manifest.case_id,
+                "evidence_id": manifest.evidence_id,
+                "job_id": manifest.job_id,
+                "chunk_index": item.index,
+                "canonical_boundary": item.boundary.model_dump(mode="json"),
+                "status": "pending",
+                "publication_hash": None,
+                "observation_batch_id": None,
+                "completed_at": None,
+                "created_at": manifest.created_at,
+            }
+            for item in manifest.chunks
+        ]
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(sa.insert(media_chunk_manifests_table).values(**values))
+                await conn.execute(sa.insert(media_chunks_table), chunk_values)
+        except sa.exc.IntegrityError:
+            return False
+        return True
+
+    async def get_media_manifest(self, manifest_id: UUID) -> MediaManifestRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(media_chunk_manifests_table).where(
+                            media_chunk_manifests_table.c.manifest_id == manifest_id
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _media_manifest_from_row(row) if row is not None else None
+
+    async def get_media_chunk(self, chunk_id: UUID) -> MediaChunkRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(media_chunks_table).where(
+                            media_chunks_table.c.chunk_id == chunk_id
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _media_chunk_from_row(row) if row is not None else None
+
+    async def get_latest_media_checkpoint(
+        self, case_id: UUID, job_id: UUID, manifest_id: UUID
+    ) -> MediaCheckpointRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(media_checkpoints_table)
+                        .where(
+                            media_checkpoints_table.c.case_id == case_id,
+                            media_checkpoints_table.c.job_id == job_id,
+                            media_checkpoints_table.c.manifest_id == manifest_id,
+                        )
+                        .order_by(media_checkpoints_table.c.created_at.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _media_checkpoint_from_row(row) if row is not None else None
 
     # --- evidence + job (single atomic write path) -----------------------
 
@@ -812,6 +1006,7 @@ class EvidenceLifecycleRepository:
         transformations: list[ObservationTransformationRecord],
         progress_event: WorkerProgressEventRecord | None,
         graph_projection_max_attempts: int,
+        media_publication: MediaChunkPublication | None = None,
     ) -> WorkerProgressEventRecord | None:
         """Insert the batch receipt + its observations/transformations/progress event
         + one durable graph-projection job per newly accepted observation, all in
@@ -876,4 +1071,145 @@ class EvidenceLifecycleRepository:
                 persisted_progress_event = progress_event.model_copy(
                     update={"ordinal": real_ordinal}
                 )
+            if media_publication is not None:
+                publication_hash = canonical_sha256(media_publication)
+                chunk = (
+                    (
+                        await conn.execute(
+                            sa.select(media_chunks_table)
+                            .where(media_chunks_table.c.chunk_id == media_publication.chunk_id)
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if (
+                    chunk is None
+                    or chunk["manifest_id"] != media_publication.manifest_id
+                    or chunk["case_id"] != batch.case_id
+                    or chunk["evidence_id"] != batch.evidence_id
+                    or chunk["job_id"] != batch.job_id
+                    or chunk["chunk_index"] != media_publication.chunk_index
+                    or chunk["status"] != "pending"
+                ):
+                    raise sa.exc.IntegrityError(
+                        "invalid or already-completed media chunk", {}, Exception("constraint")
+                    )
+                artifact_values = [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "case_id": batch.case_id,
+                        "evidence_id": batch.evidence_id,
+                        "job_id": batch.job_id,
+                        "manifest_id": media_publication.manifest_id,
+                        "chunk_id": media_publication.chunk_id,
+                        "idempotency_key": artifact.idempotency_key,
+                        "canonical_payload": artifact.model_dump(mode="json"),
+                        "created_at": media_publication.completed_at,
+                    }
+                    for artifact in media_publication.artifacts
+                ]
+                if artifact_values:
+                    await conn.execute(sa.insert(media_derived_artifacts_table), artifact_values)
+                if observation_values:
+                    await conn.execute(
+                        sa.insert(media_chunk_observations_table),
+                        [
+                            {
+                                "chunk_id": media_publication.chunk_id,
+                                "observation_id": value["observation_id"],
+                            }
+                            for value in observation_values
+                        ],
+                    )
+                await conn.execute(
+                    sa.update(media_chunks_table)
+                    .where(media_chunks_table.c.chunk_id == media_publication.chunk_id)
+                    .values(
+                        status="completed",
+                        publication_hash=publication_hash,
+                        observation_batch_id=batch.observation_batch_id,
+                        completed_at=media_publication.completed_at,
+                    )
+                )
+                completed_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(
+                                media_chunks_table.c.chunk_id,
+                                media_chunks_table.c.observation_batch_id,
+                            )
+                            .where(
+                                media_chunks_table.c.manifest_id == media_publication.manifest_id,
+                                media_chunks_table.c.status == "completed",
+                            )
+                            .order_by(media_chunks_table.c.chunk_index)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                chunk_count = (
+                    await conn.execute(
+                        sa.select(sa.func.count())
+                        .select_from(media_chunks_table)
+                        .where(media_chunks_table.c.manifest_id == media_publication.manifest_id)
+                    )
+                ).scalar_one()
+                artifact_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(media_derived_artifacts_table.c.artifact_id)
+                            .where(
+                                media_derived_artifacts_table.c.manifest_id
+                                == media_publication.manifest_id
+                            )
+                            .order_by(media_derived_artifacts_table.c.artifact_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                manifest = (
+                    (
+                        await conn.execute(
+                            sa.select(media_chunk_manifests_table).where(
+                                media_chunk_manifests_table.c.manifest_id
+                                == media_publication.manifest_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                await conn.execute(
+                    sa.insert(media_checkpoints_table).values(
+                        checkpoint_id=media_publication.checkpoint_id,
+                        manifest_id=media_publication.manifest_id,
+                        case_id=batch.case_id,
+                        evidence_id=batch.evidence_id,
+                        job_id=batch.job_id,
+                        manifest_hash=media_publication.manifest_hash,
+                        processor_version=manifest["processor_version"],
+                        configuration_hash=manifest["configuration_hash"],
+                        completed_chunk_ids=[str(row["chunk_id"]) for row in completed_rows],
+                        observation_batch_ids=[
+                            str(row["observation_batch_id"])
+                            for row in completed_rows
+                            if row["observation_batch_id"] is not None
+                        ],
+                        artifact_ids=[str(item) for item in artifact_rows],
+                        created_at=media_publication.completed_at,
+                    )
+                )
+                if len(completed_rows) == chunk_count:
+                    await conn.execute(
+                        sa.update(media_chunk_manifests_table)
+                        .where(
+                            media_chunk_manifests_table.c.manifest_id
+                            == media_publication.manifest_id
+                        )
+                        .values(completed_at=media_publication.completed_at)
+                    )
         return persisted_progress_event

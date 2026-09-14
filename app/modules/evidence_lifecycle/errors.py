@@ -97,3 +97,11 @@ class ObservationBatchConflictError(EvidenceLifecycleError):
     submitted observation_id collides with one already accepted under a different batch
     or result entirely. See `docs/architecture/phase-3-decisions.md`.
     """
+
+
+class MediaManifestValidationError(EvidenceLifecycleError):
+    """A media manifest/chunk/checkpoint is foreign, corrupt, or incompatible with its job."""
+
+
+class MediaPublicationConflictError(EvidenceLifecycleError):
+    """A completed media chunk was submitted again with different durable content."""

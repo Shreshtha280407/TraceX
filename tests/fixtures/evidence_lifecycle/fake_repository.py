@@ -17,8 +17,17 @@ from uuid import UUID, uuid4
 import sqlalchemy.exc
 
 from app.contracts.worker import WorkerStatus
+from app.core.canonical import canonical_sha256
+from app.modules.evidence_lifecycle.media_orchestration import (
+    ChunkManifest,
+    MediaChunkPublication,
+    chunk_identity,
+)
 from app.modules.evidence_lifecycle.models import (
     EvidenceRecord,
+    MediaCheckpointRecord,
+    MediaChunkRecord,
+    MediaManifestRecord,
     ObservationBatchRecord,
     ObservationRecord,
     ObservationTransformationRecord,
@@ -57,10 +66,64 @@ class FakeEvidenceLifecycleRepository:
         self.observation_batches: dict[UUID, ObservationBatchRecord] = {}
         self.transformations: dict[UUID, ObservationTransformationRecord] = {}
         self.progress_events: dict[UUID, WorkerProgressEventRecord] = {}
+        self.media_manifests: dict[UUID, MediaManifestRecord] = {}
+        self.media_chunks: dict[UUID, MediaChunkRecord] = {}
+        self.media_checkpoints: dict[UUID, MediaCheckpointRecord] = {}
+        self.media_artifacts: dict[UUID, dict[str, object]] = {}
         self._next_progress_ordinal = 1
 
     async def close(self) -> None:
         pass
+
+    async def create_media_manifest(self, manifest: ChunkManifest) -> bool:
+        if manifest.manifest_id in self.media_manifests:
+            return False
+        self.media_manifests[manifest.manifest_id] = MediaManifestRecord(
+            manifest_id=manifest.manifest_id,
+            case_id=manifest.case_id,
+            evidence_id=manifest.evidence_id,
+            job_id=manifest.job_id,
+            version=manifest.version,
+            manifest_hash=manifest.manifest_hash,
+            processor_name=manifest.processor_name,
+            processor_version=manifest.processor_version,
+            configuration_hash=manifest.configuration_hash,
+            canonical_payload=manifest.model_dump(mode="json"),
+            created_at=manifest.created_at,
+        )
+        for item in manifest.chunks:
+            chunk_id = chunk_identity(manifest, item.index)
+            self.media_chunks[chunk_id] = MediaChunkRecord(
+                chunk_id=chunk_id,
+                manifest_id=manifest.manifest_id,
+                case_id=manifest.case_id,
+                evidence_id=manifest.evidence_id,
+                job_id=manifest.job_id,
+                chunk_index=item.index,
+                canonical_boundary=item.boundary.model_dump(mode="json"),
+                status="pending",
+                publication_hash=None,
+                observation_batch_id=None,
+                completed_at=None,
+                created_at=manifest.created_at,
+            )
+        return True
+
+    async def get_media_manifest(self, manifest_id: UUID) -> MediaManifestRecord | None:
+        return self.media_manifests.get(manifest_id)
+
+    async def get_media_chunk(self, chunk_id: UUID) -> MediaChunkRecord | None:
+        return self.media_chunks.get(chunk_id)
+
+    async def get_latest_media_checkpoint(
+        self, case_id: UUID, job_id: UUID, manifest_id: UUID
+    ) -> MediaCheckpointRecord | None:
+        values = [
+            item
+            for item in self.media_checkpoints.values()
+            if item.case_id == case_id and item.job_id == job_id and item.manifest_id == manifest_id
+        ]
+        return max(values, key=lambda item: item.created_at) if values else None
 
     async def create_evidence_with_job(
         self, evidence: EvidenceRecord, job: WorkerJobRecord
@@ -318,6 +381,7 @@ class FakeEvidenceLifecycleRepository:
         transformations: list[ObservationTransformationRecord],
         progress_event: WorkerProgressEventRecord | None,
         graph_projection_max_attempts: int,
+        media_publication: MediaChunkPublication | None = None,
     ) -> WorkerProgressEventRecord | None:
         if any(
             b.job_id == batch.job_id and b.batch_id == batch.batch_id
@@ -359,6 +423,53 @@ class FakeEvidenceLifecycleRepository:
             )
         for transformation in transformations:
             self.transformations[transformation.transformation_id] = transformation
+
+        if media_publication is not None:
+            chunk = self.media_chunks.get(media_publication.chunk_id)
+            if chunk is None or chunk.status != "pending":
+                raise sqlalchemy.exc.IntegrityError(
+                    "invalid media chunk", {}, Exception("unique violation")
+                )
+            for artifact in media_publication.artifacts:
+                if artifact.artifact_id in self.media_artifacts:
+                    raise sqlalchemy.exc.IntegrityError(
+                        "duplicate media artifact", {}, Exception("unique violation")
+                    )
+                self.media_artifacts[artifact.artifact_id] = artifact.model_dump(mode="json")
+            self.media_chunks[chunk.chunk_id] = chunk.model_copy(
+                update={
+                    "status": "completed",
+                    "publication_hash": canonical_sha256(media_publication),
+                    "observation_batch_id": batch.observation_batch_id,
+                    "completed_at": media_publication.completed_at,
+                }
+            )
+            completed = sorted(
+                (
+                    item
+                    for item in self.media_chunks.values()
+                    if item.manifest_id == media_publication.manifest_id
+                    and item.status == "completed"
+                ),
+                key=lambda item: item.chunk_index,
+            )
+            manifest = self.media_manifests[media_publication.manifest_id]
+            self.media_checkpoints[media_publication.checkpoint_id] = MediaCheckpointRecord(
+                checkpoint_id=media_publication.checkpoint_id,
+                manifest_id=manifest.manifest_id,
+                case_id=batch.case_id,
+                evidence_id=batch.evidence_id,
+                job_id=batch.job_id,
+                manifest_hash=media_publication.manifest_hash,
+                processor_version=manifest.processor_version,
+                configuration_hash=manifest.configuration_hash,
+                completed_chunk_ids=[item.chunk_id for item in completed],
+                observation_batch_ids=[
+                    item.observation_batch_id for item in completed if item.observation_batch_id
+                ],
+                artifact_ids=list(self.media_artifacts),
+                created_at=media_publication.completed_at,
+            )
 
         if progress_event is None:
             return None

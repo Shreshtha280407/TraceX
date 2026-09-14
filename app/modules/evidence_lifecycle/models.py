@@ -274,3 +274,54 @@ class WorkerProgressEventRecord(EvidenceLifecycleModel):
     message_code: str | None
     occurred_at: datetime
     created_at: datetime
+
+
+class MediaManifestRecord(EvidenceLifecycleModel):
+    """Immutable coordinator-owned media work definition; never contains media bytes."""
+
+    manifest_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    job_id: UUID
+    version: str
+    manifest_hash: str
+    processor_name: str
+    processor_version: str
+    configuration_hash: str
+    canonical_payload: dict[str, JsonValue]
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class MediaChunkRecord(EvidenceLifecycleModel):
+    """One immutable ordered chunk plus its accepted publication identity."""
+
+    chunk_id: UUID
+    manifest_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    job_id: UUID
+    chunk_index: int
+    canonical_boundary: dict[str, JsonValue]
+    status: str
+    publication_hash: str | None
+    observation_batch_id: UUID | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class MediaCheckpointRecord(EvidenceLifecycleModel):
+    """A durable snapshot written atomically with a completed chunk publication."""
+
+    checkpoint_id: UUID
+    manifest_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    job_id: UUID
+    manifest_hash: str
+    processor_version: str
+    configuration_hash: str
+    completed_chunk_ids: list[UUID]
+    observation_batch_ids: list[UUID]
+    artifact_ids: list[UUID]
+    created_at: datetime

@@ -165,3 +165,9 @@ No new fixture module was needed: every new unit test reuses the existing `tests
 Focused tests use inline synthetic UUIDs, invented phone-shaped identifiers, generic Devanagari/Roman aliases,
 and bounded timestamps. The projection test uses one synthetic extractor and source locator with a fake graph
 repository. No Operation Nightfall, reference master, private truth, source evidence, or runtime fixture is read.
+# Phase 4 media orchestration fixtures
+
+The Phase 4 coordinator tests use synthetic UUIDs, opaque `s3://` references,
+short time boundaries, and synthetic canonical observations. They contain no
+audio/video/image bytes, object-store credentials, biometric material, or
+real-case provenance.
