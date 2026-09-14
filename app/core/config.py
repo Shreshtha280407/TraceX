@@ -232,6 +232,8 @@ class Settings(BaseSettings):
     media_detector_device: Literal["auto", "cpu", "cuda"] = Field(default="auto")
     media_detector_confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     media_detector_nms_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Explicit Phase 4 analysis profile selected by the existing worker CLI.
+    media_processing_profile: Literal["rapid", "deep"] = Field(default="rapid")
     # `eng` (English) is the only tesseract language pack this repository's
     # Dockerfile installs by default -- see docs/architecture/media-
     # processing-worker.md's "OCR runtime setup" for adding others.

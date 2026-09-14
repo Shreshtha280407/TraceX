@@ -32,6 +32,7 @@ import structlog
 
 from app.contracts.observation_batch import ObservationBatchReceiptV1, ObservationBatchSubmissionV1
 from app.contracts.worker import WorkerJobV1, WorkerResultV1
+from app.modules.evidence_lifecycle.media_orchestration import MediaChunkPublication
 from app.modules.media_processing.errors import (
     InputResolutionUnavailableError,
     WorkerApiError,
@@ -48,6 +49,7 @@ _CLAIM_PATH = "/api/v1/internal/worker-jobs/claim"
 _INPUT_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/input"
 _RENEW_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/renew"
 _OBSERVATIONS_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/observations"
+_MEDIA_PUBLISH_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/media-chunks/publish"
 
 #: RFC 6266 `filename*=UTF-8''<percent-encoded>` -- preferred when present
 #: (correct for any non-ASCII original filename); `filename="..."` is the
@@ -211,6 +213,31 @@ class WorkerApiClient:
             raise WorkerApiError(f"batch submission rejected for job {job_id}: validation failed")
         if response.status_code != httpx.codes.OK:
             raise WorkerApiError(f"batch submission failed: HTTP {response.status_code}")
+        return ObservationBatchReceiptV1.model_validate(response.json())
+
+    def publish_media_chunk(
+        self, *, job_id: UUID, claim_token: str, publication: MediaChunkPublication
+    ) -> ObservationBatchReceiptV1:
+        """Use Nipun's idempotent staged-media route; never write persistence directly."""
+        logger.info(
+            "worker.client.media_chunk_publish_attempted",
+            job_id=str(job_id),
+            chunk_id=str(publication.chunk_id),
+        )
+        response = self._post_safely(
+            _MEDIA_PUBLISH_PATH_TEMPLATE.format(job_id=job_id),
+            content=publication.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"media chunk publication conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(
+                f"media chunk publication rejected for job {job_id}: validation failed"
+            )
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"media chunk publication failed: HTTP {response.status_code}")
         return ObservationBatchReceiptV1.model_validate(response.json())
 
     def renew(self, job_id: UUID, *, claim_token: str) -> datetime:

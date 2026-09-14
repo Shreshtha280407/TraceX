@@ -112,6 +112,7 @@ from app.modules.media_processing.ocr_batching import (
     iter_image_ocr_batches,
 )
 from app.modules.media_processing.performance import Stopwatch
+from app.modules.media_processing.phase4 import DEEP_PROFILE, RAPID_PROFILE, ProcessingProfile
 from app.modules.media_processing.provenance import (
     CONFIDENCE_METADATA_PROBED,
     OBSERVATION_ANONYMOUS_TRACK_SEGMENT,
@@ -653,6 +654,7 @@ def run_once(
     tracker: ObjectTracker | None = None,
     ocr_adapter: ImageOcrAdapter | None = None,
     renew_interval_seconds: float | None = None,
+    processing_profile: ProcessingProfile | None = None,
 ) -> RunOnceOutcome:
     """Claim at most one job, process it, submit its result, and return what happened.
 
@@ -801,13 +803,19 @@ def run_once(
         )
         try:
             with heartbeat_ctx:
+                profile = processing_profile or RAPID_PROFILE
                 result = process_job(
                     job,
                     evidence=evidence_record,
                     resolver=StaticBytesResolver(payload=resolved.data),
                     detector=detector,
                     tracker=tracker,
-                    ocr_adapter=ocr_adapter,
+                    ocr_adapter=ocr_adapter if profile.ocr_enabled else None,
+                    sampling=SamplingRequest(
+                        strategy=SamplingStrategy.UNIFORM_INTERVAL,
+                        interval_ms=profile.baseline_interval_ms,
+                        max_frames=profile.max_frames_per_chunk,
+                    ),
                     submit_ocr_batch=_submit_ocr_batch,
                     stopwatch=None,
                 )
@@ -1088,6 +1096,7 @@ def run_loop(
     max_backoff_seconds: float = 60.0,
     max_consecutive_failures: int = 5,
     renew_interval_seconds: float | None = None,
+    processing_profile: ProcessingProfile | None = None,
 ) -> RunLoopSummary:
     """Continuously claim-process-submit (via `run_once`) until `shutdown_event` is
     set or too many consecutive failures occur.
@@ -1125,6 +1134,7 @@ def run_loop(
                 tracker=tracker,
                 ocr_adapter=ocr_adapter,
                 renew_interval_seconds=renew_interval_seconds,
+                processing_profile=processing_profile,
             )
         except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
             consecutive_failures += 1
@@ -1195,6 +1205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     components = _build_analysis_components(settings)
+    processing_profile = (
+        RAPID_PROFILE if settings.media_processing_profile == "rapid" else DEEP_PROFILE
+    )
     if args.require_analysis and components.detector is None:
         logger.error(
             "worker.cli.failed",
@@ -1214,6 +1227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tracker=components.tracker,
                 ocr_adapter=components.ocr_adapter,
                 renew_interval_seconds=settings.media_worker_renew_interval_seconds,
+                processing_profile=processing_profile,
             )
         except (WorkerAuthenticationError, WorkerApiError, InputResolutionUnavailableError) as exc:
             logger.error("worker.cli.failed", reason=str(exc))
@@ -1243,6 +1257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_backoff_seconds=settings.media_worker_max_backoff_seconds,
             max_consecutive_failures=settings.media_worker_max_consecutive_failures,
             renew_interval_seconds=settings.media_worker_renew_interval_seconds,
+            processing_profile=processing_profile,
         )
     finally:
         client.close()

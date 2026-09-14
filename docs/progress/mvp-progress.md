@@ -600,3 +600,9 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Pure typed OCR-fragment cleanup and deterministic unresolved identifier
   candidates with span/locator/lineage provenance.
 - [ ] Real OCR, GPU/media, LAN, and dataset validation at merge wave.
+
+# Phase 4 - Gaurav video and image evidence worker: In progress
+
+- [x] Deterministic rapid/deep profile, chunk-plan, adaptive sampling, and
+  authenticated staged-media publication seam added over existing local worker.
+- [ ] GPU/model-bundle/LAN/real-media validation at merge wave.

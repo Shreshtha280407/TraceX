@@ -103,3 +103,17 @@ Implement the relevant protocol in `app/modules/media_processing/analysis/interf
 - **`ffmpeg_unavailable`/`ffprobe_unavailable` from the worker at runtime**: same as above — this module checks `shutil.which` itself and fails safely rather than letting a raw `FileNotFoundError` escape.
 - **A detection never produces an observation**: check `provenance.is_valid_confidence` (must be a finite value in `[0, 1]`) and the box's normalized geometry (`image/geometry.to_normalized` — must be non-degenerate and within `[0, 1]`). This module skips malformed model output rather than raising — see ADR-004, Decision 2.
 - **Real footage/CCTV content**: never commit it. All fixtures under `tests/fixtures/media_processing/` are synthetic (solid-color PNGs, `ffmpeg lavfi testsrc`-generated MP4s) — see `docs/qa/test-data.md`.
+# Phase 4 profile planning
+
+Use `RAPID_PROFILE` for bounded initial inspection and `DEEP_PROFILE` only when
+the configured local detector/OCR toolchain is available. The worker must use
+its existing credential/claim token and `publish_media_chunk`; do not call a
+database, graph, object store, or publication endpoint without that boundary.
+Model bundles remain external to Git. `auto` device selection may fall back to
+CPU; an explicitly unavailable model/tool is a safe deferred/failure outcome.
+
+The existing CLI selects this through `MEDIA_PROCESSING_PROFILE=rapid|deep`
+(default `rapid`). Both profiles permit a configured OCR adapter; `deep` uses
+denser sampling and a larger bounded OCR-region allowance. No separate
+profile-specific command or worker credential exists. For example:
+`MEDIA_PROCESSING_PROFILE=deep uv run python -m app.modules.media_processing.worker --once`.
