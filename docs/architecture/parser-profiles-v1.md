@@ -24,19 +24,21 @@ Field-level reference for every profile defined in `app/modules/structured_proce
   | `caller_number` | `caller_number`, `caller`, `a_number`, `calling_number`, `from_number` |
   | `callee_number` | `callee_number`, `callee`, `b_number`, `called_number`, `to_number` |
   | `timestamp` | `timestamp`, `call_time`, `date_time`, `start_time` |
+  | `end_timestamp` | `end_timestamp`, `end_time`, `call_end`, `stop_time` |
   | `duration_seconds` | `duration_seconds`, `duration`, `call_duration`, `duration_secs` |
   | `call_type` | `call_type`, `type`, `direction` |
+  | `call_id` | `call_id`, `cdr_id`, `record_id`, `call_reference` |
   | `cell_tower_id` | `cell_tower_id`, `tower_id`, `cell_id`, `site_id` |
   | `imei` | `imei` |
   | `imsi` | `imsi` |
 
-- **Required vs optional**: `caller_number` and `timestamp` are required; everything else is optional.
+- **Required vs optional**: `caller_number`, `callee_number`, and `timestamp` are required for a correlation-ready call event; everything else is optional.
 - **Normalisation**:
-  - Phone numbers are stripped of separators and a `+91`/leading-`0` prefix *only if* the result is an unambiguous 10-digit Indian mobile number (`[6-9]\d{9}`); otherwise the original value is kept unchanged.
-  - Timestamps are parsed only against: `%Y-%m-%d %H:%M:%S`, `%Y-%m-%dT%H:%M:%S`, `%d/%m/%Y %H:%M:%S`, `%d-%m-%Y %H:%M:%S`, `%Y-%m-%d`, `%d/%m/%Y`. All are interpreted as UTC (no timezone offset support in this phase). A value matching none of these fails as `required_field_missing`.
-  - `duration_seconds` is stored as a raw string (`duration_seconds_raw`) always, plus a numeric `duration_seconds` only when it parses as a non-negative number.
+  - Caller/callee are trimmed, retained as source-local opaque identifiers, and represented as ordered `participants` entries with roles `caller` and `callee`. No country code, name, owner, or counterparty is inferred.
+  - Timestamps use the documented fixed formats plus the explicit source timezone/configured default policy. An optional mapped end time must not precede the start time.
+  - `duration_seconds` is retained alongside its raw source form only when it is finite and non-negative; malformed/negative values reject the row.
 - **Observation types emitted**: `cdr_call_record` (whole-row, confidence `1.00`), `cdr_device_identifier_mention`, `cdr_subscriber_identifier_mention`, `cdr_tower_mention` (field-level, confidence `0.90`).
-- **Safe failure/defer behaviour**: missing `caller_number`/`timestamp`, or an unparseable timestamp, fails the whole job as `required_field_missing`.
+- **Safe failure/defer behaviour**: blank/missing participant/timestamp fields fail as `required_field_missing`; malformed identifiers, duration, or time range fail as `invalid_source_signal`. Rejected rows publish no canonical event observation.
 
 ## `financial_transaction_generic_v1`
 
@@ -46,7 +48,7 @@ Field-level reference for every profile defined in `app/modules/structured_proce
   | Canonical field | Accepted aliases |
   |---|---|
   | `transaction_id` | `transaction_id`, `txn_id`, `reference_no`, `txn_ref` |
-  | `timestamp` | `timestamp`, `date`, `transaction_date`, `txn_date` |
+  | `timestamp` | `timestamp`, `date`, `transaction_date`, `txn_date`, `value_date` |
   | `sender_account` | `sender_account`, `from_account`, `debit_account`, `payer_account` |
   | `receiver_account` | `receiver_account`, `to_account`, `credit_account`, `payee_account` |
   | `amount` | `amount`, `txn_amount`, `value` |
@@ -55,10 +57,10 @@ Field-level reference for every profile defined in `app/modules/structured_proce
   | `channel` | `channel`, `mode`, `payment_mode` |
   | `status` | `status` |
 
-- **Required vs optional**: `amount` and `currency` are required; everything else is optional.
-- **Normalisation**: `amount` is parsed with `decimal.Decimal` (never `float`) after defensively stripping a leading currency symbol/code and thousands separators; the original string is always kept as `amount_raw` alongside the normalized `amount`. `currency` is uppercased (`currency`) with the original preserved as `currency_raw`; an empty or missing currency fails the record rather than being invented.
+- **Required vs optional**: `sender_account`, `receiver_account`, `amount`, `currency`, and `timestamp` are required for a correlation-ready transfer event; transaction/reference ID and channel are optional.
+- **Normalisation**: sender/receiver are trimmed, retained as source-local opaque values, and represented as ordered `participants` entries with roles `sender` and `receiver`; they are never swapped or used to infer ownership. `amount` is parsed with `decimal.Decimal` (never `float`) after defensively stripping a leading currency symbol/code and thousands separators; it must be finite and non-negative for this transfer profile. `currency` is uppercased (`currency`) with the original preserved as `currency_raw`; it must have an ISO-4217-shaped three-letter form and is never converted. Reference aliases that contain free-form narration are marked unusable rather than copied into graph-facing attributes.
 - **Observation types emitted**: `financial_transaction_record` (whole-row, `1.00`), `amount_mention` (`1.00`), `financial_account_mention`, `transaction_reference_mention` (field-level, `0.90`).
-- **Safe failure/defer behaviour**: missing `amount`/`currency`, an unparseable amount, or an empty currency fails the whole job as `required_field_missing`.
+- **Safe failure/defer behaviour**: blank/missing core fields fail as `required_field_missing`; malformed timestamp/amount/currency/reference values and negative amounts fail as `invalid_source_signal`. Rejected rows publish no canonical event observation.
 
 ## `generic_tabular_v1`
 

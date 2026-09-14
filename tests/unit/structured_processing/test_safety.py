@@ -79,7 +79,9 @@ def test_error_messages_never_echo_sensitive_field_values() -> None:
         source_type=SourceType.CDR,
     )
     sensitive_number = "9998887776"
-    data = f"caller_number,timestamp\n{sensitive_number},not-a-real-date\n".encode()
+    data = (
+        f"caller_number,callee_number,timestamp\n{sensitive_number},callee-A,not-a-real-date\n"
+    ).encode()
 
     result = process_job(job, evidence, StaticBytesResolver(payload=data))
 
@@ -98,14 +100,18 @@ def test_amount_and_account_values_never_appear_in_error_messages() -> None:
     )
     secret_amount = "13377331"
     data = (
-        f"amount,currency\n{secret_amount},NOTREAL\n".encode()
-    )  # unparseable currency is fine; amount is the target
+        "sender_account,receiver_account,amount,currency,timestamp\n"
+        f"sender-A,receiver-B,{secret_amount},NOTREAL,2026-01-01 10:00:00\n"
+    ).encode()  # unparseable currency is fine; amount is the target
 
     result = process_job(job, evidence, StaticBytesResolver(payload=data))
     # NOTREAL currency is accepted (currency is never invented, but any non-empty
     # string is accepted as-is); force a failure by making the amount unparseable instead.
     if result.status.value != "failed":
-        bad_data = b"amount,currency\nnot-a-number,INR\n"
+        bad_data = (
+            b"sender_account,receiver_account,amount,currency,timestamp\n"
+            b"sender-A,receiver-B,not-a-number,INR,2026-01-01 10:00:00\n"
+        )
         result = process_job(job, evidence, StaticBytesResolver(payload=bad_data))
 
     assert result.status.value == "failed"

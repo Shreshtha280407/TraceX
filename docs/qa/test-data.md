@@ -175,6 +175,15 @@ Focused tests use inline synthetic UUIDs, invented phone-shaped identifiers, gen
 and bounded timestamps. The projection test uses one synthetic extractor and source locator with a fake graph
 repository. No Operation Nightfall, reference master, private truth, source evidence, or runtime fixture is read.
 
+**Phase 5B document/CDR/finance validation fixtures (Jasraj):**
+`tests/unit/structured_processing/test_phase5_signal_validation.py` uses only
+short opaque values such as `caller-A`, `sender-A`, `TXN-001`, synthetic
+phone-shaped values, a one-line synthetic OCR region, and generated UUIDs.
+CSV, JSON, and generated XLSX rows are in-memory only. The one narration-like
+reference is intentionally synthetic and asserts exclusion from graph-facing
+attributes; no real document, transcript, CDR, account, evidence, or case data
+is present.
+
 **Phase 5A reconciliation fixtures** (new): `tests/unit/graph/test_intelligence_sourcing.py`/
 `test_intelligence_pipeline.py` build real-shaped `ObservationV1`s inline (invented phone/email/vehicle/UPI
 values, invented Devanagari sender names "राहुल शर्मा" and their `raahula`/`sharmaa` transliteration

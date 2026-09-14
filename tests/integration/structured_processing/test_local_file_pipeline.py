@@ -31,7 +31,9 @@ class LocalFileResolver:
 def test_full_pipeline_across_file_types_via_local_file_resolver(tmp_path: Path) -> None:
     (tmp_path / "fir.txt").write_bytes(b"FIR No: 501/2026, phone 9876543210")
     (tmp_path / "fir.docx").write_bytes(build_docx(["FIR No: 502/2026 in a docx file"]))
-    (tmp_path / "cdr.csv").write_bytes(b"caller_number,timestamp\n9876543210,2026-01-01 10:00:00\n")
+    (tmp_path / "cdr.csv").write_bytes(
+        b"caller_number,callee_number,timestamp\n9876543210,9123456789,2026-01-01 10:00:00\n"
+    )
     (tmp_path / "data.xlsx").write_bytes(build_xlsx(headers=["a", "b"], rows=[["1", "2"]]))
     (tmp_path / "data.json").write_bytes(b'{"a": 1, "b": [2, 3]}')
 

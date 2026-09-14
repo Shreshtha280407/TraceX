@@ -39,6 +39,7 @@ class ErrorCode:
     DOCUMENT_REQUIRES_OCR = "document_requires_ocr"
     INPUT_LIMIT_EXCEEDED = "input_limit_exceeded"
     REQUIRED_FIELD_MISSING = "required_field_missing"
+    INVALID_SOURCE_SIGNAL = "invalid_source_signal"
     UNSUPPORTED_PARSER_PROFILE = "unsupported_parser_profile"
     OCR_RUNTIME_UNAVAILABLE = "ocr_runtime_unavailable"
     NER_RUNTIME_UNAVAILABLE = "ner_runtime_unavailable"

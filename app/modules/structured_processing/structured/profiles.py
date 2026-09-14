@@ -98,10 +98,12 @@ CDR_GENERIC_V1 = ParserProfile(
         "duration_seconds": ("duration_seconds", "duration", "call_duration", "duration_secs"),
         "call_type": ("call_type", "type", "direction"),
         "cell_tower_id": ("cell_tower_id", "tower_id", "cell_id", "site_id"),
+        "call_id": ("call_id", "cdr_id", "record_id", "call_reference"),
+        "end_timestamp": ("end_timestamp", "end_time", "call_end", "stop_time"),
         "imei": ("imei",),
         "imsi": ("imsi",),
     },
-    required_fields=("caller_number", "timestamp"),
+    required_fields=("caller_number", "callee_number", "timestamp"),
 )
 
 FINANCIAL_TRANSACTION_GENERIC_V1 = ParserProfile(
@@ -144,7 +146,7 @@ FINANCIAL_TRANSACTION_GENERIC_V1 = ParserProfile(
         "balance": ("balance", "closing_balance", "available_balance"),
         "counterparty": ("counterparty", "counterparty_name", "payee_name", "payer_name"),
     },
-    required_fields=("amount", "currency"),
+    required_fields=("sender_account", "receiver_account", "amount", "currency", "timestamp"),
 )
 
 GENERIC_TABULAR_V1 = ParserProfile(

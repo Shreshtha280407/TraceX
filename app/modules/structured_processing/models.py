@@ -12,11 +12,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
-from app.contracts.common import SourceLocator
+from app.contracts.common import SourceLocator, TimeWindow
 
 _HEADER_SEPARATORS = re.compile(r"[\s\-]+")
 
@@ -107,6 +108,11 @@ class RawMention:
     confidence: float
     entity_type_hint: str | None = None
     attributes: dict[str, JsonValue] = field(default_factory=dict)
+    # Record-level event observations can carry a source-backed time without
+    # changing the frozen ObservationV1 contract.  Document mentions leave
+    # both unset.
+    event_time: datetime | None = None
+    time_window: TimeWindow | None = None
 
 
 @dataclass(frozen=True)

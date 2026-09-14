@@ -23,9 +23,9 @@ from app.modules.structured_processing.structured.profiles import (
 
 
 def _cdr_csv(row_count: int) -> bytes:
-    data = b"caller_number,timestamp,duration_seconds\n"
+    data = b"caller_number,callee_number,timestamp,duration_seconds\n"
     for i in range(row_count):
-        data += f"98765432{i:02d},2026-01-01 10:{i % 60:02d}:00,{i * 5}\n".encode()
+        data += f"98765432{i:02d},91234567{i:02d},2026-01-01 10:{i % 60:02d}:00,{i * 5}\n".encode()
     return data
 
 
@@ -60,10 +60,10 @@ def test_csv_chunk_row_numbers_are_globally_consistent_across_chunk_boundaries()
 
 def test_malformed_row_is_reported_safely_and_does_not_abort_the_chunk() -> None:
     data = (
-        b"caller_number,timestamp\n"
-        b"9876543210,2026-01-01 10:00:00\n"
-        b",2026-01-01 10:05:00\n"  # missing caller_number
-        b"9876543211,2026-01-01 10:10:00\n"
+        b"caller_number,callee_number,timestamp\n"
+        b"9876543210,9123456789,2026-01-01 10:00:00\n"
+        b",9123456789,2026-01-01 10:05:00\n"  # missing caller_number
+        b"9876543211,9123456788,2026-01-01 10:10:00\n"
     )
     header = peek_csv_header(data)
     assess_schema(CDR_GENERIC_V1, header)
@@ -86,9 +86,9 @@ def test_xlsx_chunks_preserve_sheet_and_row_provenance() -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "CallLog"
-    sheet.append(["caller_number", "timestamp"])
+    sheet.append(["caller_number", "callee_number", "timestamp"])
     for i in range(5):
-        sheet.append([f"98765432{i:02d}", "2026-01-01 10:00:00"])
+        sheet.append([f"98765432{i:02d}", f"91234567{i:02d}", "2026-01-01 10:00:00"])
     buf = io.BytesIO()
     workbook.save(buf)
     data = buf.getvalue()
@@ -110,9 +110,9 @@ def test_xlsx_malformed_row_reported_with_sheet_provenance() -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Txns"
-    sheet.append(["amount", "currency"])
-    sheet.append([500, "INR"])
-    sheet.append([None, "INR"])  # malformed: missing the required amount field
+    sheet.append(["sender_account", "receiver_account", "amount", "currency", "timestamp"])
+    sheet.append(["sender-A", "receiver-B", 500, "INR", "2026-01-01 10:00:00"])
+    sheet.append(["sender-A", "receiver-B", None, "INR", "2026-01-01 10:00:00"])
     buf = io.BytesIO()
     workbook.save(buf)
     data = buf.getvalue()
