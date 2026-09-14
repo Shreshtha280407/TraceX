@@ -24,6 +24,8 @@ delivery" in `docs/architecture/evidence-lifecycle.md`.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import quote
@@ -38,6 +40,7 @@ from app.contracts.observation_batch import (
     ObservationBatchSubmissionV1,
 )
 from app.contracts.worker import WorkerResultV1, WorkerStatus
+from app.core.config import Settings, get_settings
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import record_audit_event, record_audit_event_safely
 from app.modules.access_control.dependencies import get_access_control_repository
@@ -59,11 +62,13 @@ from app.modules.evidence_lifecycle.errors import (
     ResultValidationError,
 )
 from app.modules.evidence_lifecycle.media_orchestration import MediaChunkPublication
+from app.modules.evidence_lifecycle.models import WorkerAvailabilityStatus
 from app.modules.evidence_lifecycle.schemas import (
     ClaimRequest,
     ClaimResponse,
     RenewLeaseResponse,
     ResultAcknowledgement,
+    WorkerHeartbeatResponse,
 )
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
 from app.modules.evidence_lifecycle.storage import ObjectStorage
@@ -72,6 +77,37 @@ router = APIRouter(prefix="/api/v1/internal/worker-jobs", tags=["worker-internal
 
 _CLAIM_TOKEN_HEADER = "X-Claim-Token"
 _MAX_CLAIM_TOKEN_LENGTH = 200
+
+
+def _enforce_worker_payload_limits(
+    *,
+    observation_count: int,
+    transformation_count: int,
+    artifact_count: int,
+    settings: Settings,
+) -> None:
+    if (
+        observation_count > settings.worker_batch_max_observations
+        or transformation_count > settings.worker_batch_max_transformations
+        or artifact_count > settings.worker_media_chunk_max_artifacts
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="worker request payload too large",
+        )
+
+
+async def _within_worker_deadline[ResultT](
+    operation: Awaitable[ResultT], settings: Settings
+) -> ResultT:
+    try:
+        async with asyncio.timeout(settings.worker_internal_request_timeout_seconds):
+            return await operation
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="worker control operation timed out; retry with the same idempotency key",
+        ) from exc
 
 
 @router.post("/claim", response_model=ClaimResponse)
@@ -176,6 +212,7 @@ async def submit_result(
     principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
 ) -> ResultAcknowledgement:
     """Submit one terminal `WorkerResultV1` for a previously claimed job.
@@ -194,12 +231,15 @@ async def submit_result(
 
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
-        outcome = await service.submit_result(
-            job_id=job_id,
-            claim_token=claim_token,
-            result=result,
-            context=context,
-            worker_id=principal.worker_id,
+        outcome = await _within_worker_deadline(
+            service.submit_result(
+                job_id=job_id,
+                claim_token=claim_token,
+                result=result,
+                context=context,
+                worker_id=principal.worker_id,
+            ),
+            settings,
         )
     except InvalidClaimTokenError as exc:
         await record_audit_event_safely(
@@ -260,6 +300,7 @@ async def submit_observation_batch(
     principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
 ) -> ObservationBatchReceiptV1:
     """Submit one partial, provenance-rich observation micro-batch for a claimed job.
@@ -282,15 +323,24 @@ async def submit_observation_batch(
     """
     if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+    _enforce_worker_payload_limits(
+        observation_count=len(submission.observations),
+        transformation_count=len(submission.transformations),
+        artifact_count=0,
+        settings=settings,
+    )
 
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
-        outcome = await service.submit_observation_batch(
-            job_id=job_id,
-            claim_token=claim_token,
-            submission=submission,
-            context=context,
-            worker_id=principal.worker_id,
+        outcome = await _within_worker_deadline(
+            service.submit_observation_batch(
+                job_id=job_id,
+                claim_token=claim_token,
+                submission=submission,
+                context=context,
+                worker_id=principal.worker_id,
+            ),
+            settings,
         )
     except InvalidClaimTokenError as exc:
         await record_audit_event_safely(
@@ -346,6 +396,7 @@ async def publish_media_chunk(
     principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
 ) -> ObservationBatchReceiptV1:
     """Accept one media chunk's canonical observations and artifact metadata.
@@ -356,15 +407,24 @@ async def publish_media_chunk(
     """
     if claim_token is None or not claim_token.strip() or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+    _enforce_worker_payload_limits(
+        observation_count=len(publication.batch.observations),
+        transformation_count=len(publication.batch.transformations),
+        artifact_count=len(publication.artifacts),
+        settings=settings,
+    )
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
-        outcome = await service.submit_observation_batch(
-            job_id=job_id,
-            claim_token=claim_token,
-            submission=publication.batch,
-            media_publication=publication,
-            context=context,
-            worker_id=principal.worker_id,
+        outcome = await _within_worker_deadline(
+            service.submit_observation_batch(
+                job_id=job_id,
+                claim_token=claim_token,
+                submission=publication.batch,
+                media_publication=publication,
+                context=context,
+                worker_id=principal.worker_id,
+            ),
+            settings,
         )
     except InvalidClaimTokenError as exc:
         await record_audit_event_safely(
@@ -419,6 +479,7 @@ async def renew_job_lease(
     principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
     audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
     claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
 ) -> RenewLeaseResponse:
     """Extend a currently-claimed, still-`running` job's lease -- a heartbeat for a worker
@@ -439,11 +500,14 @@ async def renew_job_lease(
 
     context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
     try:
-        renewal = await service.renew_claim(
-            job_id=job_id,
-            claim_token=claim_token,
-            context=context,
-            worker_id=principal.worker_id,
+        renewal = await _within_worker_deadline(
+            service.renew_claim(
+                job_id=job_id,
+                claim_token=claim_token,
+                context=context,
+                worker_id=principal.worker_id,
+            ),
+            settings,
         )
     except InvalidClaimTokenError as exc:
         await record_audit_event_safely(
@@ -475,6 +539,45 @@ async def renew_job_lease(
         },
     )
     return RenewLeaseResponse(job_id=job_id, lease_expires_at=renewal.lease_expires_at)
+
+
+@router.post("/{job_id}/heartbeat", response_model=WorkerHeartbeatResponse)
+async def heartbeat_worker(
+    job_id: UUID,
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> WorkerHeartbeatResponse:
+    """Record liveness by renewing the durable job lease, never a parallel state machine."""
+    before_renewal = await service.worker_availability(
+        job_id=job_id,
+        now=datetime.now(UTC),
+        stale_seconds=settings.worker_heartbeat_stale_seconds,
+    )
+    renewal = await renew_job_lease(
+        job_id=job_id,
+        principal=principal,
+        service=service,
+        audit_repository=audit_repository,
+        settings=settings,
+        claim_token=claim_token,
+    )
+    # A worker that renewed while its existing lease was still valid but its
+    # last accepted operational update was stale has recovered without
+    # inventing a second heartbeat store.  Its next normal heartbeat reports
+    # ``active``; an expired lease remains a safe claim-token failure above.
+    availability = (
+        WorkerAvailabilityStatus.RECOVERING
+        if before_renewal is WorkerAvailabilityStatus.DEGRADED
+        else WorkerAvailabilityStatus.ACTIVE
+    )
+    return WorkerHeartbeatResponse(
+        job_id=job_id,
+        availability=availability,
+        lease_expires_at=renewal.lease_expires_at,
+    )
 
 
 @router.get("/{job_id}/input")

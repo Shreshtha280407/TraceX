@@ -80,6 +80,18 @@ curl -s http://<host-lan-ip>:5432 --connect-timeout 2 || echo "postgres correctl
 
 The second command should fail to connect (confirming the firewall is doing its job) — if it succeeds, stop and fix the firewall rule before continuing any demo.
 
+## TLS-ready worker control plane
+
+For a secure LAN deployment, terminate TLS at the API or a reverse proxy and
+set `WORKER_SECURE_TRANSPORT_REQUIRED=true`. If TLS terminates at a proxy, set
+`WORKER_TRUSTED_PROXY_IPS` only to that proxy's immediate IP; the proxy must
+overwrite `X-Forwarded-Proto`. Certificates and private keys are operator
+managed and must never be committed. Local demo HTTP requires the explicit
+`false` setting and is unsuitable for sensitive evidence.
+
+Workers use only the API and must never receive PostgreSQL, Neo4j, Redis,
+MinIO, object-store, or object URI credentials.
+
 ## This is not production deployment
 
 This setup has no TLS (plain HTTP over the LAN), no reverse proxy, no production secret manager, and dev-only credentials in a plaintext `.env` file on one laptop. It is suitable only for a trusted, temporary, same-room/same-Wi-Fi development or demo session — never for anything internet-facing, never for real evidentiary data, and never left running unattended on a shared network.

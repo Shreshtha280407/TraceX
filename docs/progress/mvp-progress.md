@@ -580,6 +580,12 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
 - [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.
 
+# Phase 4 - Aditya LAN worker security and reliability: In progress
+
+- [x] Existing worker credential, claim-token, and lease path extended with
+  TLS-ready transport gating, bounded metadata controls, and heartbeat renewal.
+- [ ] Real multi-machine TLS/LAN, GPU, and dataset validation at merge wave.
+
 # Phase 4 - Shreshtha media graph mapping and temporal semantics: In progress
 
 - [x] Deterministic case-scoped mappings for staged visual, speech, message,
