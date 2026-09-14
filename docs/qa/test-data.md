@@ -174,6 +174,20 @@ No new fixture module was needed: every new unit test reuses the existing `tests
 Focused tests use inline synthetic UUIDs, invented phone-shaped identifiers, generic Devanagari/Roman aliases,
 and bounded timestamps. The projection test uses one synthetic extractor and source locator with a fake graph
 repository. No Operation Nightfall, reference master, private truth, source evidence, or runtime fixture is read.
+
+**Phase 5A reconciliation fixtures** (new): `tests/unit/graph/test_intelligence_sourcing.py`/
+`test_intelligence_pipeline.py` build real-shaped `ObservationV1`s inline (invented phone/email/vehicle/UPI
+values, invented Devanagari sender names "राहुल शर्मा" and their `raahula`/`sharmaa` transliteration
+candidates, invented CDR caller/callee numbers and financial account strings) mirroring Jasraj's/Sarthak's
+actual canonical observation shapes -- never real evidence. `tests/unit/graph/test_intelligence_vector_store.py`
+uses small hand-written fake `AsyncEngine`/connection classes (no real database) to exercise the
+`VectorSearchUnavailable` path deterministically. `tests/integration/graph/test_intelligence_vector_store_live.py`
+and `test_intelligence_pipeline_live.py` insert a full synthetic case/user/evidence/job/result/observation
+chain directly into live PostgreSQL (reusing `test_phase5_correlation_integration_live.py`'s
+`_insert_observation` helper, extended to accept an explicit observation type/attributes) and a synthetic
+Evidence/Observation pair into live Neo4j, all deleted in each test's own cleanup -- no pre-existing user/case
+data is ever touched, matching every other live test in this package's convention.
+
 # Phase 4 media orchestration fixtures
 
 The Phase 4 coordinator tests use synthetic UUIDs, opaque `s3://` references,

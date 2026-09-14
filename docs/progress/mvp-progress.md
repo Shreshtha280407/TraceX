@@ -577,13 +577,29 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
   plus transactional typed graph-update outbox.
 - [x] Typed replay handler seam, deterministic projection key, safe
   case-scoped integration read endpoints, and focused fixture tests.
-- [ ] Shreshtha semantic correlation projection handler and intelligence
-  producers; Aditya write/review authorization policy.
+- [x] Shreshtha semantic correlation projection handler and intelligence
+  producers -- registered into a reachable process in the Phase 5A
+  reconciliation below (`app/modules/graph/intelligence_worker.py`).
+- [ ] Aditya write/review authorization policy.
 
 # Phase 5 - Shreshtha graph intelligence and rules baseline: In progress
 
 - [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.
 - [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
+- [x] **Phase 5A reconciliation**: closed the gap between "algorithm implemented" and "reachable against
+  real data," found by an explicit audit before any new code was written. Added `intelligence/sourcing.py`
+  (real `ObservationV1` -> retrieval/analytics/motif input, documented bounded mapping scope across
+  Jasraj's/Sarthak's Phase 3/4 observation types), `intelligence/pipeline.py` (retrieval -> scoring ->
+  correlation -> Nipun's `submit()`, exactly once per case), and `app/modules/graph/intelligence_worker.py`
+  (the minimal `--replay-once`/`--replay-loop` registration wiring the semantic handler was missing --
+  it existed and was tested, but no process ever invoked it outside a test). Fixed one genuine,
+  pre-existing bug found along the way: `retrieval.py`'s transliteration-vs-alias check was
+  order-dependent (only checked one direction), now symmetric with a permanent regression test. Added
+  live pgvector coverage (previously zero) and a full live pipeline test proving exactly-once submission,
+  replay idempotency, and provenance-gated projection against real PostgreSQL + Neo4j. 63 new tests; full
+  repository suite green (1759+ passed). See `docs/architecture/phase-5-graph-intelligence.md`'s
+  dependency-map section and `docs/qa/known-limitations.md` for the corrected record and remaining,
+  deliberately-scoped Phase 5A limitations.
 - [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.
 
 # Phase 4 - Aditya LAN worker security and reliability: In progress

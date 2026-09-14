@@ -11,8 +11,15 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
-from app.modules.evidence_lifecycle.repository import worker_observations_table
+from app.modules.access_control.repository import cases_table, users_table
+from app.modules.evidence_lifecycle.repository import (
+    evidence_records_table,
+    worker_jobs_table,
+    worker_observations_table,
+    worker_results_table,
+)
 from app.modules.graph.errors import GraphConnectionError
 from app.modules.graph.integration_models import (
     CandidateLinkSubmission,
@@ -35,15 +42,113 @@ from tests.fixtures.factories import make_observation
 _NOW = datetime(2026, 9, 14, tzinfo=UTC)
 
 
-async def _insert_observation(outbox: GraphProjectionOutboxRepository, *, case_id, evidence_id):
-    observation = make_observation(case_id=case_id, evidence_id=evidence_id, created_at=_NOW)
+async def _ensure_case_and_evidence(conn, *, case_id, evidence_id, user_id) -> None:
+    """Idempotently satisfy `worker_observations`' full referential chain
+    (`users` -> `cases` -> `evidence_records`) -- this fixture only needs
+    *a* valid case/evidence pair to exist, never its own case-CRUD/upload
+    behavior, so a direct minimal insert (mirroring this suite's own
+    `test_outbox_repository_live.py::_insert_job` style) is used rather
+    than the real HTTP upload path another live test already covers.
+    """
+    await conn.execute(
+        postgresql.insert(users_table)
+        .values(
+            user_id=user_id,
+            email_normalized=f"phase5-fixture-{user_id}@example.test",
+            display_name="Phase 5 Fixture User",
+            password_hash="not-a-real-hash",
+            is_active=True,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        .on_conflict_do_nothing(index_elements=["user_id"])
+    )
+    await conn.execute(
+        postgresql.insert(cases_table)
+        .values(
+            case_id=case_id,
+            case_reference=f"PHASE5-FIXTURE-{case_id}",
+            classification="restricted",
+            status="open",
+            created_at=_NOW,
+        )
+        .on_conflict_do_nothing(index_elements=["case_id"])
+    )
+    await conn.execute(
+        postgresql.insert(evidence_records_table)
+        .values(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            source_type="document",
+            original_filename="fixture.txt",
+            content_type="text/plain",
+            object_uri=f"local://phase5-fixture/{evidence_id}",
+            sha256="0" * 64,
+            classification="unclassified",
+            uploaded_by=user_id,
+            uploaded_at=_NOW,
+            processing_status="processed",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        .on_conflict_do_nothing(index_elements=["evidence_id"])
+    )
+
+
+async def _insert_observation(
+    outbox: GraphProjectionOutboxRepository, *, case_id, evidence_id, **observation_overrides
+):
+    observation = make_observation(
+        case_id=case_id, evidence_id=evidence_id, created_at=_NOW, **observation_overrides
+    )
+    job_id, result_id, user_id = uuid4(), uuid4(), uuid4()
     async with outbox._engine.begin() as conn:  # noqa: SLF001 - live fixture setup
+        await _ensure_case_and_evidence(
+            conn, case_id=case_id, evidence_id=evidence_id, user_id=user_id
+        )
+        await conn.execute(
+            sa.insert(worker_jobs_table).values(
+                job_id=job_id,
+                case_id=case_id,
+                evidence_id=evidence_id,
+                source_type="document",
+                processor_name="fixture_processor",
+                processor_version="1.0.0",
+                attempt=1,
+                idempotency_key=f"phase5-fixture-{job_id}",
+                input_object_uri=f"local://phase5-fixture/{evidence_id}",
+                requested_at=_NOW,
+                status="succeeded",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        await conn.execute(
+            sa.insert(worker_results_table).values(
+                result_id=result_id,
+                job_id=job_id,
+                case_id=case_id,
+                evidence_id=evidence_id,
+                attempt=1,
+                status="succeeded",
+                derived_artifacts=[],
+                canonical_payload={"job_id": str(job_id), "status": "succeeded"},
+                payload_hash="0" * 64,
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
         await conn.execute(
             sa.insert(worker_observations_table).values(
                 observation_id=observation.observation_id,
-                result_id=None,
+                # `worker_observations`'s `ck_worker_observations_exactly_one_source`
+                # check constraint requires exactly one of these two, and
+                # `worker_observations_result_id_fkey` requires it to
+                # reference a real `worker_results` row -- both satisfied
+                # by the terminal-result chain inserted just above.
+                result_id=result_id,
                 observation_batch_id=None,
-                job_id=uuid4(),
+                job_id=job_id,
                 case_id=case_id,
                 evidence_id=evidence_id,
                 observation_type=observation.observation_type,
@@ -77,6 +182,35 @@ async def _cleanup(outbox: GraphProjectionOutboxRepository, case_id) -> None:
                 worker_observations_table.c.case_id == case_id
             )
         )
+        await conn.execute(
+            sa.delete(worker_results_table).where(worker_results_table.c.case_id == case_id)
+        )
+        await conn.execute(
+            sa.delete(worker_jobs_table).where(worker_jobs_table.c.case_id == case_id)
+        )
+        # `cases`/`users` rows are this fixture's own synthetic scaffolding
+        # (never shared with real user/case data) -- read the uploader
+        # *before* deleting `evidence_records`, then delete
+        # evidence/case/user in FK-safe order.
+        uploader_ids = (
+            (
+                await conn.execute(
+                    sa.select(evidence_records_table.c.uploaded_by).where(
+                        evidence_records_table.c.case_id == case_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await conn.execute(
+            sa.delete(evidence_records_table).where(evidence_records_table.c.case_id == case_id)
+        )
+        await conn.execute(sa.delete(cases_table).where(cases_table.c.case_id == case_id))
+        if uploader_ids:
+            await conn.execute(
+                sa.delete(users_table).where(users_table.c.user_id.in_(uploader_ids))
+            )
 
 
 async def test_correlation_write_is_atomic_idempotent_and_replayable_after_graph_outage(
