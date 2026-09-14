@@ -191,3 +191,9 @@ artifact URI, real audio/video/image, or real-case data is used.
 synthetic strings, generated UUIDs, normalized test boxes, and frame-relative
 locators. It contains no real OCR output, media bytes, credentials, object
 URIs, case material, or production identifiers.
+
+# Phase 4 video/image planning fixtures (Gaurav)
+
+Planning tests use synthetic metadata, generated UUIDs, and tiny in-memory
+arrays only. No video, image, model bundle, OCR text, URI, credential, or case
+evidence is included.

@@ -2434,3 +2434,10 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   in 0.16s**.
 - No real OCR engine, GPU/video workload, LAN worker, real dataset, Docker,
   or end-to-end graph validation was run.
+
+# Phase 4 Gaurav video/image worker (2026-09-14)
+
+- Focused Phase 4 planning plus existing probe/sampling/OCR-batch/media-graph
+  mapping tests: **50 passed in 0.23s**.
+- No GPU, configured model bundle, real media, LAN worker, Docker, or end-to-
+  end acceptance was run.

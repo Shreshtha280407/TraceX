@@ -175,3 +175,11 @@ wave and post-Phase-5 validation gate.
   canonical observation is a future worker's explicit responsibility; graph
   projection, correlation, entity resolution, and identity verification remain
   out of scope.
+
+# Phase 4 video/image worker limitations (Gaurav)
+
+- Profile thresholds and batch limits are deterministic safeguards, not measured
+  performance or accuracy claims. Real GPU, hardware decode, model assets,
+  media, LAN, and dataset validation are deferred.
+- Scene/motion signals are local frame-difference inputs supplied to planning;
+  they do not identify people, vehicles, meetings, or relationships.
