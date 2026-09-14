@@ -106,7 +106,18 @@ async def _project_one(
 
     try:
         await project_evidence(graph, evidence)
-        mapping_plan = map_observation(observation)
+        # Phase 4 lineage is optional: ordinary document/CDR/finance and
+        # terminal-result observations have none, while partial published
+        # chunks retain safe identifiers through the same durable outbox.
+        lineage_reader = getattr(outbox, "get_media_lineage", None)
+        media_lineage = (
+            await lineage_reader(
+                observation.case_id, observation.evidence_id, observation.observation_id
+            )
+            if lineage_reader is not None
+            else None
+        )
+        mapping_plan = map_observation(observation, media_lineage)
         observation_result = await project_observation(graph, observation, mapping_plan)
         if observation_result.outcome is ProjectionOutcome.DEFERRED:
             await outbox.mark_retryable_failure(

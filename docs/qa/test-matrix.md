@@ -195,3 +195,4 @@ uv run pytest
 | GRAPH-INTEL-002 | Rules snapshots retain named contributions and candidate-only status through Nipun's typed submission seam | `tests/unit/graph/test_intelligence.py` |
 | GRAPH-INTEL-003 | The semantic handler requires the projected Evidence → Observation chain and Nipun projection key | `tests/unit/graph/test_intelligence_projection.py` |
 | GRAPH-INTEL-004 | PageRank, betweenness, WCC, community baseline, and temporal motif operate on one synthetic case | `tests/unit/graph/test_intelligence.py` |
+| PHASE4-MEDIA-GRAPH-001 | Synthetic canonical visual, audio, chat, and explicit meeting-candidate observations map deterministically to case-scoped temporal events with source locator, precision, provenance, and optional safe staged lineage. Labels/handles stay unresolved; source content is excluded. | `tests/unit/graph/test_mapping.py`, `tests/unit/graph/test_phase_4_media_mapping.py`, `tests/unit/graph/test_projector.py` |

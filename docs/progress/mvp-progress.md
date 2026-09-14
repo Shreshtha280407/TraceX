@@ -579,3 +579,12 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.
 - [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
 - [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.
+
+# Phase 4 - Shreshtha media graph mapping and temporal semantics: In progress
+
+- [x] Deterministic case-scoped mappings for staged visual, speech, message,
+  and explicit meeting-candidate canonical observations through the existing
+  durable graph outbox.
+- [x] Source-relative/absolute temporal precision policy, bounded provenance,
+  and safe manifest/chunk/artifact identifier lineage.
+- [ ] Merge-wave real-media, GPU, LAN, Docker/Compose, and dataset validation.

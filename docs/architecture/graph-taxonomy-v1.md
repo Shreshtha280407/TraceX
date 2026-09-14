@@ -90,6 +90,16 @@ intel_reported_activity
 
 Every one of these is, by construction, time-bounded: `EventV1` requires `event_time` or `time_window` (enforced by `EventV1._validate_time_bounded`), because an event represents something that happened at (or during) a specific time — never a standing, timeless fact about a relationship between entities. A recommended type describing something with no natural time bound does not belong in this list; it belongs as an `Entity`/`Observation` attribute instead.
 
+## Phase 4 specialised temporal events
+
+The internal `TemporalEvent` projection additionally uses `sighting`,
+`speech_segment`, `message`, and `meeting_candidate` for canonical staged
+media/communication observations. They do not introduce a second event label
+or direct entity relationship. Source-relative millisecond ranges and frame
+numbers are temporal bounds for their evidence source, not a fabricated UTC
+instant. `meeting_candidate` is explicitly review-only (`candidate_only`) and
+is never a verified `meeting`. See `phase-4-media-graph-mapping.md`.
+
 ## Identity and relationship safety
 
 These rules bind every later phase that extends this graph, not just Phase 1:

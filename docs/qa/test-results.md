@@ -2404,6 +2404,13 @@ it was not claimed as run in this follow-up because the stack was unavailable.
 - The seeded Leiden-specific focused check passed: `6 passed in 0.14s`.
 - `uv sync --all-groups`, `uv run alembic heads` (single `e4f7a8b9c0d1` head), and `docker compose config` passed.
 - No Operation Nightfall truth, real-dataset, LAN, benchmark, P99, or Precision@K/Recall@K result is claimed here.
+
+# Phase 4 Shreshtha media graph mapping and temporal semantics (2026-09-14)
+
+- `.venv/bin/ruff check` passed for the changed graph paths.
+- `.venv/bin/mypy app/modules/graph` passed.
+- Formatting, lint, and strict graph-package typing passed; synthetic focused mapping/projector and existing Phase 3/Phase 5 compatibility coverage: **89 passed in 0.19s**.
+- No Docker/Compose, GPU, LAN worker, real media/audio dataset, external ASR/OCR, or end-to-end acceptance check was run.
 # Phase 4 media orchestration (Nipun)
 
 - `UV_CACHE_DIR=/tmp/tracex-uv-cache uv run pytest -q tests/unit/evidence_lifecycle/test_media_orchestration.py`: **5 passed** (2026-09-14). Synthetic manifest/observation fixtures only; no Docker, GPU, LAN worker, real media, or Neo4j service was invoked.

@@ -52,12 +52,17 @@ from app.core.config import Settings
 from app.modules.evidence_lifecycle.repository import (
     evidence_records_table,
     graph_projection_jobs_table,
+    media_chunk_manifests_table,
+    media_chunk_observations_table,
+    media_chunks_table,
+    media_derived_artifacts_table,
     worker_observations_table,
 )
 from app.modules.graph.models import (
     CLAIMABLE_PROJECTION_JOB_STATUSES,
     GraphProjectionJobRecord,
     GraphProjectionJobStatus,
+    MediaProjectionLineage,
 )
 
 
@@ -285,6 +290,75 @@ class GraphProjectionOutboxRepository:
                 .first()
             )
         return _evidence_from_row(row) if row is not None else None
+
+    async def get_media_lineage(
+        self, case_id: UUID, evidence_id: UUID, observation_id: UUID
+    ) -> MediaProjectionLineage | None:
+        """Return safe Phase 4 lineage for one already-persisted observation.
+
+        The joins deliberately require the same case/evidence on every
+        source table.  Artifact identifiers are useful provenance; their
+        canonical payloads (including opaque object URIs) are never read.
+        """
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(
+                            media_chunks_table.c.chunk_id,
+                            media_chunks_table.c.manifest_id,
+                            media_chunk_manifests_table.c.manifest_hash,
+                            media_chunk_manifests_table.c.processor_version,
+                            media_chunk_manifests_table.c.configuration_hash,
+                        )
+                        .select_from(
+                            media_chunk_observations_table.join(
+                                media_chunks_table,
+                                media_chunk_observations_table.c.chunk_id
+                                == media_chunks_table.c.chunk_id,
+                            ).join(
+                                media_chunk_manifests_table,
+                                media_chunks_table.c.manifest_id
+                                == media_chunk_manifests_table.c.manifest_id,
+                            )
+                        )
+                        .where(
+                            media_chunk_observations_table.c.observation_id == observation_id,
+                            media_chunks_table.c.case_id == case_id,
+                            media_chunks_table.c.evidence_id == evidence_id,
+                            media_chunk_manifests_table.c.case_id == case_id,
+                            media_chunk_manifests_table.c.evidence_id == evidence_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            artifact_ids = (
+                (
+                    await conn.execute(
+                        sa.select(media_derived_artifacts_table.c.artifact_id)
+                        .where(
+                            media_derived_artifacts_table.c.chunk_id == row["chunk_id"],
+                            media_derived_artifacts_table.c.case_id == case_id,
+                            media_derived_artifacts_table.c.evidence_id == evidence_id,
+                        )
+                        .order_by(media_derived_artifacts_table.c.artifact_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return MediaProjectionLineage(
+            chunk_id=row["chunk_id"],
+            manifest_id=row["manifest_id"],
+            manifest_hash=row["manifest_hash"],
+            processor_version=row["processor_version"],
+            configuration_hash=row["configuration_hash"],
+            artifact_ids=tuple(artifact_ids),
+        )
 
     async def mark_succeeded(self, projection_id: UUID, now: datetime) -> None:
         async with self._engine.begin() as conn:
