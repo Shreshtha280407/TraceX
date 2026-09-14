@@ -11,22 +11,25 @@ for the same verification-ordering scenarios, complementing the HTTP tests.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.contracts.evidence import SourceType
 from app.contracts.worker import WorkerStatus
+from app.core.config import get_settings
 from app.main import app
 from app.modules.access_control.dependencies import get_access_control_repository
 from app.modules.evidence_lifecycle.dependencies import (
     WorkerPrincipal,
     get_evidence_lifecycle_repository,
+    get_evidence_lifecycle_service,
     get_job_producer,
     get_object_storage,
     require_worker_principal,
@@ -66,20 +69,61 @@ def _override_worker_dependencies(
     evidence_repository: FakeEvidenceLifecycleRepository,
     ac_repository: FakeAccessControlRepository,
 ) -> Iterator[None]:
-    app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
-    app.dependency_overrides[get_object_storage] = FakeObjectStorage
-    app.dependency_overrides[get_job_producer] = FakeJobProducer
-    app.dependency_overrides[require_worker_principal] = lambda: _TEST_WORKER_PRINCIPAL
-    app.dependency_overrides[get_access_control_repository] = lambda: ac_repository
+    # FastAPI otherwise executes synchronous test overrides in AnyIO's
+    # worker-thread bridge.  That bridge is the source of the historic
+    # stalled route test under pytest-asyncio; async overrides keep the
+    # entirely in-memory HTTP test on its owning event loop.
+    async def fake_repository() -> FakeEvidenceLifecycleRepository:
+        return evidence_repository
+
+    async def fake_service() -> EvidenceLifecycleService:
+        return _service(evidence_repository)
+
+    async def fake_storage() -> FakeObjectStorage:
+        return FakeObjectStorage()
+
+    async def fake_job_producer() -> FakeJobProducer:
+        return FakeJobProducer()
+
+    async def fake_principal() -> WorkerPrincipal:
+        return _TEST_WORKER_PRINCIPAL
+
+    async def fake_access_repository() -> FakeAccessControlRepository:
+        return ac_repository
+
+    async def test_settings():
+        return get_settings()
+
+    app.dependency_overrides[get_evidence_lifecycle_repository] = fake_repository
+    # Override the composed service directly.  Resolving its nested production
+    # dependency graph in this HTTP unit test can retain the production
+    # async-engine dependency while an ASGI request is in flight; the route
+    # is meant to exercise the HTTP/auth boundary against the in-memory
+    # lifecycle implementation, not the external infrastructure wiring.
+    app.dependency_overrides[get_evidence_lifecycle_service] = fake_service
+    app.dependency_overrides[get_object_storage] = fake_storage
+    app.dependency_overrides[get_job_producer] = fake_job_producer
+    app.dependency_overrides[require_worker_principal] = fake_principal
+    app.dependency_overrides[get_access_control_repository] = fake_access_repository
+    app.dependency_overrides[get_settings] = test_settings
     yield
     app.dependency_overrides.clear()
 
 
-@pytest_asyncio.fixture
-async def client(_override_worker_dependencies: None) -> AsyncIterator[AsyncClient]:
+async def _post_worker_route(url: str, **kwargs: Any) -> Any:
+    """Issue one real ASGI request without a pytest-managed async client.
+
+    The prior ``client`` fixture stalled the installed pytest-asyncio runner
+    before the test coroutine began.  Opening the connectionless ASGI
+    transport inside the coroutine keeps the test a true HTTP-route test.
+    """
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
-        yield ac
+    async with AsyncClient(transport=transport, base_url="http://testserver") as value:
+        request = asyncio.create_task(value.post(url, **kwargs))
+        # Let the nested ASGI task establish its AnyIO worker-thread bridge
+        # before the pytest-asyncio root task awaits its response.
+        await asyncio.sleep(0)
+        return await request
 
 
 def _seed_claimed_job(
@@ -143,13 +187,14 @@ def _seed_claimed_job(
 
 
 async def test_valid_renewal_extends_the_lease(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository)
     original_lease = job.lease_expires_at
     assert original_lease is not None
 
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -163,13 +208,13 @@ async def test_valid_renewal_extends_the_lease(
 
 
 async def test_valid_renewal_records_a_worker_job_lease_renewed_audit_event(
-    client: AsyncClient,
     evidence_repository: FakeEvidenceLifecycleRepository,
     ac_repository: FakeAccessControlRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository)
 
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -184,10 +229,11 @@ async def test_valid_renewal_records_a_worker_job_lease_renewed_audit_event(
 
 
 async def test_renewal_never_leaks_the_claim_token_or_an_object_uri(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository)
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -199,15 +245,16 @@ async def test_renewal_never_leaks_the_claim_token_or_an_object_uri(
 
 
 async def test_renewal_rejects_a_missing_claim_token_header(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository)
-    response = await client.post(f"/api/v1/internal/worker-jobs/{job.job_id}/renew")
+    response = await _post_worker_route(f"/api/v1/internal/worker-jobs/{job.job_id}/renew")
     assert response.status_code == 401
 
 
-async def test_renewal_rejects_an_unknown_job(client: AsyncClient) -> None:
-    response = await client.post(
+async def test_renewal_rejects_an_unknown_job(_override_worker_dependencies: None) -> None:
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{uuid4()}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -215,10 +262,11 @@ async def test_renewal_rejects_an_unknown_job(client: AsyncClient) -> None:
 
 
 async def test_renewal_rejects_a_wrong_claim_token(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository)
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": "wrong-token"},
     )
@@ -226,10 +274,11 @@ async def test_renewal_rejects_a_wrong_claim_token(
 
 
 async def test_renewal_rejects_a_different_workers_valid_claim_token(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository, claimed_by_worker_id=uuid4())
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -237,10 +286,11 @@ async def test_renewal_rejects_a_different_workers_valid_claim_token(
 
 
 async def test_renewal_rejects_a_not_currently_running_job(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(evidence_repository, status=WorkerStatus.SUCCEEDED)
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )
@@ -248,12 +298,13 @@ async def test_renewal_rejects_a_not_currently_running_job(
 
 
 async def test_renewal_rejects_an_already_expired_lease(
-    client: AsyncClient, evidence_repository: FakeEvidenceLifecycleRepository
+    evidence_repository: FakeEvidenceLifecycleRepository,
+    _override_worker_dependencies: None,
 ) -> None:
     job = _seed_claimed_job(
         evidence_repository, lease_expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
-    response = await client.post(
+    response = await _post_worker_route(
         f"/api/v1/internal/worker-jobs/{job.job_id}/renew",
         headers={"X-Claim-Token": _CLAIM_TOKEN},
     )

@@ -4,7 +4,13 @@
 
 - [x] Deterministic internal manifest/chunk records, partial publication,
   artifact lineage, and checkpoint/replay foundation.
-- [ ] Gaurav/Sarthak progressive worker adoption and merge-wave validation.
+- [x] Merged Phase 4 visual, audio/social, OCR, temporal graph, and
+  worker-control implementations are present on `nipun`.
+- [ ] Final release gate: Python, static, and migration-chain checks pass
+  (`1693 passed, 61 conditionally skipped`), but the dedicated API Compose
+  image cannot finish its locked install because Docker-build DNS cannot
+  resolve PyPI. The live integration/Compose checks remain pending; see
+  `docs/architecture/phase-4-integration-release-gate.md`.
 
 ## Phase 3 — In progress — blocked by fresh five-service Compose image rebuild
 

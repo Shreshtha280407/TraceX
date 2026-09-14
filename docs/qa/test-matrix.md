@@ -2,6 +2,7 @@
 
 | ID | Owner | Expected behavior | Test command | Status | Result |
 |---|---|---|---|---|---|
+| P4-RELEASE-GATE-001 | Team | All six Phase 4 paths, replay, lease security, migrations, full suite, and dedicated Compose synthetic E2E | `uv run pytest`; `docker compose -p tracex-phase4-gate --env-file .env.example up --build -d` | Blocked | Python/migration gates pass; dedicated API image build is blocked by Docker-build DNS lookup failures for PyPI, so Compose E2E is not claimed. See 2026-09-14 results. |
 | P4-MEDIA-ORCH-001 | Nipun | Deterministic manifests; duplicate-free chunk replay; partial observations/artifacts/checkpoints retain exact scope | `uv run pytest -q tests/unit/evidence_lifecycle/test_media_orchestration.py` | Passing | Focused synthetic fixture run; no media decoding/GPU required |
 
 ## Phase 3 final integration acceptance

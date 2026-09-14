@@ -1,5 +1,45 @@
 # Phase 1 Test Results
 
+## 2026-09-14 — Team — Phase 4 final integration release gate
+
+The final decision remains **In progress**: all executable Python and
+migration-chain gates passed, but the mandatory fresh dedicated Compose API
+image and live E2E gate could not run to completion.
+
+```text
+$ uv sync --all-groups
+Resolved 105 packages in 1ms
+Checked 103 packages in 1ms
+
+$ uv run ruff format --check .
+415 files already formatted
+$ uv run ruff check .
+All checks passed!
+$ uv run mypy app
+Success: no issues found in 173 source files
+
+$ uv run alembic heads
+f4a1c9e0d2b3 (head)
+
+$ uv run pytest -q
+1693 passed, 61 skipped, 1 warning in 230.25s
+```
+
+Required component runs also passed: evidence lifecycle 181; media processing
+347; communication processing 348 (the one retained `audioop` warning);
+extracted text 8; graph 136; security 134; integration 9 passed and 60
+conditionally skipped. The repaired HTTP lease-renewal suite is included in
+the evidence-lifecycle total and passed 14 tests.
+
+`docker compose config` passed. Docker Engine was available, but two clean
+dedicated builds using `docker compose -p tracex-phase4-gate --env-file
+.env.example up --build -d` failed at Dockerfile `uv sync --locked
+--no-install-project --no-dev`: first resolving `neo4j==6.3.0`, then
+`lxml==6.1.3`. Both were DNS failures resolving `files.pythonhosted.org`.
+Therefore no dedicated API container, clean-database migration, health/
+readiness recovery check, or synthetic live progressive E2E is recorded as a
+pass. Existing user-owned containers were not changed.
+
 ## 2026-09-13 — Nipun — Phase 3 final integration acceptance
 
 - `uv sync --all-groups`, `uv run ruff format --check .`, `uv run ruff check .`,
@@ -2448,3 +2488,23 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   tests/unit/evidence_lifecycle/test_media_orchestration.py`: **361 passed**.
 - No configured real local ASR/diarization model, audio dataset, LAN worker,
   Docker, or end-to-end acceptance is claimed.
+
+# Phase 4 final integration release-gate attempt (2026-09-14)
+
+- `uv sync --all-groups` passed; Alembic reports one head,
+  `f4a1c9e0d2b3`.
+- Repaired `tests/unit/evidence_lifecycle/test_worker_lease_renewal.py`:
+  **14 passed in 0.22s**. The HTTP suite now uses async in-memory overrides
+  and a child ASGI task, avoiding the stalled AnyIO thread bridge.
+- Focused Phase 4 security/orchestration/mapping run: **115 passed, one known
+  `audioop` deprecation warning**.
+- A test-only AnyIO/pytest-asyncio compatibility fixture repairs the stalled
+  root-task worker bridge. `tests/e2e/test_boot_smoke.py`, existing upload
+  routing, and graph API coverage now run: **22 passed in 23.01s**.
+- A new full-suite attempt passed the former boot-test point and reached live
+  graph integration. It cannot complete until Docker services are reachable;
+  no full-suite pass is claimed.
+- `docker compose config` passed. Dedicated `tracex-phase4-gate` startup was
+  attempted but Docker denied access to
+  `/home/nipun/.docker/desktop/docker.sock`; no container, health, migration,
+  readiness, or live E2E pass is claimed.

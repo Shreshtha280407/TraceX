@@ -1,5 +1,14 @@
 # Test Data
 
+## Phase 4 release-gate synthetic data
+
+Phase 4 focused tests use only generated manifest boundaries, synthetic frame
+and source-relative time metadata, synthetic social record/JSON-path markers,
+and deterministic SHA-256 commitments. They contain no raw frames,
+transcripts, chat messages, credentials, object-store URLs, or sensitive
+evidence. The blocked Compose gate did not run an API container or create
+test-domain data: its image build failed before the service started.
+
 ## Phase 3 final acceptance fixtures
 
 The image/video OCR checks use generated labelled PNG/JPEG/MP4 fixtures with
