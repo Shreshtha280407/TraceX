@@ -2886,3 +2886,123 @@ real-worker verification is intentionally deferred to Shreshtha's Phase 6 Part
 `git diff --check`, and `docker compose config -q` passed. The full
 `uv run pytest -q` was attempted but this command runner returned no terminal
 result after its 30-second execution window; it is not recorded as passing.
+
+# Phase 6 Part 5 — Shreshtha review, hypothesis, and final release gate (2026-09-15)
+
+**Scope**: completed the human-review and evidence-backed-hypothesis
+workflow, wired it into the existing integrity/graph/authorization seams,
+found and fixed real Phase 6 integration defects, and ran every
+previously-deferred live Docker/PostgreSQL/Neo4j gate.
+
+## Static gates
+
+- `uv sync --all-groups`: resolved/checked, no changes needed.
+- `uv run ruff format --check .`: **477 files already formatted** (final run,
+  after all edits).
+- `uv run ruff check .`: **All checks passed!**
+- `uv run mypy app`: **Success: no issues found in 198 source files**.
+- `uv run alembic heads`: one coherent head, `a3b4c5d6e7f8`. `uv run alembic
+  history` confirms an unbroken 19-migration chain from `<base>` through
+  this task's new `a3b4c5d6e7f8` (phase 6 part 5 candidate review decisions
+  and evidence-backed hypotheses).
+- `git diff --check`: exit code 0, no whitespace errors.
+- `docker compose config -q`: passed.
+
+## Docker/live-infrastructure gate
+
+Used the existing, already-running `tracex-*` Compose project (postgres,
+neo4j, redis, minio, api — all already healthy from prior work in this
+repository, not a fresh stack); it belongs to this same project, so no
+dedicated/port-isolated project was needed. Two unrelated Docker projects
+on the same host (`trustchain-*`, `openshell-ai-factory-sentinel-*`) were
+confirmed untouched throughout (`docker ps` before/after shows their
+uptime unchanged).
+
+- `uv run alembic upgrade head` against the live `tracex-postgres-1`:
+  applied 5 pending migrations (`8f68fb441037` phase 6 integrity foundation
+  through `a3b4c5d6e7f8` phase 6 part 5 review/hypothesis) — the running
+  database had never been migrated past the Phase 5 head before this gate.
+  `uv run alembic current` confirms `a3b4c5d6e7f8 (head)` applied.
+- `docker compose build api` then `docker compose up -d api`: rebuilt and
+  recreated only the `api` service so it runs this task's new routes;
+  postgres/neo4j/redis/minio were left running, untouched.
+- `docker compose ps`: all 5 services `Up ... (healthy)`.
+- `GET /healthz` → `{"status":"ok","service":"tracex-api","version":"0.1.0"}`.
+- `GET /readyz` → `{"status":"ok","dependencies":{"postgres":"ok","neo4j":"ok","redis":"ok","minio":"ok"}}`.
+- `GET /api/v1/meta/contracts` → the 9 frozen V1 contract names, unchanged.
+- OpenAPI schema confirms all 7 new routes are live: `GET/POST
+  /api/v1/cases/{case_id}/candidates[/{candidate_id}[/review]]`,
+  `GET/POST /api/v1/cases/{case_id}/hypotheses[/{hypothesis_id}[/review]]`
+  — with no collision against Nipun's existing `/graph/candidates`/
+  `/graph/hypotheses` read routes.
+
+### Live test results
+
+- `uv run pytest tests/unit/ -q`: **2003 passed, 1 skipped** (final run,
+  after all fixes below).
+- `uv run pytest tests/integration/ -q` (against the live stack): **95
+  passed** (every test in the package — the whole `tests/integration/`
+  tree is 95 items; none skipped, since every dependent service was
+  reachable).
+- `uv run pytest tests/contract/ tests/e2e/ -q`: **109 passed**.
+- `uv run pytest -q` (the complete suite, exactly as specified): **2003
+  passed, 1 skipped, 0 failed in ~250s**, run twice for confirmation after
+  the code was frozen.
+- One test (`tests/integration/media_processing/test_video_pipeline.py
+  ::test_temporary_artifacts_are_cleaned_up`) failed once during a
+  combined run (a stray `/tmp/runc-process*` file from unrelated
+  container-runtime activity on the shared host tripped its before/after
+  `/tmp` snapshot diff) and passed cleanly on an isolated re-run and on
+  every subsequent full-suite run — confirmed environmental flakiness
+  unrelated to any Phase 6 change, not a regression.
+- My new live end-to-end test
+  (`tests/integration/graph/test_review_and_hypothesis_live.py`) proves,
+  against the real API server, PostgreSQL, and Neo4j: unauthenticated
+  `401` before any lookup; cross-case and non-member `403`; a nonexistent
+  candidate/hypothesis `404`; a real candidate review decision reaching
+  `candidate_review_decisions`, its `review_decision` integrity event, and
+  a provenance-gated `Correlation.review_status` Neo4j property; exact
+  retry `200` idempotent; conflicting retry `409` with the decision count
+  unchanged; a real hypothesis citing a real observation and candidate
+  reaching a provenance-gated `Hypothesis` node with a
+  `SUPPORTED_BY_OBSERVATION` edge and a `REFERENCES_CANDIDATE` edge to the
+  candidate's `Correlation`; hypothesis review idempotency/conflict
+  identical to candidate review; direct PostgreSQL `UPDATE`/`DELETE`
+  against both new tables rejected by the append-only trigger; and
+  reconciliation correctly identifying 3 already-live-recorded leaves
+  (review decision + 2 hypothesis actions) versus 3 genuinely missing
+  ones (2 evidence + 1 correlation, both intentionally built via direct
+  fixture inserts bypassing their normal producing seam in this test),
+  then 0 missing on a second idempotent pass.
+
+## Bugs found and fixed during this gate
+
+1. `tests/unit/graph/test_projection.py
+   ::test_relationship_kind_enum_has_no_entity_to_entity_kind` — a
+   pre-existing exhaustive-set assertion broke on this task's additive
+   `REFERENCES_CANDIDATE` relationship kind; updated to include it.
+2. `tests/unit/integrity/test_migration_head.py
+   ::test_phase_6_migration_is_the_current_head` — hardcoded the prior
+   Phase 6 Part 4 head (`e26f7a8b9c0d`); updated to this task's new head
+   (`a3b4c5d6e7f8`).
+3. **Genuine pre-existing defect**, not caused by this task:
+   `tests/integration/evidence_lifecycle/test_integrity_producer_seam_live.py
+   ::test_upload_records_exactly_one_evidence_registered_event`'s own
+   cleanup attempted `DELETE FROM integrity_events`, which Phase 6 Part 2's
+   append-only trigger correctly rejects. This test had never been run
+   against a live, migrated-to-Part-2 database before (Parts 2-4 explicitly
+   deferred live infrastructure to this gate), so the defect was latent.
+   Fixed by removing the impossible delete and relying on the fixture's
+   already-unguessable `case_id`, matching
+   `tests/integration/integrity/conftest.py`'s own established precedent.
+4. Discovered (not a bug, a design confirmation): this task's own new live
+   test's cleanup initially also attempted to delete
+   `candidate_review_decisions`/`hypothesis_actions` rows and was
+   correctly rejected by the same trigger — confirming the new append-only
+   tables work exactly as designed. Fixed the test's cleanup, not the
+   trigger.
+
+No Operation Nightfall data, real police case data, production credentials,
+or private evaluation material was used anywhere in this gate. No test,
+Docker service, migration, or end-to-end flow is claimed passing without
+having been actually run and observed as shown above.

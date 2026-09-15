@@ -101,6 +101,7 @@ class CaseAction(StrEnum):
     INTEGRITY_VERIFY = "integrity_verify"
     INTEGRITY_EXPORT = "integrity_export"
     REVIEW_DECIDE = "review_decide"
+    HYPOTHESIS_PROPOSE = "hypothesis_propose"
     EXPORT_CASE_DATA = "export_case_data"
 
 
@@ -120,6 +121,7 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.INTEGRITY_VERIFY,
             CaseAction.INTEGRITY_EXPORT,
             CaseAction.REVIEW_DECIDE,
+            CaseAction.HYPOTHESIS_PROPOSE,
             CaseAction.EXPORT_CASE_DATA,
         }
     ),
@@ -131,6 +133,7 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.GRAPH_READ,
             CaseAction.INTEGRITY_READ,
             CaseAction.INTEGRITY_VERIFY,
+            CaseAction.HYPOTHESIS_PROPOSE,
         }
     ),
     CaseRole.ANALYST: frozenset(

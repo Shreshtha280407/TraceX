@@ -2,10 +2,12 @@
 
 Owner: Nipun. Status: Part 1 (this document) complete — durable, case-scoped
 integrity events, deterministic Merkle checkpoints, and local Ed25519
-signing/verification. Review-decision and hypothesis-action recording
-(Shreshtha), authorization/audit protection for integrity operations
-(Aditya), and modality-specific provenance leaves (Jasraj/Gaurav/Sarthak)
-are later Phase 6 work — see "Handoff to later branches" below.
+signing/verification. Review-decision and hypothesis-action recording,
+plus the final live release gate (Shreshtha, Phase 6 Part 5, complete —
+see `docs/architecture/phase-6-review-and-hypothesis.md`), authorization/
+audit protection for integrity operations (Aditya, Part 2), and
+modality-specific provenance leaves (Jasraj Part 3, Gaurav/Sarthak Part 4)
+are documented in their own sections below and in the linked Part 5 doc.
 
 ## Part 2: protected API, append-only records, and reconciliation
 
@@ -53,8 +55,9 @@ until a durable ordered observation-ID representation exists; UUID sort order
 would alter the frozen original payload hash. Later producer owners must
 register their durable replay adapter when they add new integrity leaves.
 
-Live Docker/infrastructure validation is intentionally deferred to Phase 6
-Part 5 (Shreshtha); Part 2 does not start containers.
+Live Docker/infrastructure validation was intentionally deferred to Phase 6
+Part 5 (Shreshtha) — Part 2 itself did not start containers. **Resolved**:
+see `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry.
 
 ## Part 3: structured observation provenance
 
@@ -198,11 +201,11 @@ Fields: `integrity_event_id`, `case_id`, `event_kind`, `subject_type`,
 
 Supported `IntegrityEventKind` values: `evidence_registered`,
 `observation_published`, `correlation_completed`, `review_decision`,
-`hypothesis_action`. The final two are **forward-compatible only** — the
-enum and schema accept them, but no producer emits them yet and no
-review/hypothesis workflow exists in this repository. Shreshtha's later
-Phase 6 work is expected to emit them through the same `record_integrity_event`
-facade, unchanged.
+`hypothesis_action`. **Resolved (Phase 6 Part 5, Shreshtha).** The final
+two were originally forward-compatible-only; a real candidate-review and
+hypothesis workflow now emits both through this exact same
+`record_integrity_event` facade, unchanged — see
+`docs/architecture/phase-6-review-and-hypothesis.md`.
 
 ### Why raw content never reaches storage
 
@@ -418,14 +421,13 @@ integrity recorder at a deliberately unreachable database and confirms
 dict — see the module docstring's "Why raw content never reaches storage"
 section above for why this matters beyond just the validator.
 
-Two producer boundaries are explicitly *not* wired to code that doesn't
-exist yet: **review decisions** and **hypothesis actions**. Their
-`IntegrityEventKind` values exist in the enum (forward-compatible), and
-`record_integrity_event`/`IntegrityEventSubmission` already accept them —
-Shreshtha's later work only needs to call the existing facade with
-`event_kind=IntegrityEventKind.REVIEW_DECISION` (or `HYPOTHESIS_ACTION`)
-and its own `subject_type`/`subject_id`/`canonical_metadata`; no new
-integrity-module code should be needed.
+Two producer boundaries originally had no code wired to them: **review
+decisions** and **hypothesis actions**. **Resolved (Phase 6 Part 5,
+Shreshtha).** `review_service.py` (`app/modules/graph/`) now calls this
+exact facade with `event_kind=IntegrityEventKind.REVIEW_DECISION` (or
+`HYPOTHESIS_ACTION`) and its own `subject_type`/`subject_id`/
+`canonical_metadata` — no new integrity-module code was needed, exactly as
+anticipated here.
 
 ## Verification and safe export
 
@@ -481,16 +483,14 @@ material (see `models.py`'s `VerificationLeaf`/`VerificationBundle`).
 - **Sarthak** — audio/social/message/chunk provenance leaf inputs, same
   facade, same discipline: IDs, counts, hashes, safe metadata — never
   transcript text or chat body.
-- **Shreshtha** — review-decision and hypothesis-action recording, plus
-  final Phase 6 graph/release integration. `IntegrityEventKind
-  .REVIEW_DECISION`/`HYPOTHESIS_ACTION` already exist; call
-  `record_integrity_event` from wherever your review/hypothesis workflow
-  durably commits its decision, exactly like the three existing seams in
-  this document's "Producer integration seams" section. No new integrity
-  schema/migration should be needed for this — if your workflow's
-  `subject_type`/`subject_id`/metadata shape doesn't fit the existing
-  model, that's a signal to raise with Nipun before extending it
-  unilaterally, not to build a parallel recording path.
+- **Shreshtha** — **done (Phase 6 Part 5)**: review-decision and
+  hypothesis-action recording, plus final Phase 6 graph/release
+  integration. `review_service.py` calls `record_integrity_event` exactly
+  like the three existing seams in this document's "Producer integration
+  seams" section, with no new integrity schema/migration — see
+  `docs/architecture/phase-6-review-and-hypothesis.md` for the full design
+  and `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry for the live
+  release-gate results.
 
 ## Non-goals (explicit)
 

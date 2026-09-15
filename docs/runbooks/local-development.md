@@ -727,8 +727,36 @@ uv run python -m app.modules.integrity.reconcile_cli --case-id <case-uuid>
 ```
 
 The command is bounded (`--limit`, maximum 500), case-scoped, and idempotent.
-It currently repairs durable evidence and correlation leaves by reconstructing
-only their original safe metadata. Do not disable integrity append-only
-triggers in normal operation. A PostgreSQL superuser can bypass them, which
-is an explicit trust boundary. Live Compose verification is deferred to
-Phase 6 Part 5; this procedure does not authorize starting Docker.
+It repairs durable evidence, correlation, structured-provenance, modality-
+provenance, candidate-review-decision, and hypothesis-action leaves by
+reconstructing only their original safe metadata. Do not disable integrity
+append-only triggers in normal operation. A PostgreSQL superuser can bypass
+them, which is an explicit trust boundary. Live Compose verification was
+completed in Phase 6 Part 5 — see `docs/qa/test-results.md`'s dated entry.
+
+## Candidate review and hypothesis workflow (Phase 6 Part 5)
+
+```bash
+# List/decide a correlation candidate (case-scoped; requires an authenticated
+# access token whose membership has the review permission):
+curl -s http://localhost:8000/api/v1/cases/<case_id>/candidates \
+    -H "Authorization: Bearer <access_token>"
+curl -s -X POST http://localhost:8000/api/v1/cases/<case_id>/candidates/<candidate_id>/review \
+    -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+    -d '{"decision": "accepted_by_reviewer", "rationale": "optional, protected-database-only"}'
+
+# Propose/review a human-authored, evidence-backed hypothesis:
+curl -s -X POST http://localhost:8000/api/v1/cases/<case_id>/hypotheses \
+    -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+    -d '{"statement": "...", "supporting_observation_ids": ["<uuid>"]}'
+curl -s -X POST http://localhost:8000/api/v1/cases/<case_id>/hypotheses/<hypothesis_id>/review \
+    -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+    -d '{"decision": "accepted_by_reviewer"}'
+```
+
+A decision/hypothesis-review request is idempotent on an exact retry and
+rejected with `409` on a conflicting one -- it never overwrites an existing
+decision. `candidate_review_decisions` and `hypothesis_actions` are
+append-only, exactly like `integrity_events`; there is no update/delete
+path, by design, for either. See
+`docs/architecture/phase-6-review-and-hypothesis.md` for the full design.

@@ -467,6 +467,27 @@ class GraphCorrelationIntegrationRepository:
             )
         return [_correlation(row) for row in rows]
 
+    async def get_candidate_link(
+        self, case_id: UUID, candidate_link_id: UUID
+    ) -> CandidateLinkRecord | None:
+        """Case-scoped single-candidate lookup, for Shreshtha's Phase 6 Part 5
+        review workflow (`review_service.py`) -- mirrors `get_correlation`'s
+        exact shape and scoping."""
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(candidate_links_table).where(
+                            candidate_links_table.c.case_id == case_id,
+                            candidate_links_table.c.candidate_link_id == candidate_link_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _candidate(row) if row else None
+
     async def list_candidates(self, case_id: UUID) -> list[CandidateLinkRecord]:
         async with self._engine.connect() as conn:
             rows = (

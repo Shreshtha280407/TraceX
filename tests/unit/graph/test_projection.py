@@ -240,6 +240,9 @@ def test_relationship_kind_enum_has_no_entity_to_entity_kind() -> None:
         "PROJECTS_EVENT",
         "HAS_CLAIM_PARTICIPANT",
         "SUPPORTED_BY_OBSERVATION",
+        # Phase 6 Part 5: a hypothesis referencing a reviewed candidate --
+        # still never a direct Entity-to-Entity edge.
+        "REFERENCES_CANDIDATE",
     }
 
 

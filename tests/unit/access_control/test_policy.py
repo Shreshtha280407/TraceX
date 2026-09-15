@@ -82,6 +82,22 @@ def test_reviewer_can_decide_but_not_write_evidence() -> None:
     assert not _allow(role=CaseRole.REVIEWER, action=CaseAction.EVIDENCE_WRITE)
 
 
+def test_investigator_and_manager_can_propose_hypotheses_but_reviewer_cannot() -> None:
+    assert _allow(role=CaseRole.INVESTIGATOR, action=CaseAction.HYPOTHESIS_PROPOSE)
+    assert _allow(role=CaseRole.CASE_MANAGER, action=CaseAction.HYPOTHESIS_PROPOSE)
+    assert not _allow(role=CaseRole.REVIEWER, action=CaseAction.HYPOTHESIS_PROPOSE)
+    assert not _allow(role=CaseRole.ANALYST, action=CaseAction.HYPOTHESIS_PROPOSE)
+    assert not _allow(role=CaseRole.VIEWER, action=CaseAction.HYPOTHESIS_PROPOSE)
+
+
+def test_reviewer_can_decide_a_hypothesis_review_via_the_shared_review_decide_action() -> None:
+    # Hypothesis review reuses the same generic REVIEW_DECIDE permission a
+    # candidate review decision uses -- one "authorized human review
+    # decision" concept applied to two subject types.
+    assert _allow(role=CaseRole.REVIEWER, action=CaseAction.REVIEW_DECIDE)
+    assert not _allow(role=CaseRole.INVESTIGATOR, action=CaseAction.REVIEW_DECIDE)
+
+
 def test_every_role_has_a_defined_action_set() -> None:
     assert set(ROLE_ACTIONS) == set(CaseRole)
 

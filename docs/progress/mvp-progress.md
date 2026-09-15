@@ -644,17 +644,17 @@ dated entry.
   ID-to-test mapping.
 - [x] `docs/decisions/ADR-013-phase-6-integrity-checkpoints.md` records
   why this is explicitly not a public-blockchain-anchoring claim.
-- [ ] Live-infrastructure (real PostgreSQL) verification of this
-  module's DB-backed tests was not run in this environment — Docker
-  Desktop's daemon was unavailable throughout. Static checks, the full
-  migration-graph check, and every pure-logic test ran and passed; see
-  `docs/qa/test-results.md`'s dated Phase 6 Part 1 entry for the exact
-  commands and reason.
-- [ ] Review-decision/hypothesis-action recording (Shreshtha),
-  authorization-protected API exposure (Aditya), and modality-specific
-  provenance leaf wiring (Jasraj/Gaurav/Sarthak) remain later Phase 6
-  work — see `docs/architecture/phase-6-integrity.md`'s "Handoff to
-  later branches" section.
+- [x] Live-infrastructure (real PostgreSQL) verification of this
+  module's DB-backed tests: **resolved in Phase 6 Part 5 (Shreshtha)** —
+  the full Phase 6 migration chain was applied to a live PostgreSQL and
+  `tests/integration/integrity/test_repository_live.py` ran green; see
+  `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry.
+- [x] Review-decision/hypothesis-action recording: **complete (Phase 6
+  Part 5, Shreshtha)** — see `docs/architecture/phase-6-review-and-
+  hypothesis.md`. Authorization-protected API exposure for the
+  integrity-checkpoint surface (Aditya) and modality-specific provenance
+  leaf wiring (Jasraj/Gaurav/Sarthak) were completed in Phase 6 Parts
+  2-4, ahead of this entry.
 
 # Phase 5 - Shreshtha graph intelligence and rules baseline: Complete
 
@@ -788,25 +788,28 @@ dated entry.
   publication over existing social parsers.
 - [ ] Real model-bundle, LAN, Docker, dataset, and merge-wave validation.
 
-# Phase 6 Part 2 - Integrity security boundary: Complete (static/unit gate)
+# Phase 6 Part 2 - Integrity security boundary: Complete (live gate)
 
 - [x] Case-scoped checkpoint metadata, verification, and safe export routes
   with distinct integrity permissions and safe audit telemetry.
 - [x] PostgreSQL append-only triggers for durable integrity events,
   checkpoints, and signatures.
 - [x] Bounded, idempotent evidence-event reconciliation command.
-- [ ] Live Docker/infrastructure release validation (deferred to Shreshtha Part 5).
+- [x] Live Docker/infrastructure release validation: **complete (Phase 6
+  Part 5, Shreshtha)** — see `docs/qa/test-results.md`'s dated Phase 6
+  Part 5 entry.
 
-# Phase 6 Part 3 - Structured provenance integrity: Complete (static/unit gate)
+# Phase 6 Part 3 - Structured provenance integrity: Complete (live gate)
 
 - [x] Added immutable, case-scoped safe provenance commitments for accepted
   document/legal, OCR, CDR, and finance observations.
 - [x] Added exactly one idempotent `structured_observation_provenance` leaf per
   eligible observation without changing generic lifecycle events or graph behavior.
 - [x] Added exact-projection reconciliation and append-only migration coverage.
-- [ ] Live PostgreSQL/Docker release validation is deferred to Shreshtha Part 5.
+- [x] Live PostgreSQL/Docker release validation: **complete (Phase 6 Part 5,
+  Shreshtha)**.
 
-# Phase 6 Part 4 - Visual and communication provenance integrity: Complete (static/unit gate)
+# Phase 6 Part 4 - Visual and communication provenance integrity: Complete (live gate)
 
 - [x] Added immutable, case-scoped `visual_provenance.v1` and
   `communication_provenance.v1` records and one additive leaf per eligible
@@ -814,4 +817,46 @@ dated entry.
 - [x] Preserved persisted media scope, Phase 5 validation, correlation state,
   and local track/speaker/handle non-identity boundaries.
 - [x] Added append-only persistence and exact-projection reconciliation.
-- [ ] Live PostgreSQL/Docker/real-worker validation is deferred to Shreshtha Part 5.
+- [x] Live PostgreSQL/Docker/real-worker validation: **complete (Phase 6
+  Part 5, Shreshtha)**.
+
+# Phase 6 Part 5 - Review, hypothesis, and final release gate (Shreshtha): Complete
+
+- [x] Case-scoped, authorized candidate review-decision workflow: one
+  decision per candidate, effective status computed at read time, never a
+  mutation of Nipun's Phase 5 scoring output. Protected routes: `GET
+  /api/v1/cases/{case_id}/candidates[/{candidate_id}]`, `POST
+  .../candidates/{candidate_id}/review`.
+- [x] Human-created, evidence-backed hypothesis workflow: every reference
+  re-verified against its own canonical table; deterministic, content-
+  addressed hypothesis IDs; one review action per hypothesis. Protected
+  routes: `GET`/`POST /api/v1/cases/{case_id}/hypotheses[/{hypothesis_id}]`,
+  `POST .../hypotheses/{hypothesis_id}/review`.
+- [x] Both durable actions emit `review_decision`/`hypothesis_action`
+  integrity events through the existing, unmodified
+  `IntegrityService.record_integrity_event` facade — no new integrity
+  schema, exactly as `docs/architecture/phase-6-integrity.md` anticipated.
+- [x] Safe, provenance-gated Neo4j projection: candidate review decisions
+  `MATCH` (never fabricate) the existing `Correlation` node; hypotheses get
+  a new `Hypothesis` node/label, gated on the same Evidence->Observation
+  provenance chain `Correlation` itself requires.
+- [x] One additive migration (`a3b4c5d6e7f8`) — `candidate_review_decisions`
+  and `hypothesis_actions` (both append-only, reusing Nipun's trigger
+  function), `hypotheses` (mutable). Single coherent Alembic head,
+  confirmed live.
+- [x] New `CaseAction.HYPOTHESIS_PROPOSE`; hypothesis review reuses the
+  existing `REVIEW_DECIDE`. Two real, pre-existing test regressions found
+  and fixed (`test_relationship_kind_enum_has_no_entity_to_entity_kind`,
+  `test_phase_6_migration_is_the_current_head`) caused by this task's
+  additive enum/migration changes, plus one genuine pre-existing defect
+  found and fixed in `test_integrity_producer_seam_live.py` (its own
+  cleanup attempted a `DELETE` against the now-live append-only
+  `integrity_events` trigger).
+- [x] Full static gate (`ruff format --check`, `ruff check`, `mypy app`,
+  `alembic heads`/`history`, `git diff --check`, `docker compose config`)
+  and full live gate (`uv run pytest -q` against the real running Docker
+  stack: PostgreSQL, Neo4j, Redis, MinIO, API) both pass with zero
+  failures — see `docs/qa/test-results.md`'s dated Phase 6 Part 5 entry
+  for exact commands/counts.
+- [x] Phase 6 is complete as of this entry: every `deferred to Shreshtha's
+  Phase 6 Part 5 gate` note left by Parts 1-4 is resolved above.

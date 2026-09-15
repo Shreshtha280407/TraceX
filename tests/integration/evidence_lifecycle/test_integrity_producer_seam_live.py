@@ -115,19 +115,20 @@ async def test_upload_records_exactly_one_evidence_registered_event(
         assert len(matching) == 1
         assert matching[0].canonical_payload_sha256  # a hash, never raw content
     finally:
+        # `integrity_events` is genuinely append-only (the PostgreSQL trigger
+        # `c42d3e4f5a6b`'s migration adds -- see
+        # `docs/architecture/phase-6-integrity.md`'s "Deliberate storage
+        # trade-off" section): a direct `DELETE` here is correctly rejected,
+        # confirmed live during the Phase 6 Part 5 gate. This mirrors
+        # `tests/integration/integrity/conftest.py`'s own precedent -- rely
+        # on `seeded_case` being a fresh, unguessable ID per test run rather
+        # than deleting rows that cannot be deleted. Only the (non-append-
+        # only) sequence counter is cleaned up.
         import sqlalchemy as sa
 
-        from app.modules.integrity.repository import (
-            integrity_events_table,
-            integrity_sequence_counters_table,
-        )
+        from app.modules.integrity.repository import integrity_sequence_counters_table
 
         async with integrity_engine.begin() as conn:
-            await conn.execute(
-                sa.delete(integrity_events_table).where(
-                    integrity_events_table.c.case_id == seeded_case
-                )
-            )
             await conn.execute(
                 sa.delete(integrity_sequence_counters_table).where(
                     integrity_sequence_counters_table.c.case_id == seeded_case
