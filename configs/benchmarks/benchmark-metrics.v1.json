@@ -1,0 +1,131 @@
+{
+  "schema_version": "v1",
+  "frozen_at": "2026-09-15T00:00:00Z",
+  "metric_groups": [
+    {
+      "task": "ocr",
+      "required_metric_names": [
+        "character_error_rate",
+        "word_error_rate",
+        "field_extraction_precision",
+        "field_extraction_recall",
+        "field_extraction_f1",
+        "latency_ms",
+        "ram_mb",
+        "vram_mb"
+      ],
+      "description": "OCR: character/word error where labels permit, field extraction precision/recall/F1, latency, RAM/VRAM. A metric a given dataset's labels cannot support (e.g. no field-level ground truth) is still a required key, valued None, never omitted."
+    },
+    {
+      "task": "fir_cdr_finance_extraction",
+      "required_metric_names": [
+        "normalization_accuracy",
+        "schema_validation_error_rate",
+        "event_coverage",
+        "latency_ms"
+      ],
+      "description": "CDR/finance: normalization accuracy, schema/validation error rate, event coverage, latency."
+    },
+    {
+      "task": "detection",
+      "required_metric_names": [
+        "precision",
+        "recall",
+        "map",
+        "latency_ms",
+        "vram_mb",
+        "ram_mb"
+      ],
+      "description": "Detection: precision, recall, mAP where labels permit, latency, VRAM/RAM."
+    },
+    {
+      "task": "tracking",
+      "required_metric_names": [
+        "idf1",
+        "hota",
+        "mota",
+        "id_switches",
+        "latency_ms",
+        "vram_mb",
+        "ram_mb"
+      ],
+      "description": "Tracking: IDF1/HOTA/MOTA where labels permit, ID switches, latency, VRAM/RAM."
+    },
+    {
+      "task": "visual_text",
+      "required_metric_names": [
+        "character_error_rate",
+        "word_error_rate",
+        "field_extraction_precision",
+        "field_extraction_recall",
+        "field_extraction_f1",
+        "latency_ms"
+      ],
+      "description": "Visual text (OCR applied to video/image regions): mirrors the OCR metric group, since it is the same underlying task applied to a different upstream detector's crops."
+    },
+    {
+      "task": "vad",
+      "required_metric_names": [
+        "voice_activity_detection_accuracy",
+        "latency_ms",
+        "ram_mb"
+      ],
+      "description": "VAD: not in the task's own metrics table -- Nipun's own minimal, reasonable extension for completeness (voice-activity accuracy where labels permit, plus latency/RAM)."
+    },
+    {
+      "task": "asr",
+      "required_metric_names": [
+        "wer",
+        "cer",
+        "real_time_factor",
+        "latency_ms",
+        "ram_mb",
+        "vram_mb"
+      ],
+      "description": "ASR: WER/CER, real-time factor, latency, RAM/VRAM."
+    },
+    {
+      "task": "diarization",
+      "required_metric_names": [
+        "der",
+        "speaker_turn_quality",
+        "latency_ms",
+        "ram_mb",
+        "vram_mb"
+      ],
+      "description": "Diarization: DER, speaker-turn quality where labels permit, latency, RAM/VRAM."
+    },
+    {
+      "task": "language_identification",
+      "required_metric_names": [
+        "accuracy",
+        "latency_ms"
+      ],
+      "description": "Language identification: not in the task's own metrics table -- Nipun's own minimal, reasonable extension for completeness (accuracy where labels permit, plus latency)."
+    },
+    {
+      "task": "social_text_extraction",
+      "required_metric_names": [
+        "extraction_precision",
+        "extraction_recall",
+        "extraction_f1",
+        "language_handling_score",
+        "latency_ms"
+      ],
+      "description": "Social/text: extraction precision/recall/F1, language handling, latency. Forward-compatible only -- no Part 1 candidate exists for this task yet; the existing deterministic social/chat parsers are today's baseline."
+    },
+    {
+      "task": "correlation",
+      "required_metric_names": [
+        "precision_at_k",
+        "recall_at_k",
+        "false_positive_rate",
+        "calibration_brier_score",
+        "explanation_completeness",
+        "deterministic_reproducibility",
+        "latency_ms"
+      ],
+      "description": "Cross-linking: Precision@K, Recall@K, false-positive rate, calibration/Brier score when applicable, explanation completeness, deterministic reproducibility, latency. Never a guilt score -- see ADR-016."
+    }
+  ]
+}

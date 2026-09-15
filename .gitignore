@@ -29,3 +29,15 @@ docker/**/data/
 # app/modules/media_processing/bootstrap_models.py) -- large, licensed,
 # third-party binaries, never committed to this repository.
 models/
+
+# Phase 7 evaluation foundation (see
+# docs/architecture/phase-7-evaluation-and-model-governance.md). Raw
+# downloaded datasets, model weights/caches, benchmark-run output, and
+# private evaluation/truth material all stay outside Git -- only the
+# typed manifests in configs/benchmarks/ and small, licence-safe synthetic
+# test fixtures under tests/ are ever committed.
+/local-data/
+/model-cache/
+/benchmark-runs/
+/private-evaluation/
+/operation-nightfall-truth/

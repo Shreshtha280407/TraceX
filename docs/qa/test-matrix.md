@@ -270,3 +270,31 @@ PostgreSQL, mirroring every other `tests/integration/*` suite.
 | HYPOTHESIS-005 | Hypothesis Neo4j projection is provenance-gated exactly like `Correlation`'s; a hypothesis with no evidence paths is a safe no-op; a candidate-reference edge uses `MATCH` on both sides | `tests/unit/graph/test_review_projection.py` |
 | ACCESS-HYPOTHESIS-001 | `HYPOTHESIS_PROPOSE` is granted to owner/manager/investigator only; hypothesis review reuses the existing `REVIEW_DECIDE` grant | `tests/unit/access_control/test_policy.py` |
 | PHASE6-LIVE-001 | Full live workflow: authorization ordering (401 before lookup, 403 for cross-case/non-member/wrong-role, 404 for a missing candidate/hypothesis, no existence leakage), a real candidate review decision reaching the durable table + integrity event + provenance-gated `Correlation` projection, idempotent retry, conflicting-retry `409`, a real hypothesis citing a real observation and candidate reaching a provenance-gated `Hypothesis` node with a `REFERENCES_CANDIDATE` edge, direct PostgreSQL `UPDATE`/`DELETE` rejected on both new append-only tables, and reconciliation replay for both new leaf kinds | `tests/integration/graph/test_review_and_hypothesis_live.py` |
+
+## Phase 7 Part 1 — evaluation foundation and local-model governance (Nipun)
+
+The 17 required proof points from the Phase 7 Part 1 task spec, mapped to
+their tests. Every test in this section is a pure unit/contract test --
+none needs live PostgreSQL/Neo4j/Redis/MinIO, since Part 1 is a
+configuration/contract-only part with no downloaded dataset, no downloaded
+model, and no database write of its own.
+
+| ID | Proof point | Coverage |
+|---|---|---|
+| EVAL-001 | Every Dataset Manifest V1 entry parses | `tests/unit/evaluation/test_dataset_manifest.py::test_every_dataset_manifest_entry_parses` |
+| EVAL-002 | Unsupported schema version is rejected | `tests/unit/evaluation/test_models.py::test_unsupported_schema_version_is_rejected` |
+| EVAL-003 | Invalid dataset role/owner/storage policy is rejected | `tests/unit/evaluation/test_models.py::test_invalid_role_is_rejected`, `test_invalid_owner_is_rejected`, `test_invalid_storage_policy_is_rejected` |
+| EVAL-004 | Unsafe local path values are rejected | `tests/unit/evaluation/test_models.py::test_absolute_local_path_is_rejected`, `test_home_relative_local_path_is_rejected`, `test_traversal_local_path_is_rejected`, `test_local_path_outside_allowed_roots_is_rejected` |
+| EVAL-005 | Every primary dataset has allowed tasks, prohibited claims, and limitations | `tests/unit/evaluation/test_dataset_manifest.py::test_every_primary_dataset_declares_tasks_claims_and_limitations` |
+| EVAL-006 | Operation Nightfall is protected as private showcase holdout | `tests/unit/evaluation/test_dataset_manifest.py::test_operation_nightfall_is_protected_as_private_showcase_holdout`, `test_manifest_rejects_operation_nightfall_with_the_wrong_role` |
+| EVAL-007 | Public benchmark datasets cannot be marked as one real investigation | `tests/unit/evaluation/test_dataset_manifest.py::test_public_benchmark_datasets_cannot_be_marked_as_one_real_investigation` |
+| EVAL-008 | Model candidates cannot start as `selected` | `tests/unit/evaluation/test_catalog.py::test_model_candidate_cannot_start_as_selected` |
+| EVAL-009 | Completed successful benchmark runs require an artifact SHA-256 | `tests/unit/evaluation/test_results.py::test_completed_successful_run_requires_artifact_sha256` |
+| EVAL-010 | Result metrics reject unsafe raw-content fields | `tests/unit/evaluation/test_results.py::test_result_metrics_reject_unsafe_raw_content_via_forbidden_key`, `test_result_metrics_reject_a_raw_string_value`, `test_failure_reason_rejects_a_leaked_credential` |
+| EVAL-011 | All required metric groups are represented | `tests/unit/evaluation/test_results.py::test_all_required_metric_groups_are_represented` |
+| EVAL-012 | Case-level split rejects the same case in two groups | `tests/unit/evaluation/test_splits.py::test_case_level_split_rejects_the_same_case_in_two_groups` |
+| EVAL-013 | Case-plan count outside 12-15 is rejected | `tests/unit/evaluation/test_splits.py::test_case_plan_count_outside_12_to_15_is_rejected`, `test_case_plan_total_cases_must_match_its_own_declared_bounds` |
+| EVAL-014 | Operation Nightfall cannot be put in development/tuning | `tests/unit/evaluation/test_splits.py::test_operation_nightfall_cannot_appear_in_a_tunable_case_group`, `test_operation_nightfall_cannot_appear_in_holdout_either` |
+| EVAL-015 | The two investigator-report proof requirements are represented | `tests/unit/evaluation/test_models.py::test_both_investigator_report_requirements_are_represented`, `test_investigator_lead_report_must_prohibit_guilt_language` |
+| EVAL-016 | `.gitignore` contains targeted protections for data/model/private-truth paths | `tests/unit/evaluation/test_dataset_manifest.py::test_gitignore_has_targeted_evaluation_data_safety_rules` |
+| EVAL-017 | Existing regression tests remain unaffected | Full pre-existing repository suite (see `docs/qa/test-results.md`'s dated Phase 7 Part 1 entry) -- Part 1 adds only new, additive files; nothing existing was edited except `.gitignore` (additive) |

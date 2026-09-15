@@ -3006,3 +3006,70 @@ No Operation Nightfall data, real police case data, production credentials,
 or private evaluation material was used anywhere in this gate. No test,
 Docker service, migration, or end-to-end flow is claimed passing without
 having been actually run and observed as shown above.
+
+## 2026-09-15 — Phase 7 Part 1 evaluation foundation and local-model governance (Nipun)
+
+New additive `app/modules/evaluation/` module (typed dataset-manifest,
+model-candidate-catalog, benchmark-run, benchmark-metrics-spec, and
+synthetic-case-plan contracts, plus the two investigator-report proof
+contracts), four frozen `configs/benchmarks/*.v1.json` configs, and five
+new `.gitignore` entries. See
+`docs/architecture/phase-7-evaluation-and-model-governance.md` and
+`docs/decisions/ADR-016-phase-7-evaluation-and-model-selection.md` for the
+design. This is a configuration/contract-only part: no dataset was
+downloaded, no model weight was downloaded, no benchmark was executed, and
+no model/correlation-algorithm winner was selected — see those documents'
+own "what this part does not do" sections.
+
+**Docker was unavailable throughout this work**, same as it was for this
+session's earlier Phase 6 Part 1 work: `docker ps`/`docker version` failed
+with `dial unix .../docker.sock: connect: no such file or directory`. This
+had **no effect on this part's verification**, unlike Phase 6 Part 1 --
+`app/modules/evaluation/` has no PostgreSQL/Neo4j/Redis/MinIO dependency
+of any kind, so every one of its 42 new tests is a pure unit/contract test
+that needs no live infrastructure. `docker compose config -q` (which needs
+no running daemon) passed.
+
+**Static/migration checks**: `uv sync --all-groups` (up to date), `uv run
+ruff format --check .` (491 files, all formatted), `uv run ruff check .`
+(all checks passed), `uv run mypy app` (205 source files, no issues),
+`git diff --check` (clean, no whitespace errors), `docker compose config
+-q` (valid) -- all passed. No Alembic migration was added in this part, so
+`alembic heads`/`history` are unchanged from the prior Phase 6 Part 5
+entry.
+
+**One collection bug found and fixed along the way**: the first full-suite
+run failed to collect at all --
+`tests/unit/evaluation/test_models.py` collided with the pre-existing
+`tests/unit/integrity/test_models.py` under pytest's rootless import mode
+(no `tests/` package anywhere in this repository uses `__init__.py`, so
+two same-named `test_models.py` files in different directories import as
+the same top-level module name). Fixed with the standard, minimal fix for
+exactly this pytest error class: added one empty
+`tests/unit/evaluation/__init__.py`, package-qualifying only the new
+directory (as `evaluation.test_models`) without touching
+`tests/unit/integrity/` or any other existing test directory. Verified via
+`uv run pytest tests/unit/integrity/test_models.py
+tests/unit/evaluation/test_models.py --collect-only -q` that both files
+collect cleanly together before re-running the full suite.
+
+**Focused evaluation suite** (`tests/unit/evaluation/`, all 17 required
+proof points, no live infra needed):
+
+```text
+42 passed in 0.15s
+```
+
+**Full repository suite**: `uv run pytest -q` -- **1959 passed, 87
+skipped, 0 failed**, in 264s, one pre-existing unrelated warning
+(`audioop` deprecation, not from this phase's code). Zero failures,
+zero regressions. The skip count (87) is entirely explained by Docker
+being unreachable repo-wide (every `tests/integration/*` suite across the
+whole repository self-skips for that reason, not specific to this part) --
+none of Phase 7 Part 1's own 42 tests skip.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this gate. No test, dataset
+download, model download, or benchmark run is claimed as done without
+having actually happened -- this part claims none of those, honestly, per
+its own explicit non-goals.

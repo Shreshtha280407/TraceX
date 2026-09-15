@@ -1,0 +1,57 @@
+{
+  "schema_version": "v1",
+  "case_count_minimum": 12,
+  "case_count_maximum": 15,
+  "split_strategy": "Split strictly by case, never by individual observation/frame/page/row/clip/message (frozen rule 1). Each of the 12-15 planned synthetic cases is assigned to exactly one of development, validation, or holdout; a case's full multi-modal evidence set moves together with it. Development cases may be used for any tuning decision; validation/holdout cases must never be used to tune a model (frozen rule 2) -- see app.modules.evaluation.splits.assert_case_not_reserved_for_tuning.",
+  "case_groups": [
+    {
+      "group": "development",
+      "case_ids": [
+        "synth-case-dev-01",
+        "synth-case-dev-02",
+        "synth-case-dev-03",
+        "synth-case-dev-04",
+        "synth-case-dev-05",
+        "synth-case-dev-06"
+      ]
+    },
+    {
+      "group": "validation",
+      "case_ids": [
+        "synth-case-val-01",
+        "synth-case-val-02",
+        "synth-case-val-03"
+      ]
+    },
+    {
+      "group": "holdout",
+      "case_ids": [
+        "synth-case-holdout-01",
+        "synth-case-holdout-02",
+        "synth-case-holdout-03"
+      ]
+    }
+  ],
+  "leakage_rules": [
+    "a case_id may appear in exactly one of development, validation, or holdout -- never more than one, enforced structurally by SyntheticCasePlanV1's own validator",
+    "no observation, frame, page, row, clip, or message from a case may be reused across two different cases' evidence sets",
+    "no model tuning decision (a threshold, a hyperparameter, a manual review of output) may see a validation or holdout case's data before that case's final, frozen evaluation run",
+    "Operation Nightfall must never appear inside any of the case_groups above -- it is reserved separately as the private showcase holdout, entirely outside this synthetic plan's tunable case pool"
+  ],
+  "operation_nightfall_policy": "Operation Nightfall (dataset_id operation_nightfall_v1) is a separate, private, end-to-end showcase holdout -- it is not one of the 12-15 planned synthetic cases above and never appears in this plan's case_groups. It must never be used for tuning or development at any point, and is evaluated only once, at final showcase time, after every modality candidate and the correlation approach are already frozen from the synthetic_multicase_v1 plan. This separation is structural: no case_id containing 'nightfall' may appear in case_groups (see CaseGroupV1's own validator).",
+  "truth_file_policy": "Operation Nightfall's ground-truth file is private and is never committed to Git in any form (see dataset-manifest.v1.json's git_storage_policy=excluded_private_never_documented for operation_nightfall_v1) and is never shown in the investigator UI. It may be used only by an internal, offline evaluation script to score TraceX's own system output against the truth -- never surfaced as system output itself, and never used to auto-generate or auto-confirm a finding presented to an investigator.",
+  "required_modalities": ["document", "cdr", "finance", "video", "audio", "social_text"],
+  "required_cross_modal_scenarios": [
+    "shared_identifier_across_modalities",
+    "time_proximate_event_sequence",
+    "location_camera_tower_linkage",
+    "intentional_ambiguity_or_contradiction",
+    "evidence_supported_true_link",
+    "plausible_unsupported_non_link",
+    "source_locators_for_every_finding"
+  ],
+  "required_report_assertions": [
+    "evidence_and_provenance_report_required",
+    "investigator_intelligence_lead_report_required"
+  ]
+}

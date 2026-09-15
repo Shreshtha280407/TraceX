@@ -760,3 +760,38 @@ decision. `candidate_review_decisions` and `hypothesis_actions` are
 append-only, exactly like `integrity_events`; there is no update/delete
 path, by design, for either. See
 `docs/architecture/phase-6-review-and-hypothesis.md` for the full design.
+
+## Evaluation foundation and dataset/model manifests (Phase 7 Part 1)
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md` for the
+full design. This part introduces no new runtime service, CLI, or
+environment variable -- the four frozen configs load and validate purely
+in-process:
+
+```bash
+# Load and validate every frozen config against its typed contract:
+uv run python -c "
+from app.modules.evaluation.manifest import load_dataset_manifest
+from app.modules.evaluation.catalog import load_model_candidate_catalog
+from app.modules.evaluation.results import load_benchmark_metrics_spec
+from app.modules.evaluation.splits import load_synthetic_case_plan
+print('datasets:', len(load_dataset_manifest().datasets))
+print('candidates:', len(load_model_candidate_catalog().candidates))
+print('metric groups:', len(load_benchmark_metrics_spec().metric_groups))
+print('case groups:', len(load_synthetic_case_plan().case_groups))
+"
+
+# Focused test run:
+uv run pytest tests/unit/evaluation/ -v
+```
+
+Editing any of `configs/benchmarks/*.v1.json` by hand is safe to try --
+an invalid role/owner/storage-policy value, an unsafe `local_path_placeholder`,
+a candidate marked `selected`, a case appearing in two split groups, or
+Operation Nightfall appearing inside a tunable case group all fail to load
+with a clear pydantic `ValidationError`, not a silent acceptance. Raw
+dataset content, model weights, and benchmark-run output belong under the
+five paths this phase added to `.gitignore`
+(`local-data/`, `model-cache/`, `benchmark-runs/`, `private-evaluation/`,
+`operation-nightfall-truth/`) -- never committed, and never referenced by
+anything other than a `local_path_placeholder` string in the manifest.
