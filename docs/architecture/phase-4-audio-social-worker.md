@@ -43,3 +43,28 @@ Durable coordinator manifest creation and checkpoint persistence remain
 Nipun-owned service seams; workers never write storage or a database directly.
 Shreshtha receives the existing `transcript_segment`,
 `diarization_speaker_turn`, and `chat_message` taxonomy unchanged.
+
+## Phase 5B communication source-signal validation
+
+`communication_processing.signal_validation` adds deterministic
+`accepted`, `rejected`, `incomplete`, and `deferred` outcomes with bounded
+reason codes, a safe locator reference, extractor identity, and an explicit
+`correlation_ready` flag. No outcome contains transcript/message text, media
+bytes, credentials, paths, or export payloads.
+
+Transcript and diarization observations require non-negative ordered
+source-relative millisecond ranges. When the real processing call supplies a
+chunk range, a signal outside that range is rejected before publication; a
+turn spanning chunks is not assigned an arbitrary chunk. The local pipeline
+keeps valid ASR output if diarization fails or a diarization turn is excluded.
+The worker's in-memory planning identifiers are provenance only, not a claim
+that a coordinator persisted a manifest or checkpoint.
+
+Every chat message must have a platform and deterministic message/export
+locator. A missing sender or unresolved timestamp remains an incomplete,
+non-correlation-ready message; the actual worker consequently does not emit
+mentioned identifiers from it. Handles retain their platform namespace;
+speaker labels are evidence-local technical labels; aliases and deterministic
+transliterations remain candidate-only representations, never identities.
+Graph-facing transcript/message fields remain a bounded length plus SHA-256
+commitment, rather than raw content.

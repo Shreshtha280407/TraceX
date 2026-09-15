@@ -50,6 +50,7 @@ from app.modules.communication_processing.limits import (
 )
 from app.modules.communication_processing.models import RawMention
 from app.modules.communication_processing.provenance import CONFIDENCE_STRUCTURED_COMPLETE
+from app.modules.communication_processing.signal_validation import validate_chat_signal
 
 OBSERVATION_TYPE = "chat_message"
 
@@ -185,7 +186,13 @@ def chat_message_to_mention(record: ChatMessageRecord) -> RawMention:
     identity resolution, and never auto-attached to any entity's aliases.
     """
     sender = bounded_handle(record.sender)
+    participants: list[JsonValue] = [
+        participant
+        for value in record.participants
+        if (participant := bounded_handle(value)) is not None
+    ]
     message_text = truncate_text(record.text)
+    validation = validate_chat_signal(record)
     attributes: dict[str, JsonValue] = {
         "platform": record.platform,
         "conversation_id": record.conversation_id,
@@ -194,7 +201,7 @@ def chat_message_to_mention(record: ChatMessageRecord) -> RawMention:
         "sender_transliteration_candidates": (
             _sender_transliteration_candidates(sender) if sender is not None else None
         ),
-        "participants": list(record.participants),
+        "participants": participants,
         "timestamp_raw": record.timestamp_raw,
         "timestamp_source_timezone": record.timestamp_source_timezone,
         "reply_to": record.reply_to,
@@ -206,6 +213,7 @@ def chat_message_to_mention(record: ChatMessageRecord) -> RawMention:
             sha256(message_text.encode("utf-8")).hexdigest() if message_text is not None else None
         ),
         "message_text_length": len(message_text or ""),
+        "communication_signal_validation": validation.attribute_value(),
     }
     return RawMention(
         observation_type=OBSERVATION_TYPE,

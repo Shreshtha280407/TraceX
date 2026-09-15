@@ -114,6 +114,10 @@ from app.modules.communication_processing.provenance import (
     mention_to_observation,
     profile_config_hash,
 )
+from app.modules.communication_processing.signal_validation import (
+    CommunicationSignalOutcome,
+    validate_chat_signal,
+)
 from app.modules.communication_processing.social.common import chat_message_to_mention
 from app.modules.communication_processing.social.identifiers import extract_mentioned_identifiers
 from app.modules.communication_processing.social.instagram import parse_instagram_export
@@ -458,7 +462,12 @@ def _handle_social_export(
     mentions: list[RawMention] = []
     for record in records:
         mentions.append(chat_message_to_mention(record))
-        mentions.extend(extract_mentioned_identifiers(record))
+        # Identifier extraction is permitted only for a complete source
+        # record.  The pure helper remains independently testable for
+        # parser fixtures, but publication cannot turn an incomplete chat
+        # record into a correlation-ready identifier.
+        if validate_chat_signal(record).outcome is CommunicationSignalOutcome.ACCEPTED:
+            mentions.extend(extract_mentioned_identifiers(record))
     return mentions, None, WorkerStatus.SUCCEEDED
 
 

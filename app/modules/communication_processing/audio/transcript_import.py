@@ -38,6 +38,11 @@ from app.modules.communication_processing.models import (
     TranscriptImportInput,
     TranscriptSegmentInput,
 )
+from app.modules.communication_processing.signal_validation import (
+    AudioChunkScope,
+    CommunicationSignalOutcome,
+    validate_audio_signal,
+)
 
 OBSERVATION_TYPE = "transcript_segment"
 
@@ -125,6 +130,7 @@ def transcript_segments_to_mentions(
     *,
     json_path_prefix: str = "$.segments",
     provenance_attributes: Mapping[str, JsonValue] | None = None,
+    chunk_scope: AudioChunkScope | None = None,
 ) -> list[RawMention]:
     """Validate then convert transcript segments into `transcript_segment` mentions.
 
@@ -140,6 +146,29 @@ def transcript_segments_to_mentions(
             time_end_ms=segment.end_ms,
             json_path=f"{json_path_prefix}[{index}]",
         )
+        validation = validate_audio_signal(
+            locator,
+            signal_kind="transcript",
+            chunk_scope=chunk_scope,
+            extractor_identity={
+                key: str(value)
+                for key, value in (provenance_attributes or {}).items()
+                if key
+                in {
+                    "asr_backend",
+                    "asr_backend_version",
+                    "asr_model_version",
+                    "asr_configuration_hash",
+                    "audio_profile",
+                }
+                and isinstance(value, str)
+            },
+        )
+        if validation.outcome is CommunicationSignalOutcome.REJECTED:
+            raise ProcessingError(
+                ErrorCode.INVALID_TRANSCRIPT_SEGMENT,
+                "transcript segment falls outside its supplied audio chunk",
+            )
         mentions.append(
             RawMention(
                 observation_type=OBSERVATION_TYPE,
@@ -155,6 +184,7 @@ def transcript_segments_to_mentions(
                     "transcript_text_length": len(segment.text),
                     "source_segment_id": segment.source_segment_id,
                     "language_hint": segment.language_hint,
+                    "communication_signal_validation": validation.attribute_value(),
                     **(provenance_attributes or {}),
                 },
             )

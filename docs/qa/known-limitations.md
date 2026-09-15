@@ -259,3 +259,12 @@ wave and post-Phase-5 validation gate.
 - VAD thresholds/script hints are deterministic policy aids, not measured
   accuracy claims. `audioop` is used only for Python 3.12 PCM normalization;
   a supported replacement is needed before a Python 3.13 upgrade.
+- Persisted coordinator manifest/chunk scope is enforced by communication
+  validation only when the worker is supplied actual scope. The present local
+  worker's deterministic in-memory plan is useful lineage but is not evidence
+  that coordinator manifest/checkpoint persistence was completed; that remains
+  the Nipun Phase 5 integration seam.
+- Platform parsing and Unicode/transliteration normalization are deterministic
+  safeguards, not multilingual accuracy, account-ownership, speaker identity,
+  or alias-equivalence claims. There is no face/voice biometric identification
+  or external phone/handle ownership lookup.

@@ -2604,3 +2604,25 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   passed**; integration suite **78 passed**; full suite **1831 passed, 1
   skipped** (one existing `audioop` deprecation warning). `alembic heads`,
   `docker compose config -q`, and `git diff --check` passed.
+
+# Phase 5B Sarthak communication source-signal validation (2026-09-15)
+
+- Focused producer/source-boundary coverage:
+  `uv run pytest tests/unit/communication_processing/test_signal_validation.py
+  tests/unit/communication_processing/test_transcript_import.py
+  tests/unit/communication_processing/test_diarization_import.py
+  tests/unit/communication_processing/test_social_common.py
+  tests/unit/communication_processing/test_social_identifiers.py
+  tests/unit/communication_processing/test_communication_worker_batches.py -q`
+  — **72 passed**, with one existing `audioop` deprecation warning.
+- Full communication unit coverage: `uv run pytest
+  tests/unit/communication_processing -q` — **367 passed**, with the same
+  warning. No real ASR/diarization executable, model bundle, private audio, or
+  private chat export was used.
+- `uv run pytest tests/integration -q` — **78 passed**, with the same warning.
+  `uv run pytest tests/unit/evidence_lifecycle -q` — **181 passed**.
+- The full suite ran to completion: **1847 passed, 1 skipped, 1 failed**. The
+  unrelated failure was `tests/unit/access_control/test_api.py::test_refresh_rate_limit_returns_429`:
+  its invalid refresh attempts all returned 401 rather than reaching 429. No
+  access-control code was changed here. `docker compose config -q` was valid;
+  no containers were started, stopped, recreated, or removed.

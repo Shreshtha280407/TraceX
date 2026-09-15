@@ -160,6 +160,14 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
     observation_type = observation.observation_type
     attributes = observation.attributes
 
+    # Producer-side validation is authoritative when present. Legacy Phase 4
+    # observations predate this attribute and keep their established mapping;
+    # new incomplete/deferred/rejected communication signals never reach
+    # retrieval merely because they contain an otherwise plausible value.
+    validation = attributes.get("communication_signal_validation")
+    if isinstance(validation, dict) and validation.get("correlation_ready") is not True:
+        return None
+
     kind_key = _identifier_kind_key(observation)
     if kind_key in _EXACT_IDENTIFIER_ENTITY_TYPES:
         kind = _EXACT_IDENTIFIER_ENTITY_TYPES[kind_key]

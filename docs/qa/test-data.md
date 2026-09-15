@@ -240,3 +240,9 @@ Tests use generated UUIDs, synthetic source-relative intervals, short Unicode
 strings, and a tiny in-memory constant-amplitude WAV fixture. Fixture ASR text
 is short and synthetic; no real transcript, chat export, credential, object
 URI, model asset, or case evidence is included.
+
+Phase 5B communication-validation fixtures add only short synthetic timestamps,
+message IDs, platform names, local speaker labels, and placeholder transcript
+or message text used to prove SHA-256/length-only graph attributes. They contain
+no real account owner, phone subscriber, chat participant, audio, or identity
+claim.
