@@ -336,6 +336,11 @@ wave and post-Phase-5 validation gate.
   projection for observations accepted before this migration, nor does it
   derive one from raw observation payloads. A fully privileged PostgreSQL
   superuser can still bypass append-only triggers.
+- **Visual/communication provenance legacy boundary.** Part 4 replays only
+  exact append-only safe projections. It does not synthesize leaves for
+  pre-migration observations or raw observation payloads. Direct PostgreSQL
+  trigger execution and real-worker
+  infrastructure validation are deferred to Shreshtha's Phase 6 Part 5 gate.
 - **Checkpoint building is an explicit action, not automatic.** There is
   no scheduler, background job, or per-event auto-checkpoint in this
   phase — an operator (or later automation, not built here) must invoke

@@ -2,6 +2,25 @@
 
 `app/modules/communication_processing/` turns three safe audio input roles (metadata, imported transcript segments, imported diarization segments) and four documented local social/chat export formats into canonical `ObservationV1` objects, plus separately produces deterministic, review-only communication-link candidates. Full alias/transliteration design lives in `docs/architecture/multilingual-alias-candidates-v1.md`. Design rationale lives in `docs/decisions/ADR-005-provenance-first-communication-processing.md`.
 
+## Phase 6 communication integrity provenance
+
+After canonical publication, accepted local-audio ASR/diarization observations
+with a coordinator-persisted chunk receive one `communication_provenance.v1`
+projection and one additive `communication_observation_provenance` leaf.
+Accepted social/chat message and safe identifier observations use the same
+projection without inventing media scope. The projection retains only safe
+extractor/validation state, bounded platform/language/category metadata, and
+persisted manifest/chunk IDs when real; it SHA-256 commits locator/time,
+transcript, local speaker label, message ID, participant/handle, and attachment
+values. Raw audio, transcript, body, speaker label, handle, phone, attachment,
+and URI never enter the projection or an integrity export.
+
+Existing validation remains authoritative. Audio/diarization intervals outside
+or across a persisted chunk, rejected/incomplete communication signals, and
+incomplete-chat identifier observations produce no leaf. A committed local
+speaker label or platform-scoped handle is provenance only, never an identity,
+relationship, candidate, or scoring conclusion.
+
 ## Supported input boundaries
 
 Audio processing accepts exactly three roles (`models.InputPayload`):

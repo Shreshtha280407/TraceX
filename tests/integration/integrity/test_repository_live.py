@@ -17,6 +17,7 @@ import sqlalchemy as sa
 
 from app.contracts.common import SourceLocator
 from app.contracts.evidence import SourceType
+from app.modules.integrity.modality_provenance import VisualObservationIntegrityProvenanceV1
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
 from app.modules.integrity.repository import (
     IntegrityRepository,
@@ -24,6 +25,7 @@ from app.modules.integrity.repository import (
     checkpoint_signatures_table,
     integrity_events_table,
     merkle_checkpoints_table,
+    modality_observation_provenance_table,
     structured_observation_provenance_table,
 )
 from app.modules.integrity.service import IntegrityService
@@ -251,6 +253,52 @@ async def test_structured_provenance_is_case_scoped_idempotent_and_append_only(
         .values(canonical_payload_sha256="b" * 64),
         sa.delete(structured_observation_provenance_table).where(
             structured_observation_provenance_table.c.provenance_id == first.provenance_id
+        ),
+    ):
+        with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+                await conn.execute(statement)
+
+
+async def test_modality_provenance_is_case_scoped_idempotent_and_append_only(
+    repository: IntegrityRepository, case_id: UUID
+) -> None:
+    """Visual/communication safe projections have the same SQL trigger boundary."""
+    projection = VisualObservationIntegrityProvenanceV1(
+        case_id=case_id,
+        evidence_id=uuid4(),
+        observation_id=uuid4(),
+        observation_type="video_detection",
+        evidence_sha256="a" * 64,
+        extractor_name="synthetic-visual",
+        extractor_version="1",
+        extractor_config_hash="synthetic-config",
+        model_version="n/a",
+        validation_outcome="accepted",
+        correlation_ready=True,
+        safe_source_locator_commitment_sha256="b" * 64,
+        persisted_manifest_id=uuid4(),
+        persisted_chunk_id=uuid4(),
+        chunk_boundary_version_commitment_sha256="c" * 64,
+        source_relative_interval_commitment_sha256="d" * 64,
+    )
+    first = await repository.record_modality_provenance(
+        projection, source_created_at=_NOW, now=_NOW
+    )
+    second = await repository.record_modality_provenance(
+        projection, source_created_at=_NOW, now=_NOW
+    )
+    assert first == second
+    changed = projection.model_copy(update={"source_relative_interval_commitment_sha256": "e" * 64})
+    with pytest.raises(IntegrityValidationError, match="modality provenance record"):
+        await repository.record_modality_provenance(changed, source_created_at=_NOW, now=_NOW)
+    assert await repository.list_modality_provenance(uuid4()) == []
+    for statement in (
+        sa.update(modality_observation_provenance_table)
+        .where(modality_observation_provenance_table.c.provenance_id == first.provenance_id)
+        .values(canonical_payload_sha256="f" * 64),
+        sa.delete(modality_observation_provenance_table).where(
+            modality_observation_provenance_table.c.provenance_id == first.provenance_id
         ),
     ):
         with pytest.raises(sa.exc.DBAPIError, match="append-only"):

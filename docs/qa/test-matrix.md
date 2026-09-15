@@ -251,3 +251,5 @@ PostgreSQL, mirroring every other `tests/integration/*` suite.
 | INTEGRITY-020 | Direct SQL update/delete attempts against integrity events, checkpoints, and signatures fail; ordinary inserts still succeed | `tests/integration/integrity/test_repository_live.py` (requires an already-running PostgreSQL) |
 | INTEGRITY-021 | Document/OCR/CDR/finance observations yield deterministic safe structured-provenance commitments; retries replay and changed commitments differ | `tests/unit/integrity/test_structured_provenance.py` |
 | INTEGRITY-022 | Structured-provenance reconciliation replays only an exact, case-scoped safe projection | `tests/unit/integrity/test_reconciliation.py` |
+| INTEGRITY-023 | Visual/communication projections are accepted-only, deterministic, commitment-only, and preserve local non-identity semantics | `tests/unit/integrity/test_modality_provenance.py` |
+| INTEGRITY-024 | Modality provenance migration remains on one Alembic head | `tests/unit/integrity/test_migration_head.py` |

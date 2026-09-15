@@ -76,6 +76,10 @@ from app.modules.evidence_lifecycle.models import (
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
 from app.modules.evidence_lifecycle.routing import accepted_content_types, route_for
 from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
+from app.modules.integrity.modality_provenance import (
+    build_communication_observation_provenance,
+    build_visual_observation_provenance,
+)
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
 from app.modules.integrity.service import IntegrityService
 from app.modules.integrity.structured_provenance import build_structured_observation_provenance
@@ -316,6 +320,70 @@ class EvidenceLifecycleService:
                     case_id=str(job.case_id),
                     event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED.value,
                     subject_type="structured_observation_provenance",
+                    subject_id=str(observation.observation_id),
+                    retry_state="reconciliation_pending",
+                    failure_category=type(exc).__name__,
+                )
+
+    async def _record_modality_provenance_safely(
+        self,
+        *,
+        job: WorkerJobRecord,
+        observations: list[ObservationV1],
+        source_created_at: datetime,
+        request_id: str | None,
+        media_publication: MediaChunkPublication | None,
+    ) -> None:
+        """Record one safe visual/communication leaf after accepted publication.
+
+        The media publication argument has already passed the coordinator's
+        persisted-manifest/chunk validation.  Builders reject a missing media
+        scope instead of trusting an observation attribute or guessing one.
+        """
+        if self._integrity_recorder is None or not observations:
+            return
+        evidence = await self._repository.get_evidence(job.case_id, job.evidence_id)
+        if evidence is None:
+            logger.warning(
+                "integrity.event_record_failed",
+                request_id=request_id,
+                case_id=str(job.case_id),
+                event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED.value,
+                subject_type="modality_observation_provenance",
+                subject_id="unknown",
+                retry_state="reconciliation_pending",
+                failure_category="MissingEvidence",
+            )
+            return
+        for observation in observations:
+            projection = build_visual_observation_provenance(
+                observation=observation,
+                evidence_sha256=evidence.sha256,
+                source_type=job.source_type,
+                publication=media_publication,
+            ) or build_communication_observation_provenance(
+                observation=observation,
+                evidence_sha256=evidence.sha256,
+                source_type=job.source_type,
+                publication=media_publication,
+            )
+            if projection is None:
+                continue
+            try:
+                await self._integrity_recorder.record_modality_observation_provenance(
+                    projection, source_created_at=source_created_at
+                )
+            except Exception as exc:
+                logger.warning(
+                    "integrity.event_record_failed",
+                    request_id=request_id,
+                    case_id=str(job.case_id),
+                    event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED.value,
+                    subject_type=(
+                        "visual_observation_provenance"
+                        if projection.schema_version == "visual_provenance.v1"
+                        else "communication_observation_provenance"
+                    ),
                     subject_id=str(observation.observation_id),
                     retry_state="reconciliation_pending",
                     failure_category=type(exc).__name__,
@@ -1453,6 +1521,13 @@ class EvidenceLifecycleService:
             observations=submission.observations,
             source_created_at=submission.submitted_at,
             request_id=context.request_id,
+        )
+        await self._record_modality_provenance_safely(
+            job=job,
+            observations=submission.observations,
+            source_created_at=submission.submitted_at,
+            request_id=context.request_id,
+            media_publication=media_publication,
         )
 
         logger.info(

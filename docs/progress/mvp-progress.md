@@ -805,3 +805,13 @@ dated entry.
   eligible observation without changing generic lifecycle events or graph behavior.
 - [x] Added exact-projection reconciliation and append-only migration coverage.
 - [ ] Live PostgreSQL/Docker release validation is deferred to Shreshtha Part 5.
+
+# Phase 6 Part 4 - Visual and communication provenance integrity: Complete (static/unit gate)
+
+- [x] Added immutable, case-scoped `visual_provenance.v1` and
+  `communication_provenance.v1` records and one additive leaf per eligible
+  accepted observation.
+- [x] Preserved persisted media scope, Phase 5 validation, correlation state,
+  and local track/speaker/handle non-identity boundaries.
+- [x] Added append-only persistence and exact-projection reconciliation.
+- [ ] Live PostgreSQL/Docker/real-worker validation is deferred to Shreshtha Part 5.

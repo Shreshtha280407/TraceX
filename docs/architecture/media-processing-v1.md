@@ -79,3 +79,21 @@ No confidence value here is, or is derived from, a probability of guilt, culpabi
 ## Deferred to a later phase
 
 Real YOLO/ByteTrack/PaddleOCR model integration, face recognition, person re-identification, biometric identification, automatic identity resolution, cross-camera identity matching, cross-modal correlation, Neo4j graph writes, actual file uploads/object-storage writes/hashing/Merkle roots/signatures, a video frontend/player, ML training/evaluation, and GPU Docker services are all explicitly out of scope for this phase — see `CLAUDE.md` and `docs/qa/known-limitations.md`.
+
+## Phase 6 visual integrity provenance
+
+After the coordinator accepts a persisted manifest/chunk publication, an
+accepted video/image detection, visual OCR observation, or evidence-local
+technical track receives one `visual_provenance.v1` integrity projection and
+one additive `visual_observation_provenance` leaf. The projection directly
+retains only persisted manifest/chunk UUIDs, extractor/version/configuration
+identity, evidence SHA-256, validation state, correlation state, and bounded
+technical categories. It SHA-256 commits locator/timeline, frame mapping,
+normalized geometry, local track ID, OCR content, and chunk boundary/version.
+
+The coordinator validation remains authoritative: a missing persisted scope,
+cross-chunk interval, invalid geometry, impossible frame mapping, or
+incomplete/rejected visual validation produces no leaf. Local track lifecycle
+values such as `ended_unmatched` are technical-only and never a person,
+relationship, or entity assertion. Raw frame/image/crop data, OCR text, plate
+values, embeddings, faces, raw track IDs, and object URIs are excluded.
