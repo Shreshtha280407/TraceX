@@ -860,3 +860,45 @@ dated entry.
   for exact commands/counts.
 - [x] Phase 6 is complete as of this entry: every `deferred to Shreshtha's
   Phase 6 Part 5 gate` note left by Parts 1-4 is resolved above.
+
+## Phase 7 Part 1 — Nipun evaluation foundation and local-model governance: Complete
+
+- [x] New additive `app/modules/evaluation/` module: typed
+  `DatasetManifestV1`/`ModelCandidateCatalogV1`/`BenchmarkRunV1`/
+  `BenchmarkMetricsSpecV1`/`SyntheticCasePlanV1` contracts plus the two
+  investigator-report proof-requirement contracts, all `extra="forbid",
+  frozen=True`, mirroring the `IntegrityModel`/`GraphModel` base-class
+  precedent.
+- [x] Four frozen `configs/benchmarks/*.v1.json` configs: a 14-entry
+  Dataset Manifest V1 (7 primary + 5 conditional + 2 controlled-synthetic),
+  a 17-candidate Model Candidate Catalog V1 across 10 active tasks + 1
+  forward-compatible task, an 11-group Benchmark Metrics Spec V1, and a
+  12-case Synthetic Case Plan V1 (6 development / 3 validation / 3
+  holdout), with Operation Nightfall structurally separate from all of it.
+- [x] Frozen evaluation rules encoded as validators, not only prose: case-
+  level-only splitting with structural leakage rejection, Operation
+  Nightfall barred from ever appearing in a tunable case group, a
+  completed successful benchmark run required to carry an artifact
+  SHA-256, a model candidate structurally unable to start `selected`, and
+  `composite_investigation_claim_allowed: Literal[False]` on the dataset
+  manifest itself.
+- [x] `docs/decisions/ADR-016-phase-7-evaluation-and-model-selection.md`
+  freezes the correlation model-selection policy (rules baseline vs.
+  Logistic Regression/XGBoost/LightGBM) before any comparison is run, and
+  records the one design fix this task found along the way: an
+  overly-broad forbidden-token scanner initially rejected the word
+  "transcription" (a substring of "transcript") in ordinary task
+  descriptions -- fixed by splitting free-text and metric-key token sets
+  to match their actual, different risks.
+- [x] 42 focused tests covering all 17 required proof points; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 1" section for the full
+  ID-to-test mapping.
+- [x] No dataset downloaded, no model weight downloaded, no benchmark run,
+  no modality model selected, no correlation algorithm chosen, no LAN
+  validation -- all by design, not omission (see
+  `docs/architecture/phase-7-evaluation-and-model-governance.md`'s "What
+  Part 1 explicitly does not do").
+- [ ] Parts 2-6 (Jasraj/Gaurav/Sarthak download and benchmark candidates;
+  Aditya packages locked bundles; Shreshtha freezes the correlation
+  approach and runs the Phase 7 release gate) are not started. Phase 7 as
+  a whole remains in progress; only this Part 1 entry is complete.

@@ -414,3 +414,57 @@ wave and post-Phase-5 validation gate.
   entry for the exact commands, migration application, and live test
   results that close out every `deferred to Shreshtha's Phase 6 Part 5
   gate` note left by Parts 1-4.
+
+# Phase 7 Part 1 evaluation foundation and local-model governance (Nipun)
+
+All of the following are deliberate Part 1 scope boundaries, not
+oversights — see `docs/architecture/phase-7-evaluation-and-model-governance.md`'s
+"What Part 1 explicitly does not do" section:
+
+- **No dataset was downloaded.** Every entry in `dataset-manifest.v1.json`
+  is a typed, safe manifest record only; `local_path_placeholder` names
+  where a future download would go, not a path that currently contains
+  anything.
+- **No model weight was downloaded, and no model was run.** Every entry in
+  `model-candidates.v1.json` is a catalogued candidate only.
+- **No benchmark was executed.** `benchmark-metrics.v1.json` defines
+  required metric *keys* per task; no `BenchmarkRunV1` with real measured
+  values exists anywhere in this phase's committed artifacts.
+- **No final modality model was selected.** Every candidate's
+  `selection_status` is `candidate` or `conditional`; `selected` is
+  structurally rejected by `ModelCandidateV1`'s own validator for any
+  Part 1 record.
+- **No correlation algorithm was chosen.** The Logistic
+  Regression/XGBoost/LightGBM candidates are catalogued and their
+  selection *policy* is frozen (ADR-016); none was installed, run, or
+  compared against the frozen Phase 5 rules baseline.
+- **No LAN or multi-laptop validation was attempted** — that is Phase 8's
+  scope entirely.
+- **Several licence-status fields are `pending_verification`, by design.**
+  Ten of the fourteen dataset-manifest entries carry
+  `license_status: "pending_verification"` because this session could not
+  independently re-verify each source's current, exact redistribution/
+  derivative-use terms — see each entry's own `license_notes`. Parts 2-4
+  must resolve this before downloading the corresponding dataset; the
+  manifest entry's mere existence is not pre-approval to download.
+- **Two dataset owners were assigned by domain fit, not by an explicit
+  task-spec table column.** The task's own "conditional or support-only"
+  dataset table names no owner; `docs/architecture/
+  phase-7-evaluation-and-model-governance.md`'s "Where a fact was not
+  invented" section documents the reasoning, including the one genuinely
+  ambiguous case (`vast_2014_mixed_records`, assigned to Sarthak per the
+  VAST family grouping, spanning into Jasraj's structured-data scope too).
+- **`vad`/`language_identification` metric groups extend beyond the task
+  spec's own metrics table.** Neither task had an explicit metrics row in
+  the original spec; Nipun added a minimal, reasonable group for each
+  (documented in each group's own `description` field in
+  `benchmark-metrics.v1.json`), not left uncovered.
+- **`social_text_extraction` is a forward-compatible-only task, mirroring
+  Phase 6's `review_decision`/`hypothesis_action` precedent.** No Part 1
+  candidate exists for it; the existing deterministic social/chat parsers
+  remain today's baseline. A future part may catalogue a real candidate
+  against this task without a schema change.
+- **The synthetic case plan names placeholder case IDs only
+  (`synth-case-dev-01`, etc.).** No actual synthetic case content --
+  evidence, observations, or fixtures -- exists behind any of them yet.
+  Later owners generate approved modality fixtures against this plan.

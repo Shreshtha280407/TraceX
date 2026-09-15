@@ -1,0 +1,397 @@
+{
+  "schema_version": "v1",
+  "frozen_at": "2026-09-15T00:00:00Z",
+  "composite_investigation_claim_allowed": false,
+  "datasets": [
+    {
+      "schema_version": "v1",
+      "dataset_id": "fir_icdar_2023",
+      "display_name": "FIR ICDAR 2023",
+      "role": "primary_benchmark",
+      "owner": "jasraj",
+      "modalities": ["document"],
+      "allowed_tasks": [
+        "OCR quality benchmarking on scanned FIR-style document images",
+        "annotated FIR/document field-extraction accuracy measurement"
+      ],
+      "prohibited_claims": [
+        "must not be treated as a real police FIR or real case evidence",
+        "must not be used to infer real person/identity information"
+      ],
+      "source_reference": "ICDAR 2023 competition track (exact competition/track name and organizer to be confirmed before download)",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Academic competition dataset; exact license terms for redistribution/derivative use not yet verified against the source's own terms of use. Do not download or use until verified.",
+      "local_path_placeholder": "local-data/fir_icdar_2023/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "ICDAR competition datasets are academic document-image samples, not real investigative FIRs",
+        "annotation quality/coverage for this specific track not yet independently reviewed"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "gomask_voice_cdr",
+      "display_name": "GoMask Voice CDR",
+      "role": "primary_benchmark",
+      "owner": "jasraj",
+      "modalities": ["cdr"],
+      "allowed_tasks": [
+        "CDR parsing and normalization accuracy measurement",
+        "CDR-derived time/event creation correctness"
+      ],
+      "prohibited_claims": [
+        "must not be treated as real subscriber call records",
+        "must not be used to infer a real phone owner's identity"
+      ],
+      "source_reference": "pending_verification -- exact publisher/release page to be confirmed before download",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Source/license terms not yet independently verified against the publisher's own release page.",
+      "local_path_placeholder": "local-data/gomask_voice_cdr/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "dataset scale/format details not yet verified",
+        "may require format normalization before this project's CDR parser can ingest it"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "ibm_amlsim",
+      "display_name": "IBM AMLSim",
+      "role": "primary_benchmark",
+      "owner": "jasraj",
+      "modalities": ["finance"],
+      "allowed_tasks": [
+        "financial-record ingestion accuracy measurement",
+        "transaction-event creation/normalization correctness"
+      ],
+      "prohibited_claims": [
+        "must not be treated as real financial transactions or real account holders",
+        "synthetic AML simulation output must never be presented as confirmed real-world money-laundering activity"
+      ],
+      "source_reference": "IBM AMLSim public GitHub project (exact repository/release to be confirmed before download)",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Open-source simulator; generated-dataset license terms depend on the exact release/configuration used and have not yet been verified.",
+      "local_path_placeholder": "local-data/ibm_amlsim/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "fully synthetic simulation output, not real financial behavior",
+        "money-laundering typologies are simulator-modeled, not empirically validated against real cases"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "virat_ground",
+      "display_name": "VIRAT Ground",
+      "role": "primary_benchmark",
+      "owner": "gaurav",
+      "modalities": ["video"],
+      "allowed_tasks": [
+        "surveillance-style object detection benchmarking",
+        "multi-object tracking benchmarking"
+      ],
+      "prohibited_claims": [
+        "must not be treated as footage from a real TraceX case",
+        "must not be used for face recognition or person re-identification (explicitly out of scope for this project)"
+      ],
+      "source_reference": "VIRAT Video Dataset public release (exact download terms to be confirmed before use)",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Public research dataset; exact redistribution/derivative-use terms not yet independently verified.",
+      "local_path_placeholder": "local-data/virat_ground/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "ground-camera surveillance footage only, not representative of every camera angle/quality this project may encounter",
+        "no biometric/identity ground truth is used or derived from this dataset"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "common_voice_indic",
+      "display_name": "Common Voice Indian-language subset",
+      "role": "primary_benchmark",
+      "owner": "sarthak",
+      "modalities": ["audio"],
+      "allowed_tasks": [
+        "local ASR/transcription quality benchmarking for Indian languages"
+      ],
+      "prohibited_claims": [
+        "must not be treated as real intercepted or recorded case audio",
+        "contributor voice samples must never be treated as a real case subject's voice"
+      ],
+      "source_reference": "Mozilla Common Voice public dataset, Indian-language locales (exact locale/release to be pinned before download)",
+      "release_or_version": "pending_verification",
+      "license_status": "verified_permissive",
+      "license_notes": "Common Voice is released under CC0 (public domain) by Mozilla; safe to download and use for benchmarking once the exact locale/release version is pinned.",
+      "local_path_placeholder": "local-data/common_voice_indic/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "planned",
+      "known_limitations": [
+        "read-speech samples, not spontaneous conversational audio",
+        "language/accent coverage varies by locale and is not yet quantified for this project's needs"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "ami_meeting_corpus",
+      "display_name": "AMI Meeting Corpus",
+      "role": "primary_benchmark",
+      "owner": "sarthak",
+      "modalities": ["audio"],
+      "allowed_tasks": [
+        "speaker-turn/diarization mechanics benchmarking"
+      ],
+      "prohibited_claims": [
+        "must not be treated as real case audio or real suspect/witness speech",
+        "must not be used for voice-biometric identity claims (explicitly out of scope)"
+      ],
+      "source_reference": "AMI Meeting Corpus public release (exact license terms to be independently re-verified before download)",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Publicly available for research; exact current license/attribution terms not yet independently re-verified for this project's use.",
+      "local_path_placeholder": "local-data/ami_meeting_corpus/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "scripted/semi-scripted meeting scenarios, not real investigative audio",
+        "predominantly English-language meetings, not representative of this project's target-language mix"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "vast_social_text",
+      "display_name": "VAST fictional microblogs/structured text records",
+      "role": "primary_benchmark",
+      "owner": "sarthak",
+      "modalities": ["social_text"],
+      "allowed_tasks": [
+        "social/text ingestion benchmarking",
+        "structured event-extraction from social text benchmarking"
+      ],
+      "prohibited_claims": [
+        "must not be treated as a real investigation or real social-media accounts",
+        "fictional VAST Challenge personas/events must never be presented as real people or real incidents"
+      ],
+      "source_reference": "VAST Challenge (IEEE VIS) public mini-challenge dataset (exact challenge year/release to be pinned before download)",
+      "release_or_version": "pending_verification",
+      "license_status": "verified_permissive",
+      "license_notes": "VAST Challenge datasets are explicitly released by the organizers for research/benchmarking use; exact challenge-year terms still to be pinned before download.",
+      "local_path_placeholder": "local-data/vast_social_text/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "planned",
+      "known_limitations": [
+        "entirely fictional scenario data, intentionally not representative of any real investigation",
+        "designed for visual-analytics challenges, not purpose-built for this project's extraction pipeline"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "ufpr_alpr",
+      "display_name": "UFPR-ALPR",
+      "role": "conditional_support",
+      "owner": "gaurav",
+      "modalities": ["image", "video"],
+      "allowed_tasks": [
+        "vehicle/plate-region detection support benchmarking",
+        "plate-text OCR support benchmarking"
+      ],
+      "prohibited_claims": [
+        "must never be used to infer vehicle ownership",
+        "must not be treated as a real case vehicle or real license plate"
+      ],
+      "source_reference": "UFPR-ALPR dataset (Universidade Federal do Parana)",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Publisher states academic/non-commercial-use terms; these must be independently re-verified against the SIH demo's actual use case before any download or use.",
+      "local_path_placeholder": "local-data/ufpr_alpr/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "support-only for plate-region/plate-text OCR, never a basis for vehicle-ownership inference",
+        "Brazilian plate format/layout conventions differ from Indian plates and may not transfer directly"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "safe_unsafe_behaviour",
+      "display_name": "Safe/Unsafe Behaviour",
+      "role": "conditional_support",
+      "owner": "gaurav",
+      "modalities": ["image", "video"],
+      "allowed_tasks": [
+        "additional visual detection stress-testing"
+      ],
+      "prohibited_claims": [
+        "industrial-safety behaviour labels must never be treated as crime labels",
+        "must not be used to infer criminal intent or criminal behaviour"
+      ],
+      "source_reference": "pending_verification",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Source/license terms not yet independently verified.",
+      "local_path_placeholder": "local-data/safe_unsafe_behaviour/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "industrial/workplace-safety domain, not a criminal-behaviour dataset",
+        "used only as an additional visual stress test, never as a primary benchmark"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "vast_2014_mixed_records",
+      "display_name": "VAST Challenge 2014 mixed records",
+      "role": "conditional_support",
+      "owner": "sarthak",
+      "modalities": ["multi_modal"],
+      "allowed_tasks": [
+        "supporting multimodal structured-event ingestion benchmarking across text, GPS, card, loyalty, microblog, email-header, and emergency-call record types"
+      ],
+      "prohibited_claims": [
+        "must not be treated as raw audio",
+        "must not be presented as a real investigation",
+        "must not be treated as evidence of a real incident"
+      ],
+      "source_reference": "VAST Challenge 2014 (IEEE VIS) public mini-challenge dataset",
+      "release_or_version": "pending_verification",
+      "license_status": "verified_permissive",
+      "license_notes": "Released by the VAST Challenge organizers for research/benchmarking use, on the same basis as vast_social_text.",
+      "local_path_placeholder": "local-data/vast_2014_mixed_records/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "planned",
+      "known_limitations": [
+        "fictional scenario, intentionally not a real investigation",
+        "spans record types that also touch Jasraj's CDR/finance structured-processing scope in addition to Sarthak's social/text scope -- owner assigned to Sarthak per the VAST dataset family grouping; reassign if actual usage shows otherwise",
+        "no raw audio despite 'emergency-call records' naming -- these are structured/textual call metadata only"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "delhi_legal_documents",
+      "display_name": "Delhi court/legal PDF material",
+      "role": "conditional_support",
+      "owner": "jasraj",
+      "modalities": ["document"],
+      "allowed_tasks": [
+        "document-format parsing support benchmarking (PDF structure/layout handling)"
+      ],
+      "prohibited_claims": [
+        "must not be treated as case evidence",
+        "must never be used to cross-link real individuals named in these documents"
+      ],
+      "source_reference": "pending_verification",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Court/legal material carries its own source-specific privacy and usage restrictions; every applicable restriction must be verified and followed before any download or use, never assumed.",
+      "local_path_placeholder": "local-data/delhi_legal_documents/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "document-format support only, never used to cross-link real evidence",
+        "may contain real names/identities in public-record text -- never projected into any graph or correlation path"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "ncrb_context_csv",
+      "display_name": "NCRB/context CSV material",
+      "role": "conditional_support",
+      "owner": "jasraj",
+      "modalities": ["context_reference"],
+      "allowed_tasks": [
+        "background/reference context only -- not a benchmarking input for any model task"
+      ],
+      "prohibited_claims": [
+        "must never be graphed as evidence",
+        "must never be used as a basis for a person-level claim",
+        "must not be treated as case-specific data"
+      ],
+      "source_reference": "pending_verification",
+      "release_or_version": "pending_verification",
+      "license_status": "pending_verification",
+      "license_notes": "Background statistical/reference material only; source and license terms not yet independently verified.",
+      "local_path_placeholder": "local-data/ncrb_context_csv/",
+      "git_storage_policy": "excluded_manifest_only",
+      "redistribution_status": "pending_verification",
+      "evaluation_status": "license_verification_required",
+      "known_limitations": [
+        "aggregate/statistical context only, never person-level or case-level data",
+        "not used by any benchmark task in this manifest -- reference material only"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "synthetic_multicase_v1",
+      "display_name": "Synthetic multi-case evaluation set",
+      "role": "synthetic_multicase",
+      "owner": "nipun",
+      "modalities": ["multi_modal"],
+      "allowed_tasks": [
+        "end-to-end cross-modal correlation evaluation",
+        "case-scoped provenance/integrity evaluation",
+        "investigator-report proof-requirement evaluation"
+      ],
+      "prohibited_claims": [
+        "must never be presented as one real investigation",
+        "must never be treated as evidence of a real crime or real people"
+      ],
+      "source_reference": null,
+      "release_or_version": "v1-plan-only",
+      "license_status": "internal_only",
+      "license_notes": "Fictional or fully consented synthetic content authored for this project; no external license applies. Part 1 defines only the plan/contract (see SyntheticCasePlanV1) -- no raw case content is generated or committed here.",
+      "local_path_placeholder": "local-data/synthetic_multicase_v1/",
+      "git_storage_policy": "synthetic_fixtures_may_be_committed",
+      "redistribution_status": "not_applicable_internal",
+      "evaluation_status": "planned",
+      "known_limitations": [
+        "no actual synthetic case content exists yet -- Part 1 is the plan/contract only",
+        "later owners generate approved modality fixtures against this plan"
+      ]
+    },
+    {
+      "schema_version": "v1",
+      "dataset_id": "operation_nightfall_v1",
+      "display_name": "Operation Nightfall (private showcase holdout)",
+      "role": "private_showcase_holdout",
+      "owner": "nipun",
+      "modalities": ["multi_modal"],
+      "allowed_tasks": [
+        "private, end-to-end showcase evaluation of cross-linking, contradiction handling, provenance, and both investigator reports"
+      ],
+      "prohibited_claims": [
+        "must never be shown in the investigator UI",
+        "must never be committed to Git in any form, including its truth file",
+        "must never be used for tuning or development"
+      ],
+      "source_reference": null,
+      "release_or_version": "internal-private",
+      "license_status": "internal_only",
+      "license_notes": "Private, internally controlled showcase holdout. Its truth file is never committed to Git and never exposed through the investigator UI -- see git_storage_policy.",
+      "local_path_placeholder": "operation-nightfall-truth/operation_nightfall_v1/",
+      "git_storage_policy": "excluded_private_never_documented",
+      "redistribution_status": "not_applicable_internal",
+      "evaluation_status": "planned",
+      "known_limitations": [
+        "no actual Operation Nightfall content exists yet -- Part 1 defines only its protected status and policy",
+        "reserved exclusively as a final showcase holdout, never for tuning or development"
+      ]
+    }
+  ]
+}

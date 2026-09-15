@@ -1,0 +1,329 @@
+{
+  "schema_version": "v1",
+  "frozen_at": "2026-09-15T00:00:00Z",
+  "candidates": [
+    {
+      "schema_version": "v1",
+      "candidate_id": "paddleocr-ppocrv5-mobile",
+      "owner": "jasraj",
+      "task": "ocr",
+      "framework": "PaddleOCR",
+      "model_family": "PP-OCRv5",
+      "variant": "mobile-lightweight",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "PaddleOCR PP-OCRv5 mobile release (exact model card/version to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["character_error_rate", "word_error_rate", "field_extraction_f1", "latency_ms"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "lightweight variant trades accuracy for speed/footprint -- measured, not assumed"
+      ],
+      "fallback_candidate_id": "existing-deterministic-parsers"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "paddleocr-ppocrv5-server",
+      "owner": "jasraj",
+      "task": "ocr",
+      "framework": "PaddleOCR",
+      "model_family": "PP-OCRv5",
+      "variant": "server-high-accuracy",
+      "execution_target": "gpu_optional",
+      "license_status": "pending_verification",
+      "source_reference": "PaddleOCR PP-OCRv5 server release (exact model card/version to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["character_error_rate", "word_error_rate", "field_extraction_f1", "latency_ms", "vram_mb"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "higher-accuracy variant with a larger resource footprint -- measured, not assumed"
+      ],
+      "fallback_candidate_id": "paddleocr-ppocrv5-mobile"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "existing-deterministic-parsers",
+      "owner": "jasraj",
+      "task": "fir_cdr_finance_extraction",
+      "framework": "internal",
+      "model_family": "deterministic-parser-rules",
+      "variant": "phase-2-3-baseline",
+      "execution_target": "deterministic_rules",
+      "license_status": "internal_only",
+      "source_reference": "app/modules/structured_processing/ (existing, already-shipped Phase 2/3 code)",
+      "selection_status": "candidate",
+      "required_metrics": ["normalization_accuracy", "schema_validation_error_rate", "event_coverage", "latency_ms"],
+      "known_limitations": [
+        "the baseline this project already runs, not a new model download",
+        "an NER/ML model is deliberately not forced in over this baseline unless a later part demonstrates a defined, measurable improvement"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "yolo11n",
+      "owner": "gaurav",
+      "task": "detection",
+      "framework": "Ultralytics",
+      "model_family": "YOLO11",
+      "variant": "n-nano",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "Ultralytics YOLO11n release (exact model card/version to be pinned before download; AGPL-3.0 upstream terms to verify against this project's licensing)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision", "recall", "map", "latency_ms", "ram_mb"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "nano variant favors speed/footprint over accuracy -- measured, not assumed"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "yolo11s",
+      "owner": "gaurav",
+      "task": "detection",
+      "framework": "Ultralytics",
+      "model_family": "YOLO11",
+      "variant": "s-small",
+      "execution_target": "gpu_optional",
+      "license_status": "pending_verification",
+      "source_reference": "Ultralytics YOLO11s release (exact model card/version to be pinned before download; AGPL-3.0 upstream terms to verify against this project's licensing)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision", "recall", "map", "latency_ms", "vram_mb"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "higher-accuracy variant with a larger resource footprint -- measured, not assumed"
+      ],
+      "fallback_candidate_id": "yolo11n"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "bytetrack",
+      "owner": "gaurav",
+      "task": "tracking",
+      "framework": "ByteTrack",
+      "model_family": "ByteTrack",
+      "variant": "default",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "ByteTrack public release (exact repository/license to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["idf1", "hota", "mota", "id_switches", "latency_ms"],
+      "known_limitations": [
+        "the only tracking candidate considered -- no face recognition, appearance-based person re-identification, or biometric identity model is a candidate here, by explicit project boundary",
+        "not yet downloaded or benchmarked in this phase"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "paddleocr-lightweight-visual-text",
+      "owner": "gaurav",
+      "task": "visual_text",
+      "framework": "PaddleOCR",
+      "model_family": "PP-OCRv5",
+      "variant": "mobile-lightweight",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "Same PaddleOCR PP-OCRv5 mobile release as the OCR task's candidate, applied to video/image visual-text regions",
+      "selection_status": "candidate",
+      "required_metrics": ["character_error_rate", "word_error_rate", "field_extraction_f1", "latency_ms"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "shares its model family with the document-OCR candidate but is benchmarked separately against visual-text-region input"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "silero-vad-v6",
+      "owner": "sarthak",
+      "task": "vad",
+      "framework": "Silero",
+      "model_family": "Silero VAD",
+      "variant": "v6",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "Silero VAD v6 public release (exact model card/license to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["voice_activity_detection_accuracy", "latency_ms"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "VAD accuracy metric is Nipun's own minimal addition beyond the task spec's metrics table, since VAD had no explicit metrics row there"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "faster-whisper-small",
+      "owner": "sarthak",
+      "task": "asr",
+      "framework": "faster-whisper",
+      "model_family": "Whisper",
+      "variant": "small",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "faster-whisper small release (exact model card/version to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["wer", "cer", "real_time_factor", "latency_ms", "ram_mb"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "smaller variant trades accuracy for speed/footprint -- measured, not assumed"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "faster-whisper-medium",
+      "owner": "sarthak",
+      "task": "asr",
+      "framework": "faster-whisper",
+      "model_family": "Whisper",
+      "variant": "medium",
+      "execution_target": "gpu_optional",
+      "license_status": "pending_verification",
+      "source_reference": "faster-whisper medium release (exact model card/version to be pinned before download)",
+      "selection_status": "candidate",
+      "required_metrics": ["wer", "cer", "real_time_factor", "latency_ms", "vram_mb"],
+      "known_limitations": [
+        "not yet downloaded or benchmarked in this phase",
+        "higher-accuracy variant with a larger resource footprint -- measured, not assumed"
+      ],
+      "fallback_candidate_id": "faster-whisper-small"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "pyannote-community-local",
+      "owner": "sarthak",
+      "task": "diarization",
+      "framework": "pyannote.audio",
+      "model_family": "pyannote",
+      "variant": "community-local",
+      "execution_target": "gpu_optional",
+      "license_status": "pending_verification",
+      "source_reference": "pyannote.audio community pipeline (local-use terms to be independently accepted/verified before any download)",
+      "selection_status": "conditional",
+      "required_metrics": ["der", "speaker_turn_quality", "latency_ms", "vram_mb"],
+      "known_limitations": [
+        "conditional on local-use license terms being verified and accepted -- not yet confirmed",
+        "if terms are not accepted, the deterministic fallback below is used instead, not a silent skip"
+      ],
+      "fallback_candidate_id": "deterministic-diarization-fallback"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "deterministic-diarization-fallback",
+      "owner": "sarthak",
+      "task": "diarization",
+      "framework": "internal",
+      "model_family": "deterministic-fallback",
+      "variant": "phase-4-baseline",
+      "execution_target": "deterministic_rules",
+      "license_status": "internal_only",
+      "source_reference": "app/modules/communication_processing/ (existing, already-shipped Phase 4 deterministic diarization-import path)",
+      "selection_status": "candidate",
+      "required_metrics": ["der", "speaker_turn_quality", "latency_ms"],
+      "known_limitations": [
+        "the existing deterministic fallback this project already ships, used if pyannote's local-use terms are not accepted",
+        "no learned speaker-embedding model -- diarization-import only, no raw-audio speaker segmentation"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "fasttext-lid176",
+      "owner": "sarthak",
+      "task": "language_identification",
+      "framework": "fastText",
+      "model_family": "lid.176",
+      "variant": "ftz-compressed",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "fastText lid.176.ftz public release (exact license to be pinned before download)",
+      "selection_status": "conditional",
+      "required_metrics": ["accuracy", "latency_ms"],
+      "known_limitations": [
+        "deterministic script/Unicode-range normalization (already shipped, Phase 4) is the first-line approach; this candidate is optional, evaluated only if deterministic normalization proves insufficient",
+        "not yet downloaded or benchmarked in this phase"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "phase5-rules-baseline",
+      "owner": "shreshtha",
+      "task": "correlation",
+      "framework": "internal",
+      "model_family": "deterministic-rules",
+      "variant": "phase5_preliminary_rules_v1",
+      "execution_target": "deterministic_rules",
+      "license_status": "internal_only",
+      "source_reference": "app/modules/graph/intelligence/scoring.py -- the existing frozen Phase 5 rules baseline (ADR-006)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision_at_k", "recall_at_k", "false_positive_rate", "explanation_completeness", "deterministic_reproducibility", "latency_ms"],
+      "known_limitations": [
+        "the existing, already-frozen Phase 5 baseline -- the fallback if no ML candidate below shows a material, reproducible holdout improvement",
+        "not installed/run again in this phase -- referenced as the comparison baseline only"
+      ],
+      "fallback_candidate_id": null
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "logistic-regression-correlation",
+      "owner": "shreshtha",
+      "task": "correlation",
+      "framework": "scikit-learn",
+      "model_family": "LogisticRegression",
+      "variant": "default",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "scikit-learn LogisticRegression (exact version to be pinned before any install)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision_at_k", "recall_at_k", "false_positive_rate", "calibration_brier_score", "explanation_completeness", "deterministic_reproducibility", "latency_ms"],
+      "known_limitations": [
+        "not installed or run in this phase -- Part 1 catalogues it only",
+        "preferred over a boosted-tree candidate if within a small documented tolerance, for transparency (see ADR-016)"
+      ],
+      "fallback_candidate_id": "phase5-rules-baseline"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "xgboost-correlation",
+      "owner": "shreshtha",
+      "task": "correlation",
+      "framework": "XGBoost",
+      "model_family": "XGBoost",
+      "variant": "default",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "XGBoost (exact version to be pinned before any install)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision_at_k", "recall_at_k", "false_positive_rate", "calibration_brier_score", "explanation_completeness", "deterministic_reproducibility", "latency_ms"],
+      "known_limitations": [
+        "not installed or run in this phase -- Part 1 catalogues it only",
+        "selected over Logistic Regression only if it clears the documented material-improvement bar without an explainability regression (see ADR-016)"
+      ],
+      "fallback_candidate_id": "logistic-regression-correlation"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "lightgbm-correlation",
+      "owner": "shreshtha",
+      "task": "correlation",
+      "framework": "LightGBM",
+      "model_family": "LightGBM",
+      "variant": "default",
+      "execution_target": "cpu",
+      "license_status": "pending_verification",
+      "source_reference": "LightGBM (exact version to be pinned before any install)",
+      "selection_status": "candidate",
+      "required_metrics": ["precision_at_k", "recall_at_k", "false_positive_rate", "calibration_brier_score", "explanation_completeness", "deterministic_reproducibility", "latency_ms"],
+      "known_limitations": [
+        "not installed or run in this phase -- Part 1 catalogues it only",
+        "selected over Logistic Regression only if it clears the documented material-improvement bar without an explainability regression (see ADR-016)"
+      ],
+      "fallback_candidate_id": "logistic-regression-correlation"
+    }
+  ]
+}

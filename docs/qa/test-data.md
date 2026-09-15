@@ -333,3 +333,39 @@ hypothesis.md`), this test's cleanup deliberately does not attempt to delete
 those rows; it relies on an unguessable, never-reused `case_id`, the same
 documented precedent `tests/integration/integrity/conftest.py` already
 established for `integrity_events`.
+
+# Phase 7 Part 1 — evaluation foundation fixtures (Nipun)
+
+All `tests/unit/evaluation/` tests use synthetic, non-sensitive data only,
+and the four frozen `configs/benchmarks/*.v1.json` files themselves
+contain no real dataset content, no real model weight, and no real
+benchmark measurement:
+
+- **Dataset manifest fixtures**: `test_models.py`'s `_entry()` helper
+  builds a minimal `DatasetManifestEntryV1` from short placeholder strings
+  (`"Example Dataset"`, `"example task"`); `test_dataset_manifest.py`
+  loads the real, committed `dataset-manifest.v1.json` and asserts against
+  it directly, since that file is itself entirely safe metadata (dataset
+  IDs, roles, licence-verification status, short limitation notes) with
+  no raw dataset content, license text reproduction, or downloaded file of
+  any kind.
+- **Model candidate fixtures**: `test_catalog.py`'s `_candidate()` helper
+  and the real, committed `model-candidates.v1.json` describe only
+  framework/model-family/variant *names* (e.g. `"PaddleOCR"`,
+  `"PP-OCRv5"`, `"mobile-lightweight"`) and licence-verification status --
+  no model weight, checksum, or benchmark number, since none was
+  downloaded or measured in this phase.
+- **Benchmark-run fixtures**: `test_results.py`'s `_run()` helper builds a
+  synthetic `BenchmarkRunV1` with placeholder hashes (`"cfg-" + "b" * 16`,
+  a fixed 64-character hex string for `artifact_sha256`) and small
+  numeric metric values (`{"latency_ms": 42.0}`) -- never a value derived
+  from an actual model run, since none occurred.
+- **Synthetic case-plan fixtures**: `test_splits.py`'s `_plan()` helper and
+  the real, committed `synthetic-case-plan.v1.json` use only placeholder
+  case IDs (`"synth-case-dev-01"`, etc.) -- no actual case content,
+  evidence, or observation exists behind any of these IDs yet; Part 1
+  defines the plan/contract only.
+
+No Operation Nightfall data, real police case data, real dataset content,
+real model weight, or production credential was used, referenced, or
+approximated anywhere in this module's tests or configs.
