@@ -42,6 +42,11 @@ from app.modules.communication_processing.models import (
     DiarizationSegmentInput,
     RawMention,
 )
+from app.modules.communication_processing.signal_validation import (
+    AudioChunkScope,
+    CommunicationSignalOutcome,
+    validate_audio_signal,
+)
 
 OBSERVATION_TYPE = "diarization_speaker_turn"
 ENTITY_TYPE_HINT = "speaker_label_local"
@@ -112,6 +117,7 @@ def diarization_segments_to_mentions(
     *,
     json_path_prefix: str = "$.segments",
     provenance_attributes: Mapping[str, JsonValue] | None = None,
+    chunk_scope: AudioChunkScope | None = None,
 ) -> list[RawMention]:
     """Validate then convert diarization segments into `diarization_speaker_turn` mentions.
 
@@ -136,6 +142,29 @@ def diarization_segments_to_mentions(
             time_end_ms=segment.end_ms,
             json_path=f"{json_path_prefix}[{index}]",
         )
+        validation = validate_audio_signal(
+            locator,
+            signal_kind="diarization",
+            chunk_scope=chunk_scope,
+            extractor_identity={
+                key: str(value)
+                for key, value in (provenance_attributes or {}).items()
+                if key
+                in {
+                    "diarization_backend",
+                    "diarization_backend_version",
+                    "diarization_model_version",
+                    "diarization_configuration_hash",
+                    "audio_profile",
+                }
+                and isinstance(value, str)
+            },
+        )
+        if validation.outcome is CommunicationSignalOutcome.REJECTED:
+            raise ProcessingError(
+                ErrorCode.INVALID_DIARIZATION_SEGMENT,
+                "diarization turn falls outside its supplied audio chunk",
+            )
         mentions.append(
             RawMention(
                 observation_type=OBSERVATION_TYPE,
@@ -146,6 +175,8 @@ def diarization_segments_to_mentions(
                 attributes={
                     "source_segment_id": segment.source_segment_id,
                     "segment_source": SEGMENT_SOURCE_METADATA_SUPPLIED,
+                    "speaker_identity_status": "source_local_unresolved",
+                    "communication_signal_validation": validation.attribute_value(),
                     **(provenance_attributes or {}),
                 },
             )

@@ -643,6 +643,17 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [ ] Real-media/model accuracy, variable-frame-rate validation, and
   manifest-aware worker publication remain merge-wave work.
 
+# Phase 5B - Sarthak audio/social source-signal validation: In progress
+
+- [x] Added deterministic audio/chat/identifier validation outcomes and safe
+  correlation-readiness metadata; raw transcript/message content remains out
+  of graph-facing attributes.
+- [x] Added supplied audio-chunk bounds checks, evidence-local speaker-label
+  semantics, platform-scoped handle normalization, and actual worker gating so
+  incomplete chat records emit no retrieval-eligible identifiers.
+- [ ] Persisted coordinator manifest/chunk wiring, real model quality, and
+  Compose/full merge-wave validation remain Nipun/team integration work.
+
 # Phase 4 - Aditya LAN worker security and reliability: In progress
 
 - [x] Existing worker credential, claim-token, and lease path extended with

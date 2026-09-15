@@ -40,6 +40,7 @@ from app.modules.communication_processing.phase4 import (
     diarization_decision,
     normalize_vad_intervals,
 )
+from app.modules.communication_processing.signal_validation import AudioChunkScope
 
 _TARGET_SAMPLE_RATE = 16_000
 _TARGET_SAMPLE_WIDTH = 2
@@ -213,11 +214,19 @@ def process_local_audio(
             "asr_model_version": asr.model_version,
             "asr_model_identity_hash": asr.model_identity_hash,
             "asr_configuration_hash": asr.config_hash,
+            "chunk_time_start_ms": interval.start_ms,
+            "chunk_time_end_ms": interval.end_ms,
         }
         segment_mentions = transcript_segments_to_mentions(
             shifted,
             json_path_prefix=f"$.phase4.chunks[{interval_index}].asr_segments",
             provenance_attributes=common,
+            chunk_scope=AudioChunkScope(
+                start_ms=interval.start_ms,
+                end_ms=interval.end_ms,
+                manifest_id=str(manifest_id),
+                chunk_id=str(chunk_id),
+            ),
         )
         mentions.extend(
             replace(
@@ -243,7 +252,6 @@ def process_local_audio(
         return LocalAudioOutcome(mentions, WorkerStatus.SUCCEEDED, None)
     diar_common: dict[str, JsonValue] = {
         "manifest_id": str(manifest_id),
-        "chunk_id": str(chunk_ids[0]),
         "audio_profile": profile.name,
         "audio_profile_config_hash": profile.config_hash(),
         "diarization_backend": diarization.backend_name,
@@ -255,20 +263,52 @@ def process_local_audio(
         "segment_source": SEGMENT_SOURCE_MODEL_DERIVED,
         "speaker_identity_status": "source_local_unresolved",
     }
-    turn_mentions = diarization_segments_to_mentions(
-        diarization.segments,
-        json_path_prefix="$.phase4.diarization_segments",
-        provenance_attributes=diar_common,
-    )
-    mentions.extend(
-        replace(
-            mention,
-            extractor_config_hash=diarization.config_hash,
-            extractor_model_version=f"{diarization.model_name}:{diarization.model_version}",
+    skipped_outside_chunk = False
+    for index, segment in enumerate(diarization.segments):
+        chunk_index = segment.start_ms // profile.chunk_duration_ms
+        # An end exactly on a boundary belongs to the preceding source chunk.
+        end_chunk_index = max(segment.end_ms - 1, 0) // profile.chunk_duration_ms
+        if (
+            chunk_index != end_chunk_index
+            or chunk_index >= len(chunk_ids)
+            or segment.end_ms <= segment.start_ms
+        ):
+            # Do not attach an arbitrary chunk identifier to a crossing or
+            # malformed turn. Valid ASR output above remains publishable.
+            skipped_outside_chunk = True
+            continue
+        chunk_start = chunk_index * profile.chunk_duration_ms
+        chunk_end = min((chunk_index + 1) * profile.chunk_duration_ms, decoded.duration_ms)
+        turn_common: dict[str, JsonValue] = {
+            **diar_common,
+            "chunk_id": str(chunk_ids[chunk_index]),
+            "chunk_time_start_ms": chunk_start,
+            "chunk_time_end_ms": chunk_end,
+        }
+        turn_mentions = diarization_segments_to_mentions(
+            (segment,),
+            json_path_prefix=f"$.phase4.diarization_segments[{index}]",
+            provenance_attributes=turn_common,
+            chunk_scope=AudioChunkScope(
+                start_ms=chunk_start,
+                end_ms=chunk_end,
+                manifest_id=str(manifest_id),
+                chunk_id=str(chunk_ids[chunk_index]),
+            ),
         )
-        for mention in turn_mentions
+        mentions.extend(
+            replace(
+                mention,
+                extractor_config_hash=diarization.config_hash,
+                extractor_model_version=f"{diarization.model_name}:{diarization.model_version}",
+            )
+            for mention in turn_mentions
+        )
+    return LocalAudioOutcome(
+        mentions,
+        WorkerStatus.SUCCEEDED,
+        "local_diarization_turn_outside_chunk" if skipped_outside_chunk else None,
     )
-    return LocalAudioOutcome(mentions, WorkerStatus.SUCCEEDED, None)
 
 
 def _split_at_chunk_boundaries(

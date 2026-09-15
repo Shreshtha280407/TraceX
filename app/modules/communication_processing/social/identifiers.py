@@ -48,6 +48,10 @@ from app.modules.communication_processing.limits import (
 )
 from app.modules.communication_processing.models import RawMention
 from app.modules.communication_processing.provenance import CONFIDENCE_REGEX_EXACT_MATCH
+from app.modules.communication_processing.signal_validation import (
+    CommunicationSignalOutcome,
+    validate_identifier_signal,
+)
 from app.modules.communication_processing.social.common import ChatMessageRecord
 
 # Indian mobile numbers only: 10 digits starting 6-9, optional +91/0 prefix
@@ -83,7 +87,6 @@ def extract_mentioned_identifiers(record: ChatMessageRecord) -> list[RawMention]
     """
     if not record.text:
         return []
-
     mentions: list[RawMention] = []
     for observation_type, pattern, match_kind in _PATTERNS:
         match_count = 0
@@ -92,6 +95,21 @@ def extract_mentioned_identifiers(record: ChatMessageRecord) -> list[RawMention]
             if observation_type == "url":
                 value = value.rstrip(_URL_TRAILING_PUNCTUATION)
             if not value:
+                continue
+            identifier_type = (
+                "phone_like"
+                if observation_type == "phone_number"
+                else "handle"
+                if observation_type == "username_or_handle"
+                else "alias"
+            )
+            validation, normalized = validate_identifier_signal(
+                value,
+                identifier_type=identifier_type,
+                platform=record.platform if identifier_type == "handle" else None,
+                locator=record.locator,
+            )
+            if validation.outcome is not CommunicationSignalOutcome.ACCEPTED:
                 continue
             match_count += 1
             if match_count > MAX_IDENTIFIER_MATCHES_PER_MESSAGE:
@@ -107,6 +125,12 @@ def extract_mentioned_identifiers(record: ChatMessageRecord) -> list[RawMention]
                         "platform": record.platform,
                         "conversation_id": record.conversation_id,
                         "message_id": record.message_id,
+                        "identifier_type": identifier_type,
+                        "normalized_identifier": normalized,
+                        "platform_namespace": (
+                            record.platform if identifier_type == "handle" else None
+                        ),
+                        "communication_signal_validation": validation.attribute_value(),
                     },
                     event_time=record.timestamp_utc,
                 )

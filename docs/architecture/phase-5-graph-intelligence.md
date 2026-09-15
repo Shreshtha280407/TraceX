@@ -135,6 +135,21 @@ not identity claims. Phase 5 consumers must retain the canonical evidence ID,
 source locator, extractor and quality outcome rather than infer identity from
 appearance, a vehicle, or reappearance.
 
+## Communication producer compatibility (Phase 5B)
+
+Communication producers attach `communication_signal_validation` to accepted
+canonical observations. `sourcing.descriptor_from_observation` ignores an
+observation carrying this attribute unless `correlation_ready` is explicitly
+true; legacy observations without the additive attribute keep their existing
+compatibility behavior. This is a producer-quality gate, not a scoring change.
+
+The existing adapter continues to consume only `chat_message` sender aliases,
+bounded transliteration candidates, platform, and `phone_number`/
+`email_address`/`username_or_handle` mentions. It does not consume transcript
+text, local speaker labels, raw message bodies, or an inferred cross-platform
+identity. Any future source key must retain case/evidence/observation IDs,
+source locator, extractor/configuration identity, and this quality outcome.
+
 ## Phase 5B secure read boundary
 
 Every externally reachable Phase 5 graph/correlation read uses the established
