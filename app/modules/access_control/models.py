@@ -97,6 +97,9 @@ class CaseAction(StrEnum):
     EVIDENCE_READ = "evidence_read"
     EVIDENCE_WRITE = "evidence_write"
     GRAPH_READ = "graph_read"
+    INTEGRITY_READ = "integrity_read"
+    INTEGRITY_VERIFY = "integrity_verify"
+    INTEGRITY_EXPORT = "integrity_export"
     REVIEW_DECIDE = "review_decide"
     EXPORT_CASE_DATA = "export_case_data"
 
@@ -113,6 +116,9 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.EVIDENCE_READ,
             CaseAction.EVIDENCE_WRITE,
             CaseAction.GRAPH_READ,
+            CaseAction.INTEGRITY_READ,
+            CaseAction.INTEGRITY_VERIFY,
+            CaseAction.INTEGRITY_EXPORT,
             CaseAction.REVIEW_DECIDE,
             CaseAction.EXPORT_CASE_DATA,
         }
@@ -123,6 +129,8 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.EVIDENCE_READ,
             CaseAction.EVIDENCE_WRITE,
             CaseAction.GRAPH_READ,
+            CaseAction.INTEGRITY_READ,
+            CaseAction.INTEGRITY_VERIFY,
         }
     ),
     CaseRole.ANALYST: frozenset(
@@ -130,6 +138,8 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.CASE_READ,
             CaseAction.EVIDENCE_READ,
             CaseAction.GRAPH_READ,
+            CaseAction.INTEGRITY_READ,
+            CaseAction.INTEGRITY_VERIFY,
         }
     ),
     CaseRole.REVIEWER: frozenset(
@@ -137,6 +147,8 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.CASE_READ,
             CaseAction.EVIDENCE_READ,
             CaseAction.GRAPH_READ,
+            CaseAction.INTEGRITY_READ,
+            CaseAction.INTEGRITY_VERIFY,
             CaseAction.REVIEW_DECIDE,
         }
     ),

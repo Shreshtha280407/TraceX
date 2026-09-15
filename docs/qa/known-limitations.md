@@ -140,6 +140,17 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 
 # Phase 5 graph/correlation integration
 
+## Phase 6 Part 2 integrity access
+
+PostgreSQL append-only triggers protect ordinary application/database roles,
+but a database superuser can disable triggers or alter rows. There is no
+external anchoring, KMS/HSM, or key rotation service. Integrity recording is
+best-effort after its primary write; operators must monitor the safe
+`integrity.event_record_failed` signal and run the bounded case reconciler.
+The reconciler currently covers durable evidence-registration events; owners
+of later modality/review producer seams must add their safe source adapter.
+Live Compose validation is deferred to Shreshtha's Phase 6 Part 5 gate.
+
 - **Resolved (Phase 5A reconciliation, Shreshtha).** The Phase 5 foundation ships a typed
   `CorrelationProjectionContext` and replay worker seam; the semantic correlation Cypher handler
   (`intelligence/projection.py::make_correlation_projection_handler`) is now registered into a reachable
@@ -310,12 +321,16 @@ wave and post-Phase-5 validation gate.
   automatic rotation, no multi-key/threshold signing, and no external
   KMS/HSM. A compromised key can sign an arbitrary (internally-consistent)
   history — see the ADR's threat-model discussion.
-- **No HTTP exposure yet.** Verification/export is a CLI/service surface
-  only (`app/modules/integrity/cli.py`); no router is registered, and no
-  case-scoped authorization has been applied to an integrity endpoint,
-  because none exists yet. This is deliberate scope, left to Aditya's
-  later Phase 6 work — see `docs/architecture/phase-6-integrity.md`'s
-  "Verification and safe export" section.
+- **HTTP exposure is intentionally narrow.** Only protected, case-scoped
+  checkpoint metadata, verification, and safe bundle export are available;
+  there is no raw integrity-event feed or global integrity-admin bypass.
+- **Append-only triggers are not superuser-proof.** A fully privileged
+  PostgreSQL operator can disable triggers or alter rows; the protection is
+  strong for ordinary application/database roles, not an absolute claim.
+- **Reconciliation is currently evidence/correlation scoped.** It repairs
+  known missing leaves from durable metadata only. Observation-batch replay
+  awaits a durable original ordering field; later modality/review producer
+  owners must add safe source adapters.
 - **Checkpoint building is an explicit action, not automatic.** There is
   no scheduler, background job, or per-event auto-checkpoint in this
   phase — an operator (or later automation, not built here) must invoke

@@ -234,4 +234,7 @@ def require_case_action(
 require_case_read = require_case_action(CaseAction.CASE_READ)
 require_evidence_read = require_case_action(CaseAction.EVIDENCE_READ)
 require_graph_read = require_case_action(CaseAction.GRAPH_READ)
+require_integrity_read = require_case_action(CaseAction.INTEGRITY_READ)
+require_integrity_verify = require_case_action(CaseAction.INTEGRITY_VERIFY)
+require_integrity_export = require_case_action(CaseAction.INTEGRITY_EXPORT)
 require_review_decision = require_case_action(CaseAction.REVIEW_DECIDE)

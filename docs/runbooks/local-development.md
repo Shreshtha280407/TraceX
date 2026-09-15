@@ -716,3 +716,19 @@ selection for one CLI invocation.
 - **mypy complains about a third-party import**: check `[[tool.mypy.overrides]]` in `pyproject.toml` before adding a blanket `# type: ignore` — the library may just need `ignore_missing_imports` added to that list.
 - **`AUTH_JWT_SECRET` validation error on startup**: it's required and must be ≥ 32 characters — see `.env.example` for a safe local placeholder and generate a stronger one for anything beyond a single developer's machine.
 - **`alembic upgrade head` fails with a password/auth error**: confirm `POSTGRES_DSN` in `.env` matches the credentials `docker compose up -d postgres` was started with (`POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`); if you changed `.env` after the Postgres container's first start, its data volume still has the old credentials — `docker compose down -v` for a fresh start, or update `.env` back to match.
+
+## Integrity reconciliation
+
+Monitor the safe `integrity.event_record_failed` structured signal, then
+repair one case without reading source content:
+
+```bash
+uv run python -m app.modules.integrity.reconcile_cli --case-id <case-uuid>
+```
+
+The command is bounded (`--limit`, maximum 500), case-scoped, and idempotent.
+It currently repairs durable evidence and correlation leaves by reconstructing
+only their original safe metadata. Do not disable integrity append-only
+triggers in normal operation. A PostgreSQL superuser can bypass them, which
+is an explicit trust boundary. Live Compose verification is deferred to
+Phase 6 Part 5; this procedure does not authorize starting Docker.

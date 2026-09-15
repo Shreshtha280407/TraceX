@@ -254,13 +254,16 @@ class EvidenceLifecycleService:
                     idempotency_key=idempotency_key,
                 )
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "integrity.event_record_failed",
                 request_id=request_id,
                 case_id=str(case_id),
                 event_kind=event_kind.value,
+                subject_type=subject_type,
                 subject_id=subject_id,
+                retry_state="reconciliation_pending",
+                failure_category=type(exc).__name__,
             )
 
     async def create_media_manifest(

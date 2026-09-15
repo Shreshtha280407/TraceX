@@ -787,3 +787,12 @@ dated entry.
   command ASR/diarization adapters, and claimed-worker canonical batch
   publication over existing social parsers.
 - [ ] Real model-bundle, LAN, Docker, dataset, and merge-wave validation.
+
+# Phase 6 Part 2 - Integrity security boundary: Complete (static/unit gate)
+
+- [x] Case-scoped checkpoint metadata, verification, and safe export routes
+  with distinct integrity permissions and safe audit telemetry.
+- [x] PostgreSQL append-only triggers for durable integrity events,
+  checkpoints, and signatures.
+- [x] Bounded, idempotent evidence-event reconciliation command.
+- [ ] Live Docker/infrastructure release validation (deferred to Shreshtha Part 5).
