@@ -45,6 +45,16 @@ def _ordered(
     return (left, right) if str(left.observation_id) < str(right.observation_id) else (right, left)
 
 
+def _same_origin_event(left: ObservationDescriptor, right: ObservationDescriptor) -> bool:
+    """Two party descriptors (e.g. a CDR record's caller and callee) sharing
+    one origin observation are the two ends of the *same* event, not two
+    independent signals about the same identity -- never a candidate
+    merely for that reason. `descriptors_from_observation`'s two-party
+    expansion is the only producer that can make this `True`; every other
+    descriptor is already one-per-observation."""
+    return left.observation_id == right.observation_id
+
+
 def _tokens(item: ObservationDescriptor) -> tuple[str, ...]:
     values = (*item.aliases, *item.transliterations)
     return tuple(token.casefold() for value in values for token in _TOKEN.findall(value))
@@ -82,6 +92,11 @@ def retrieve_candidates(
 ) -> tuple[RetrievedCandidate, ...]:
     """Return deterministic same-case candidates with named retrieval reasons."""
     _single_case(items)
+    # Keyed by descriptor_id, not observation_id: two role-scoped
+    # descriptors sharing one observation_id (a CDR record's caller and
+    # callee) must accumulate independently here, or one role's match
+    # would silently overwrite the other's under an identical
+    # observation_id-based key.
     by_pair: dict[
         tuple[str, str],
         tuple[
@@ -90,10 +105,13 @@ def retrieve_candidates(
             set[RetrievalReason],
             set[str],
             float | None,
+            set[str],
         ],
     ] = {}
-    vectors = {item.observation_id: hashed_token_vector(item) for item in items}
+    vectors = {item.descriptor_id: hashed_token_vector(item) for item in items}
     for left, right in combinations(items, 2):
+        if _same_origin_event(left, right):
+            continue
         left, right = _ordered(left, right)
         reasons: set[RetrievalReason] = set()
         identifier_types: set[str] = set()
@@ -131,23 +149,98 @@ def retrieve_candidates(
             set(right.transliterations) & set(left.aliases)
         ):
             reasons.add(RetrievalReason.TRANSLITERATION)
-        vector_score = _cosine(vectors[left.observation_id], vectors[right.observation_id])
+        vector_score = _cosine(vectors[left.descriptor_id], vectors[right.descriptor_id])
         if vector_score >= vector_threshold and vector_score < 1.0:
             reasons.add(RetrievalReason.VECTOR)
         if not reasons:
             continue
-        key = (str(left.observation_id), str(right.observation_id))
+        key = (str(left.descriptor_id), str(right.descriptor_id))
         by_pair[key] = (
             left,
             right,
             reasons,
             identifier_types,
             vector_score if RetrievalReason.VECTOR in reasons else None,
+            contradictions,
         )
     if len(by_pair) > MAX_CANDIDATES:
         raise ValueError("candidate retrieval exceeded bounded limit")
+
+    # Merge by the *observation*-pair a candidate is ultimately reported
+    # against: two role-scoped descriptors of one two-party structured
+    # record (e.g. a CDR record's caller and callee) that both
+    # independently match the same other observation must still surface
+    # as exactly one `RetrievedCandidate` for that observation pair --
+    # `by_pair` above tracked them separately (by descriptor_id) only to
+    # avoid one role's match silently overwriting the other's while
+    # accumulating.
+    merged: dict[
+        tuple[str, str],
+        tuple[
+            ObservationDescriptor,
+            ObservationDescriptor,
+            set[RetrievalReason],
+            set[str],
+            float | None,
+            set[str],
+        ],
+    ] = {}
+    for (
+        left,
+        right,
+        reason_set,
+        identifier_types,
+        stored_vector_score,
+        contradiction_set,
+    ) in by_pair.values():
+        output_key = (str(left.observation_id), str(right.observation_id))
+        existing = merged.get(output_key)
+        if existing is None:
+            merged[output_key] = (
+                left,
+                right,
+                set(reason_set),
+                set(identifier_types),
+                stored_vector_score,
+                set(contradiction_set),
+            )
+            continue
+        (
+            existing_left,
+            existing_right,
+            existing_reasons,
+            existing_kinds,
+            existing_score,
+            existing_contradictions,
+        ) = existing
+        existing_reasons |= reason_set
+        existing_kinds |= identifier_types
+        existing_contradictions |= contradiction_set
+        merged_score = (
+            max(existing_score, stored_vector_score)
+            if existing_score is not None and stored_vector_score is not None
+            else existing_score
+            if existing_score is not None
+            else stored_vector_score
+        )
+        merged[output_key] = (
+            existing_left,
+            existing_right,
+            existing_reasons,
+            existing_kinds,
+            merged_score,
+            existing_contradictions,
+        )
+
     results = []
-    for left, right, reason_set, identifier_types, stored_vector_score in by_pair.values():
+    for (
+        left,
+        right,
+        reason_set,
+        identifier_types,
+        stored_vector_score,
+        contradiction_set,
+    ) in merged.values():
         sorted_reasons = tuple(sorted(reason_set, key=str))
         results.append(
             RetrievedCandidate(
@@ -159,7 +252,7 @@ def retrieve_candidates(
                 vector_score=stored_vector_score,
                 supporting_observation_ids=(left.observation_id, right.observation_id),
                 supporting_evidence_ids=(left.evidence_id, right.evidence_id),
-                contradiction_reasons=tuple(sorted(contradictions)),
+                contradiction_reasons=tuple(sorted(contradiction_set)),
             )
         )
     return tuple(

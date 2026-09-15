@@ -571,7 +571,7 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - MFA, SSO, external identity provider, production secret management.
 - Merkle checkpointing and signatures.
 - Frontend (including any future cookie/CSRF/CORS decisions).
-# Phase 5 - Nipun graph/correlation integration: In progress
+# Phase 5 - Nipun graph/correlation integration: Complete
 
 - [x] Additive case-scoped correlation/candidate/feature-snapshot persistence
   plus transactional typed graph-update outbox.
@@ -580,9 +580,41 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Shreshtha semantic correlation projection handler and intelligence
   producers -- registered into a reachable process in the Phase 5A
   reconciliation below (`app/modules/graph/intelligence_worker.py`).
-- [ ] Aditya write/review authorization policy.
+- [ ] Aditya write/review authorization policy (explicit Phase 5 non-goal;
+  unrelated to this integration closeout).
 
-# Phase 5 - Shreshtha graph intelligence and rules baseline: In progress
+## Phase 5 final integration and release gate — Nipun
+
+Closed every open Phase 5A/5B integration item after all contributors
+merged: fixed the refresh-rate-limit regression (P5-REGRESSION-AUTH-001);
+closed both persisted media-manifest/chunk gaps
+(P5-INTEG-VISUAL-001/P5-INTEG-COMMUNICATION-001); enforced producer
+validation gates at Phase 5 sourcing for the structured family (the
+visual/communication gates already existed); completed the two-party
+CDR caller/callee and finance sender/receiver descriptor extension;
+measured and froze the transparent rules baseline; and built one
+end-to-end acceptance test proving the whole chain against real
+HTTP/PostgreSQL/Neo4j boundaries. Also fixed one genuine pre-existing
+gap found while completing the release gate: `Dockerfile` never copied
+`README.md`/`alembic.ini`/`migrations/` into the runtime image, so
+`uv run alembic upgrade head` could never run inside *any* phase's
+container -- now fixed with a minimal three-file `COPY` addition.
+
+**All completion gates passed**: static checks (`ruff format --check`,
+`ruff check`, `mypy app`), a single coherent Alembic head, the full
+1885-test repository suite against real live PostgreSQL (with the
+Phase 5A-required `pgvector` extension)/Neo4j/Redis/MinIO, and a
+dedicated Docker Compose release-gate run (`tracex-phase5-gate`, fully
+port-isolated from the main stack) covering healthy-service readiness,
+a real dependency-outage/recovery cycle, a clean in-container migration,
+and the full worker-claim -> manifest/chunk -> chunk-scoped publication
+-> correlation -> idempotent replay -> authorized/denied case-scoped
+read acceptance path. Full record in
+`docs/architecture/phase-5-integration.md`'s "Phase 5 final integration"
+section; exact commands and results in `docs/qa/test-results.md`'s
+dated entry.
+
+# Phase 5 - Shreshtha graph intelligence and rules baseline: Complete
 
 - [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.
 - [x] Preliminary transparent scoring, correlation submission adapter, semantic typed-outbox handler, analytics, and motif.
@@ -600,9 +632,16 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
   repository suite green (1759+ passed). See `docs/architecture/phase-5-graph-intelligence.md`'s
   dependency-map section and `docs/qa/known-limitations.md` for the corrected record and remaining,
   deliberately-scoped Phase 5A limitations.
-- [ ] Operation Nightfall evaluation, measured/final rule tuning, real-dataset, and LAN validation after the merge wave.
+- [x] **Phase 5 final integration (Nipun)**: measured and froze the rules baseline
+  against a versioned synthetic benchmark (Precision@K = 1.0, Recall@K = 1.0,
+  0 false links, correct same-event suppression/contradiction handling/case
+  isolation/determinism; one explicit alternative weight configuration
+  compared and found not to improve on the baseline). See
+  `docs/decisions/ADR-006-phase-5-rules-baseline.md`'s "Measurement and
+  freeze" addendum and `tests/unit/graph/test_phase5_rules_benchmark.py`.
+- [ ] Operation Nightfall evaluation, real-dataset, and LAN validation remain separate, later release-validation activities.
 
-# Phase 5B - Aditya secure graph/correlation reads: In progress
+# Phase 5B - Aditya secure graph/correlation reads: Complete
 
 - [x] Reused the existing case-membership authorization seam with
   `CaseAction.GRAPH_READ`; successful decisions now carry their required action
@@ -614,11 +653,15 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Added focused unauthenticated, cross-case, object-ID probing,
   safe-audit, PostgreSQL/authorization-outage, parameterized Neo4j, and
   pgvector case-predicate coverage.
-- [ ] Docker-backed secure-read and full merge-wave regression verification;
-  Phase 5 write/review policy, public feature snapshots/analytics/motifs/vector
+- [x] **Docker-backed secure-read verification (Nipun, Phase 5 final
+  integration)**: `test_phase5_final_acceptance_live.py` proves an
+  authorized case-scoped `graph/candidates` read and a denied
+  cross-membership read against a real dedicated Docker Compose stack.
+  See `docs/qa/test-results.md`'s dated entry.
+- [ ] Phase 5 write/review policy, public feature snapshots/analytics/motifs/vector
   routes, and any frontend flow are intentionally not implemented here.
 
-# Phase 5B - Jasraj document, CDR, and financial source-signal validation: In progress
+# Phase 5B - Jasraj document, CDR, and financial source-signal validation: Complete
 
 - [x] Correlation-ready CDR and financial records now require both explicit,
   source-local participant roles plus a valid source-backed time; CDR uses
@@ -630,20 +673,30 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Added synthetic CSV/XLSX/JSON and Phase 4-to-Phase 5 motif-boundary tests;
   no candidate generation, scoring, direct graph write, entity merge, or model
   change was introduced.
-- [ ] Full merge-wave, Compose-backed, real-local-OCR and wider regression
-  verification remain pending the required verification run/environment.
+- [x] **Compose-backed verification (Nipun, Phase 5 final integration)**:
+  the full repository suite (1885 tests) and a dedicated Docker Compose
+  release-gate run both passed against real live infra, including real
+  structured/CDR processing paths. See `docs/qa/test-results.md`'s dated
+  entry.
+- [ ] Real-local-OCR accuracy and wider real-dataset/LAN validation
+  remain separate, later release-validation activities.
 
-# Phase 5B - Gaurav visual-source reliability: In progress
+# Phase 5B - Gaurav visual-source reliability: Complete
 
 - [x] Added deterministic producer-side visual locator, timeline, normalized
   geometry, and optional chunk-boundary validation with accepted/rejected/
   incomplete quality outcomes.
 - [x] Preserved evidence-local track lifecycle conditions and bounded OCR
   provenance without creating identity, candidate, graph-write, or scoring paths.
-- [ ] Real-media/model accuracy, variable-frame-rate validation, and
-  manifest-aware worker publication remain merge-wave work.
+- [x] **Manifest-aware worker publication (Nipun, Phase 5 final integration)**:
+  `media_processing.worker.run_once` now registers a coordinator-persisted
+  manifest and publishes every sampled frame's OCR output chunk-scoped
+  (`POST .../media-chunks/publish`), replacing the previous plain/unscoped
+  submission (P5-INTEG-VISUAL-001). See
+  `docs/architecture/phase-5-integration.md`.
+- [ ] Real-media/model accuracy and variable-frame-rate validation remain merge-wave work.
 
-# Phase 5B - Sarthak audio/social source-signal validation: In progress
+# Phase 5B - Sarthak audio/social source-signal validation: Complete
 
 - [x] Added deterministic audio/chat/identifier validation outcomes and safe
   correlation-readiness metadata; raw transcript/message content remains out
@@ -651,8 +704,13 @@ Owned by other contributors, building on the frozen Phase 1 contracts, the graph
 - [x] Added supplied audio-chunk bounds checks, evidence-local speaker-label
   semantics, platform-scoped handle normalization, and actual worker gating so
   incomplete chat records emit no retrieval-eligible identifiers.
-- [ ] Persisted coordinator manifest/chunk wiring, real model quality, and
-  Compose/full merge-wave validation remain Nipun/team integration work.
+- [x] **Persisted coordinator manifest/chunk wiring (Nipun, Phase 5 final
+  integration)**: `run_communication_job_with_batches` now registers the
+  manifest with the coordinator and publishes ASR/diarization mentions
+  chunk-scoped, replacing the previous worker-local-only plan
+  (P5-INTEG-COMMUNICATION-001). See
+  `docs/architecture/phase-5-integration.md`.
+- [ ] Real model quality and Compose/full merge-wave validation remain team work.
 
 # Phase 4 - Aditya LAN worker security and reliability: In progress
 

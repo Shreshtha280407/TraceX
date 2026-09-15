@@ -29,6 +29,7 @@ import structlog
 from fastapi import UploadFile
 
 from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
+from app.contracts.observation import ObservationV1
 from app.contracts.observation_batch import (
     BatchAcceptanceStatus,
     ObservationBatchProgressV1,
@@ -58,6 +59,7 @@ from app.modules.evidence_lifecycle.media_orchestration import (
     ChunkManifest,
     MediaChunkPublication,
     chunk_identity,
+    find_chunk_for_interval,
 )
 from app.modules.evidence_lifecycle.models import (
     TERMINAL_WORKER_STATUSES,
@@ -203,19 +205,37 @@ class EvidenceLifecycleService:
         self._graph_projection_max_attempts = graph_projection_max_attempts
 
     async def create_media_manifest(
-        self, *, manifest: ChunkManifest, context: UploadContext
+        self,
+        *,
+        manifest: ChunkManifest,
+        claim_token: str,
+        context: UploadContext,
+        worker_id: UUID | None = None,
     ) -> MediaManifestOutcome:
         """Persist an immutable coordinator manifest before workers publish chunks.
 
-        This is intentionally a service seam, rather than a public API: the
-        coordinator constructs no boundaries on a worker's behalf.  A retry
-        with the identical canonical definition is harmless; changed content
-        under its deterministic identity is rejected.
+        This is the coordinator-owned seam a worker calls right after
+        claiming a chunked media job and probing its own input (duration,
+        frame count -- only the worker can determine this; the coordinator
+        never decodes media). The manifest's own content -- `manifest_id`/
+        `manifest_hash` are a pure hash of everything else on it (see
+        `media_orchestration.build_manifest`) -- is what a worker submits;
+        this method's job is authorization (an active claim on the exact
+        job this manifest declares) plus first-writer-wins persistence, the
+        same idempotent-or-conflict shape every other worker-submission
+        path in this module already uses. A retry with the identical
+        canonical definition is harmless; changed content under its
+        deterministic identity is rejected.
         """
-        job = await self._repository.get_job_by_id(manifest.job_id)
+        job = await self._require_active_claim(
+            job_id=manifest.job_id,
+            claim_token=claim_token,
+            worker_id=worker_id,
+            context=context,
+            log_scope="worker.media_manifest",
+        )
         if (
-            job is None
-            or job.case_id != manifest.case_id
+            job.case_id != manifest.case_id
             or job.evidence_id != manifest.evidence_id
             or job.source_type.value != manifest.source_type
             or job.processor_name != manifest.processor_name
@@ -228,6 +248,66 @@ class EvidenceLifecycleService:
             if existing is None or existing.manifest_hash != manifest.manifest_hash:
                 raise MediaPublicationConflictError("a different manifest already exists")
         return MediaManifestOutcome(manifest_id=manifest.manifest_id, created=created)
+
+    async def _require_active_claim(
+        self,
+        *,
+        job_id: UUID,
+        claim_token: str,
+        worker_id: UUID | None,
+        context: UploadContext,
+        log_scope: str,
+    ) -> WorkerJobRecord:
+        """Claim-token, worker-identity, running-status, and lease-expiry checks.
+
+        The same ordering and outcomes `submit_result`/`submit_observation_batch`
+        already establish (unconditional token hash compare, then identity,
+        before any status/lease branch) -- factored out here since this is
+        the first *new* caller of that exact sequence since those two were
+        written, rather than a fourth hand-copied block.
+        """
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None or job.claim_token_hash is None:
+            logger.warning(
+                f"{log_scope}.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="unknown_or_unclaimed_job",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="unknown_or_unclaimed_job")
+        if not hmac.compare_digest(_hash_claim_token(claim_token), job.claim_token_hash):
+            logger.warning(
+                f"{log_scope}.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="token_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="token_mismatch")
+        if worker_id is not None and job.claimed_by_worker_id != worker_id:
+            logger.warning(
+                f"{log_scope}.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="worker_identity_mismatch",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="worker_identity_mismatch")
+        if job.status is not WorkerStatus.RUNNING:
+            logger.warning(
+                f"{log_scope}.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="not_claimed",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="not_claimed")
+        if job.lease_expires_at is None or job.lease_expires_at < context.now:
+            logger.warning(
+                f"{log_scope}.rejected",
+                request_id=context.request_id,
+                job_id=str(job_id),
+                reason="lease_expired",
+            )
+            raise InvalidClaimTokenError("invalid claim token", reason="lease_expired")
+        return job
 
     async def worker_availability(
         self, *, job_id: UUID, now: datetime, stale_seconds: int
@@ -1240,11 +1320,14 @@ class EvidenceLifecycleService:
             or publication.batch != submission
         ):
             raise MediaManifestValidationError("media publication does not match its manifest/job")
-        expected_chunk_id = chunk_identity(
-            ChunkManifest.model_validate(manifest.canonical_payload), publication.chunk_index
-        )
+        manifest_definition = ChunkManifest.model_validate(manifest.canonical_payload)
+        expected_chunk_id = chunk_identity(manifest_definition, publication.chunk_index)
         if expected_chunk_id != publication.chunk_id:
             raise MediaManifestValidationError("media chunk identity does not match manifest order")
+        for observation in submission.observations:
+            _require_observation_within_chunk(
+                manifest_definition, publication.chunk_index, observation
+            )
         if any(
             artifact.parent_evidence_id != job.evidence_id for artifact in publication.artifacts
         ):
@@ -1351,6 +1434,32 @@ class EvidenceLifecycleService:
     async def get_job_progress_summary(self, job_id: UUID) -> ObservationBatchProgressV1 | None:
         """The safe, current progress summary for a job -- its latest accepted event, if any."""
         return _progress_contract(await self._repository.get_latest_progress_event(job_id))
+
+
+def _require_observation_within_chunk(
+    manifest: ChunkManifest, chunk_index: int, observation: ObservationV1
+) -> None:
+    """Reject a media observation whose source-relative interval is outside its
+    assigned chunk, or ambiguous across chunks -- never assign one arbitrarily.
+
+    Skips an observation with no time interval on its `source_locator`
+    (e.g. a whole-file fact) -- there is nothing chunk-scoped to check, and
+    this validates chunk-scoped *publication*, not every observation type.
+    """
+    locator = observation.source_locator
+    if locator.time_start_ms is None:
+        return
+    end_ms = locator.time_end_ms if locator.time_end_ms is not None else locator.time_start_ms
+    try:
+        matched = find_chunk_for_interval(manifest, start_ms=locator.time_start_ms, end_ms=end_ms)
+    except ValueError as exc:
+        raise MediaManifestValidationError(
+            f"observation {observation.observation_id} interval is outside its assigned chunk"
+        ) from exc
+    if matched.index != chunk_index:
+        raise MediaManifestValidationError(
+            f"observation {observation.observation_id} interval belongs to a different chunk"
+        )
 
 
 def _build_job(

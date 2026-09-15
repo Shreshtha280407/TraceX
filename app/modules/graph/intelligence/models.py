@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import Field, field_validator
 
@@ -28,12 +28,31 @@ class CandidateStatus(StrEnum):
 
 
 class ObservationDescriptor(GraphModel):
-    """Bounded source-backed fields used by retrieval; never a resolved entity."""
+    """Bounded source-backed fields used by retrieval; never a resolved entity.
+
+    `descriptor_id` is the identity `retrieval.py`'s pairwise comparison
+    uses internally -- deterministic from `(case_id, observation_id,
+    participant_role, identifiers)`, so it is stable/reproducible but
+    distinct for two descriptors sharing one `observation_id` (a two-party
+    CDR/finance record's caller and callee -- see `sourcing.
+    descriptors_from_observation`). `observation_id` remains every
+    descriptor's real origin observation -- never fabricated, never a
+    second observation or an entity. `participant_role` (`"caller"`/
+    `"callee"`/`"sender"`/`"receiver"`, or `None` for every other,
+    single-party descriptor) is evidence-local metadata only -- it is
+    never treated as, or promoted into, an identity.
+    """
 
     case_id: UUID
     observation_id: UUID
+    #: Defaults to a fresh random id only for callers that never set one
+    #: explicitly (e.g. hand-built test fixtures exercising unrelated
+    #: behavior); every real producer in `sourcing.py` sets this
+    #: deterministically -- see the class docstring.
+    descriptor_id: UUID = Field(default_factory=uuid4)
     evidence_id: UUID
     source_locator_reference: str
+    participant_role: str | None = None
     identifiers: dict[str, str] = Field(default_factory=dict)
     identifier_normalization_version: str = "phase5_identifier_normalization_v1"
     aliases: tuple[str, ...] = ()

@@ -53,6 +53,7 @@ from app.contracts.observation import ObservationV1
 from app.contracts.observation_batch import TransformationProvenanceV1
 from app.contracts.worker import WorkerError, WorkerJobV1, WorkerResultV1, WorkerStatus
 from app.core.config import Settings, get_settings
+from app.core.ids import deterministic_uuid
 from app.modules.communication_processing.audio.asr_adapter import (
     AsrAdapter,
     LocalCommandAsrAdapter,
@@ -124,7 +125,11 @@ from app.modules.communication_processing.social.instagram import parse_instagra
 from app.modules.communication_processing.social.json_records import parse_generic_json_export
 from app.modules.communication_processing.social.telegram import parse_telegram_export
 from app.modules.communication_processing.social.whatsapp import parse_whatsapp_export
-from app.modules.evidence_lifecycle.media_orchestration import chunk_identity
+from app.modules.evidence_lifecycle.media_orchestration import (
+    ChunkManifest,
+    MediaChunkPublication,
+    chunk_identity,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -343,30 +348,20 @@ def _handle_local_audio(
     profile: AudioProcessingProfile,
     asr_adapter: AsrAdapter,
     diarization_adapter: DiarizationAdapter,
+    manifest: ChunkManifest,
     created_at: datetime,
 ) -> tuple[list[RawMention], str | None, WorkerStatus]:
     """Extend the existing raw-audio route without changing its job scope.
 
-    The coordinator owns durable manifest creation and media-chunk
-    checkpointing.  This worker derives the identical deterministic plan for
-    bounded processing and preserves its safe identifiers on observations;
-    publication remains the existing authenticated observation-batch route.
-    It never attempts a direct coordinator/database write.
+    `manifest` is already coordinator-persisted by the caller
+    (`run_communication_job_with_batches`, via `client.create_media_manifest`)
+    before this function ever runs -- unlike before P5-INTEG-COMMUNICATION-001,
+    this is no longer a worker-local plan the coordinator never saw. This
+    function itself still performs no direct coordinator/database write; it
+    only derives chunk identities from the manifest it was given and
+    preserves them as safe lineage on every produced observation.
     """
     metadata_mentions, _, _ = _handle_audio_metadata(input_payload)
-    duration_ms = round(extract_wav_metadata(input_payload.data).duration_seconds * 1000)
-    manifest = plan_audio_manifest(
-        case_id=job.case_id,
-        evidence_id=job.evidence_id,
-        job_id=job.job_id,
-        input_object_uri=job.input_object_uri,
-        source_type=job.source_type.value,
-        processor_name=job.processor_name,
-        processor_version=job.processor_version,
-        duration_ms=duration_ms,
-        profile=profile,
-        created_at=created_at,
-    )
     outcome = process_local_audio(
         payload=input_payload,
         profile=profile,
@@ -485,6 +480,12 @@ def _defer_checkpoint(reason: AudioRoutingDecision) -> str:
 # and docs/architecture/phase-3-decisions.md's Sarthak section.
 # ---------------------------------------------------------------------------
 
+#: The transformation step name for a chunk-scoped local-audio ASR/
+#: diarization publication -- distinct from `wav_metadata_extraction`
+#: (the same path's own whole-file metadata mention, which stays
+#: unscoped) and from `communication_extraction` (every other profile).
+STEP_NAME_LOCAL_AUDIO_CHUNK = "local_audio_asr_diarization_extraction"
+
 #: One safe, named transformation step per profile family -- recorded in
 #: every batch's `TransformationProvenanceV1`, never raw source content.
 _TRANSFORMATION_STEP_NAMES: dict[str, str] = {
@@ -562,6 +563,10 @@ def run_communication_job_with_batches(
     settings = get_settings()
     now = clock()
 
+    #: Set only when the local-audio path registers a real coordinator
+    #: manifest (see P5-INTEG-COMMUNICATION-001) -- `None` for every other
+    #: profile, which never had a manifest and is unaffected below.
+    manifest: ChunkManifest | None = None
     try:
         profile = _get_profile(job.processor_name)
         _validate_source_type(profile, job.source_type)
@@ -572,12 +577,31 @@ def run_communication_job_with_batches(
             and asr_adapter is not None
             and diarization_adapter is not None
         ):
+            duration_ms = round(extract_wav_metadata(input_payload.data).duration_seconds * 1000)
+            candidate_manifest = plan_audio_manifest(
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                job_id=job.job_id,
+                input_object_uri=job.input_object_uri,
+                source_type=job.source_type.value,
+                processor_name=job.processor_name,
+                processor_version=job.processor_version,
+                duration_ms=duration_ms,
+                profile=audio_profile,
+                created_at=now,
+            )
+            # Coordinator-owned persistence, not a worker-local plan the
+            # coordinator never saw -- see `client.create_media_manifest`.
+            manifest = client.create_media_manifest(
+                job_id=job.job_id, claim_token=claim_token, manifest=candidate_manifest
+            )
             mentions, checkpoint, status = _handle_local_audio(
                 job=job,
                 input_payload=input_payload,
                 profile=audio_profile,
                 asr_adapter=asr_adapter,
                 diarization_adapter=diarization_adapter,
+                manifest=manifest,
                 created_at=now,
             )
         else:
@@ -592,6 +616,20 @@ def run_communication_job_with_batches(
             derived_artifacts=[],
             checkpoint=None,
             error=WorkerError(code=exc.code, message=exc.message, retryable=exc.retryable),
+            completed_at=now,
+        )
+    except WorkerApiError as exc:
+        return WorkerResultV1(
+            job_id=job.job_id,
+            case_id=job.case_id,
+            evidence_id=job.evidence_id,
+            status=WorkerStatus.FAILED,
+            observations=[],
+            derived_artifacts=[],
+            checkpoint=None,
+            error=WorkerError(
+                code="media_manifest_registration_failed", message=str(exc), retryable=True
+            ),
             completed_at=now,
         )
 
@@ -613,12 +651,111 @@ def run_communication_job_with_batches(
     batch_size = settings.communication_batch_size
     total = len(mentions)
     renew_since_last = 0
+    batch_sequence = 0
+    units_completed = 0
 
-    for batch_sequence, start in enumerate(range(0, total, batch_size)):
-        chunk = mentions[start : start + batch_size]
+    # A mention carrying a `chunk_id` attribute (only ASR/diarization
+    # mentions from the local-audio path) must be published chunk-scoped,
+    # combined per chunk (a coordinator-persisted chunk accepts exactly
+    # one publication -- see `EvidenceLifecycleService.
+    # _validate_media_publication`'s "already completed" check); every
+    # other mention (including this same path's own whole-file metadata
+    # mention, and every mention from every other profile) keeps using
+    # the pre-existing unscoped micro-batch loop below, unchanged.
+    chunk_groups: dict[str, list[RawMention]] = {}
+    unscoped_mentions: list[RawMention] = []
+    if manifest is not None:
+        for mention in mentions:
+            chunk_id = mention.attributes.get("chunk_id")
+            if isinstance(chunk_id, str):
+                chunk_groups.setdefault(chunk_id, []).append(mention)
+            else:
+                unscoped_mentions.append(mention)
+    else:
+        unscoped_mentions = mentions
+
+    if chunk_groups:
+        assert manifest is not None
+        chunk_index_by_id = {
+            str(chunk_identity(manifest, spec.index)): spec.index for spec in manifest.chunks
+        }
+        for chunk_id_str in sorted(chunk_groups, key=lambda cid: chunk_index_by_id.get(cid, -1)):
+            chunk_index = chunk_index_by_id.get(chunk_id_str)
+            if chunk_index is None:
+                # Never guess which chunk an unrecognized id meant.
+                raise WorkerApiError(
+                    f"mention references chunk {chunk_id_str}, which is not part of "
+                    f"manifest {manifest.manifest_id}"
+                )
+            group = chunk_groups[chunk_id_str]
+            observations = _observations_for(job, profile, group, now)
+            # Must match what `build_batch_submission` derives internally
+            # from the same `(job_id, batch_sequence)` pair below -- a
+            # transformation's `batch_id` must equal its submission's own.
+            batch_id = deterministic_batch_id(job_id=job.job_id, batch_sequence=batch_sequence)
+            units_completed += len(group)
+
+            chunk_transformation: TransformationProvenanceV1 = build_transformation(
+                job=job,
+                batch_id=batch_id,
+                ordinal=0,
+                step_name=STEP_NAME_LOCAL_AUDIO_CHUNK,
+                step_version=profile.version,
+                config_hash=config_hash,
+                started_at=now,
+                completed_at=now,
+                output_observation_ids=[o.observation_id for o in observations],
+                safe_metadata={
+                    "batch_sequence": batch_sequence,
+                    "item_count": len(group),
+                    "chunk_index": chunk_index,
+                },
+            )
+            chunk_progress = build_progress(
+                stage="submitting",
+                units_total=total,
+                units_completed=units_completed,
+                observations_emitted=len(observations),
+                batch_sequence=batch_sequence,
+                occurred_at=now,
+                message_code="CHUNK_BATCH_SUBMITTED",
+            )
+            chunk_submission = build_batch_submission(
+                job=job,
+                batch_sequence=batch_sequence,
+                submitted_at=now,
+                observations=observations,
+                transformations=[chunk_transformation],
+                progress=chunk_progress,
+            )
+            publication = MediaChunkPublication(
+                manifest_id=manifest.manifest_id,
+                manifest_hash=manifest.manifest_hash,
+                chunk_id=chunk_identity(manifest, chunk_index),
+                chunk_index=chunk_index,
+                batch=chunk_submission,
+                checkpoint_id=deterministic_uuid(
+                    "phase5_media_checkpoint",
+                    str(manifest.manifest_id),
+                    str(chunk_identity(manifest, chunk_index)),
+                ),
+                completed_at=now,
+            )
+            client.publish_media_chunk(
+                job_id=job.job_id, claim_token=claim_token, publication=publication
+            )
+            batch_sequence += 1
+            renew_since_last += 1
+            if renew_since_last >= 5:
+                with contextlib.suppress(WorkerApiError):
+                    client.renew_lease(job.job_id, claim_token=claim_token)
+                renew_since_last = 0
+
+    for start in range(0, len(unscoped_mentions), batch_size):
+        chunk = unscoped_mentions[start : start + batch_size]
         observations = _observations_for(job, profile, chunk, now)
         batch_id = deterministic_batch_id(job_id=job.job_id, batch_sequence=batch_sequence)
-        units_completed = min(start + batch_size, total)
+        units_completed += len(chunk)
 
         transformation: TransformationProvenanceV1 = build_transformation(
             job=job,
@@ -650,6 +787,7 @@ def run_communication_job_with_batches(
             progress=progress,
         )
         client.submit_batch(job_id=job.job_id, claim_token=claim_token, submission=submission)
+        batch_sequence += 1
 
         renew_since_last += 1
         if renew_since_last >= 5:

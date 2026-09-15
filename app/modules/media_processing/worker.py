@@ -63,6 +63,13 @@ from app.contracts.evidence import (
 from app.contracts.observation import ObservationV1
 from app.contracts.worker import WorkerError, WorkerJobV1, WorkerResultV1, WorkerStatus
 from app.core.config import Settings, get_settings
+from app.core.ids import deterministic_uuid
+from app.modules.evidence_lifecycle.media_orchestration import (
+    ChunkManifest,
+    MediaChunkPublication,
+    chunk_identity,
+    find_chunk_for_interval,
+)
 from app.modules.media_processing.analysis.interfaces import (
     ObjectDetection,
     ObjectDetector,
@@ -103,17 +110,23 @@ from app.modules.media_processing.models import (
     SamplingStrategy,
     VideoMetadata,
 )
-from app.modules.media_processing.ocr_adapter import ImageOcrAdapter, OcrAdapterConfig
+from app.modules.media_processing.ocr_adapter import ImageOcrAdapter, OcrAdapterConfig, OcrBoxResult
 from app.modules.media_processing.ocr_batching import (
     OcrBatchConfig,
     build_media_observation_batch,
     build_terminal_result,
     build_terminal_result_failed,
+    build_video_chunk_ocr_batch,
     build_video_frame_ocr_batch,
     iter_image_ocr_batches,
 )
 from app.modules.media_processing.performance import Stopwatch
-from app.modules.media_processing.phase4 import DEEP_PROFILE, RAPID_PROFILE, ProcessingProfile
+from app.modules.media_processing.phase4 import (
+    DEEP_PROFILE,
+    RAPID_PROFILE,
+    ProcessingProfile,
+    plan_manifest,
+)
 from app.modules.media_processing.provenance import (
     CONFIDENCE_METADATA_PROBED,
     OBSERVATION_ANONYMOUS_TRACK_SEGMENT,
@@ -143,6 +156,13 @@ from app.modules.media_processing.visual_validation import (
 OcrBatchCallback = TypingCallable[
     [ExtractedFrame | None, Frame, ImageMetadata | VideoMetadata], None
 ]
+#: Fired once, right after a video's real metadata is known (only the
+#: worker can probe it -- see `_process`'s video branch), so the
+#: orchestration layer (`run_once`) can register a coordinator-persisted
+#: manifest before any chunk-scoped OCR batch is built. `_process` itself
+#: never talks to the coordinator directly -- see `submit_ocr_batch`'s own
+#: identical "HTTP I/O lives in the caller's closure" precedent.
+RegisterManifestCallback = TypingCallable[[VideoMetadata], None]
 
 logger = structlog.get_logger(__name__)
 
@@ -173,6 +193,7 @@ def process_job(
     tracker: ObjectTracker | None = None,
     ocr_adapter: ImageOcrAdapter | None = None,
     submit_ocr_batch: OcrBatchCallback | None = None,
+    register_manifest: RegisterManifestCallback | None = None,
     stopwatch: Stopwatch | None = None,
 ) -> WorkerResultV1:
     """Process one video/image evidence source into a `WorkerResultV1`.
@@ -182,7 +203,9 @@ def process_job(
     additionally requires `detector` to be provided, and optionally uses
     `tracker`/`ocr` if given. `stopwatch`, if provided, is populated with
     measured per-stage timings (see `performance.py`); it is a side-channel
-    only and never affects the returned `WorkerResultV1`.
+    only and never affects the returned `WorkerResultV1`. `register_manifest`,
+    if given, fires once for a video job right after its real duration is
+    probed -- see `RegisterManifestCallback`.
     """
     completed_at = datetime.now(UTC)
     sw = stopwatch or Stopwatch()
@@ -200,6 +223,7 @@ def process_job(
                 sw,
                 completed_at,
                 submit_ocr_batch,
+                register_manifest,
             )
         return WorkerResultV1(
             job_id=job.job_id,
@@ -238,6 +262,7 @@ def _process(
     sw: Stopwatch,
     completed_at: datetime,
     submit_ocr_batch: OcrBatchCallback | None = None,
+    register_manifest: RegisterManifestCallback | None = None,
 ) -> list[ObservationV1]:
     kind = classify_media(evidence.content_type, evidence.original_filename)
     _check_source_type(kind, evidence.source_type)
@@ -263,6 +288,8 @@ def _process(
             check_video_limits(video_metadata, limits)
             observations = [_video_metadata_observation(job, video_metadata, completed_at)]
             if run_analysis and detector is not None:
+                if register_manifest is not None:
+                    register_manifest(video_metadata)
                 observations.extend(
                     _process_video_analysis(
                         job,
@@ -766,6 +793,38 @@ def run_once(
         video_frames_seen = 0
         last_video_frame: ExtractedFrame | None = None
         last_video_metadata: VideoMetadata | None = None
+        #: Set once by `_register_manifest` (below), right after a video's
+        #: real duration is probed inside `_process`. Every video-frame OCR
+        #: batch is chunk-scoped against this coordinator-persisted
+        #: manifest -- see P5-INTEG-VISUAL-001.
+        manifest: ChunkManifest | None = None
+        #: Frames whose OCR results have been computed but not yet
+        #: published, grouped by their assigned chunk index. A chunk is
+        #: published exactly once (the coordinator rejects a second
+        #: publication for an already-completed chunk -- see
+        #: `EvidenceLifecycleService._validate_media_publication`), so
+        #: every frame landing in one chunk must be combined into one
+        #: submission; frames accumulate here and are flushed together
+        #: once video-frame processing finishes (below).
+        pending_chunk_frames: dict[int, list[tuple[ExtractedFrame, list[OcrBoxResult]]]] = {}
+
+        def _register_manifest(video_metadata: VideoMetadata) -> None:
+            nonlocal manifest
+            planned = plan_manifest(
+                case_id=job.case_id,
+                evidence_id=job.evidence_id,
+                job_id=job.job_id,
+                input_object_uri=job.input_object_uri,
+                source_type=job.source_type.value,
+                processor_name=job.processor_name,
+                processor_version=job.processor_version,
+                metadata=video_metadata,
+                profile=profile,
+                created_at=clock(),
+            )
+            manifest = client.create_media_manifest(
+                job_id=job.job_id, claim_token=claim_token, manifest=planned
+            )
 
         def _submit_ocr_batch(
             frame: ExtractedFrame | None, image: Frame, meta: ImageMetadata | VideoMetadata
@@ -812,27 +871,21 @@ def run_once(
                     batches_submitted += 1
                     total_observations += len(batch_submission.observations)
             else:
-                video_meta = typing.cast("VideoMetadata", meta)
-                batch_submission = build_video_frame_ocr_batch(
-                    results,
-                    job=job,
-                    frame=frame,
-                    metadata=video_meta,
-                    batch_id=f"{job.job_id}-frame-{frame.frame_number or frame.time_start_ms}",
-                    batch_sequence=batches_submitted,
-                    idempotency_key=(
-                        f"{job.job_id}-frame-{frame.frame_number or frame.time_start_ms}"
-                    ),
-                    units_completed=video_frames_seen,
-                    units_total=None,
-                    observations_emitted_before=total_observations,
-                    completed_at=datetime.now(UTC),
-                )
-                client.submit_batch(
-                    job_id=job.job_id, claim_token=claim_token, submission=batch_submission
-                )
-                batches_submitted += 1
-                total_observations += len(batch_submission.observations)
+                if manifest is None:  # pragma: no cover - defensive: register_manifest always
+                    # runs before any video frame is sampled (see `_process`'s video branch)
+                    raise WorkerApiError(
+                        "video frame OCR batch has no registered coordinator manifest"
+                    )
+                try:
+                    target_chunk = find_chunk_for_interval(
+                        manifest, start_ms=frame.time_start_ms, end_ms=frame.time_end_ms
+                    )
+                except ValueError as exc:
+                    raise WorkerApiError(
+                        f"video frame at {frame.time_start_ms}-{frame.time_end_ms}ms is outside "
+                        "its manifest's chunk scope"
+                    ) from exc
+                pending_chunk_frames.setdefault(target_chunk.index, []).append((frame, results))
 
         heartbeat_ctx = (
             _lease_heartbeat(client, job.job_id, claim_token, renew_interval_seconds)
@@ -855,10 +908,64 @@ def run_once(
                         max_frames=profile.max_frames_per_chunk,
                     ),
                     submit_ocr_batch=_submit_ocr_batch,
+                    register_manifest=(
+                        _register_manifest
+                        if ocr_adapter is not None and profile.ocr_enabled
+                        else None
+                    ),
                     stopwatch=None,
                 )
 
                 if result.status is WorkerStatus.SUCCEEDED:
+                    # Publish every chunk's buffered frame OCR together, once
+                    # per chunk (see `pending_chunk_frames`'s own docstring
+                    # above for why this can't happen per-frame). Chunk
+                    # index order keeps `batch_sequence`/progress
+                    # monotonically increasing and deterministic.
+                    for chunk_index in sorted(pending_chunk_frames):
+                        assert manifest is not None  # a buffered frame implies a manifest
+                        chunk_batch = build_video_chunk_ocr_batch(
+                            pending_chunk_frames[chunk_index],
+                            job=job,
+                            metadata=cast("VideoMetadata", last_video_metadata),
+                            batch_id=f"{job.job_id}-chunk-{chunk_index}",
+                            batch_sequence=batches_submitted,
+                            idempotency_key=f"{job.job_id}-chunk-{chunk_index}",
+                            # Chunks completed so far, not frames -- a
+                            # smaller, coarser count than the later
+                            # `video_frame_ocr` final marker's frame-based
+                            # `units_completed`. Never a progress
+                            # regression: the chunk count can only be
+                            # <= the eventual frame count (every counted
+                            # chunk holds >= 1 of those frames), so this
+                            # value is always <= what the final marker
+                            # reports next.
+                            units_completed=len(
+                                [i for i in pending_chunk_frames if i <= chunk_index]
+                            ),
+                            units_total=len(manifest.chunks),
+                            observations_emitted_before=total_observations,
+                            completed_at=clock(),
+                        )
+                        publication = MediaChunkPublication(
+                            manifest_id=manifest.manifest_id,
+                            manifest_hash=manifest.manifest_hash,
+                            chunk_id=chunk_identity(manifest, chunk_index),
+                            chunk_index=chunk_index,
+                            batch=chunk_batch,
+                            checkpoint_id=deterministic_uuid(
+                                "phase5_media_checkpoint",
+                                str(manifest.manifest_id),
+                                str(chunk_identity(manifest, chunk_index)),
+                            ),
+                            completed_at=clock(),
+                        )
+                        client.publish_media_chunk(
+                            job_id=job.job_id, claim_token=claim_token, publication=publication
+                        )
+                        batches_submitted += 1
+                        total_observations += len(chunk_batch.observations)
+
                     media_batch = build_media_observation_batch(
                         result.observations,
                         job=job,

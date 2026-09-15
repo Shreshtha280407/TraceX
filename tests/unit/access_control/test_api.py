@@ -186,6 +186,52 @@ async def test_refresh_rate_limit_returns_429(client: AsyncClient) -> None:
     assert 429 in statuses[limit:]
 
 
+async def test_refresh_rate_limit_returns_429_for_a_real_rotating_authenticated_client(
+    client: AsyncClient,
+) -> None:
+    """P5-REGRESSION-AUTH-001 regression test: a legitimate client presents
+    its newest rotated refresh token on every call, exactly as a real
+    client must (the previous token is now invalid -- reuse would 401).
+    Rate limiting must still trigger once this same client exceeds the
+    configured attempt count, even though every individual token string
+    differs from the last -- keying the limiter on the token itself made
+    this unreachable (every attempt landed in its own one-shot bucket).
+
+    Uses a fixed-clock limiter (not the fixture's real-time default): this
+    test does real bcrypt/JWT work per call, and the fixed rate-limit
+    window is real wall-clock time -- under full-suite load, `limit + 2`
+    real requests could otherwise straddle a window boundary and reset
+    the count, making the test flaky rather than actually verifying the
+    limiter's identity-keying behavior.
+    """
+    from app.core.config import get_settings
+
+    # Construct the limiter ONCE and close over that instance -- FastAPI
+    # calls the override callable fresh on every dependency resolution
+    # (see `_override_dependencies` above), so a fresh instance per call
+    # would silently reset the count on every request.
+    fixed_clock_limiter = InMemoryRateLimiter(clock=lambda: 0.0)
+    app.dependency_overrides[get_refresh_rate_limiter] = lambda: fixed_clock_limiter
+    limit = get_settings().auth_refresh_rate_limit
+    email = "rotating-refresh@example.test"
+    await _register(client, email)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": email, "password": VALID_PASSWORD}
+    )
+    assert login.status_code == 200
+    refresh_token = login.json()["refresh_token"]
+
+    statuses = []
+    for _ in range(limit + 2):
+        response = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+        statuses.append(response.status_code)
+        if response.status_code == 200:
+            refresh_token = response.json()["refresh_token"]
+
+    assert statuses[:limit] == [200] * limit
+    assert 429 in statuses[limit:]
+
+
 # --- Scenario 18: security headers ------------------------------------------
 
 

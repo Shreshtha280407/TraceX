@@ -112,6 +112,20 @@ class ResultAcknowledgement(_ResponseModel):
     observation_ids: tuple[UUID, ...]
 
 
+class MediaManifestResponse(_ResponseModel):
+    """Safe acknowledgement of a persisted coordinator manifest.
+
+    `created=False` means an identical manifest (matching content hash)
+    was already durably persisted -- an idempotent retry, not a conflict.
+    Never echoes the manifest's own chunk definitions back: the worker
+    that submitted it already has them (it built the manifest), and this
+    is only proof the coordinator now owns a persisted copy under this ID.
+    """
+
+    manifest_id: UUID
+    created: bool
+
+
 class RenewLeaseResponse(_ResponseModel):
     """Safe acknowledgement of a lease renewal -- the new expiry only, nothing else."""
 

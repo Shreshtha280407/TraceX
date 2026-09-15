@@ -31,6 +31,13 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --no-dev
 
 COPY app ./app
+# `README.md` is required only because `pyproject.toml` declares it as the
+# package readme (`uv run` validates project metadata on first invocation
+# inside the container); `alembic.ini`/`migrations` let the required release-
+# gate check `docker compose exec api uv run alembic upgrade head` run
+# in-container instead of needing a host-side `uv` install.
+COPY README.md alembic.ini ./
+COPY migrations ./migrations
 
 EXPOSE 8000
 

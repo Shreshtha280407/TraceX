@@ -198,11 +198,21 @@ sort first) -- fixed to check both directions, with a permanent regression test
   line-level regions, spans are source-relative, and confidence means recognition/extraction quality only.
   Existing local OCR/NER models may still miss or misread text; this phase adds no model, download, or
   full-document graph-text storage.
-- `sourcing.descriptor_from_observation`'s mapping scope is intentionally bounded to observation types
-  already confirmed to carry a genuinely stable identifier, alias, or handle (see the module's own
-  docstring for the exact list). A `cdr_call_record`/`financial_transaction_record`'s second party
-  (callee/receiver) is not independently exact-blockable from that one combined record, since
-  `ObservationDescriptor.identifiers` holds one value per stable-identifier kind.
+- **Resolved (Phase 5 final integration, Nipun)**: `sourcing.
+  descriptor_from_observation`'s mapping scope is intentionally bounded to
+  observation types already confirmed to carry a genuinely stable
+  identifier, alias, or handle (see the module's own docstring for the
+  exact list) -- unchanged. What used to be a limitation here is closed:
+  a `cdr_call_record`/`financial_transaction_record`'s second party
+  (callee/receiver) is now independently exact-blockable, via a new
+  `descriptors_from_observation` (plural) that returns both parties as
+  role-scoped descriptors sharing one origin observation, never a second
+  fabricated observation or an entity. Same-event self-pairing (the two
+  ends of one record) is explicitly suppressed in `retrieval.
+  retrieve_candidates`, so this closure does not relax "no candidate
+  merely because two participant descriptors originated from the same
+  event." See `docs/architecture/phase-5-integration.md`'s "Per-party
+  (two-party) descriptor extension" section.
 - The temporal motif's "movement/meeting" hop only fires for a `meeting_candidate` media observation
   whose own `contributing_observation_ids` cites a call/transfer this same adapter run recognized -- a
   real, evidence-backed link, never fabricated, but real cross-modal chains need a shared identifier
@@ -259,11 +269,20 @@ wave and post-Phase-5 validation gate.
 - VAD thresholds/script hints are deterministic policy aids, not measured
   accuracy claims. `audioop` is used only for Python 3.12 PCM normalization;
   a supported replacement is needed before a Python 3.13 upgrade.
-- Persisted coordinator manifest/chunk scope is enforced by communication
-  validation only when the worker is supplied actual scope. The present local
-  worker's deterministic in-memory plan is useful lineage but is not evidence
-  that coordinator manifest/checkpoint persistence was completed; that remains
-  the Nipun Phase 5 integration seam.
+- **Resolved (Phase 5 final integration, Nipun)**: persisted coordinator
+  manifest/chunk scope is now genuinely enforced, not just locally
+  planned. `run_communication_job_with_batches` registers the manifest
+  with the coordinator (`POST .../media-manifest`) before any chunk is
+  published, and ASR/diarization mentions are published chunk-scoped
+  (`POST .../media-chunks/publish`) instead of the previous plain,
+  unscoped batch route. See `docs/architecture/phase-5-integration.md`'s
+  "Persisted media-manifest/chunk enforcement" section. Unlike the visual
+  side (`tests/integration/media_processing/test_media_worker_live.py`),
+  no live test runs the real audio worker process end to end against
+  live infra yet -- this wiring is covered by unit tests against a fake
+  client only (`tests/unit/communication_processing/
+  test_communication_worker_orchestration.py`); a live audio-worker
+  acceptance test is deferred, not attempted.
 - Platform parsing and Unicode/transliteration normalization are deterministic
   safeguards, not multilingual accuracy, account-ownership, speaker identity,
   or alias-equivalence claims. There is no face/voice biometric identification

@@ -32,7 +32,7 @@ import structlog
 
 from app.contracts.observation_batch import ObservationBatchReceiptV1, ObservationBatchSubmissionV1
 from app.contracts.worker import WorkerJobV1, WorkerResultV1
-from app.modules.evidence_lifecycle.media_orchestration import MediaChunkPublication
+from app.modules.evidence_lifecycle.media_orchestration import ChunkManifest, MediaChunkPublication
 from app.modules.media_processing.errors import (
     InputResolutionUnavailableError,
     WorkerApiError,
@@ -50,6 +50,7 @@ _INPUT_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/input"
 _RENEW_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/renew"
 _OBSERVATIONS_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/observations"
 _MEDIA_PUBLISH_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/media-chunks/publish"
+_MEDIA_MANIFEST_PATH_TEMPLATE = "/api/v1/internal/worker-jobs/{job_id}/media-manifest"
 
 #: RFC 6266 `filename*=UTF-8''<percent-encoded>` -- preferred when present
 #: (correct for any non-ASCII original filename); `filename="..."` is the
@@ -214,6 +215,41 @@ class WorkerApiClient:
         if response.status_code != httpx.codes.OK:
             raise WorkerApiError(f"batch submission failed: HTTP {response.status_code}")
         return ObservationBatchReceiptV1.model_validate(response.json())
+
+    def create_media_manifest(
+        self, *, job_id: UUID, claim_token: str, manifest: ChunkManifest
+    ) -> ChunkManifest:
+        """Register this worker's locally-planned chunk manifest with the coordinator.
+
+        Called exactly once per chunked-media job, before any chunk is
+        published -- only this worker can determine the source's actual
+        duration/frame count (the coordinator never decodes media), but
+        the coordinator is still the durable owner: `manifest` is
+        submitted whole, and every later `publish_media_chunk` call is
+        validated against the persisted copy, never a worker's local,
+        unregistered plan. Idempotent: retrying with the identical
+        `manifest` (same content, same deterministic ID) is a safe replay.
+        Returns `manifest` unchanged -- the acknowledgement only confirms
+        persistence; the manifest's own content never changes server-side.
+        """
+        logger.info(
+            "worker.client.media_manifest_create_attempted",
+            job_id=str(job_id),
+            manifest_id=str(manifest.manifest_id),
+        )
+        response = self._post_safely(
+            _MEDIA_MANIFEST_PATH_TEMPLATE.format(job_id=job_id),
+            content=manifest.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"media manifest conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(f"media manifest rejected for job {job_id}: validation failed")
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"media manifest creation failed: HTTP {response.status_code}")
+        return manifest
 
     def publish_media_chunk(
         self, *, job_id: UUID, claim_token: str, publication: MediaChunkPublication

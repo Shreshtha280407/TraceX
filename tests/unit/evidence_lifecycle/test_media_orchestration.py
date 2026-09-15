@@ -4,9 +4,11 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.contracts.common import SourceLocator
 from app.contracts.evidence import SourceType
 from app.contracts.observation_batch import BatchAcceptanceStatus
 from app.modules.evidence_lifecycle.errors import (
+    InvalidClaimTokenError,
     MediaManifestValidationError,
     MediaPublicationConflictError,
 )
@@ -18,6 +20,7 @@ from app.modules.evidence_lifecycle.media_orchestration import (
     MediaChunkPublication,
     build_manifest,
     chunk_identity,
+    find_chunk_for_interval,
 )
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
@@ -110,7 +113,11 @@ async def test_partial_chunk_persists_observations_artifact_and_checkpoint_atomi
     service, repository = _service()
     job, claim_token = await _claimed_media_job(service, repository)
     manifest = _manifest(job)
-    assert (await service.create_media_manifest(manifest=manifest, context=_context())).created
+    assert (
+        await service.create_media_manifest(
+            manifest=manifest, claim_token=claim_token, context=_context()
+        )
+    ).created
     observation = make_observation(case_id=job.case_id, evidence_id=job.evidence_id)
     batch = make_observation_batch_submission(
         job_id=job.job_id,
@@ -186,7 +193,9 @@ async def test_cross_case_artifact_and_changed_chunk_replay_are_rejected() -> No
     service, repository = _service()
     job, claim_token = await _claimed_media_job(service, repository)
     manifest = _manifest(job)
-    await service.create_media_manifest(manifest=manifest, context=_context())
+    await service.create_media_manifest(
+        manifest=manifest, claim_token=claim_token, context=_context()
+    )
     batch = make_observation_batch_submission(
         job_id=job.job_id,
         case_id=job.case_id,
@@ -222,6 +231,159 @@ async def test_cross_case_artifact_and_changed_chunk_replay_are_rejected() -> No
             claim_token=claim_token,
             submission=batch,
             media_publication=unsafe,
+            context=_context(),
+        )
+
+
+def test_find_chunk_for_interval_returns_the_containing_chunk() -> None:
+    manifest = build_manifest(
+        case_id=uuid4(),
+        evidence_id=uuid4(),
+        job_id=uuid4(),
+        source_type="video",
+        processor_name="media",
+        processor_version="1",
+        input_object_uri="evidence/a",
+        configuration_hash="a",
+        chunks=(
+            ChunkSpec(index=0, boundary=ChunkBoundary(time_start_ms=0, time_end_ms=1000)),
+            ChunkSpec(index=1, boundary=ChunkBoundary(time_start_ms=1000, time_end_ms=2000)),
+        ),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert find_chunk_for_interval(manifest, start_ms=0, end_ms=500).index == 0
+    assert find_chunk_for_interval(manifest, start_ms=1500, end_ms=1500).index == 1
+    # Exactly on a shared boundary belongs to the chunk that starts there.
+    assert find_chunk_for_interval(manifest, start_ms=1000, end_ms=1000).index == 1
+
+
+def test_find_chunk_for_interval_rejects_out_of_scope_and_spanning_intervals() -> None:
+    manifest = build_manifest(
+        case_id=uuid4(),
+        evidence_id=uuid4(),
+        job_id=uuid4(),
+        source_type="video",
+        processor_name="media",
+        processor_version="1",
+        input_object_uri="evidence/a",
+        configuration_hash="a",
+        chunks=(ChunkSpec(index=0, boundary=ChunkBoundary(time_start_ms=0, time_end_ms=1000)),),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="not contained"):
+        find_chunk_for_interval(manifest, start_ms=1500, end_ms=1600)  # entirely out of scope
+    with pytest.raises(ValueError, match="not contained"):
+        find_chunk_for_interval(manifest, start_ms=900, end_ms=1100)  # spans past the one chunk
+    with pytest.raises(ValueError, match="end must not precede start"):
+        find_chunk_for_interval(manifest, start_ms=100, end_ms=50)
+
+
+async def test_create_media_manifest_requires_a_valid_claim_token() -> None:
+    service, repository = _service()
+    job, claim_token = await _claimed_media_job(service, repository)
+    manifest = _manifest(job)
+
+    with pytest.raises(InvalidClaimTokenError):
+        await service.create_media_manifest(
+            manifest=manifest, claim_token="wrong-token", context=_context()
+        )
+    with pytest.raises(InvalidClaimTokenError):
+        await service.create_media_manifest(
+            manifest=manifest,
+            claim_token=claim_token,
+            context=_context(),
+            worker_id=uuid4(),
+        )
+    # An unclaimed (never-seen) job is rejected the same way, not a 404/crash.
+    with pytest.raises(InvalidClaimTokenError):
+        await service.create_media_manifest(
+            manifest=_manifest(make_job_record(job_id=uuid4())),
+            claim_token=claim_token,
+            context=_context(),
+        )
+
+
+async def test_media_publication_rejects_observation_interval_outside_its_chunk() -> None:
+    service, repository = _service()
+    job, claim_token = await _claimed_media_job(service, repository)
+    manifest = _manifest(job)
+    await service.create_media_manifest(
+        manifest=manifest, claim_token=claim_token, context=_context()
+    )
+    # Chunk 0 covers [0, 1000); this observation's interval starts inside
+    # chunk 0 but is declared as chunk 0 while its own timing lands in
+    # chunk 1's range entirely -- must be rejected, never silently kept.
+    out_of_scope = make_observation(
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        source_locator=SourceLocator(time_start_ms=1500, time_end_ms=1600),
+    )
+    batch = make_observation_batch_submission(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        batch_id="media-oob",
+        idempotency_key="media-oob",
+        observations=[out_of_scope],
+    )
+    publication = MediaChunkPublication(
+        manifest_id=manifest.manifest_id,
+        manifest_hash=manifest.manifest_hash,
+        chunk_id=chunk_identity(manifest, 0),
+        chunk_index=0,
+        batch=batch,
+        checkpoint_id=uuid4(),
+        completed_at=datetime.now(UTC),
+    )
+    with pytest.raises(MediaManifestValidationError):
+        await service.submit_observation_batch(
+            job_id=job.job_id,
+            claim_token=claim_token,
+            submission=batch,
+            media_publication=publication,
+            context=_context(),
+        )
+    assert repository.observations == {}
+
+
+async def test_media_publication_rejects_ambiguous_interval_spanning_chunks() -> None:
+    service, repository = _service()
+    job, claim_token = await _claimed_media_job(service, repository)
+    manifest = _manifest(job)
+    await service.create_media_manifest(
+        manifest=manifest, claim_token=claim_token, context=_context()
+    )
+    # Straddles the chunk-0/chunk-1 boundary at time_ms=1000 -- neither
+    # chunk fully contains it, so it must be rejected rather than
+    # arbitrarily assigned to whichever chunk was declared.
+    spanning = make_observation(
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        source_locator=SourceLocator(time_start_ms=900, time_end_ms=1100),
+    )
+    batch = make_observation_batch_submission(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        batch_id="media-span",
+        idempotency_key="media-span",
+        observations=[spanning],
+    )
+    publication = MediaChunkPublication(
+        manifest_id=manifest.manifest_id,
+        manifest_hash=manifest.manifest_hash,
+        chunk_id=chunk_identity(manifest, 0),
+        chunk_index=0,
+        batch=batch,
+        checkpoint_id=uuid4(),
+        completed_at=datetime.now(UTC),
+    )
+    with pytest.raises(MediaManifestValidationError):
+        await service.submit_observation_batch(
+            job_id=job.job_id,
+            claim_token=claim_token,
+            submission=batch,
+            media_publication=publication,
             context=_context(),
         )
 

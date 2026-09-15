@@ -54,6 +54,8 @@ class _FakeClient:
     submit_batch_exception: Exception | None = None
     submit_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
     submit_batch_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
+    media_manifest_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
+    media_chunk_publish_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
     _claim_calls: int = 0
 
     def claim(self, *, processor_name: str, processor_version: str) -> ClaimResult:  # noqa: ARG002
@@ -72,6 +74,14 @@ class _FakeClient:
         self.submit_batch_calls.append((job_id, claim_token, submission))
         if self.submit_batch_exception is not None:
             raise self.submit_batch_exception
+
+    def create_media_manifest(self, *, job_id: UUID, claim_token: str, manifest: object) -> object:
+        """Mirrors the real client: idempotent registration, echoes the manifest back."""
+        self.media_manifest_calls.append((job_id, claim_token, manifest))
+        return manifest
+
+    def publish_media_chunk(self, *, job_id: UUID, claim_token: str, publication: object) -> None:
+        self.media_chunk_publish_calls.append((job_id, claim_token, publication))
 
     def close(self) -> None:
         pass
@@ -265,16 +275,15 @@ def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_ma
     )
 
     assert outcome.result_status == "succeeded"
-    batches = [call[2] for call in client.submit_batch_calls]
-    assert len(batches) >= 3  # one or more frame OCR batches, media, completion
-    assert [batch.batch_sequence for batch in batches] == list(range(len(batches)))
-    assert batches[-1].is_final_batch is True
-    assert batches[-1].progress.stage == "video_frame_ocr"  # type: ignore[union-attr]
-    frame_batches = [
-        batch for batch in batches if batch.progress and batch.progress.stage == "video_frame_ocr"
-    ]
-    assert frame_batches
-    for batch in frame_batches[:-1]:
+    # Exactly one coordinator manifest is registered before any chunk is
+    # published -- see P5-INTEG-VISUAL-001.
+    assert len(client.media_manifest_calls) == 1
+    chunk_publications = [call[2] for call in client.media_chunk_publish_calls]
+    assert chunk_publications  # at least one chunk-scoped frame-OCR publication
+    chunk_batches = [publication.batch for publication in chunk_publications]
+    for batch in chunk_batches:
+        assert batch.progress is not None
+        assert batch.progress.stage == "video_chunk_ocr"
         for observation in batch.observations:
             locator = observation.source_locator
             assert locator.frame_number is not None
@@ -282,12 +291,26 @@ def test_run_once_video_ocr_batches_have_global_zero_based_sequence_and_final_ma
             assert locator.time_end_ms is not None
             assert locator.time_start_ms <= locator.time_end_ms
             assert locator.bbox_xyxy_normalized is not None
-    progress_events = [batch.progress for batch in batches if batch.progress is not None]
+
+    plain_batches = [call[2] for call in client.submit_batch_calls]
+    assert plain_batches  # media aggregate + final completion marker
+    assert plain_batches[-1].is_final_batch is True
+    assert plain_batches[-1].progress.stage == "video_frame_ocr"  # type: ignore[union-attr]
+    media_batches = [batch for batch in plain_batches if batch.progress is None]
+    assert len(media_batches) == 1
+
+    # `batch_sequence` is one single, globally contiguous counter across
+    # BOTH chunk-scoped publications and the plain submit_batch path --
+    # chunk publications happen first (flushed right after process_job
+    # returns, before the media/final-marker batches are built).
+    all_sequences = [batch.batch_sequence for batch in (*chunk_batches, *plain_batches)]
+    assert all_sequences == list(range(len(all_sequences)))
+    progress_events = [
+        batch.progress for batch in (*chunk_batches, *plain_batches) if batch.progress is not None
+    ]
     assert [event.units_completed for event in progress_events] == sorted(
         event.units_completed for event in progress_events
     )
-    media_batches = [batch for batch in batches if batch.progress is None]
-    assert len(media_batches) == 1
     assert client.submit_calls[0][2].observations == []  # type: ignore[attr-defined]
 
 

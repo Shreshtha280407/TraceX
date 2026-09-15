@@ -594,6 +594,105 @@ def build_video_frame_ocr_batch(
     )
 
 
+def build_video_chunk_ocr_batch(
+    frame_results: Sequence[tuple[ExtractedFrame, Sequence[OcrBoxResult]]],
+    *,
+    job: WorkerJobV1,
+    metadata: VideoMetadata,
+    batch_id: str,
+    batch_sequence: int,
+    idempotency_key: str,
+    units_completed: int,
+    units_total: int | None,
+    observations_emitted_before: int,
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+) -> ObservationBatchSubmissionV1:
+    """Combine every sampled frame's OCR output that falls in one manifest chunk.
+
+    A coordinator-persisted chunk is published exactly once (see
+    `EvidenceLifecycleService._validate_media_publication`'s "already
+    completed" check) -- unlike `build_video_frame_ocr_batch`, which
+    covers exactly one frame and was never meant to be published directly
+    once chunk-scoped publication applies (P5-INTEG-VISUAL-001), every
+    frame whose timestamp maps to the same chunk must be combined into one
+    ``ObservationBatchSubmissionV1`` here, published together. One
+    ``TransformationProvenanceV1`` is still recorded per frame (skipping a
+    frame with no valid OCR results) -- the per-frame provenance shape
+    doesn't change, only how many frames share one wire submission.
+    """
+    now = datetime.now(UTC)
+    completed_at = completed_at or now
+    started_at = started_at or completed_at
+
+    observations: list[ObservationV1] = []
+    transformations: list[TransformationProvenanceV1] = []
+    for ordinal, (frame, results) in enumerate(frame_results):
+        valid_results = [r for r in results if is_valid_confidence(r.confidence)]
+        if not valid_results:
+            continue
+        extractor = build_extractor(
+            processor_name=_PROCESSOR_NAME,
+            processor_version=_PROCESSOR_VERSION,
+            model_version=valid_results[0].ocr_engine_name,
+        )
+        frame_observations = [
+            build_video_frame_ocr_observation(
+                r,
+                job=job,
+                frame=frame,
+                metadata=metadata,
+                extractor=extractor,
+                completed_at=completed_at,
+            )
+            for r in valid_results
+        ]
+        observations.extend(frame_observations)
+        first = valid_results[0]
+        transformations.append(
+            build_ocr_transformation_provenance(
+                job=job,
+                batch_id=batch_id,
+                ordinal=ordinal,
+                observations=frame_observations,
+                ocr_engine=first.ocr_engine_name,
+                ocr_engine_version=first.ocr_engine_version,
+                ocr_language=first.language,
+                config_hash=first.config_hash,
+                source_width=first.source_image_width,
+                source_height=first.source_image_height,
+                step_name=STEP_NAME_VIDEO_FRAME_OCR,
+                frame_info=frame,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        )
+
+    progress = ObservationBatchProgressV1(
+        stage="video_chunk_ocr",
+        units_total=units_total,
+        units_completed=units_completed,
+        observations_emitted=observations_emitted_before + len(observations),
+        batch_sequence=batch_sequence,
+        message_code="CHUNK_OCR_EXTRACTED",
+        occurred_at=completed_at,
+    )
+
+    return ObservationBatchSubmissionV1(
+        job_id=job.job_id,
+        case_id=job.case_id,
+        evidence_id=job.evidence_id,
+        batch_id=batch_id,
+        batch_sequence=batch_sequence,
+        idempotency_key=idempotency_key,
+        observations=observations,
+        transformations=transformations,
+        progress=progress,
+        submitted_at=completed_at,
+        is_final_batch=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Terminal result builder
 # ---------------------------------------------------------------------------
@@ -666,6 +765,7 @@ __all__ = [
     "build_ocr_transformation_provenance",
     "build_terminal_result",
     "build_terminal_result_failed",
+    "build_video_chunk_ocr_batch",
     "build_video_frame_ocr_batch",
     "iter_image_ocr_batches",
 ]

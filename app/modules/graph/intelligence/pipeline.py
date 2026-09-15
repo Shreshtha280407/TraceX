@@ -40,7 +40,7 @@ from app.modules.graph.intelligence.retrieval import retrieve_candidates
 from app.modules.graph.intelligence.scoring import score_candidates
 from app.modules.graph.intelligence.sourcing import (
     build_motif_edges,
-    descriptor_from_observation,
+    descriptors_from_observation,
     edges_from_candidate_links,
     fetch_case_observations,
 )
@@ -61,7 +61,7 @@ def build_case_correlation_submission(
     descriptors = tuple(
         descriptor
         for observation in observations
-        if (descriptor := descriptor_from_observation(observation)) is not None
+        for descriptor in descriptors_from_observation(observation)
     )
     if len(descriptors) < 2:
         return None

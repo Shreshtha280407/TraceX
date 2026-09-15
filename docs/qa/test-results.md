@@ -2626,3 +2626,145 @@ it was not claimed as run in this follow-up because the stack was unavailable.
   its invalid refresh attempts all returned 401 rather than reaching 429. No
   access-control code was changed here. `docker compose config -q` was valid;
   no containers were started, stopped, recreated, or removed.
+
+# Phase 5 final integration and release gate (Nipun, 2026-09-15)
+
+All Phase 5A/5B contributor branches merged (`shreshtha/5A`, `aditya/5B`,
+`jasraj/5B`, `gaurav/5B`, `sarthak/5B`). Closed every open integration
+item (P5-REGRESSION-AUTH-001, P5-INTEG-VISUAL-001,
+P5-INTEG-COMMUNICATION-001), enforced producer validation gates at
+sourcing, completed the two-party descriptor extension, measured and
+froze the rules baseline, and built one end-to-end acceptance test. Full
+design record in `docs/architecture/phase-5-integration.md`'s "Phase 5
+final integration" section.
+
+**Infra used**: `docker compose up -d postgres neo4j redis minio` (the
+`postgres` service specifically recreated on `pgvector/pgvector:pg16` --
+the previously-running container had drifted to a stale `postgres:16-
+alpine` image predating Phase 5A's pgvector requirement; see
+`docs/runbooks/local-development.md`'s "Phase 5 final integration note"
+for the corrupted-image-layer gotcha hit and fixed along the way) plus
+`uv run uvicorn app.main:app --host 0.0.0.0 --port 8000` on the host
+(the documented workaround for this sandbox's persistent Docker-build
+DNS/registry resolution issue -- see below). `uv run alembic upgrade
+head` applied all three pending Phase 5 migrations cleanly to a single
+head (`f4a1c9e0d2b3`).
+
+**Static/migration checks**: `uv sync --all-groups`, `uv run ruff format
+--check .` (432 files, all formatted), `uv run ruff check .` (all
+checks passed), `uv run mypy app` (179 source files, no issues), `uv run
+alembic heads` (single head), `uv run alembic history` (linear, no
+branching), `git diff --check` (clean) -- all passed.
+
+**Focused suites** (real live PostgreSQL/Neo4j/Redis/MinIO/host API):
+
+```text
+tests/security                        140 passed
+tests/unit/evidence_lifecycle         186 passed
+tests/unit/graph                      200 passed
+tests/unit/media_processing           359 passed
+tests/unit/communication_processing   367 passed, 1 warning (existing audioop deprecation)
+tests/unit/structured_processing      266 passed, 1 skipped
+tests/integration                      79 passed, 1 warning (same)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **1885 passed, 1
+skipped**, in 247s. No unexpected failures anywhere. Re-ran the new live
+tests specifically 2-3 times each to confirm stability/idempotency, not
+just a single pass:
+`tests/integration/graph/test_phase5_final_acceptance_live.py` (3 runs,
+all passed, ~2s each) and
+`tests/integration/media_processing/test_media_worker_live.py::test_video_frame_ocr_batch_submission_end_to_end_live`
+(whose pre-existing cleanup this closeout also fixed -- see
+`docs/qa/known-limitations.md`).
+
+**Docker-backed dedicated-project gate**: completed, after one
+environment interruption and one genuine pre-existing gap found and
+fixed along the way.
+
+`docker compose config -q` passed cleanly. The first `docker compose -p
+tracex-phase5-gate --env-file .env.example up --build -d` attempt got as
+far as the final "exporting to image" build step, then Docker Desktop
+itself exited mid-session (not just one container -- `docker ps`/`docker
+info` lost the daemon socket entirely, and the already-running main-stack
+`postgres`/`neo4j`/`redis`/`minio` containers became unreachable at their
+host ports too). This was a genuine, non-code-related environment
+failure with no non-interactive fix available in this sandbox; the user
+restarted Docker Desktop, after which the main stack's containers came
+back up automatically (`restart: unless-stopped`) and this gate resumed.
+
+Retrying, the dedicated project's `minio` port (`9000`) collided with
+the already-running main stack (the
+literal `--env-file .env.example` command shares the same default host
+ports as `.env`, so a *different Compose project name* alone does not
+guarantee host-port isolation for a hard-coded-port compose file). Fixed
+by running the gate with an env file identical to `.env.example` except
+for `APP_PORT`/`POSTGRES_PORT`/`NEO4J_BOLT_PORT`/`NEO4J_HTTP_PORT`/
+`REDIS_PORT`/`MINIO_API_PORT`/`MINIO_CONSOLE_PORT` (and their
+`*_DSN`/`*_URI`/`*_URL`/`*_ENDPOINT` companions) remapped to unused
+high ports -- true isolation, not just a different project name, without
+touching the main stack's own `.env`/ports.
+
+`docker compose -p tracex-phase5-gate exec -T api uv run alembic upgrade
+head` then failed with `OSError: Readme file does not exist: README.md`
+-- a genuine, **pre-existing** gap in `Dockerfile` (present since before
+this phase, in every phase's Docker image, not something this Phase 5
+work introduced): the runtime image only ever copied `app/`, never
+`README.md`/`alembic.ini`/`migrations/`, so `uv run` inside the container
+could not build project metadata and alembic had nothing to run against.
+Fixed by adding `COPY README.md alembic.ini ./` and `COPY migrations
+./migrations` to `Dockerfile` -- a minimal, low-risk addition (three
+small, already-committed files) needed to make this explicitly-required
+release-gate command actually runnable in-container; no other Dockerfile
+behavior changed.
+
+With both fixed, the full dedicated-project gate passed complete:
+
+```text
+docker compose config -q                                            -> valid
+docker compose -p tracex-phase5-gate ... up --build -d               -> all 5 services healthy
+curl .../healthz, .../readyz, .../api/v1/meta/contracts              -> 200, all dependencies "ok"
+docker compose exec api uv run alembic upgrade head                  -> 13 migrations applied cleanly to a fresh DB
+docker compose -p tracex-phase5-gate stop postgres; curl .../readyz  -> 503, {"postgres":"unavailable", others "ok"}, no stack trace/credentials
+docker compose -p tracex-phase5-gate start postgres; curl .../readyz -> 200, "ok" again
+uv run pytest tests/integration/graph tests/integration/media_processing/test_media_worker_live.py -q
+                                                                       -> 34 passed, against the dedicated stack
+  (includes test_phase5_final_acceptance_live.py: worker claim -> persisted
+  manifest/chunk -> chunk-scoped publication -> correlation -> idempotent
+  replay -> authorized read -> denied cross-membership read, and
+  test_media_worker_live.py's real-OCR video chunk-publish test)
+docker compose -p tracex-phase5-gate down -v                         -> all containers/volumes/network removed
+```
+
+Verified isolation throughout: the main stack's four containers stayed
+"Up"/healthy the entire time, `curl localhost:8000/readyz` kept
+succeeding while the dedicated stack ran on its own ports, and after
+teardown `docker ps` showed only the original four main-stack containers
+again. `.env` was temporarily repointed at the dedicated stack's ports to
+run the acceptance suite against it, then restored byte-for-byte
+(diffed against a pre-change backup) immediately after -- `.env` is
+git-ignored and was never committed in either state.
+
+Every required gate now passes: static checks, migration coherence, the
+full 1885-test suite against real live infra, and this Docker-backed
+dedicated-project acceptance run. See this report's "Phase 5 completion
+decision" section.
+
+**One transient full-suite run, investigated and not reproducible.** A
+full-suite run started immediately after tearing down the dedicated
+Docker project (rapid daemon-level churn: container teardown, `.env`
+port restoration, ~1885 tests starting within seconds) produced 4
+failures: 3 in `tests/integration/communication_processing/
+test_communication_worker_live.py` (one `503` from the live API, unrelated
+to any code this phase touched) and this phase's own
+`test_phase5_final_acceptance_live.py` (`_correlation_node_count() == 1`
+got `0`). All 4 were re-run individually -- all passed. The full
+`tests/integration/graph` (27 tests) and `tests/integration` (79 tests)
+directories were then re-run together -- all passed. A completely fresh
+full-suite run (`uv run pytest -q`, no preceding Docker teardown) then
+completed with **1885 passed, 1 skipped, 0 failed** in 226s -- an exact,
+clean reproduction with zero failures, confirming the earlier run's
+failures were transient connection-layer instability from the
+immediately-preceding intensive Docker operations, not a logic
+regression in this phase's code. Reported here rather than silently
+re-run-and-discarded, per this task's own "do not hide" requirement.

@@ -91,6 +91,49 @@ def chunk_identity(manifest: ChunkManifest, index: int) -> UUID:
     return deterministic_uuid("phase4_media_chunk", str(manifest.manifest_id), str(index))
 
 
+def find_chunk_for_interval(manifest: ChunkManifest, *, start_ms: int, end_ms: int) -> ChunkSpec:
+    """The one chunk whose time boundary fully contains ``[start_ms, end_ms]``.
+
+    Used on both sides of chunk-scoped publication: a worker calls this to
+    decide which chunk a frame/speech interval belongs to before
+    publishing, and the coordinator (`EvidenceLifecycleService.
+    _validate_media_publication`) calls it again to independently verify
+    the worker's claim -- never trusting a worker-declared chunk index on
+    its own. Raises `ValueError` (never guesses) when no chunk contains
+    the interval (out of scope) or when the interval crosses a chunk
+    boundary; either way this is a reject, not an arbitrary assignment.
+
+    Chunk boundaries are half-open (``[start, end)``) on the upper side,
+    except for the manifest's last chunk (inclusive), so a sample landing
+    exactly on the shared boundary between two chunks deterministically
+    belongs to the *later* chunk it starts, rather than being ambiguous --
+    this is a fixed, principled tie-break, not an arbitrary one; only the
+    manifest's own final instant (its last chunk's own upper bound) is
+    ever inclusive, so nothing at a video/audio source's exact end is
+    left with no containing chunk at all.
+    """
+    if end_ms < start_ms:
+        raise ValueError("interval end must not precede start")
+    last_index = max((chunk.index for chunk in manifest.chunks), default=None)
+    containing = [
+        chunk
+        for chunk in manifest.chunks
+        if chunk.boundary.time_start_ms is not None
+        and chunk.boundary.time_end_ms is not None
+        and chunk.boundary.time_start_ms <= start_ms
+        and (
+            end_ms < chunk.boundary.time_end_ms
+            or (chunk.index == last_index and end_ms == chunk.boundary.time_end_ms)
+        )
+    ]
+    if len(containing) != 1:
+        raise ValueError(
+            f"interval [{start_ms}, {end_ms}] is not contained within exactly one time-bounded "
+            f"chunk of manifest {manifest.manifest_id} ({len(containing)} candidates)"
+        )
+    return containing[0]
+
+
 class ArtifactRegistration(TraceXModel):
     artifact_id: UUID
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,200}$")
