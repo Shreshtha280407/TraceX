@@ -90,6 +90,61 @@ projection, case-scoped and idempotently; it never derives history from a raw
 canonical observation payload. Observations predating this migration therefore
 receive no invented structured-provenance leaf.
 
+## Part 4: visual and communication observation provenance
+
+Part 4 adds separate typed projections rather than extending
+`structured_provenance.v1`: `VisualObservationIntegrityProvenanceV1`
+(`visual_provenance.v1`) and `CommunicationObservationIntegrityProvenanceV1`
+(`communication_provenance.v1`). Each persisted projection has exactly one
+additional `observation_published` leaf: respectively
+`visual_observation_provenance` or `communication_observation_provenance`,
+with the canonical observation UUID as subject ID. These additive leaves do
+not replace or duplicate the existing `observation_batch` lifecycle leaf.
+
+Visual retry keys are
+`visual-provenance:<case_id>:<observation_id>:visual_provenance.v1`;
+communication retry keys are
+`communication-provenance:<case_id>:<observation_id>:communication_provenance.v1`.
+The append-only `modality_observation_integrity_provenance` table stores the
+exact safe canonical projection and matching SHA-256 commitment. Exact retry
+replays; a changed projection under the same key conflicts and cannot update
+the first record. Its PostgreSQL trigger rejects both `UPDATE` and `DELETE`.
+
+Both projections retain direct IDs, evidence SHA-256, bounded extractor/model
+identity, existing validation outcome and `correlation_ready`, plus the
+persisted manifest/chunk IDs where applicable. All sensitive or unstable
+metadata is SHA-256 committed: locator, chunk boundary/version, time interval,
+frame mapping, normalized geometry, local track/speaker label, OCR/audio text,
+message identifier, participants/handles, and attachment content. Safe
+controlled categories (detection class, track lifecycle condition, language,
+and platform namespace) can be direct. No raw pixels/crops, OCR/ASR/chat text,
+face/plate data, audio bytes, source URI, transcript, handle, phone number,
+or private key is stored in the projection, integrity leaf, export, route, or
+structured failure signal.
+
+Visual leaves require the persisted media publication seam and an already
+accepted Phase 5 visual validation result. The coordinator has independently
+validated the manifest/chunk and interval before the leaf builder receives it;
+missing scope, invalid/cross-chunk interval, invalid geometry, impossible
+frame mapping, or incomplete/rejected validation produces no leaf. A local
+track and lifecycle status remain technical, evidence-local metadata only;
+they never assert identity, relationship, entity merge, or candidate.
+
+Raw-audio/diarization leaves likewise require accepted communication validation
+and a persisted media chunk, so an out-of-chunk or cross-boundary turn cannot
+be assigned a guessed scope. Accepted imported transcript/diarization records
+have no media publication and retain no invented manifest/chunk scope. Social/chat
+leaves require accepted existing chat validation; incomplete records produce no identifier provenance. This layer
+does not alter validation, `correlation_ready`, graph projection, candidate
+generation, identity resolution, or scoring.
+
+The Part 2 reconciliation command replays modality leaves only from the exact
+safe projection row, bounded and case-scoped. It never derives a new
+projection from a raw observation row. Observations accepted before this
+migration therefore receive no invented provenance claim. Live
+Docker/PostgreSQL/real-worker validation remains
+intentionally deferred to Shreshtha's Phase 6 Part 5 gate.
+
 ## What this proves, and what it explicitly does not
 
 **This phase proves that TraceX can detect tampering with recorded

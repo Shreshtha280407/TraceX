@@ -10,15 +10,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 import sqlalchemy as sa
 
 from app.modules.evidence_lifecycle.repository import evidence_records_table
 from app.modules.graph.integration_repository import correlation_records_table
+from app.modules.integrity.modality_provenance import (
+    CommunicationObservationIntegrityProvenanceV1,
+    VisualObservationIntegrityProvenanceV1,
+)
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
 from app.modules.integrity.repository import (
     IntegrityRepository,
+    modality_observation_provenance_table,
     structured_observation_provenance_table,
 )
 from app.modules.integrity.service import IntegrityService
@@ -43,9 +49,9 @@ class IntegrityReconciliationService:
     """A deliberately bounded, case-scoped repair seam for durable evidence writes.
 
     Later modality/review producers can add source adapters here. This Part 2
-    implementation handles evidence/correlation producers and persisted
-    structured-provenance projections.  It never reconstructs a structured
-    projection from the raw observation payload: only the immutable safe
+    implementation handles evidence/correlation producers plus persisted
+    structured and modality projections.  It never reconstructs a
+    projection from a raw observation payload: only the immutable safe
     projection itself is replayed.
     """
 
@@ -124,6 +130,21 @@ class IntegrityReconciliationService:
                     .mappings()
                     .all()
                 )
+            remaining -= len(structured_rows)
+            modality_rows: Sequence[sa.RowMapping] = ()
+            if remaining:
+                modality_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(modality_observation_provenance_table)
+                            .where(modality_observation_provenance_table.c.case_id == case_id)
+                            .order_by(modality_observation_provenance_table.c.created_at.asc())
+                            .limit(remaining)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
         evidence_submissions = [
             IntegrityEventSubmission(
                 case_id=case_id,
@@ -172,4 +193,37 @@ class IntegrityReconciliationService:
             ).to_integrity_submission(source_created_at=row["source_created_at"])
             for row in structured_rows
         ]
-        return evidence_submissions + correlation_submissions + structured_submissions
+        modality_submissions = [
+            _modality_submission(row["canonical_payload"], row["source_created_at"])
+            for row in modality_rows
+        ]
+        return (
+            evidence_submissions
+            + correlation_submissions
+            + structured_submissions
+            + modality_submissions
+        )
+
+
+def _modality_submission(payload: object, source_created_at: object) -> IntegrityEventSubmission:
+    """Replay only a stored typed projection; never inspect a raw observation row."""
+    if not isinstance(payload, dict):  # pragma: no cover - database invariant
+        raise ValueError("persisted modality provenance payload is invalid")
+    if payload.get("schema_version") == "visual_provenance.v1":
+        return VisualObservationIntegrityProvenanceV1.model_validate(
+            payload
+        ).to_integrity_submission(source_created_at=_valid_timestamp(source_created_at))
+    if payload.get("schema_version") == "communication_provenance.v1":
+        return CommunicationObservationIntegrityProvenanceV1.model_validate(
+            payload
+        ).to_integrity_submission(source_created_at=_valid_timestamp(source_created_at))
+
+    # pragma: no cover - migration/schema invariant
+    raise ValueError("persisted modality provenance schema is unsupported")
+
+
+def _valid_timestamp(value: object) -> datetime:
+    """Narrow a database timestamp without accepting a fabricated value."""
+    if not isinstance(value, datetime):  # pragma: no cover - database invariant
+        raise ValueError("persisted modality provenance timestamp is invalid")
+    return value

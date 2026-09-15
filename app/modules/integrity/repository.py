@@ -36,12 +36,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from app.core.canonical import canonical_sha256
 from app.core.config import Settings
 from app.core.ids import deterministic_uuid
+from app.modules.integrity.modality_provenance import ModalityObservationIntegrityProvenanceV1
 from app.modules.integrity.models import (
     CheckpointBuildReceipt,
     CheckpointSignatureRecord,
     IntegrityEventRecord,
     IntegrityEventSubmission,
     MerkleCheckpointRecord,
+    ModalityObservationProvenanceRecord,
     StructuredObservationProvenanceRecord,
 )
 from app.modules.integrity.signing import SignedRoot
@@ -125,6 +127,23 @@ structured_observation_provenance_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+modality_observation_provenance_table = sa.Table(
+    "modality_observation_integrity_provenance",
+    metadata,
+    sa.Column("provenance_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("provenance_kind", sa.Text(), nullable=False),
+    sa.Column("source_family", sa.Text(), nullable=False),
+    sa.Column("schema_version", sa.Text(), nullable=False),
+    sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("canonical_payload_sha256", sa.Text(), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=False),
+    sa.Column("source_created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 
 class IntegrityValidationError(ValueError):
     """Raised when a submission or checkpoint range is rejected as unsafe/inconsistent."""
@@ -148,6 +167,10 @@ def _signature_from_row(row: sa.RowMapping) -> CheckpointSignatureRecord:
 
 def _structured_provenance_from_row(row: sa.RowMapping) -> StructuredObservationProvenanceRecord:
     return StructuredObservationProvenanceRecord.model_validate(dict(row))
+
+
+def _modality_provenance_from_row(row: sa.RowMapping) -> ModalityObservationProvenanceRecord:
+    return ModalityObservationProvenanceRecord.model_validate(dict(row))
 
 
 def _event_fingerprint(
@@ -364,6 +387,109 @@ class IntegrityRepository:
                 .all()
             )
         return [_structured_provenance_from_row(row) for row in rows]
+
+    async def record_modality_provenance(
+        self,
+        projection: ModalityObservationIntegrityProvenanceV1,
+        *,
+        source_created_at: datetime,
+        now: datetime | None = None,
+    ) -> ModalityObservationProvenanceRecord:
+        """Persist one immutable visual/communication projection.
+
+        Exact retries return the first record.  A changed safe projection
+        under the deterministic retry key is a conflict, never an update.
+        """
+        now = now or datetime.now(UTC)
+        payload = projection.canonical_metadata()
+        payload_hash = projection.canonical_payload_sha256
+        provenance_kind = (
+            "visual" if projection.schema_version == "visual_provenance.v1" else "communication"
+        )
+        async with self._engine.begin() as conn:
+            existing = (
+                (
+                    await conn.execute(
+                        sa.select(modality_observation_provenance_table).where(
+                            modality_observation_provenance_table.c.case_id == projection.case_id,
+                            modality_observation_provenance_table.c.idempotency_key
+                            == projection.idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                record = _modality_provenance_from_row(existing)
+                if (
+                    record.observation_id != projection.observation_id
+                    or record.canonical_payload_sha256 != payload_hash
+                    or record.canonical_payload != payload
+                ):
+                    raise IntegrityValidationError(
+                        "idempotency key conflicts with an existing modality provenance record"
+                    )
+                return record
+
+            provenance_id = deterministic_uuid(
+                "phase_6_modality_observation_provenance",
+                provenance_kind,
+                str(projection.case_id),
+                str(projection.observation_id),
+                projection.schema_version,
+            )
+            record = ModalityObservationProvenanceRecord(
+                provenance_id=provenance_id,
+                case_id=projection.case_id,
+                evidence_id=projection.evidence_id,
+                observation_id=projection.observation_id,
+                provenance_kind=provenance_kind,
+                source_family=projection.source_family.value,
+                schema_version=projection.schema_version,
+                canonical_payload=payload,
+                canonical_payload_sha256=payload_hash,
+                idempotency_key=projection.idempotency_key,
+                source_created_at=source_created_at,
+                created_at=now,
+            )
+            await conn.execute(
+                sa.insert(modality_observation_provenance_table).values(
+                    provenance_id=record.provenance_id,
+                    case_id=record.case_id,
+                    evidence_id=record.evidence_id,
+                    observation_id=record.observation_id,
+                    provenance_kind=record.provenance_kind,
+                    source_family=record.source_family,
+                    schema_version=record.schema_version,
+                    canonical_payload=record.canonical_payload,
+                    canonical_payload_sha256=record.canonical_payload_sha256,
+                    idempotency_key=record.idempotency_key,
+                    source_created_at=record.source_created_at,
+                    created_at=record.created_at,
+                )
+            )
+            return record
+
+    async def list_modality_provenance(
+        self, case_id: UUID, *, limit: int = 500
+    ) -> list[ModalityObservationProvenanceRecord]:
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(modality_observation_provenance_table)
+                        .where(modality_observation_provenance_table.c.case_id == case_id)
+                        .order_by(modality_observation_provenance_table.c.created_at.asc())
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_modality_provenance_from_row(row) for row in rows]
 
     async def list_events_in_range(
         self, case_id: UUID, start_sequence: int, end_sequence: int

@@ -296,3 +296,11 @@ synthetic document labels, telephone-like values, account-like values, and
 transaction-like values only. Assertions prove those values appear only as
 commitment inputs, never in the safe projection, integrity event, checkpoint
 bundle, log assertion, or response shape.
+
+# Phase 6 Part 4 — visual and communication provenance fixtures
+
+Part 4 uses generated UUIDs, placeholder hashes, synthetic frame/time values,
+normalized boxes, and invented local track/speaker/handle strings. Assertions
+prove these are commitment inputs only. No real media/audio, OCR/ASR/chat
+export, plate/face data, object URI, credential, signing key, or case material
+is used.

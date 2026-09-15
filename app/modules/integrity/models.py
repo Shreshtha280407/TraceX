@@ -200,3 +200,25 @@ class StructuredObservationProvenanceRecord(IntegrityModel):
     idempotency_key: str
     source_created_at: datetime
     created_at: datetime
+
+
+class ModalityObservationProvenanceRecord(IntegrityModel):
+    """Durable safe visual/communication projection paired with one leaf.
+
+    ``canonical_payload`` contains only the typed, commitment-only modality
+    projection.  It is intentionally separate from a canonical observation
+    payload, which may contain protected source content.
+    """
+
+    provenance_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    observation_id: UUID
+    provenance_kind: str
+    source_family: str
+    schema_version: str
+    canonical_payload: dict[str, Any]
+    canonical_payload_sha256: str
+    idempotency_key: str
+    source_created_at: datetime
+    created_at: datetime

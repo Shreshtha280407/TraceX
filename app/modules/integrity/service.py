@@ -14,6 +14,7 @@ from uuid import UUID
 
 from app.core.config import Settings
 from app.modules.integrity.hashing import build_merkle_root, leaf_hash
+from app.modules.integrity.modality_provenance import ModalityObservationIntegrityProvenanceV1
 from app.modules.integrity.models import (
     MERKLE_TREE_FORMAT_VERSION,
     CheckpointBuildReceipt,
@@ -62,6 +63,21 @@ class IntegrityService:
         emitted here.
         """
         await self._repository.record_structured_provenance(
+            projection, source_created_at=source_created_at, now=now
+        )
+        return await self.record_integrity_event(
+            projection.to_integrity_submission(source_created_at=source_created_at), now=now
+        )
+
+    async def record_modality_observation_provenance(
+        self,
+        projection: ModalityObservationIntegrityProvenanceV1,
+        *,
+        source_created_at: datetime,
+        now: datetime | None = None,
+    ) -> IntegrityEventRecord:
+        """Persist a safe visual/communication projection, then add its sole leaf."""
+        await self._repository.record_modality_provenance(
             projection, source_created_at=source_created_at, now=now
         )
         return await self.record_integrity_event(

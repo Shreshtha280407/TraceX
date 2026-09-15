@@ -2871,3 +2871,18 @@ projections, raw-value exclusion, retry behavior, and exact case-scoped
 reconciliation replay. Docker and live PostgreSQL were not started; the final
 infrastructure migration/trigger/worker gate remains intentionally deferred to
 Shreshtha's Phase 6 Part 5 release validation.
+
+## Phase 6 Part 4 (2026-09-15)
+
+Focused modality-provenance, migration-head, structured-provenance,
+reconciliation, and integrity-repository tests passed (`18 passed, 12 skipped`).
+The skips are live PostgreSQL tests with no reachable database. Docker and live
+PostgreSQL were not started. Direct PostgreSQL append-only-trigger and
+real-worker verification is intentionally deferred to Shreshtha's Phase 6 Part
+5 release gate.
+
+`uv sync --all-groups`, `uv run ruff format --check .`, `uv run ruff check .`,
+`uv run mypy app`, `uv run alembic heads`, `uv run alembic history`,
+`git diff --check`, and `docker compose config -q` passed. The full
+`uv run pytest -q` was attempted but this command runner returned no terminal
+result after its 30-second execution window; it is not recorded as passing.
