@@ -78,6 +78,7 @@ from app.modules.evidence_lifecycle.routing import accepted_content_types, route
 from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
 from app.modules.integrity.service import IntegrityService
+from app.modules.integrity.structured_provenance import build_structured_observation_provenance
 
 logger = structlog.get_logger(__name__)
 
@@ -265,6 +266,60 @@ class EvidenceLifecycleService:
                 retry_state="reconciliation_pending",
                 failure_category=type(exc).__name__,
             )
+
+    async def _record_structured_provenance_safely(
+        self,
+        *,
+        job: WorkerJobRecord,
+        observations: list[ObservationV1],
+        source_created_at: datetime,
+        request_id: str | None,
+    ) -> None:
+        """Add one safe provenance leaf per accepted structured observation.
+
+        This deliberately runs after the observation-batch transaction.  A
+        failed leaf never changes publication or graph projection behaviour;
+        the safely persisted projection is replayable by integrity
+        reconciliation once it has been inserted.
+        """
+        if self._integrity_recorder is None or not observations:
+            return
+        evidence = await self._repository.get_evidence(job.case_id, job.evidence_id)
+        if evidence is None:  # defensive: a claimed job always has its evidence
+            logger.warning(
+                "integrity.event_record_failed",
+                request_id=request_id,
+                case_id=str(job.case_id),
+                event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED.value,
+                subject_type="structured_observation_provenance",
+                subject_id="unknown",
+                retry_state="reconciliation_pending",
+                failure_category="MissingEvidence",
+            )
+            return
+        for observation in observations:
+            projection = build_structured_observation_provenance(
+                observation=observation,
+                evidence_sha256=evidence.sha256,
+                source_type=job.source_type,
+            )
+            if projection is None:
+                continue
+            try:
+                await self._integrity_recorder.record_structured_observation_provenance(
+                    projection, source_created_at=source_created_at
+                )
+            except Exception as exc:
+                logger.warning(
+                    "integrity.event_record_failed",
+                    request_id=request_id,
+                    case_id=str(job.case_id),
+                    event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED.value,
+                    subject_type="structured_observation_provenance",
+                    subject_id=str(observation.observation_id),
+                    retry_state="reconciliation_pending",
+                    failure_category=type(exc).__name__,
+                )
 
     async def create_media_manifest(
         self,
@@ -529,7 +584,6 @@ class EvidenceLifecycleService:
             idempotency_key=str(evidence_id),
             request_id=context.request_id,
         )
-
         logger.info(
             "evidence.job.created",
             request_id=context.request_id,
@@ -908,6 +962,12 @@ class EvidenceLifecycleService:
             )
             raise
 
+        await self._record_structured_provenance_safely(
+            job=job,
+            observations=result.observations,
+            source_created_at=result.completed_at or context.now,
+            request_id=context.request_id,
+        )
         logger.info(
             "worker.result.accepted",
             request_id=context.request_id,
@@ -1386,6 +1446,12 @@ class EvidenceLifecycleService:
             payload_schema_version=OBSERVATION_PUBLISHED_SCHEMA_VERSION,
             source_created_at=submission.submitted_at,
             idempotency_key=f"{job.job_id}:{submission.batch_id}",
+            request_id=context.request_id,
+        )
+        await self._record_structured_provenance_safely(
+            job=job,
+            observations=submission.observations,
+            source_created_at=submission.submitted_at,
             request_id=context.request_id,
         )
 

@@ -249,3 +249,5 @@ PostgreSQL, mirroring every other `tests/integration/*` suite.
 | INTEGRITY-018 | Migration upgrade succeeds; exactly one Alembic head | `tests/unit/integrity/test_migration_head.py`; live upgrade exercised by `tests/integration/integrity/conftest.py`'s `_migrated_database` fixture |
 | INTEGRITY-019 | Protected checkpoint list/detail/verify/export applies independent integrity actions, generic 401/403 behavior, cross-case isolation, and safe bundle fields | `tests/unit/integrity/test_integrity_api.py` |
 | INTEGRITY-020 | Direct SQL update/delete attempts against integrity events, checkpoints, and signatures fail; ordinary inserts still succeed | `tests/integration/integrity/test_repository_live.py` (requires an already-running PostgreSQL) |
+| INTEGRITY-021 | Document/OCR/CDR/finance observations yield deterministic safe structured-provenance commitments; retries replay and changed commitments differ | `tests/unit/integrity/test_structured_provenance.py` |
+| INTEGRITY-022 | Structured-provenance reconciliation replays only an exact, case-scoped safe projection | `tests/unit/integrity/test_reconciliation.py` |

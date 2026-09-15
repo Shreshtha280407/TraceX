@@ -63,4 +63,15 @@ Every confidence value is a fixed constant (`provenance.py`), never a model outp
 
 ## Deferred to a later phase
 
+## Phase 6 structured integrity provenance
+
+After the evidence-lifecycle service accepts a canonical observation, it
+derives `StructuredObservationIntegrityProvenanceV1` outside this worker
+module. The worker stays database-free. The projection has only structural
+metadata and SHA-256 commitments: document/OCR text, CDR caller/callee, and
+finance parties/reference/amount are never copied raw. This produces one
+additive integrity leaf per eligible observation, not an identity claim or a
+correlation/scoring change. Existing rejected/incomplete source signals create
+neither observations nor provenance leaves.
+
 Entity resolution, graph projection/cross-linking, cloud OCR or new OCR/NER/ML models, actual MinIO reads outside the approved worker boundary, and embeddings are out of scope for this producer validation work. Existing local OCR/NER plumbing is validated only for provenance/quality handling; no model capability, truth claim, or identity decision is added.

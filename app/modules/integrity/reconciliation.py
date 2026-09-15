@@ -17,8 +17,14 @@ import sqlalchemy as sa
 from app.modules.evidence_lifecycle.repository import evidence_records_table
 from app.modules.graph.integration_repository import correlation_records_table
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
-from app.modules.integrity.repository import IntegrityRepository
+from app.modules.integrity.repository import (
+    IntegrityRepository,
+    structured_observation_provenance_table,
+)
 from app.modules.integrity.service import IntegrityService
+from app.modules.integrity.structured_provenance import (
+    StructuredObservationIntegrityProvenanceV1,
+)
 
 EVIDENCE_REGISTERED_SCHEMA_VERSION = "evidence_registered.v1"
 CORRELATION_COMPLETED_SCHEMA_VERSION = "correlation_completed.v1"
@@ -37,8 +43,10 @@ class IntegrityReconciliationService:
     """A deliberately bounded, case-scoped repair seam for durable evidence writes.
 
     Later modality/review producers can add source adapters here. This Part 2
-    implementation handles current evidence and correlation producers, whose
-    original safe submissions can be reconstructed without object storage.
+    implementation handles evidence/correlation producers and persisted
+    structured-provenance projections.  It never reconstructs a structured
+    projection from the raw observation payload: only the immutable safe
+    projection itself is replayed.
     """
 
     def __init__(
@@ -101,6 +109,21 @@ class IntegrityReconciliationService:
                     .mappings()
                     .all()
                 )
+            remaining -= len(correlation_rows)
+            structured_rows: Sequence[sa.RowMapping] = ()
+            if remaining:
+                structured_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(structured_observation_provenance_table)
+                            .where(structured_observation_provenance_table.c.case_id == case_id)
+                            .order_by(structured_observation_provenance_table.c.created_at.asc())
+                            .limit(remaining)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
         evidence_submissions = [
             IntegrityEventSubmission(
                 case_id=case_id,
@@ -143,4 +166,10 @@ class IntegrityReconciliationService:
             )
             for row in correlation_rows
         ]
-        return evidence_submissions + correlation_submissions
+        structured_submissions = [
+            StructuredObservationIntegrityProvenanceV1.model_validate(
+                row["canonical_payload"]
+            ).to_integrity_submission(source_created_at=row["source_created_at"])
+            for row in structured_rows
+        ]
+        return evidence_submissions + correlation_submissions + structured_submissions

@@ -288,3 +288,11 @@ All integrity tests use synthetic, generated data only:
 No Operation Nightfall data, real police case data, or production
 credentials were used, referenced, or approximated anywhere in this
 module's tests.
+
+# Phase 6 Part 3 — structured provenance fixtures (Jasraj)
+
+Structured-provenance unit tests use generated UUIDs, placeholder hashes, and
+synthetic document labels, telephone-like values, account-like values, and
+transaction-like values only. Assertions prove those values appear only as
+commitment inputs, never in the safe projection, integrity event, checkpoint
+bundle, log assertion, or response shape.
