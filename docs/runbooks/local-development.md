@@ -526,6 +526,55 @@ uv run python -m app.modules.access_control.worker_credentials revoke --worker-i
 
 This CLI runs only where the server's own PostgreSQL configuration is already available (the same trust level as running `alembic upgrade head`) — never expose it as a network-reachable endpoint. **The printed token goes only into a local, git-ignored `.env` or a real deployment secret store — never into Git, `.env.example`, a log line, a test report, a screenshot, or an API response.** Optionally set `WORKER_CREDENTIAL_PEPPER` in `.env` for an extra server-side peppering layer on the stored digest (falls back to an unkeyed SHA-256 digest if unset — accepted in local/dev, required in production, where a missing pepper fails closed `503`).
 
+### Generating and configuring an integrity signing key (Phase 6 — Nipun)
+
+See `docs/architecture/phase-6-integrity.md` for the full design. Tamper-evident checkpoints need a local Ed25519 signing key — generate a dev-only one:
+
+```bash
+uv run python -m app.modules.integrity.cli generate-key
+# prints one base64 line -- copy it into .env as INTEGRITY_SIGNING_KEY=...
+# never into Git, .env.example, a log line, or anywhere else
+```
+
+Then set both in `.env` (see `.env.example`):
+
+```bash
+INTEGRITY_SIGNING_KEY=<the base64 line printed above>
+INTEGRITY_SIGNING_KEY_ID=dev-local-ed25519-1
+```
+
+With no key configured, `build-checkpoint` (below) fails clearly
+(`SigningKeyNotConfiguredError`) rather than silently skipping the
+signature or crashing. There is no rotation workflow in this phase — a new
+key simply changes `key_id`/the public-key fingerprint on every checkpoint
+signed after the change; older checkpoints remain verifiable against their
+own originally-stored public key, unaffected by a later rotation.
+
+### Verifying an integrity checkpoint (Phase 6 — Nipun)
+
+```bash
+# Seal a contiguous, case-scoped range of already-recorded integrity events:
+uv run python -m app.modules.integrity.cli build-checkpoint \
+    --case-id <uuid> --start-sequence 1 --end-sequence 50
+
+# Independently recompute and verify a checkpoint's root + signature.
+# Exits 0 if ok, 1 otherwise -- composes in a script or CI gate.
+uv run python -m app.modules.integrity.cli verify \
+    --case-id <uuid> --checkpoint-id <uuid>
+
+# Export a portable bundle of only public verification material + hashed
+# metadata (never raw evidence content or private key material).
+uv run python -m app.modules.integrity.cli export \
+    --case-id <uuid> --checkpoint-id <uuid> --out bundle.json
+```
+
+No integrity events are recorded unless the evidence-lifecycle/graph
+services are constructed with a real `integrity_recorder` (the default
+FastAPI dependency wiring does this — see `app/modules/evidence_lifecycle
+/dependencies.py`/`app/modules/graph/intelligence_worker.py`); a recording
+failure never blocks the primary evidence/observation/correlation write it
+follows (see `phase-6-integrity.md`'s "Producer integration seams").
+
 ### Worker retry limits and lease-ceiling (Phase 3 — Aditya)
 
 `WORKER_JOB_MAX_ATTEMPTS` (default `5`) bounds how many times a job may be reclaimed after a lease expires before `claim_job` sweeps it to a durable terminal `failed` state (`error.code = "retry_exhausted"`) instead of leaving it reclaimable forever. `WORKER_LEASE_MAX_SECONDS` (default `3600`) caps how far `POST .../renew` may ever extend a single claim's lease, measured from the original claim time — no number of renewals can push a lease past this ceiling.

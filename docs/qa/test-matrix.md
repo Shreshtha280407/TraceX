@@ -219,3 +219,31 @@ uv run pytest
 | P5-TWO-PARTY-001 | A `cdr_call_record`/`financial_transaction_record` yields both parties as independent, role-scoped, deterministically-identified descriptors sharing one origin observation; the two ends of one record never become a candidate of each other (same-event suppression); a number/account seen as one role on one record and the other role on a different record still collides (role-blind cross-observation blocking); descriptor IDs are stable/reproducible across repeated calls. | `tests/unit/graph/test_intelligence_sourcing.py` |
 | P5-RULES-BASELINE-001 | The frozen `phase5_preliminary_rules_v1` baseline achieves Precision@K = 1.0/Recall@K = 1.0/0 false links on a versioned synthetic benchmark; same-event pairs never score; a genuine contradiction is recorded and downgrades a candidate to `needs_review` without discarding its match signal; a cross-case comparison attempt is rejected; retrieval/scoring output is deterministic across repeated runs; one explicit alternative rules-weight configuration is compared and does not change which candidates are retrieved or their ranking. | `tests/unit/graph/test_phase5_rules_benchmark.py` |
 | P5-ACCEPTANCE-001 | Full live flow: case/evidence context → worker claim → manifest registration → chunk-scoped OCR publication (plus a rejected out-of-scope interval) → validated two-party CDR observations (plus one rejected decoy) and a chat observation → correlation pass → idempotent replay → authorized case-scoped read → denied cross-membership read → raw chat-body exclusion with OCR-text-as-legitimate-mention distinguished. | `tests/integration/graph/test_phase5_final_acceptance_live.py` |
+
+## Phase 6 Part 1 — integrity foundation (Nipun)
+
+The 18 required proof points from the Phase 6 Part 1 task spec, mapped to
+their tests. Pure/logic proof points need no live infrastructure; DB-backed
+proof points self-skip (never fabricate a pass) without a reachable
+PostgreSQL, mirroring every other `tests/integration/*` suite.
+
+| ID | Proof point | Coverage |
+|---|---|---|
+| INTEGRITY-001 | Canonical leaf hashes and Merkle roots are deterministic for identical input | `tests/unit/integrity/test_hashing.py` |
+| INTEGRITY-002 | Dictionary insertion order cannot change a leaf/metadata hash | `tests/unit/integrity/test_hashing.py::test_canonical_metadata_hash_is_independent_of_dict_insertion_order` |
+| INTEGRITY-003 | Different cases never share a checkpoint | `tests/integration/integrity/test_repository_live.py::test_checkpoints_never_cross_cases` |
+| INTEGRITY-004 | Event sequence number (not wall-clock order) determines leaf order | `tests/unit/integrity/test_hashing.py::test_root_depends_on_leaf_order_not_only_leaf_set`, `tests/integration/integrity/test_repository_live.py::test_event_sequence_determines_leaf_order_not_wall_clock` |
+| INTEGRITY-005 | Odd-leaf behavior follows the frozen duplicate-last rule | `tests/unit/integrity/test_hashing.py::test_odd_leaf_count_duplicates_the_final_leaf` |
+| INTEGRITY-006 | Exact integrity-event retry is idempotent | `tests/integration/integrity/test_repository_live.py::test_exact_retry_is_idempotent` |
+| INTEGRITY-007 | Conflicting idempotency-key reuse is safely rejected | `tests/integration/integrity/test_repository_live.py::test_conflicting_idempotency_key_reuse_is_rejected` |
+| INTEGRITY-008 | Identical checkpoint-range retry is idempotent | `tests/integration/integrity/test_repository_live.py::test_checkpoint_build_is_idempotent_for_an_exact_range` |
+| INTEGRITY-009 | Invalid overlapping/inconsistent checkpoint creation is rejected | `tests/integration/integrity/test_repository_live.py::test_overlapping_checkpoint_range_is_rejected` |
+| INTEGRITY-010 | A changed stored leaf hash is detected on verification | `tests/integration/integrity/test_repository_live.py::test_verify_detects_a_changed_stored_leaf_hash` |
+| INTEGRITY-011 | A missing leaf is detected on verification | `tests/integration/integrity/test_repository_live.py::test_verify_detects_a_missing_leaf` |
+| INTEGRITY-012 | Swapped leaf order is detected | `tests/unit/integrity/test_hashing.py::test_root_depends_on_leaf_order_not_only_leaf_set` |
+| INTEGRITY-013 | A changed checkpoint root is detected on verification | `tests/integration/integrity/test_repository_live.py::test_verify_detects_a_changed_checkpoint_root` |
+| INTEGRITY-014 | A valid Ed25519 signature verifies | `tests/unit/integrity/test_signing.py::test_valid_signature_verifies`, `tests/integration/integrity/test_repository_live.py::test_full_build_verify_export_round_trip_succeeds` |
+| INTEGRITY-015 | A wrong public key or altered signature/root fails verification | `tests/unit/integrity/test_signing.py::test_wrong_public_key_fails_verification`, `test_altered_signature_fails_verification`, `test_altered_root_fails_verification` |
+| INTEGRITY-016 | Private key material and raw sensitive content never appear in stored records, exported bundles, logs, or CLI output | `tests/unit/integrity/test_signing.py::test_signed_root_never_carries_private_key_material`, `tests/unit/integrity/test_models.py` (forbidden-metadata rejection), `tests/integration/integrity/test_repository_live.py::test_full_build_verify_export_round_trip_succeeds` (bundle-content scan) |
+| INTEGRITY-017 | Existing evidence/observation/correlation behavior remains fully backward compatible | Full pre-existing `tests/unit/evidence_lifecycle` + `tests/unit/graph` suite (386 tests, unaffected); `tests/integration/evidence_lifecycle/test_integrity_producer_seam_live.py` |
+| INTEGRITY-018 | Migration upgrade succeeds; exactly one Alembic head | `tests/unit/integrity/test_migration_head.py`; live upgrade exercised by `tests/integration/integrity/conftest.py`'s `_migrated_database` fixture |

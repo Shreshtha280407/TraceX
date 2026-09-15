@@ -287,3 +287,46 @@ wave and post-Phase-5 validation gate.
   safeguards, not multilingual accuracy, account-ownership, speaker identity,
   or alias-equivalence claims. There is no face/voice biometric identification
   or external phone/handle ownership lookup.
+
+# Phase 6 Part 1 integrity foundation (Nipun)
+
+- **Not a blockchain claim.** A signed Merkle checkpoint proves internal
+  consistency (any tamper with recorded integrity metadata is detectable
+  on verification) against this one database and this one local Ed25519
+  key — never independent, third-party-verifiable anchoring. See
+  `docs/decisions/ADR-013-phase-6-integrity-checkpoints.md` for the full
+  reasoning and the explicit list of what a stronger claim would require.
+- **No database-level immutability enforcement.** `integrity_events`/
+  `merkle_checkpoints`/`checkpoint_signatures` are treated as append-only
+  by every application code path (no `update`/`delete` method exists), but
+  nothing at the database level currently prevents a direct `UPDATE`/
+  `DELETE` by a role with table access — a real deployment should restrict
+  write grants on these three tables to the migration role only. Documented
+  as a deliberate operational trade-off in `docs/architecture/
+  phase-6-integrity.md`'s "Deliberate storage trade-off" section, not a
+  silently accepted gap.
+- **Single local signing key, no rotation workflow.** `Settings
+  .integrity_signing_key` is one key from environment/config; there is no
+  automatic rotation, no multi-key/threshold signing, and no external
+  KMS/HSM. A compromised key can sign an arbitrary (internally-consistent)
+  history — see the ADR's threat-model discussion.
+- **No HTTP exposure yet.** Verification/export is a CLI/service surface
+  only (`app/modules/integrity/cli.py`); no router is registered, and no
+  case-scoped authorization has been applied to an integrity endpoint,
+  because none exists yet. This is deliberate scope, left to Aditya's
+  later Phase 6 work — see `docs/architecture/phase-6-integrity.md`'s
+  "Verification and safe export" section.
+- **Checkpoint building is an explicit action, not automatic.** There is
+  no scheduler, background job, or per-event auto-checkpoint in this
+  phase — an operator (or later automation, not built here) must invoke
+  `build-checkpoint` explicitly for a named, contiguous range.
+- **`review_decision`/`hypothesis_action` are enum values only.** No
+  review or hypothesis workflow exists to emit them yet; they exist purely
+  so Shreshtha's later work can call the existing `record_integrity_event`
+  facade without a schema change.
+- **Live-infrastructure verification for this module was not run in this
+  environment.** Docker Desktop's daemon was unavailable throughout this
+  work (see `docs/qa/test-results.md`'s Phase 6 Part 1 entry for the exact
+  commands and the reason) — the DB-backed proof points self-skip cleanly
+  rather than fabricate a pass; they were not independently confirmed
+  against real PostgreSQL in this session.

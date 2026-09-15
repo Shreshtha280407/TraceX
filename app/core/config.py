@@ -306,7 +306,19 @@ class Settings(BaseSettings):
     communication_diarization_model_path: Path | None = Field(default=None)
     communication_diarization_timeout_seconds: float = Field(default=120.0, gt=0)
 
-    @field_validator("worker_token", "worker_credential_pepper")
+    # --- Tamper-evident integrity checkpoints (Phase 6 -- Nipun) ---
+    # Local Ed25519 signing key for Merkle checkpoint roots: base64-encoded
+    # 32-byte raw private key. No external KMS/HSM -- see
+    # docs/runbooks/local-development.md for the dev-only generation
+    # workflow (`uv run python -m app.modules.integrity.cli generate-key`).
+    # Never logged, returned in an API/CLI response, included in an error,
+    # or committed -- only a blank placeholder ships in `.env.example`.
+    integrity_signing_key: SecretStr | None = Field(default=None)
+    # Free-text label stored alongside every signature so a verifier can
+    # tell which configured key produced it; not itself secret.
+    integrity_signing_key_id: str = Field(default="dev-local-ed25519-1")
+
+    @field_validator("worker_token", "worker_credential_pepper", "integrity_signing_key")
     @classmethod
     def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:
         """An empty/whitespace-only value is treated as "not configured", not as a real secret.

@@ -33,6 +33,8 @@ from app.modules.evidence_lifecycle.jobs import JobProducer, RedisJobProducer
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository, create_engine
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService
 from app.modules.evidence_lifecycle.storage import MinioObjectStorage, ObjectStorage
+from app.modules.integrity.dependencies import get_integrity_service
+from app.modules.integrity.service import IntegrityService
 
 _settings = get_settings()
 _engine = create_engine(_settings)
@@ -59,6 +61,7 @@ def get_evidence_lifecycle_service(
     storage: Annotated[ObjectStorage, Depends(get_object_storage)],
     job_producer: Annotated[JobProducer, Depends(get_job_producer)],
     settings: Annotated[Settings, Depends(get_settings)],
+    integrity_recorder: Annotated[IntegrityService, Depends(get_integrity_service)],
 ) -> EvidenceLifecycleService:
     return EvidenceLifecycleService(
         repository=repository,
@@ -69,6 +72,7 @@ def get_evidence_lifecycle_service(
         worker_lease_max_seconds=settings.worker_lease_max_seconds,
         worker_job_max_attempts=settings.worker_job_max_attempts,
         graph_projection_max_attempts=settings.graph_projection_max_attempts,
+        integrity_recorder=integrity_recorder,
     )
 
 
