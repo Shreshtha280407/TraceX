@@ -121,3 +121,20 @@ Phase 2.5 (`docs/architecture/graph-projection.md`) wired `project_evidence`/`pr
 - Cross-modal correlation and candidate scoring.
 - The hypothesis engine and any inference/hypothesis `assertion_kind` values on `SUPPORTS` (or a new relationship type) beyond `"fact"`.
 - Graph analytics (centrality, community detection, motifs) — explicitly out of scope for this phase and the next.
+
+**Phase 5-6 additions (this list predates them; noted here rather than
+rewritten, since candidate identity/entity resolution proper is still not
+built):** Phase 5 added a `Correlation` node label (`(case_id,
+projection_key)`-keyed, candidate-only, never an `Entity`) for reviewable
+candidate correlations, plus a human review-decision workflow on top of it
+(Phase 6 Part 5) that sets safe review-state properties on that same node
+-- never merges it into or creates an `Entity`. Phase 6 Part 5 also added a
+`Hypothesis` node label for human-authored, evidence-backed, explicitly
+reviewable inferences (`SUPPORTED_BY_OBSERVATION` to cited observations,
+a new `REFERENCES_CANDIDATE` relationship to a cited `Correlation`) --
+this is the closest thing to "the hypothesis engine" this list
+anticipated, except it is never automatic: a hypothesis exists only
+because a human wrote one, and nothing in this repository generates one.
+Candidate identity links, `EntityMention`-to-`Entity` promotion, and
+automatic entity merge/resolution remain entirely unbuilt, exactly as this
+list still describes.

@@ -34,6 +34,7 @@ class GraphNodeKind(StrEnum):
     SOURCE_CLAIM = "SourceClaim"
     TEMPORAL_EVENT = "TemporalEvent"
     CORRELATION = "Correlation"
+    HYPOTHESIS = "Hypothesis"
 
 
 class GraphRelationshipKind(StrEnum):
@@ -60,6 +61,7 @@ class GraphRelationshipKind(StrEnum):
     PROJECTS_EVENT = "PROJECTS_EVENT"
     HAS_CLAIM_PARTICIPANT = "HAS_CLAIM_PARTICIPANT"
     SUPPORTED_BY_OBSERVATION = "SUPPORTED_BY_OBSERVATION"
+    REFERENCES_CANDIDATE = "REFERENCES_CANDIDATE"
 
 
 class AssertionKind(StrEnum):

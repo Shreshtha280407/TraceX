@@ -345,13 +345,72 @@ wave and post-Phase-5 validation gate.
   no scheduler, background job, or per-event auto-checkpoint in this
   phase — an operator (or later automation, not built here) must invoke
   `build-checkpoint` explicitly for a named, contiguous range.
-- **`review_decision`/`hypothesis_action` are enum values only.** No
-  review or hypothesis workflow exists to emit them yet; they exist purely
-  so Shreshtha's later work can call the existing `record_integrity_event`
-  facade without a schema change.
+- **`review_decision`/`hypothesis_action` are enum values only.**
+  **Resolved (Phase 6 Part 5, Shreshtha).** A real review-decision and
+  hypothesis workflow now emits both through the exact same,
+  unmodified `record_integrity_event` facade — see
+  `docs/architecture/phase-6-review-and-hypothesis.md`. No new integrity
+  schema was needed, exactly as this document anticipated.
 - **Live-infrastructure verification for this module was not run in this
-  environment.** Docker Desktop's daemon was unavailable throughout this
-  work (see `docs/qa/test-results.md`'s Phase 6 Part 1 entry for the exact
-  commands and the reason) — the DB-backed proof points self-skip cleanly
-  rather than fabricate a pass; they were not independently confirmed
-  against real PostgreSQL in this session.
+  environment.** **Resolved (Phase 6 Part 5, Shreshtha).** The full Phase 6
+  migration chain was applied to a live PostgreSQL, and
+  `tests/integration/integrity/test_repository_live.py` (append-only
+  update/delete rejection, checkpoint idempotency/overlap, full build-
+  verify-export round trip) was run live — see `docs/qa/test-results.md`'s
+  dated Phase 6 Part 5 entry for exact commands and results.
+
+# Phase 6 Part 5 — review and hypothesis workflow, final release gate (Shreshtha)
+
+- **Simplified two-state hypothesis lifecycle.** The task's *suggested*
+  lifecycle was `draft -> proposed -> needs_review ->
+  accepted_by_reviewer/rejected_by_reviewer`; this implementation only
+  ever creates a hypothesis directly at `needs_review` (no `draft`/
+  `proposed` state or transition route exists), because the required
+  minimal write-route surface has no dedicated endpoint for a draft-to-
+  proposed transition. See
+  `docs/decisions/ADR-015-phase-6-review-and-hypothesis.md` decision 3. A
+  team that wants a private drafting flow should hold the statement
+  client-side until ready to submit.
+- **Neo4j projection for review decisions and hypotheses is best-effort,
+  not outbox-backed.** Unlike Nipun's `graph_update_events` durable outbox
+  for correlations, a review/hypothesis Neo4j write runs synchronously
+  after the durable PostgreSQL write and is logged (never re-raised) on
+  failure — there is currently no automatic retry queue if Neo4j happens
+  to be down at that exact moment. The durable decision/hypothesis itself
+  is never lost or rolled back; only its graph projection may need a
+  manual re-run (the underlying write is idempotent, so a re-run is safe)
+  once Neo4j recovers. Building a second outbox exclusively for this was
+  judged out of proportion for this task (see ADR-015 decision 6); a
+  future phase could extend `graph_update_events`-style replay to cover
+  it instead.
+- **`candidate_review_decisions` and `hypothesis_actions` are genuinely
+  append-only — including for test/operator cleanup.** Both tables carry
+  the same PostgreSQL trigger `integrity_events` uses; confirmed directly
+  during this task when the live test's own cleanup code attempted a
+  `DELETE` and was correctly rejected. Integration tests therefore never
+  delete these rows, relying instead on an unguessable, never-reused
+  `case_id` per test run — the same precedent
+  `tests/integration/integrity/conftest.py` already established for
+  `integrity_events`. A production operator who needs to physically purge
+  old rows (e.g. for data-retention policy, not tamper repair) would need
+  a deliberate, audited, superuser-level operation — never an ordinary
+  application code path.
+- **Reviewing a candidate/hypothesis is exactly one accept/reject
+  judgement, never a re-score.** This task does not let a reviewer adjust
+  Nipun's Phase 5 rule weights, feature snapshot, or contradiction
+  reasons, and does not let a hypothesis review re-open or amend the
+  hypothesis's own statement/rationale/references — a changed mind
+  requires proposing a new hypothesis or awaiting a later-phase amendment
+  workflow (not built here).
+- **`HYPOTHESIS_PROPOSE` role grants mirror `EVIDENCE_WRITE`'s roles by
+  design choice, not by a requirement in the access-control matrix
+  itself.** `CASE_OWNER`/`CASE_MANAGER`/`INVESTIGATOR` may propose a
+  hypothesis; `ANALYST`/`REVIEWER`/`VIEWER` may not. A team that wants
+  analysts to propose hypotheses (but still not write raw evidence) would
+  need a genuinely new, more granular action — reusing `EVIDENCE_WRITE`'s
+  role set was a proportionate default, not an inherent constraint.
+- **No real Docker/PostgreSQL/Neo4j gap remains for Phase 6 as a whole**
+  after this task — see `docs/qa/test-results.md`'s dated Phase 6 Part 5
+  entry for the exact commands, migration application, and live test
+  results that close out every `deferred to Shreshtha's Phase 6 Part 5
+  gate` note left by Parts 1-4.

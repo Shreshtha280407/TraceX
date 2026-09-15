@@ -80,16 +80,16 @@ Every successful `/refresh` call:
 ## Role/action matrix
 
 ```text
-                case_read  case_manage  evidence_read  evidence_write  graph_read  review_decide  export_case_data
-case_owner         X            X            X              X             X             X               X
-case_manager       X            X            X              X             X             X               X
-investigator       X                         X              X             X
+                case_read  case_manage  evidence_read  evidence_write  graph_read  review_decide  hypothesis_propose  export_case_data
+case_owner         X            X            X              X             X             X               X                  X
+case_manager       X            X            X              X             X             X               X                  X
+investigator       X                         X              X             X                              X
 analyst            X                         X                            X
 reviewer           X                         X                            X             X
 viewer             X                                                      X
 ```
 
-Encoded as `ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]]` in `models.py`. An action not listed for a role is denied, full stop — there is no implicit fallback or wildcard.
+Encoded as `ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]]` in `models.py`. An action not listed for a role is denied, full stop — there is no implicit fallback or wildcard. `hypothesis_propose` is a Phase 6 Part 5 addition (Shreshtha) — see `docs/architecture/phase-6-review-and-hypothesis.md`. This table predates, and does not yet include, Phase 6 Part 2's `integrity_read`/`integrity_verify`/`integrity_export` columns (Aditya) — see `app/modules/access_control/models.py::ROLE_ACTIONS` for the authoritative, current full matrix.
 
 ## Clearance and classification
 

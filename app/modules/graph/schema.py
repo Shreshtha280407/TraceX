@@ -115,6 +115,14 @@ CONSTRAINT_STATEMENTS: tuple[SchemaStatement, ...] = (
             "FOR (c:Correlation) REQUIRE (c.case_id, c.projection_key) IS UNIQUE"
         ),
     ),
+    SchemaStatement(
+        name="hypothesis_case_hypothesis_unique",
+        kind="constraint",
+        cypher=(
+            "CREATE CONSTRAINT hypothesis_case_hypothesis_unique IF NOT EXISTS "
+            "FOR (h:Hypothesis) REQUIRE (h.case_id, h.hypothesis_id) IS UNIQUE"
+        ),
+    ),
 )
 
 INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
@@ -191,6 +199,13 @@ INDEX_STATEMENTS: tuple[SchemaStatement, ...] = (
         kind="index",
         cypher=(
             "CREATE INDEX correlation_case_id_idx IF NOT EXISTS FOR (c:Correlation) ON (c.case_id)"
+        ),
+    ),
+    SchemaStatement(
+        name="hypothesis_case_id_idx",
+        kind="index",
+        cypher=(
+            "CREATE INDEX hypothesis_case_id_idx IF NOT EXISTS FOR (h:Hypothesis) ON (h.case_id)"
         ),
     ),
 )

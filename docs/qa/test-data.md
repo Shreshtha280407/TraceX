@@ -304,3 +304,32 @@ normalized boxes, and invented local track/speaker/handle strings. Assertions
 prove these are commitment inputs only. No real media/audio, OCR/ASR/chat
 export, plate/face data, object URI, credential, signing key, or case material
 is used.
+
+# Phase 6 Part 5 — review and hypothesis workflow fixtures (Shreshtha)
+
+Unit tests (`tests/unit/graph/test_review_models.py`,
+`test_hypothesis_models.py`, `test_review_projection.py`,
+`test_review_service.py`) use generated `uuid4()` case/candidate/hypothesis
+IDs, fixed placeholder rationale/statement strings ("a plausible reviewer
+rationale", "a synthetic hypothesis statement", "the raw human-authored
+statement text") chosen specifically to be recognizable in an assertion that
+they never leak into a commitment/projection/log, and hand-written fake
+repository/graph classes (mirroring `test_intelligence_projection.py`'s
+`_Graph` pattern) rather than a real database or Neo4j connection.
+
+The live end-to-end test
+(`tests/integration/graph/test_review_and_hypothesis_live.py`) registers
+three throwaway synthetic users (`phase6-investigator-<random>@example.test`,
+`-reviewer-`, `-outsider-`) via the real registration API with a fixed
+non-production password, builds two synthetic `phone_number_mention`
+observations sharing one placeholder phone number (`9876543210`, the same
+constant `test_intelligence_pipeline_live.py` already uses), and one
+synthetic hypothesis statement/rationale pair describing a plausible but
+entirely fictitious shared-operator inference. No real police case data, real
+personal data, or Operation Nightfall material is used. Because
+`candidate_review_decisions` and `hypothesis_actions` are genuinely
+append-only (by design — see `docs/architecture/phase-6-review-and-
+hypothesis.md`), this test's cleanup deliberately does not attempt to delete
+those rows; it relies on an unguessable, never-reused `case_id`, the same
+documented precedent `tests/integration/integrity/conftest.py` already
+established for `integrity_events`.

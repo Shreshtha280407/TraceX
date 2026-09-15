@@ -37,4 +37,7 @@ def test_phase_6_migration_is_the_current_head() -> None:
         timeout=60,
         check=True,
     )
-    assert "e26f7a8b9c0d" in result.stdout
+    # Updated for Phase 6 Part 5's additive review/hypothesis migration,
+    # which now sits on top of Part 4's `e26f7a8b9c0d` -- see `alembic
+    # history` for the unbroken chain.
+    assert "a3b4c5d6e7f8" in result.stdout

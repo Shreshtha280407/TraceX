@@ -253,3 +253,20 @@ PostgreSQL, mirroring every other `tests/integration/*` suite.
 | INTEGRITY-022 | Structured-provenance reconciliation replays only an exact, case-scoped safe projection | `tests/unit/integrity/test_reconciliation.py` |
 | INTEGRITY-023 | Visual/communication projections are accepted-only, deterministic, commitment-only, and preserve local non-identity semantics | `tests/unit/integrity/test_modality_provenance.py` |
 | INTEGRITY-024 | Modality provenance migration remains on one Alembic head | `tests/unit/integrity/test_migration_head.py` |
+
+## Phase 6 Part 5 — review and hypothesis workflow, final release gate (Shreshtha)
+
+| ID | Proof point | Coverage |
+|---|---|---|
+| REVIEW-001 | Effective candidate review status (`needs_review`/`accepted_by_reviewer`/`rejected_by_reviewer`) is computed at read time, never a stored mutation of Nipun's `PropositionStatus` | `tests/unit/graph/test_review_models.py` |
+| REVIEW-002 | A review decision's rationale commitment is deterministic and never the raw text; the integrity submission carries only the commitment | `tests/unit/graph/test_review_models.py` |
+| REVIEW-003 | Candidate-not-found raises before any write; a conflicting review decision propagates and never overwrites; an exact-replay decision never re-fires integrity or projection | `tests/unit/graph/test_review_service.py` |
+| REVIEW-004 | An integrity-recording or Neo4j-projection failure never blocks an already-committed review decision | `tests/unit/graph/test_review_service.py` |
+| REVIEW-005 | Candidate review projection `MATCH`es (never `MERGE`s) the existing `Correlation` node and is a safe no-op when the correlation was never projected | `tests/unit/graph/test_review_projection.py` |
+| HYPOTHESIS-001 | A hypothesis must cite at least one case-scoped observation or candidate; duplicate references are rejected; statement/rationale are bounded | `tests/unit/graph/test_hypothesis_models.py` |
+| HYPOTHESIS-002 | `HypothesisStatus` never contains a confirmed/true value; safe metadata and the `hypothesis_action` integrity submission never carry raw statement/rationale text | `tests/unit/graph/test_hypothesis_models.py` |
+| HYPOTHESIS-003 | The review idempotency key is fixed regardless of outcome, so a second conflicting review decision is rejected, never applied | `tests/unit/graph/test_hypothesis_models.py` |
+| HYPOTHESIS-004 | A missing hypothesis returns `None` (rendered `404`); a replayed creation/review never re-fires integrity | `tests/unit/graph/test_review_service.py` |
+| HYPOTHESIS-005 | Hypothesis Neo4j projection is provenance-gated exactly like `Correlation`'s; a hypothesis with no evidence paths is a safe no-op; a candidate-reference edge uses `MATCH` on both sides | `tests/unit/graph/test_review_projection.py` |
+| ACCESS-HYPOTHESIS-001 | `HYPOTHESIS_PROPOSE` is granted to owner/manager/investigator only; hypothesis review reuses the existing `REVIEW_DECIDE` grant | `tests/unit/access_control/test_policy.py` |
+| PHASE6-LIVE-001 | Full live workflow: authorization ordering (401 before lookup, 403 for cross-case/non-member/wrong-role, 404 for a missing candidate/hypothesis, no existence leakage), a real candidate review decision reaching the durable table + integrity event + provenance-gated `Correlation` projection, idempotent retry, conflicting-retry `409`, a real hypothesis citing a real observation and candidate reaching a provenance-gated `Hypothesis` node with a `REFERENCES_CANDIDATE` edge, direct PostgreSQL `UPDATE`/`DELETE` rejected on both new append-only tables, and reconciliation replay for both new leaf kinds | `tests/integration/graph/test_review_and_hypothesis_live.py` |
