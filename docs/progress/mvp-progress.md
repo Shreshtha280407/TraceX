@@ -614,6 +614,48 @@ read acceptance path. Full record in
 section; exact commands and results in `docs/qa/test-results.md`'s
 dated entry.
 
+## Phase 6 Part 1 — Nipun integrity foundation: Complete
+
+- [x] New additive `app/modules/integrity/` module: `IntegrityEventKind`
+  (`evidence_registered`/`observation_published`/`correlation_completed`
+  now wired; `review_decision`/`hypothesis_action` forward-compatible
+  enum values only), a deterministic domain-separated SHA-256 Merkle
+  checkpoint service (frozen leaf/parent hash rules, per-case gap-free
+  sequencing, duplicate-last odd-leaf rule), and local Ed25519 signing/
+  verification with public key material stored alongside each signature.
+- [x] Focused Alembic migration (`8f68fb441037`) adding
+  `integrity_events`/`merkle_checkpoints`/`checkpoint_signatures`/
+  `integrity_sequence_counters`, with a database-level GiST exclusion
+  constraint preventing overlapping checkpoint ranges within a case —
+  single coherent head, preserved.
+- [x] Producer seams wired additively (optional, default-`None`
+  parameters) into evidence registration, observation-batch acceptance,
+  and correlation completion — verified backward compatible against the
+  full pre-existing 386-test `tests/unit/evidence_lifecycle`/
+  `tests/unit/graph` suite, and against a deliberately-unreachable
+  integrity store to confirm the safe, non-blocking contract.
+- [x] Operator CLI (`app.modules.integrity.cli`) for key generation,
+  checkpoint building, verification, and safe export — no new HTTP
+  endpoint in this phase; protected API exposure is explicitly left to
+  Aditya. See `docs/architecture/phase-6-integrity.md`'s "Verification
+  and safe export" section.
+- [x] All 18 required proof points covered with synthetic fixtures only;
+  see `docs/qa/test-matrix.md`'s "Phase 6 Part 1" section for the full
+  ID-to-test mapping.
+- [x] `docs/decisions/ADR-013-phase-6-integrity-checkpoints.md` records
+  why this is explicitly not a public-blockchain-anchoring claim.
+- [ ] Live-infrastructure (real PostgreSQL) verification of this
+  module's DB-backed tests was not run in this environment — Docker
+  Desktop's daemon was unavailable throughout. Static checks, the full
+  migration-graph check, and every pure-logic test ran and passed; see
+  `docs/qa/test-results.md`'s dated Phase 6 Part 1 entry for the exact
+  commands and reason.
+- [ ] Review-decision/hypothesis-action recording (Shreshtha),
+  authorization-protected API exposure (Aditya), and modality-specific
+  provenance leaf wiring (Jasraj/Gaurav/Sarthak) remain later Phase 6
+  work — see `docs/architecture/phase-6-integrity.md`'s "Handoff to
+  later branches" section.
+
 # Phase 5 - Shreshtha graph intelligence and rules baseline: Complete
 
 - [x] Deterministic case-scoped exact, alias/transliteration, local-vector, and hot-window retrieval.

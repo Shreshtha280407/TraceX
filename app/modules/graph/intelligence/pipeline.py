@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.contracts.observation import ObservationV1
@@ -44,6 +45,66 @@ from app.modules.graph.intelligence.sourcing import (
     edges_from_candidate_links,
     fetch_case_observations,
 )
+from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
+from app.modules.integrity.service import IntegrityService
+
+logger = structlog.get_logger(__name__)
+
+#: Canonical-metadata shape version for this module's integrity producer
+#: seam (Phase 6) -- built from IDs/counts/status only, never observation
+#: text. See `docs/architecture/phase-6-integrity.md`.
+CORRELATION_COMPLETED_SCHEMA_VERSION = "correlation_completed.v1"
+
+
+async def _record_correlation_integrity_event_safely(
+    integrity_recorder: IntegrityService | None,
+    receipt: CorrelationSubmissionReceipt,
+    *,
+    case_id: UUID,
+    now: datetime | None,
+) -> None:
+    """Best-effort integrity recording for a genuinely new correlation.
+
+    A replayed submission is skipped -- it was already recorded (with the
+    same idempotency key) the first time it was submitted. A failure here
+    never affects the already-committed correlation this follows, mirroring
+    `evidence_lifecycle.service._record_integrity_event_safely`.
+    """
+    if integrity_recorder is None or receipt.replayed:
+        return
+    correlation = receipt.correlation
+    try:
+        await integrity_recorder.record_integrity_event(
+            IntegrityEventSubmission(
+                case_id=case_id,
+                event_kind=IntegrityEventKind.CORRELATION_COMPLETED,
+                subject_type="correlation",
+                subject_id=str(correlation.correlation_id),
+                canonical_metadata={
+                    "correlation_id": str(correlation.correlation_id),
+                    "correlation_type": correlation.correlation_type,
+                    "status": correlation.status.value,
+                    "supporting_observation_ids": [
+                        str(v) for v in correlation.supporting_observation_ids
+                    ],
+                    "contradictory_observation_ids": [
+                        str(v) for v in correlation.contradictory_observation_ids
+                    ],
+                    "mapping_version": correlation.mapping_version,
+                    "config_version": correlation.config_version,
+                },
+                payload_schema_version=CORRELATION_COMPLETED_SCHEMA_VERSION,
+                source_created_at=correlation.created_at,
+                idempotency_key=correlation.idempotency_key,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "integrity.event_record_failed",
+            case_id=str(case_id),
+            event_kind=IntegrityEventKind.CORRELATION_COMPLETED.value,
+            subject_id=str(correlation.correlation_id),
+        )
 
 
 def build_case_correlation_submission(
@@ -79,6 +140,7 @@ async def run_case_correlation_pass(
     case_id: UUID,
     *,
     now: datetime | None = None,
+    integrity_recorder: IntegrityService | None = None,
 ) -> CorrelationSubmissionReceipt | None:
     """I/O: fetch this case's canonical observations, build a submission, and
     submit it through Nipun's durable seam exactly once.
@@ -88,12 +150,20 @@ async def run_case_correlation_pass(
     (same descriptors -> same candidates -> same scores -> same
     idempotency_key), so `repository.submit()`'s own replay path returns the
     existing receipt rather than creating a duplicate correlation.
+
+    `integrity_recorder` is optional (Phase 6, absent from every pre-existing
+    caller/test) and, when present, only records a `correlation_completed`
+    integrity event for a genuinely new (non-replayed) submission.
     """
     observations = await fetch_case_observations(engine, case_id)
     submission = build_case_correlation_submission(observations, case_id)
     if submission is None:
         return None
-    return await repository.submit(case_id=case_id, submission=submission, now=now)
+    receipt = await repository.submit(case_id=case_id, submission=submission, now=now)
+    await _record_correlation_integrity_event_safely(
+        integrity_recorder, receipt, case_id=case_id, now=now
+    )
+    return receipt
 
 
 async def run_case_analytics_snapshot(

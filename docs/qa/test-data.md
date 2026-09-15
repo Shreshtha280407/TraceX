@@ -260,3 +260,31 @@ No private police data, real case data, or Operation Nightfall data was
 used, referenced, or approximated. See
 `docs/decisions/ADR-006-phase-5-rules-baseline.md`'s "Measurement and
 freeze" addendum for the experiment this fixture supports.
+
+# Phase 6 Part 1 — integrity foundation fixtures (Nipun)
+
+All integrity tests use synthetic, generated data only:
+
+- **Integrity events** (`tests/unit/integrity/`, `tests/integration/integrity/`):
+  generated `uuid4()` case/event IDs, fixed placeholder hashes
+  (`"a" * 64`, etc. — never a real SHA-256 of real content), and
+  `canonical_metadata` dicts containing only short synthetic strings/counts
+  (e.g. `{"sha256": "a" * 64, "note": "key-1"}`). No real evidence content,
+  filename, transcript, chat body, or OCR text appears anywhere in this
+  fixture set — several tests (`test_models.py`) exist specifically to
+  prove such content is *rejected* if a producer tried to pass it.
+- **Signing keys**: every test generates its own fresh, random,
+  throwaway Ed25519 key via `signing.generate_signing_key_b64()` —
+  never the operator's real `.env` `INTEGRITY_SIGNING_KEY`, and never a
+  hardcoded key committed to the repository. Live integration tests
+  (`tests/integration/integrity/conftest.py`) explicitly override any
+  key present in a local `.env` with a freshly generated one, so these
+  tests never depend on (or risk logging) a real deployment key.
+- **Merkle/checkpoint fixtures**: small in-memory sequences of 3-8
+  synthetic events built via each test file's own `_event`/`_submission`
+  helper — no real case data, and every value is either a random UUID, a
+  fixed placeholder hash, or a small integer.
+
+No Operation Nightfall data, real police case data, or production
+credentials were used, referenced, or approximated anywhere in this
+module's tests.

@@ -76,6 +76,8 @@ from app.modules.evidence_lifecycle.models import (
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
 from app.modules.evidence_lifecycle.routing import accepted_content_types, route_for
 from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
+from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
+from app.modules.integrity.service import IntegrityService
 
 logger = structlog.get_logger(__name__)
 
@@ -86,6 +88,12 @@ _MAX_FILENAME_LENGTH = 255
 #: Bytes of entropy for a generated claim token (256 bits) -- mirrors
 #: `access_control.tokens.REFRESH_TOKEN_BYTES`'s reasoning exactly.
 CLAIM_TOKEN_BYTES = 32
+
+#: Canonical-metadata shape versions for this module's two integrity
+#: producer seams (Phase 6) -- see `docs/architecture/phase-6-integrity.md`.
+#: Deliberately built from IDs/counts/hashes only, never observation text.
+EVIDENCE_REGISTERED_SCHEMA_VERSION = "evidence_registered.v1"
+OBSERVATION_PUBLISHED_SCHEMA_VERSION = "observation_published.v1"
 
 
 @dataclass(frozen=True)
@@ -194,6 +202,7 @@ class EvidenceLifecycleService:
         worker_lease_max_seconds: int = 3600,
         worker_job_max_attempts: int = 5,
         graph_projection_max_attempts: int = 5,
+        integrity_recorder: IntegrityService | None = None,
     ) -> None:
         self._repository = repository
         self._storage = storage
@@ -203,6 +212,56 @@ class EvidenceLifecycleService:
         self._worker_lease_max_seconds = worker_lease_max_seconds
         self._worker_job_max_attempts = worker_job_max_attempts
         self._graph_projection_max_attempts = graph_projection_max_attempts
+        # Optional (Phase 6): absent in every pre-existing call site and
+        # test, so this is fully backward compatible. When present, a
+        # failure here never blocks or rolls back the primary write it
+        # follows -- see `_record_integrity_event_safely`.
+        self._integrity_recorder = integrity_recorder
+
+    async def _record_integrity_event_safely(
+        self,
+        *,
+        case_id: UUID,
+        event_kind: IntegrityEventKind,
+        subject_type: str,
+        subject_id: str,
+        canonical_metadata: dict[str, object],
+        payload_schema_version: str,
+        source_created_at: datetime,
+        idempotency_key: str,
+        request_id: str | None,
+    ) -> None:
+        """Best-effort integrity recording after a primary write already committed.
+
+        Mirrors `access_control.audit.record_audit_event_safely`'s
+        "already-committed state change" case: the evidence/observation
+        write this follows has already durably succeeded, so a hiccup
+        writing its integrity event must never turn that success into an
+        error for the caller.
+        """
+        if self._integrity_recorder is None:
+            return
+        try:
+            await self._integrity_recorder.record_integrity_event(
+                IntegrityEventSubmission(
+                    case_id=case_id,
+                    event_kind=event_kind,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    canonical_metadata=canonical_metadata,
+                    payload_schema_version=payload_schema_version,
+                    source_created_at=source_created_at,
+                    idempotency_key=idempotency_key,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "integrity.event_record_failed",
+                request_id=request_id,
+                case_id=str(case_id),
+                event_kind=event_kind.value,
+                subject_id=subject_id,
+            )
 
     async def create_media_manifest(
         self,
@@ -447,6 +506,26 @@ class EvidenceLifecycleService:
             )
             await _safe_delete(self._storage, object_key, context.request_id)
             raise
+
+        await self._record_integrity_event_safely(
+            case_id=case_id,
+            event_kind=IntegrityEventKind.EVIDENCE_REGISTERED,
+            subject_type="evidence",
+            subject_id=str(evidence_id),
+            canonical_metadata={
+                "evidence_id": str(evidence.evidence_id),
+                "source_type": evidence.source_type.value,
+                "content_type": evidence.content_type,
+                "sha256": evidence.sha256,
+                "classification": evidence.classification.value,
+                "uploaded_by": str(evidence.uploaded_by),
+                "parser_profile": evidence.parser_profile,
+            },
+            payload_schema_version=EVIDENCE_REGISTERED_SCHEMA_VERSION,
+            source_created_at=evidence.uploaded_at,
+            idempotency_key=str(evidence_id),
+            request_id=context.request_id,
+        )
 
         logger.info(
             "evidence.job.created",
@@ -1288,6 +1367,24 @@ class EvidenceLifecycleService:
             progress_summary = _progress_contract(
                 await self._repository.get_latest_progress_event(job.job_id)
             )
+
+        await self._record_integrity_event_safely(
+            case_id=job.case_id,
+            event_kind=IntegrityEventKind.OBSERVATION_PUBLISHED,
+            subject_type="observation_batch",
+            subject_id=f"{job.job_id}:{submission.batch_id}",
+            canonical_metadata={
+                "job_id": str(job.job_id),
+                "evidence_id": str(job.evidence_id),
+                "batch_id": submission.batch_id,
+                "observation_count": len(observation_records),
+                "observation_ids": [str(o.observation_id) for o in observation_records],
+            },
+            payload_schema_version=OBSERVATION_PUBLISHED_SCHEMA_VERSION,
+            source_created_at=submission.submitted_at,
+            idempotency_key=f"{job.job_id}:{submission.batch_id}",
+            request_id=context.request_id,
+        )
 
         logger.info(
             "worker.observation_batch.accepted",

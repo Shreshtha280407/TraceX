@@ -47,9 +47,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _live_settings() -> Settings:
+def _live_settings(**overrides: Any) -> Settings:
     values = dotenv_values(ENV_FILE)
     kwargs: dict[str, Any] = {k.lower(): v for k, v in values.items() if v is not None}
+    kwargs.update(overrides)
     return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 

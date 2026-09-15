@@ -47,6 +47,9 @@ from app.modules.graph.integration_repository import create_engine as create_pos
 from app.modules.graph.intelligence.pipeline import run_case_correlation_pass
 from app.modules.graph.intelligence.projection import make_correlation_projection_handler
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+from app.modules.integrity.repository import IntegrityRepository
+from app.modules.integrity.repository import create_engine as create_integrity_engine
+from app.modules.integrity.service import IntegrityService
 
 logger = structlog.get_logger(__name__)
 
@@ -158,10 +161,15 @@ async def generate_once(settings: Settings, case_id: UUID) -> bool:
     """
     postgres_engine = create_postgres_engine(settings)
     repository = GraphCorrelationIntegrationRepository(postgres_engine)
+    integrity_engine = create_integrity_engine(settings)
+    integrity_recorder = IntegrityService(IntegrityRepository(integrity_engine), settings)
     try:
-        receipt = await run_case_correlation_pass(repository, postgres_engine, case_id)
+        receipt = await run_case_correlation_pass(
+            repository, postgres_engine, case_id, integrity_recorder=integrity_recorder
+        )
     finally:
         await repository.close()
+        await integrity_engine.dispose()
     if receipt is None:
         logger.info("graph.intelligence_worker.generate_no_candidates", case_id=str(case_id))
         return False

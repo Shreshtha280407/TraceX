@@ -2768,3 +2768,90 @@ failures were transient connection-layer instability from the
 immediately-preceding intensive Docker operations, not a logic
 regression in this phase's code. Reported here rather than silently
 re-run-and-discarded, per this task's own "do not hide" requirement.
+
+## 2026-09-15 — Phase 6 Part 1 integrity foundation (Nipun)
+
+New additive `app/modules/integrity/` module (models, deterministic
+domain-separated SHA-256 Merkle hashing, local Ed25519 signing/
+verification, repository, service facade, operator CLI), one focused
+Alembic migration (`8f68fb441037`), and three additive producer seams
+(evidence registration, observation-batch acceptance, correlation
+completion). See `docs/architecture/phase-6-integrity.md` and
+`docs/decisions/ADR-013-phase-6-integrity-checkpoints.md` for the design.
+
+**Docker/live infrastructure was unavailable throughout this work.**
+`docker ps`/`docker version` failed with `dial unix
+/home/nipun/.docker/desktop/docker.sock: connect: no such file or
+directory` -- Docker Desktop's daemon was not running, and no other local
+PostgreSQL/Neo4j/Redis/MinIO was reachable (`ss -tlnp` showed nothing on
+`5432`/`7687`/`6379`/`9000`). This was raised with the user mid-task; the
+explicit decision was to proceed without Docker and report the gap
+honestly rather than wait, per the task's own "if unavailable/blocked,
+report the exact command and reason -- do not fabricate success"
+instruction. **No live-PostgreSQL verification of this phase's DB-backed
+behavior (repository idempotency, checkpoint overlap rejection, tamper
+detection, migration apply) was performed in this session** -- every
+`tests/integration/*` suite in the repository (not only this phase's new
+one) self-skipped for the same reason, exactly as designed.
+
+**Static/migration checks**: `uv sync --all-groups` (up to date), `uv run
+ruff format --check .` (450 files, all formatted), `uv run ruff check .`
+(all checks passed), `uv run mypy app` (187 source files, no issues),
+`uv run alembic heads` (single head, `8f68fb441037`), `uv run alembic
+history` (linear, `f4a1c9e0d2b3 -> 8f68fb441037`, no branching), `git diff
+--check` (clean, no whitespace errors), `docker compose config -q` (valid
+-- this needs no running daemon, only the CLI binary and a syntactically
+valid `compose.yaml`) -- all passed.
+
+**Focused regression suite** (`tests/unit/evidence_lifecycle
+tests/unit/graph tests/integration/evidence_lifecycle
+/test_integrity_producer_seam_live.py tests/contract`, no live infra
+needed for the unit/contract portion):
+
+```text
+494 passed, 3 skipped in 145.48s
+```
+
+The 3 skips are this phase's own new live-Postgres producer-seam tests
+(`test_integrity_producer_seam_live.py`), self-skipping for the same
+Docker-unavailable reason above. All 386 pre-existing
+`tests/unit/evidence_lifecycle`/`tests/unit/graph` tests pass completely
+unchanged, confirming the new optional `integrity_recorder` constructor
+parameter on `EvidenceLifecycleService` and the new optional
+`integrity_recorder` parameter on `run_case_correlation_pass` are fully
+backward compatible (proof point 17).
+
+**Focused integrity suite** (`tests/unit/integrity/ tests/integration
+/integrity/`):
+
+```text
+28 passed, 10 skipped in 0.64s
+```
+
+Every pure-logic proof point (hashing determinism, dict-insertion-order
+independence, odd-leaf duplication, leaf-order sensitivity, Ed25519
+sign/verify/tamper-detection, forbidden-metadata rejection, the migration
+static-graph check) ran and passed. The 10 skips are the DB-backed proof
+points (3, 6-11, 13, plus the full round-trip sanity test) in
+`tests/integration/integrity/test_repository_live.py`, self-skipping for
+the same reason.
+
+**Full repository suite**: `uv run pytest -q` -- **1843 passed, 84
+skipped, 0 failed**, in 247s, one pre-existing unrelated warning
+(`audioop` deprecation, not from this phase's code). Zero failures. The
+skip count (84, vs. the historical ~1 skipped when live infra was
+reachable) is fully explained by every `tests/integration/*` suite in the
+entire repository self-skipping for the same Docker-unavailable reason
+described above -- not specific to this phase's code, and not a
+regression in anything this phase touched.
+
+**Docker-backed migration/integrity verification**: not run. The exact
+blocked command and reason: `docker compose up -d postgres` (and every
+subsequent live-infra command) could not run because `docker
+ps`/`docker version` failed with `dial unix
+/home/nipun/.docker/desktop/docker.sock: connect: no such file or
+directory` -- Docker Desktop's daemon was not running in this
+environment, and the user, when asked, chose to proceed without waiting
+for it rather than pause the task. This is reported as a genuine,
+outstanding verification gap, not claimed as passing. `git diff --check`
+and `docker compose config -q` (which need no daemon) both passed.
