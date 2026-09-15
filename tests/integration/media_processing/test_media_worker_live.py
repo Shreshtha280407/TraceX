@@ -863,6 +863,11 @@ async def test_video_frame_ocr_batch_submission_end_to_end_live() -> None:
     `test_full_upload_claim_stream_verify_process_submit_project_live_pipeline`).
     """
     from app.modules.evidence_lifecycle.repository import (
+        media_checkpoints_table,
+        media_chunk_manifests_table,
+        media_chunk_observations_table,
+        media_chunks_table,
+        media_derived_artifacts_table,
         observation_batches_table,
         observation_transformations_table,
     )
@@ -1076,7 +1081,28 @@ async def test_video_frame_ocr_batch_submission_end_to_end_live() -> None:
         await graph_repository.close()
         async with ac_engine.begin() as conn:
             if case_id is not None:
+                # `media_chunk_observations` has no `case_id` of its own and
+                # FKs to both `media_chunks` and `worker_observations` --
+                # must go first, or a later delete on either parent leaves
+                # the transaction aborted and every subsequent statement in
+                # it (including ones wrapped in `contextlib.suppress`, which
+                # only swallows the *local* exception, not the poisoned
+                # transaction state) fails too.
+                with contextlib.suppress(Exception):
+                    await conn.execute(
+                        sa.delete(media_chunk_observations_table).where(
+                            media_chunk_observations_table.c.chunk_id.in_(
+                                sa.select(media_chunks_table.c.chunk_id).where(
+                                    media_chunks_table.c.case_id == case_id
+                                )
+                            )
+                        )
+                    )
                 for table in [
+                    media_derived_artifacts_table,
+                    media_checkpoints_table,
+                    media_chunks_table,
+                    media_chunk_manifests_table,
                     graph_projection_jobs_table,
                     worker_observations_table,
                     observation_batches_table,

@@ -1,5 +1,32 @@
 # Runbook: Local Development
 
+## Phase 5 final integration note
+
+`compose.yaml`'s `postgres` service requires `pgvector/pgvector:pg16` (not
+plain `postgres:16-alpine`) since Phase 5A added `pgvector` for candidate
+snapshots — `uv run alembic upgrade head` fails outright
+(`extension "vector" is not available`) against a Postgres without it. If
+`docker compose up -d postgres` starts an unhealthy, crash-looping
+container whose logs show only repeated
+`docker-entrypoint.sh: line NNN: /usr/local/bin/gosu: Success` with no
+further output, this is a **corrupted local image layer** (a `0`-byte
+`gosu` binary inside the pulled image), not a permissions/sandbox
+restriction — confirmed by running `docker run --rm --entrypoint sh
+pgvector/pgvector:pg16 -c "ls -la /usr/local/bin/gosu"` and seeing a
+`0`-byte file. Fix: remove every container still referencing the image,
+then force a clean re-pull:
+
+```bash
+docker rm -f <containers using pgvector/pgvector:pg16>   # docker ps -a --filter ancestor=pgvector/pgvector:pg16
+docker rmi pgvector/pgvector:pg16
+docker pull pgvector/pgvector:pg16
+docker compose up -d postgres
+```
+
+A `docker compose up -d postgres` alone will not fix this: Docker treats
+a locally-cached image as already matching its digest and will not
+re-download it merely because the cached layer is corrupted.
+
 ## Phase 4 release-gate note
 
 Use a dedicated Compose project for a release-gate run so existing local

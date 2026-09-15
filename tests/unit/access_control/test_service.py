@@ -215,6 +215,41 @@ async def test_refresh_rate_limit_raises_after_threshold() -> None:
         await service.refresh(request, CTX)
 
 
+async def test_refresh_rate_limit_applies_across_rotated_tokens_from_the_same_caller() -> None:
+    """P5-REGRESSION-AUTH-001: a real client's refresh token changes on
+    every successful call (single-use rotation). The rate limiter must
+    still count these as the same caller -- keying on the token string
+    itself let every rotated attempt escape the limit entirely."""
+    service, repo = _make_service(refresh_rate_limit=1)
+    user = make_user_record()
+    repo.users[user.user_id] = user
+    login_result = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), CTX
+    )
+
+    first = await service.refresh(RefreshRequest(refresh_token=login_result.refresh_token), CTX)
+    assert first.refresh_token != login_result.refresh_token
+
+    with pytest.raises(RateLimitExceededError):
+        await service.refresh(RefreshRequest(refresh_token=first.refresh_token), CTX)
+
+
+async def test_refresh_rate_limit_buckets_are_independent_per_caller() -> None:
+    """A different `ip_marker` gets its own bucket -- one caller exceeding
+    the limit must not deny a different caller's refresh attempts."""
+    service, repo = _make_service(refresh_rate_limit=1)
+    other_ctx = RequestContext(now=NOW, request_id="other-request-id", ip_marker="a" * 16)
+    request = RefreshRequest(refresh_token="never-issued-token")
+
+    with pytest.raises(SessionRevokedError):
+        await service.refresh(request, CTX)
+    with pytest.raises(RateLimitExceededError):
+        await service.refresh(request, CTX)
+    # A different caller (different ip_marker) is unaffected.
+    with pytest.raises(SessionRevokedError):
+        await service.refresh(request, other_ctx)
+
+
 # --- Logout ------------------------------------------------------------------
 
 

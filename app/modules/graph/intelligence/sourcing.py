@@ -147,6 +147,30 @@ def _flatten_transliteration_candidates(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(flattened))
 
 
+def _is_structured_validation_rejected(observation: ObservationV1) -> bool:
+    """Producer-validation gate for Jasraj's structured (document/CDR/finance)
+    family, shared by `descriptor_from_observation` and the motif-edge
+    builder below (which reads CDR/finance attributes directly, not through
+    that function).
+
+    This producer module names its own validation attribute
+    `source_signal_quality` (see `structured_processing.signal_validation.
+    SignalValidationResult`) -- a different key than `communication_signal_
+    validation`/`visual_signal_validation`, since each producer module
+    independently established its own attribute name; the semantic this
+    sourcing boundary enforces is identical across all three: a present,
+    non-"accepted" outcome never reaches descriptor/correlation/motif input.
+    Only `cdr.py`/`finance.py` attach this attribute today (always
+    "accepted" currently, but never assumed to stay that way); `fir_report.
+    py`'s regex-extracted document mentions attach none at all -- treated
+    exactly like an observation with no communication validation attribute,
+    never rejected merely for predating this additive metadata.
+    """
+    validation = observation.attributes.get("source_signal_quality")
+    outcome = validation.get("outcome") if isinstance(validation, dict) else None
+    return outcome is not None and outcome != "accepted"
+
+
 def descriptor_from_observation(observation: ObservationV1) -> ObservationDescriptor | None:
     """Map one canonical observation into retrieval input, or `None` if this
     observation type carries no source-backed identity/alias/handle signal
@@ -167,6 +191,10 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
     validation = attributes.get("communication_signal_validation")
     if isinstance(validation, dict) and validation.get("correlation_ready") is not True:
         return None
+    # Same gate for Jasraj's structured (document/CDR/finance) family -- see
+    # `_is_structured_validation_rejected`'s own docstring.
+    if _is_structured_validation_rejected(observation):
+        return None
 
     kind_key = _identifier_kind_key(observation)
     if kind_key in _EXACT_IDENTIFIER_ENTITY_TYPES:
@@ -178,20 +206,21 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
     elif observation_type == "cdr_call_record":
         # `ObservationDescriptor.identifiers` holds one value per stable-
         # identifier *kind*, and `retrieval.py._IDENTIFIER_TYPES` is a fixed,
-        # closed set -- there is no "second phone" kind to hold a callee
-        # number safely. A `cdr_call_record` observation's exact-blocking
-        # identity is therefore its caller's number only; the callee number
-        # is not independently blockable from this one combined record (a
-        # documented Phase 5A limitation, not a silent drop -- the motif
-        # adapter below, which builds its own internal party graph rather
-        # than a per-observation identifier map, uses both).
+        # closed set -- there is no "second phone" kind to hold caller and
+        # callee in one descriptor safely. This single-descriptor function
+        # therefore still returns the caller's number only, kept for every
+        # existing caller of this exact signature; `descriptors_from_
+        # observation` (below) is the Phase 5B two-party extension that
+        # returns BOTH the caller and callee as independent, role-scoped
+        # descriptors, closing the Phase 5A limitation this comment used to
+        # document.
         caller = attributes.get("caller_number")
         if isinstance(caller, str) and caller.strip():
             identifiers["phone"] = caller
     elif observation_type == "financial_transaction_record":
-        # Same reasoning as `cdr_call_record` above: only the sender side of
-        # a combined transaction record is exact-blockable as an
-        # observation-level identifier in this baseline.
+        # Same reasoning as `cdr_call_record` above: this single-descriptor
+        # function returns only the sender side; `descriptors_from_
+        # observation` returns both sender and receiver.
         sender = attributes.get("sender_account")
         if isinstance(sender, str) and sender.strip():
             identifiers["account"] = sender
@@ -223,6 +252,11 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
     return ObservationDescriptor(
         case_id=observation.case_id,
         observation_id=observation.observation_id,
+        descriptor_id=deterministic_uuid(
+            "phase5_observation_descriptor",
+            str(observation.case_id),
+            str(observation.observation_id),
+        ),
         evidence_id=observation.evidence_id,
         source_locator_reference=_locator_reference(observation),
         identifiers=identifiers,
@@ -233,6 +267,116 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
         event_start=event_start,
         event_end=event_end,
     )
+
+
+#: `(observation_type, attribute_key, identifier_kind, participant_role)` --
+#: the CDR/finance two-party fields `descriptors_from_observation` maps.
+#: Both entries of a pair MUST share the same identifier kind (both are
+#: phone numbers, or both are accounts) since `retrieval.py`'s exact
+#: blocking only ever compares like kinds.
+_TWO_PARTY_FIELDS: tuple[tuple[str, str, str, str], tuple[str, str, str, str]] = (
+    ("cdr_call_record", "caller_number", "phone", "caller"),
+    ("cdr_call_record", "callee_number", "phone", "callee"),
+)
+_TWO_PARTY_FIELDS_FINANCE: tuple[tuple[str, str, str, str], tuple[str, str, str, str]] = (
+    ("financial_transaction_record", "sender_account", "account", "sender"),
+    ("financial_transaction_record", "receiver_account", "account", "receiver"),
+)
+
+
+def _party_descriptor(
+    observation: ObservationV1,
+    *,
+    role: str,
+    identifier_kind: str,
+    raw_value: str,
+    event_start: datetime | None,
+    event_end: datetime | None,
+) -> ObservationDescriptor:
+    """One evidence-local, role-scoped descriptor for a two-party structured record.
+
+    Never a second observation or an entity: `observation_id` is the same
+    real, single combined CDR/finance record both parties came from.
+    `descriptor_id` is what makes the two roles independently comparable
+    in `retrieval.py` despite sharing one `observation_id` -- deterministic
+    from `(case_id, observation_id, role, normalized value)`, per this
+    module's own `_party_key` precedent for the motif adapter.
+    """
+    normalized = normalise_identifier(identifier_kind, raw_value) or raw_value
+    return ObservationDescriptor(
+        case_id=observation.case_id,
+        observation_id=observation.observation_id,
+        descriptor_id=deterministic_uuid(
+            "phase5_party_descriptor",
+            str(observation.case_id),
+            str(observation.observation_id),
+            role,
+            normalized,
+        ),
+        evidence_id=observation.evidence_id,
+        source_locator_reference=_locator_reference(observation),
+        participant_role=role,
+        identifiers={identifier_kind: raw_value},
+        event_start=event_start,
+        event_end=event_end,
+    )
+
+
+def descriptors_from_observation(observation: ObservationV1) -> tuple[ObservationDescriptor, ...]:
+    """Every retrieval-eligible descriptor one canonical observation supplies.
+
+    For most observation types this is exactly `descriptor_from_observation`'s
+    single result, wrapped in a 0- or 1-tuple -- unchanged behavior, same
+    producer-validation gates, same documented mapping scope. The one
+    difference: a two-party structured record (`cdr_call_record`'s caller/
+    callee, `financial_transaction_record`'s sender/receiver) returns BOTH
+    parties as independent, role-scoped descriptors instead of only the
+    primary one -- closing the Phase 5A limitation `descriptor_from_
+    observation`'s own docstring documents.
+
+    Social/chat and audio are deliberately unchanged here: a chat message
+    only ever carries an explicit, source-supplied sender (no second
+    "recipient" role the source data actually supplies), and a diarization
+    speaker label is never promoted into a party descriptor at all (see
+    the module docstring's "Deliberately NOT mapped" list) -- there is
+    nothing to expand for either family.
+    """
+    two_party_fields = (
+        _TWO_PARTY_FIELDS
+        if observation.observation_type == "cdr_call_record"
+        else _TWO_PARTY_FIELDS_FINANCE
+        if observation.observation_type == "financial_transaction_record"
+        else None
+    )
+    if two_party_fields is None:
+        single = descriptor_from_observation(observation)
+        return (single,) if single is not None else ()
+
+    # The same producer-validation gates `descriptor_from_observation`
+    # enforces apply identically here -- neither party of a rejected
+    # structured record is correlation-ready.
+    validation = observation.attributes.get("communication_signal_validation")
+    if isinstance(validation, dict) and validation.get("correlation_ready") is not True:
+        return ()
+    if _is_structured_validation_rejected(observation):
+        return ()
+
+    event_start, event_end = _event_time_of(observation)
+    descriptors: list[ObservationDescriptor] = []
+    for _observation_type, attribute_key, identifier_kind, role in two_party_fields:
+        raw_value = observation.attributes.get(attribute_key)
+        if isinstance(raw_value, str) and raw_value.strip():
+            descriptors.append(
+                _party_descriptor(
+                    observation,
+                    role=role,
+                    identifier_kind=identifier_kind,
+                    raw_value=raw_value,
+                    event_start=event_start,
+                    event_end=event_end,
+                )
+            )
+    return tuple(descriptors)
 
 
 def _locator_reference(observation: ObservationV1) -> str:
@@ -322,6 +466,8 @@ def _account_party_key(case_id: UUID, value: str) -> UUID:
 
 
 def _call_or_transfer_edge(observation: ObservationV1) -> GraphEdgeSnapshot | None:
+    if _is_structured_validation_rejected(observation):
+        return None
     if observation.observation_type == "cdr_call_record":
         caller = observation.attributes.get("caller_number")
         callee = observation.attributes.get("callee_number")
@@ -472,6 +618,7 @@ def edges_from_candidate_links(
 __all__ = [
     "build_motif_edges",
     "descriptor_from_observation",
+    "descriptors_from_observation",
     "edges_from_candidate_links",
     "fetch_case_observations",
 ]

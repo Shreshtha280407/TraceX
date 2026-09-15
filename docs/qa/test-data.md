@@ -246,3 +246,17 @@ message IDs, platform names, local speaker labels, and placeholder transcript
 or message text used to prove SHA-256/length-only graph attributes. They contain
 no real account owner, phone subscriber, chat participant, audio, or identity
 claim.
+
+# Phase 5 final integration — rules-baseline benchmark (Nipun)
+
+`tests/fixtures/graph/phase5_rules_benchmark.py` (`phase5_rules_benchmark_v1`)
+is a versioned, invented, non-sensitive synthetic case: nine canonical
+observations (two-party CDR pair, two-party finance pair, a cross-modal
+phone match, two transliteration-linked chat messages, two unrelated
+negatives) with hand-labeled ground-truth positive pairs, plus a separate
+direct-construction contradiction probe and cross-case probe. Every phone
+number, account identifier, and name is fabricated for this fixture only.
+No private police data, real case data, or Operation Nightfall data was
+used, referenced, or approximated. See
+`docs/decisions/ADR-006-phase-5-rules-baseline.md`'s "Measurement and
+freeze" addendum for the experiment this fixture supports.

@@ -211,7 +211,21 @@ class AuthService:
 
         Raises `RateLimitExceededError`, `RefreshReuseDetectedError`, or `SessionRevokedError`.
         """
-        rate_limit_key = hash_rate_limit_key("refresh", request.refresh_token)
+        # Keyed by client IP marker, never the refresh token itself: a
+        # refresh token is single-use and rotates on every successful call
+        # (see `rotate_session`), so a legitimate client's own repeated
+        # calls each present a *different* token string. Keying on the
+        # token value therefore let every attempt land in its own
+        # one-shot bucket and never accumulate -- an authenticated client
+        # exceeding the configured limit could never actually observe a
+        # `429` (P5-REGRESSION-AUTH-001). `ip_marker` is the same
+        # pre-validation, stable-per-caller identity `login`'s own rate
+        # limit already keys on (there, `request.email`) -- known before
+        # the token is looked up or rotated, so the check runs unchanged
+        # ahead of any session mutation. A caller with no discoverable
+        # client host (`ip_marker is None`, e.g. certain test transports)
+        # shares one fixed bucket rather than bypassing the limit entirely.
+        rate_limit_key = hash_rate_limit_key("refresh", ctx.ip_marker or "unknown")
         allowed = await self._refresh_rate_limiter.check_and_increment(
             rate_limit_key, limit=self._refresh_rate_limit
         )

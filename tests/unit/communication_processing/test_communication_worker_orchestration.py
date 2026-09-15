@@ -74,6 +74,8 @@ class _FakeClient:
     submit_exception: Exception | None = None
     submit_calls: list[tuple[UUID, str, object]] = field(default_factory=list)
     batch_calls: list[ObservationBatchSubmissionV1] = field(default_factory=list)
+    media_manifest_calls: list[object] = field(default_factory=list)
+    media_chunk_publish_calls: list[object] = field(default_factory=list)
     renew_calls: int = 0
     _claim_calls: int = 0
 
@@ -93,6 +95,25 @@ class _FakeClient:
         self, *, job_id: UUID, claim_token: str, submission: ObservationBatchSubmissionV1
     ) -> ObservationBatchReceiptV1:
         self.batch_calls.append(submission)
+        return ObservationBatchReceiptV1(
+            job_id=job_id,
+            batch_id=submission.batch_id,
+            status=BatchAcceptanceStatus.ACCEPTED,
+            accepted_observation_count=len(submission.observations),
+            progress=submission.progress,
+            request_id=None,
+        )
+
+    def create_media_manifest(self, *, job_id: UUID, claim_token: str, manifest: object) -> object:
+        """Mirrors the real client: idempotent registration, echoes the manifest back."""
+        self.media_manifest_calls.append(manifest)
+        return manifest
+
+    def publish_media_chunk(
+        self, *, job_id: UUID, claim_token: str, publication: object
+    ) -> ObservationBatchReceiptV1:
+        self.media_chunk_publish_calls.append(publication)
+        submission = publication.batch  # type: ignore[attr-defined]
         return ObservationBatchReceiptV1(
             job_id=job_id,
             batch_id=submission.batch_id,
@@ -173,7 +194,15 @@ def test_run_once_invokes_explicit_local_asr_path_and_keeps_transcript_out_of_at
     )
 
     assert outcome.result_status == "succeeded"
-    observations = client.batch_calls[0].observations
+    # ASR/diarization mentions carry a `chunk_id` -- published chunk-scoped
+    # via `publish_media_chunk`, not the plain (unscoped) `submit_batch`
+    # path -- see P5-INTEG-COMMUNICATION-001.
+    assert len(client.media_manifest_calls) == 1
+    observations = [
+        observation
+        for publication in client.media_chunk_publish_calls
+        for observation in publication.batch.observations  # type: ignore[attr-defined]
+    ]
     transcript = next(
         item for item in observations if item.observation_type == "transcript_segment"
     )
@@ -238,10 +267,13 @@ def test_run_once_deep_profile_adds_source_local_diarization_turns() -> None:
     )
 
     assert outcome.result_status == "succeeded"
+    observations = [
+        observation
+        for publication in client.media_chunk_publish_calls
+        for observation in publication.batch.observations  # type: ignore[attr-defined]
+    ]
     turn = next(
-        item
-        for item in client.batch_calls[0].observations
-        if item.observation_type == "diarization_speaker_turn"
+        item for item in observations if item.observation_type == "diarization_speaker_turn"
     )
     assert turn.source_locator.time_start_ms == 0
     assert turn.source_locator.time_end_ms == 1_000

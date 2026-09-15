@@ -10,12 +10,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
 from app.contracts.common import Extractor, SourceLocator
 from app.contracts.observation import ExtractedEntityMention, ObservationV1
 from app.modules.graph.intelligence.retrieval import retrieve_candidates
 from app.modules.graph.intelligence.sourcing import (
     build_motif_edges,
     descriptor_from_observation,
+    descriptors_from_observation,
 )
 
 _EXTRACTOR = Extractor(name="fixture", version="1.0.0", config_hash="h", model_version="n/a")
@@ -375,6 +378,410 @@ def test_unmapped_observation_types_are_skipped_not_guessed_at() -> None:
 
 
 # --- Motif adapter: real cross-modal shapes ---------------------------------
+
+
+# --- Phase 5 producer validation gates: structured/visual/communication ----
+
+
+def test_structured_signal_rejected_observation_is_excluded_from_descriptors() -> None:
+    """A CDR record whose producer-side validation rejected it must not
+    reach descriptor/correlation input -- see `source_signal_quality`."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+            "source_signal_quality": {"outcome": "rejected", "reason_codes": ["bad_timestamp"]},
+        },
+    )
+    assert descriptor_from_observation(observation) is None
+
+
+def test_structured_signal_incomplete_observation_is_excluded_from_descriptors() -> None:
+    observation = _observation(
+        observation_type="financial_transaction_record",
+        attributes={
+            "sender_account": "9999999999",
+            "timestamp": "2026-01-01T10:20:00+00:00",
+            "source_signal_quality": {"outcome": "incomplete", "reason_codes": []},
+        },
+    )
+    assert descriptor_from_observation(observation) is None
+
+
+def test_structured_signal_accepted_observation_still_produces_a_descriptor() -> None:
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+            "source_signal_quality": {"outcome": "accepted", "reason_codes": []},
+        },
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {"phone": "+919876543210"}
+
+
+def test_structured_signal_absent_is_legacy_compatible_not_rejected() -> None:
+    """`fir_report.py`'s document mentions never attach `source_signal_quality`
+    at all -- absence must never be treated as a rejection."""
+    observation = _observation(
+        observation_type="phone_number_mention",
+        extracted_entities=[
+            ExtractedEntityMention(text="9876543210", entity_type_hint="phone_number")
+        ],
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {"phone": "9876543210"}
+
+
+def test_structured_signal_rejected_call_record_is_excluded_from_motif_edges() -> None:
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+            "source_signal_quality": {"outcome": "rejected", "reason_codes": ["bad_timestamp"]},
+        },
+    )
+    assert build_motif_edges([observation]) == ()
+
+
+def test_visual_ocr_and_detection_observations_never_produce_a_descriptor() -> None:
+    """Raw OCR text and detection/track observations are excluded from
+    descriptor mapping regardless of `visual_signal_validation.
+    correlation_ready` -- they carry no parsed identifier at all (see
+    `descriptor_from_observation`'s module docstring), so there is no
+    additional validation gate to enforce here; an accepted visual
+    validation still never yields a descriptor, and a rejected one is
+    equally excluded."""
+    for correlation_ready in (True, False):
+        ocr = _observation(
+            observation_type="ocr_text",
+            extracted_entities=[ExtractedEntityMention(text="STOP", entity_type_hint="ocr_text")],
+            attributes={
+                "visual_signal_validation": {
+                    "outcome": "accepted" if correlation_ready else "rejected",
+                    "correlation_ready": correlation_ready,
+                }
+            },
+        )
+        detection = _observation(
+            observation_type="object_detection",
+            attributes={
+                "visual_signal_validation": {
+                    "outcome": "accepted" if correlation_ready else "rejected",
+                    "correlation_ready": correlation_ready,
+                }
+            },
+        )
+        assert descriptor_from_observation(ocr) is None
+        assert descriptor_from_observation(detection) is None
+
+
+def test_communication_signal_rejected_chat_message_is_excluded() -> None:
+    observation = _observation(
+        observation_type="chat_message",
+        attributes={
+            "sender": "Alice",
+            "platform": "whatsapp",
+            "communication_signal_validation": {"correlation_ready": False, "outcome": "rejected"},
+        },
+    )
+    assert descriptor_from_observation(observation) is None
+
+
+def test_mixed_batch_of_all_three_producer_families_applies_each_gate_independently() -> None:
+    """One retrieval input list spanning structured, visual, and
+    communication observations -- each family's own gate decides its own
+    observations only; an accepted one from any family survives, a
+    rejected one from any family is excluded, independent of the others."""
+    case_id = uuid4()
+    accepted_structured = _observation(
+        case_id=case_id,
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+            "source_signal_quality": {"outcome": "accepted", "reason_codes": []},
+        },
+    )
+    rejected_structured = _observation(
+        case_id=case_id,
+        observation_type="financial_transaction_record",
+        attributes={
+            "sender_account": "ACC-1",
+            "timestamp": "2026-01-01T10:20:00+00:00",
+            "source_signal_quality": {"outcome": "rejected", "reason_codes": ["bad_amount"]},
+        },
+    )
+    excluded_visual = _observation(
+        case_id=case_id,
+        observation_type="ocr_text",
+        extracted_entities=[ExtractedEntityMention(text="STOP", entity_type_hint="ocr_text")],
+        attributes={"visual_signal_validation": {"outcome": "accepted", "correlation_ready": True}},
+    )
+    accepted_communication = _observation(
+        case_id=case_id,
+        observation_type="chat_message",
+        attributes={
+            "sender": "Bob",
+            "platform": "telegram",
+            "communication_signal_validation": {"correlation_ready": True, "outcome": "accepted"},
+        },
+    )
+    rejected_communication = _observation(
+        case_id=case_id,
+        observation_type="chat_message",
+        attributes={
+            "sender": "Carol",
+            "platform": "telegram",
+            "communication_signal_validation": {"correlation_ready": False, "outcome": "rejected"},
+        },
+    )
+    descriptors = [
+        descriptor_from_observation(observation)
+        for observation in (
+            accepted_structured,
+            rejected_structured,
+            excluded_visual,
+            accepted_communication,
+            rejected_communication,
+        )
+    ]
+    assert descriptors == [
+        descriptor_from_observation(accepted_structured),
+        None,
+        None,
+        descriptor_from_observation(accepted_communication),
+        None,
+    ]
+    surviving = [d for d in descriptors if d is not None]
+    assert len(surviving) == 2
+    assert {d.observation_id for d in surviving} == {
+        accepted_structured.observation_id,
+        accepted_communication.observation_id,
+    }
+
+
+# --- Phase 5B: per-party (CDR caller/callee, finance sender/receiver) -----
+
+
+def test_cdr_record_yields_both_caller_and_callee_as_independent_descriptors() -> None:
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    descriptors = descriptors_from_observation(observation)
+    assert len(descriptors) == 2
+    by_role = {d.participant_role: d for d in descriptors}
+    assert by_role.keys() == {"caller", "callee"}
+    assert by_role["caller"].identifiers == {"phone": "+919876543210"}
+    assert by_role["callee"].identifiers == {"phone": "+919999999999"}
+    # Both parties trace back to the one real combined record -- never a
+    # fabricated second observation.
+    assert by_role["caller"].observation_id == observation.observation_id
+    assert by_role["callee"].observation_id == observation.observation_id
+    # But each role is independently identifiable for retrieval comparison.
+    assert by_role["caller"].descriptor_id != by_role["callee"].descriptor_id
+    for descriptor in descriptors:
+        assert descriptor.case_id == observation.case_id
+        assert descriptor.evidence_id == observation.evidence_id
+
+
+def test_finance_record_yields_both_sender_and_receiver_as_independent_descriptors() -> None:
+    observation = _observation(
+        observation_type="financial_transaction_record",
+        attributes={
+            "sender_account": "SENDER-1",
+            "receiver_account": "RECEIVER-1",
+            "timestamp": "2026-01-01T10:20:00+00:00",
+        },
+    )
+    descriptors = descriptors_from_observation(observation)
+    assert len(descriptors) == 2
+    by_role = {d.participant_role: d for d in descriptors}
+    assert by_role.keys() == {"sender", "receiver"}
+    assert by_role["sender"].identifiers == {"account": "SENDER-1"}
+    assert by_role["receiver"].identifiers == {"account": "RECEIVER-1"}
+
+
+def test_cdr_record_missing_callee_yields_only_the_caller_descriptor() -> None:
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={"caller_number": "+919876543210", "timestamp": "2026-01-01T10:00:00+00:00"},
+    )
+    descriptors = descriptors_from_observation(observation)
+    assert len(descriptors) == 1
+    assert descriptors[0].participant_role == "caller"
+
+
+def test_two_party_expansion_respects_the_structured_validation_gate() -> None:
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+            "source_signal_quality": {"outcome": "rejected", "reason_codes": ["bad_timestamp"]},
+        },
+    )
+    assert descriptors_from_observation(observation) == ()
+
+
+def test_non_two_party_observation_matches_the_singular_function_exactly() -> None:
+    observation = _observation(
+        observation_type="phone_number_mention",
+        extracted_entities=[
+            ExtractedEntityMention(text="9876543210", entity_type_hint="phone_number")
+        ],
+    )
+    singular = descriptor_from_observation(observation)
+    plural = descriptors_from_observation(observation)
+    assert singular is not None
+    assert plural == (singular,)
+
+
+def test_unmapped_observation_type_yields_an_empty_tuple_not_none() -> None:
+    observation = _observation(observation_type="object_detection", attributes={})
+    assert descriptors_from_observation(observation) == ()
+
+
+def test_descriptor_ids_are_deterministic_across_repeated_calls() -> None:
+    """Replay stability: the same observation always derives the same
+    descriptor_id for the same role -- required for idempotent re-runs of
+    a case's correlation pass."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    first = descriptors_from_observation(observation)
+    second = descriptors_from_observation(observation)
+    assert {d.descriptor_id for d in first} == {d.descriptor_id for d in second}
+    assert len({d.descriptor_id for d in first}) == 2  # caller and callee remain distinct
+
+
+def test_caller_and_callee_of_the_same_record_never_become_a_candidate_of_each_other() -> None:
+    """Same-event suppression: the two ends of one call are not two
+    independent signals about the same identity."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919876543210",  # pathological but must still not self-pair
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    descriptors = list(descriptors_from_observation(observation))
+    assert len(descriptors) == 2
+    candidates = retrieve_candidates(descriptors)
+    assert candidates == ()
+
+
+def test_exact_blocking_uses_both_roles_across_different_observations() -> None:
+    """A number seen as the *callee* on one record and the *caller* on a
+    different record must still collide -- exact blocking is role-blind
+    across observations, only same-event pairing is suppressed."""
+    case_id = uuid4()
+    first_call = _observation(
+        case_id=case_id,
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+911111111111",
+            "callee_number": "+919876543210",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    second_call = _observation(
+        case_id=case_id,
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+912222222222",
+            "timestamp": "2026-01-01T11:00:00+00:00",
+        },
+    )
+    descriptors = [
+        *descriptors_from_observation(first_call),
+        *descriptors_from_observation(second_call),
+    ]
+    candidates = retrieve_candidates(descriptors)
+    assert len(candidates) == 1
+    assert "exact_identifier" in candidates[0].reasons
+    assert candidates[0].left_observation_id in {
+        first_call.observation_id,
+        second_call.observation_id,
+    }
+    assert candidates[0].right_observation_id in {
+        first_call.observation_id,
+        second_call.observation_id,
+    }
+    assert candidates[0].left_observation_id != candidates[0].right_observation_id
+
+
+def test_two_role_matches_against_one_other_observation_collapse_to_one_candidate() -> None:
+    """If both the caller AND callee of one record independently match the
+    same other observation, the output is still exactly one
+    `RetrievedCandidate` for that observation pair (never two), matching
+    the one-candidate-per-observation-pair contract every downstream
+    persistence/scoring consumer relies on."""
+    case_id = uuid4()
+    call = _observation(
+        case_id=case_id,
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919876543210",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    other = _observation(
+        case_id=case_id,
+        observation_type="phone_number_mention",
+        extracted_entities=[
+            ExtractedEntityMention(text="+919876543210", entity_type_hint="phone_number")
+        ],
+    )
+    descriptors = [*descriptors_from_observation(call), descriptor_from_observation(other)]
+    candidates = retrieve_candidates(descriptors)  # type: ignore[arg-type]
+    pairs = {(c.left_observation_id, c.right_observation_id) for c in candidates}
+    assert len(candidates) == len(pairs) == 1
+
+
+def test_cross_case_two_party_descriptors_are_rejected_not_silently_compared() -> None:
+    caller_case_a = descriptors_from_observation(
+        _observation(
+            observation_type="cdr_call_record",
+            attributes={
+                "caller_number": "+919876543210",
+                "callee_number": "+919999999999",
+                "timestamp": "2026-01-01T10:00:00+00:00",
+            },
+        )
+    )
+    callee_case_b = descriptors_from_observation(
+        _observation(
+            observation_type="cdr_call_record",
+            attributes={
+                "caller_number": "+911111111111",
+                "callee_number": "+919876543210",
+                "timestamp": "2026-01-01T10:00:00+00:00",
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="multiple cases"):
+        retrieve_candidates([*caller_case_a, *callee_case_b])
 
 
 def test_motif_edges_are_deterministic_for_the_same_observations() -> None:

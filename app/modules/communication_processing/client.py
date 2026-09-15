@@ -39,6 +39,7 @@ from app.modules.communication_processing.errors import (
 )
 from app.modules.communication_processing.input_resolver import ResolvedInput
 from app.modules.communication_processing.limits import MAX_INPUT_BYTES
+from app.modules.evidence_lifecycle.media_orchestration import ChunkManifest, MediaChunkPublication
 
 logger = structlog.get_logger(__name__)
 
@@ -70,6 +71,14 @@ def _result_path(job_id: UUID) -> str:
 
 def _observations_path(job_id: UUID) -> str:
     return f"/api/v1/internal/worker-jobs/{job_id}/observations"
+
+
+def _media_manifest_path(job_id: UUID) -> str:
+    return f"/api/v1/internal/worker-jobs/{job_id}/media-manifest"
+
+
+def _media_chunk_publish_path(job_id: UUID) -> str:
+    return f"/api/v1/internal/worker-jobs/{job_id}/media-chunks/publish"
 
 
 def _renew_path(job_id: UUID) -> str:
@@ -214,6 +223,63 @@ class WorkerApiClient:
             raise WorkerApiError(f"batch submission rejected for job {job_id}: validation failed")
         if response.status_code != httpx.codes.OK:
             raise WorkerApiError(f"batch submission failed: HTTP {response.status_code}")
+        return ObservationBatchReceiptV1.model_validate(response.json())
+
+    def create_media_manifest(
+        self, *, job_id: UUID, claim_token: str, manifest: ChunkManifest
+    ) -> ChunkManifest:
+        """Register this worker's locally-planned chunk manifest with the coordinator.
+
+        Mirrors `app.modules.media_processing.client.WorkerApiClient.
+        create_media_manifest` exactly -- see its docstring. Called once per
+        chunked local-audio job, before any chunk is published.
+        """
+        logger.info(
+            "worker.client.media_manifest_create_attempted",
+            job_id=str(job_id),
+            manifest_id=str(manifest.manifest_id),
+        )
+        response = self._post_safely(
+            _media_manifest_path(job_id),
+            content=manifest.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"media manifest conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(f"media manifest rejected for job {job_id}: validation failed")
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"media manifest creation failed: HTTP {response.status_code}")
+        return manifest
+
+    def publish_media_chunk(
+        self, *, job_id: UUID, claim_token: str, publication: MediaChunkPublication
+    ) -> ObservationBatchReceiptV1:
+        """Use Nipun's idempotent staged-media route; never write persistence directly.
+
+        Mirrors `app.modules.media_processing.client.WorkerApiClient.
+        publish_media_chunk` exactly.
+        """
+        logger.info(
+            "worker.client.media_chunk_publish_attempted",
+            job_id=str(job_id),
+            chunk_id=str(publication.chunk_id),
+        )
+        response = self._post_safely(
+            _media_chunk_publish_path(job_id),
+            content=publication.model_dump_json(),
+            headers={"Content-Type": "application/json", _CLAIM_TOKEN_HEADER: claim_token},
+        )
+        _raise_for_auth_failure(response)
+        if response.status_code == httpx.codes.CONFLICT:
+            raise WorkerApiError(f"media chunk publication conflict for job {job_id}")
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise WorkerApiError(
+                f"media chunk publication rejected for job {job_id}: validation failed"
+            )
+        if response.status_code != httpx.codes.OK:
+            raise WorkerApiError(f"media chunk publication failed: HTTP {response.status_code}")
         return ObservationBatchReceiptV1.model_validate(response.json())
 
     def renew_lease(self, job_id: UUID, *, claim_token: str) -> RenewAck:

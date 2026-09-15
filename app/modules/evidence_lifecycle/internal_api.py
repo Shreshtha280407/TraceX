@@ -61,11 +61,12 @@ from app.modules.evidence_lifecycle.errors import (
     ResultConflictError,
     ResultValidationError,
 )
-from app.modules.evidence_lifecycle.media_orchestration import MediaChunkPublication
+from app.modules.evidence_lifecycle.media_orchestration import ChunkManifest, MediaChunkPublication
 from app.modules.evidence_lifecycle.models import WorkerAvailabilityStatus
 from app.modules.evidence_lifecycle.schemas import (
     ClaimRequest,
     ClaimResponse,
+    MediaManifestResponse,
     RenewLeaseResponse,
     ResultAcknowledgement,
     WorkerHeartbeatResponse,
@@ -387,6 +388,78 @@ async def submit_observation_batch(
         progress=outcome.progress,
         request_id=context.request_id,
     )
+
+
+@router.post("/{job_id}/media-manifest", response_model=MediaManifestResponse)
+async def create_media_manifest(
+    job_id: UUID,
+    manifest: ChunkManifest,
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    claim_token: Annotated[str | None, Header(alias=_CLAIM_TOKEN_HEADER)] = None,
+) -> MediaManifestResponse:
+    """Persist the coordinator-owned manifest for a chunked media job.
+
+    A worker calls this exactly once, right after claiming a chunked
+    media job and probing its own input (only the worker can determine a
+    video's duration or an audio file's length -- the coordinator never
+    decodes media). Every subsequent chunk publication
+    (`POST /{job_id}/media-chunks/publish`) is validated against the
+    manifest persisted here, never a worker's local, unregistered plan.
+    """
+    if (
+        claim_token is None
+        or not claim_token.strip()
+        or len(claim_token) > _MAX_CLAIM_TOKEN_LENGTH
+        or job_id != manifest.job_id
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid claim token")
+    context = UploadContext(now=datetime.now(UTC), request_id=get_request_id())
+    try:
+        outcome = await _within_worker_deadline(
+            service.create_media_manifest(
+                manifest=manifest,
+                claim_token=claim_token,
+                context=context,
+                worker_id=principal.worker_id,
+            ),
+            settings,
+        )
+    except InvalidClaimTokenError as exc:
+        await record_audit_event_safely(
+            audit_repository,
+            event_type="worker_job_access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=context.now,
+            request_id=context.request_id,
+            metadata={
+                "worker_id": str(principal.worker_id),
+                "job_id": str(job_id),
+                "reason": exc.reason,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except MediaManifestValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except MediaPublicationConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if outcome.created:
+        await record_audit_event(
+            audit_repository,
+            event_type="worker.media_manifest.created",
+            outcome=AuditOutcome.SUCCESS,
+            now=context.now,
+            request_id=context.request_id,
+            user_id=None,
+            case_id=manifest.case_id,
+            metadata={"job_id": str(job_id), "manifest_id": str(outcome.manifest_id)},
+        )
+    return MediaManifestResponse(manifest_id=outcome.manifest_id, created=outcome.created)
 
 
 @router.post("/{job_id}/media-chunks/publish", response_model=ObservationBatchReceiptV1)
