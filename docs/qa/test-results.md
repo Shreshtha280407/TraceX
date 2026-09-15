@@ -2855,3 +2855,11 @@ environment, and the user, when asked, chose to proceed without waiting
 for it rather than pause the task. This is reported as a genuine,
 outstanding verification gap, not claimed as passing. `git diff --check`
 and `docker compose config -q` (which need no daemon) both passed.
+
+## Phase 6 Part 2 (2026-09-15)
+
+Focused integrity API, authorization-policy, and migration-head unit tests
+passed. Static ruff, mypy, and Alembic graph verification passed. The direct
+PostgreSQL trigger suite remains self-skipping when no already-running
+database exists; no Docker containers were started. Live Compose release
+validation is intentionally deferred to Shreshtha's Phase 6 Part 5 gate.

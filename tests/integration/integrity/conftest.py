@@ -22,19 +22,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-import sqlalchemy as sa
 from dotenv import dotenv_values
 
 from app.core.config import Settings
 from app.dependencies.services import check_postgres
-from app.modules.integrity.repository import (
-    IntegrityRepository,
-    checkpoint_signatures_table,
-    create_engine,
-    integrity_events_table,
-    integrity_sequence_counters_table,
-    merkle_checkpoints_table,
-)
+from app.modules.integrity.repository import IntegrityRepository, create_engine
 from app.modules.integrity.service import IntegrityService
 from app.modules.integrity.signing import generate_signing_key_b64
 
@@ -115,37 +107,11 @@ async def service(repository: IntegrityRepository, settings: Settings) -> Integr
 
 @pytest_asyncio.fixture
 async def case_id(repository: IntegrityRepository) -> AsyncIterator[UUID]:
-    """A fresh case ID; every row this module could write under it is cleaned up after."""
+    """A fresh, isolated case ID.
+
+    Phase 6 Part 2 deliberately makes integrity records impossible to clean
+    up with ordinary SQL; integration databases are disposable and each test
+    gets an unguessable scope instead.
+    """
     generated = uuid4()
     yield generated
-    async with repository._engine.begin() as conn:  # noqa: SLF001 - test-only cleanup
-        checkpoint_ids = (
-            (
-                await conn.execute(
-                    sa.select(merkle_checkpoints_table.c.checkpoint_id).where(
-                        merkle_checkpoints_table.c.case_id == generated
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if checkpoint_ids:
-            await conn.execute(
-                sa.delete(checkpoint_signatures_table).where(
-                    checkpoint_signatures_table.c.checkpoint_id.in_(checkpoint_ids)
-                )
-            )
-        await conn.execute(
-            sa.delete(merkle_checkpoints_table).where(
-                merkle_checkpoints_table.c.case_id == generated
-            )
-        )
-        await conn.execute(
-            sa.delete(integrity_events_table).where(integrity_events_table.c.case_id == generated)
-        )
-        await conn.execute(
-            sa.delete(integrity_sequence_counters_table).where(
-                integrity_sequence_counters_table.c.case_id == generated
-            )
-        )

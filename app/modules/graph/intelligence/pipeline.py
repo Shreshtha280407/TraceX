@@ -98,12 +98,15 @@ async def _record_correlation_integrity_event_safely(
                 idempotency_key=correlation.idempotency_key,
             )
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "integrity.event_record_failed",
             case_id=str(case_id),
             event_kind=IntegrityEventKind.CORRELATION_COMPLETED.value,
+            subject_type="correlation",
             subject_id=str(correlation.correlation_id),
+            retry_state="reconciliation_pending",
+            failure_category=type(exc).__name__,
         )
 
 

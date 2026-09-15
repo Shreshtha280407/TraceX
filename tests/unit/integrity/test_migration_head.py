@@ -37,4 +37,4 @@ def test_phase_6_migration_is_the_current_head() -> None:
         timeout=60,
         check=True,
     )
-    assert "8f68fb441037" in result.stdout
+    assert "c42d3e4f5a6b" in result.stdout

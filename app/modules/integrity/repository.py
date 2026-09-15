@@ -398,6 +398,45 @@ class IntegrityRepository:
             )
             return _checkpoint_from_row(row) if row else None
 
+    async def list_checkpoints(
+        self, case_id: UUID, *, limit: int, offset: int
+    ) -> list[MerkleCheckpointRecord]:
+        """Return a bounded, case-scoped checkpoint page; never integrity leaves."""
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(merkle_checkpoints_table)
+                        .where(merkle_checkpoints_table.c.case_id == case_id)
+                        .order_by(merkle_checkpoints_table.c.created_at.desc())
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_checkpoint_from_row(row) for row in rows]
+
+    async def get_event_by_idempotency_key(
+        self, case_id: UUID, idempotency_key: str
+    ) -> IntegrityEventRecord | None:
+        """Internal reconciliation lookup, structurally scoped to one case."""
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(integrity_events_table).where(
+                            integrity_events_table.c.case_id == case_id,
+                            integrity_events_table.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _event_from_row(row) if row else None
+
     async def get_signature(self, checkpoint_id: UUID) -> CheckpointSignatureRecord | None:
         async with self._engine.connect() as conn:
             row = (

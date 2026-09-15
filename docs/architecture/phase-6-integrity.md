@@ -1,4 +1,4 @@
-# Phase 6 Part 1: Integrity Foundation
+# Phase 6: Integrity Foundation and Protected Access
 
 Owner: Nipun. Status: Part 1 (this document) complete — durable, case-scoped
 integrity events, deterministic Merkle checkpoints, and local Ed25519
@@ -6,6 +6,55 @@ signing/verification. Review-decision and hypothesis-action recording
 (Shreshtha), authorization/audit protection for integrity operations
 (Aditya), and modality-specific provenance leaves (Jasraj/Gaurav/Sarthak)
 are later Phase 6 work — see "Handoff to later branches" below.
+
+## Part 2: protected API, append-only records, and reconciliation
+
+Part 2 adds only case-scoped verification access. `GET
+/api/v1/cases/{case_id}/integrity/checkpoints`, checkpoint detail, `POST
+.../{checkpoint_id}/verify`, and `GET .../{checkpoint_id}/export` all use
+the normal authenticated case-action dependency. Missing membership,
+insufficient role/clearance, and a nonexistent case produce the existing
+generic 403; unauthenticated callers receive the existing 401. Authorization
+runs before any checkpoint lookup, so a checkpoint ID cannot be used to
+probe another case.
+
+`integrity_read` and `integrity_verify` are granted to owners, managers,
+investigators, analysts, and reviewers. `integrity_export` is intentionally
+more restrictive: owners and managers only. Viewers receive no integrity
+action. Successful operations are recorded as safe `integrity_operation`
+audit telemetry; authorization failures retain the existing safe
+`case_access_denied` event. Both contain actor, case, action, outcome, and
+request ID only.
+
+List and detail return checkpoint range/count, root, format, timestamps and
+public signature-verification metadata. They never return a raw event feed.
+Export uses the Part 1 verification bundle unchanged: safe leaf identifiers
+and hashes plus public verification material only; no private key, source
+body, object URI, transcript, OCR text, credential, or exception detail.
+Verification is public-key-only and never loads or invokes a signing key.
+Pages are bounded to 100 checkpoints.
+
+The `c42d3e4f5a6b` migration adds PostgreSQL row triggers that reject every
+`UPDATE` and `DELETE` on `integrity_events`, `merkle_checkpoints`, and
+`checkpoint_signatures`; ordinary inserts remain valid. This is strong
+application/database protection, not an absolute claim against a PostgreSQL
+superuser, who can disable triggers or alter the database.
+
+Integrity recording still follows the primary write and logs/continues on a
+failure. The structured signal has only case ID, event kind, subject type/ID,
+correlation/request ID, `reconciliation_pending`, and an exception class.
+An operator can run `uv run python -m app.modules.integrity.reconcile_cli
+--case-id <uuid>`. It scans the existing durable evidence records for that
+case, reconstructs exactly the safe original submission, and records only a
+missing idempotency key. Repeated runs are idempotent; it never reads object
+storage, source bodies, or another case. It currently covers evidence and
+correlation source records. Observation batches are intentionally not replayed
+until a durable ordered observation-ID representation exists; UUID sort order
+would alter the frozen original payload hash. Later producer owners must
+register their durable replay adapter when they add new integrity leaves.
+
+Live Docker/infrastructure validation is intentionally deferred to Phase 6
+Part 5 (Shreshtha); Part 2 does not start containers.
 
 ## What this proves, and what it explicitly does not
 
@@ -48,7 +97,8 @@ model" pattern:
 | `signing.py` | Ed25519 signing/verification (`load_signing_key`, `generate_signing_key_b64`, `verify`). Private key material never leaves this file except as a signature. |
 | `repository.py` | `sa.Table` definitions, the idempotent-submit/fingerprint-comparison persistence pattern (mirrors `graph.integration_repository.GraphCorrelationIntegrationRepository.submit()`), `IntegrityValidationError`. |
 | `service.py` | `IntegrityService` — the one interface later branches need: `record_integrity_event`, `build_checkpoint`, `verify_checkpoint`, `export_verification_bundle`. |
-| `dependencies.py` | FastAPI dependency providers (`get_integrity_service`), mirroring `evidence_lifecycle.dependencies`'s lazy-engine-at-import pattern. No router is registered — see "Verification and safe export" below. |
+| `dependencies.py` | FastAPI dependency providers (`get_integrity_service`), mirroring `evidence_lifecycle.dependencies`'s lazy-engine-at-import pattern. |
+| `api.py` | Protected, case-scoped checkpoint metadata, verification, and safe export routes. |
 | `cli.py` | The operator CLI: `generate-key`, `build-checkpoint`, `verify`, `export`. |
 
 ## What an `IntegrityEvent` safely captures
@@ -243,11 +293,10 @@ at all.
 
 The consequence: `integrity_events` rows must never be deleted or updated
 outside this module's own (append-only) code paths for verification to
-mean anything. No database trigger enforces this in Phase 6 Part 1 — it is
-an operational/deployment-level guarantee (restrict `UPDATE`/`DELETE`
-grants on `integrity_events`/`merkle_checkpoints`/`checkpoint_signatures`
-to nothing beyond the migration role, in a real deployment), documented
-here and in `docs/qa/known-limitations.md` rather than silently assumed.
+mean anything. Phase 6 Part 2 adds PostgreSQL triggers that reject ordinary
+`UPDATE`/`DELETE` attempts on `integrity_events`, `merkle_checkpoints`, and
+`checkpoint_signatures`. This does not protect against a PostgreSQL
+superuser that disables triggers, an explicit operational trust boundary.
 
 ## Producer integration seams
 

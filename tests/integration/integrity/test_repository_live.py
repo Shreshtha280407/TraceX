@@ -19,6 +19,7 @@ from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmi
 from app.modules.integrity.repository import (
     IntegrityRepository,
     IntegrityValidationError,
+    checkpoint_signatures_table,
     integrity_events_table,
     merkle_checkpoints_table,
 )
@@ -130,71 +131,52 @@ async def test_checkpoints_never_cross_cases(service: IntegrityService, case_id:
     other_case_id = uuid4()
     await _seed_events(repository, case_id, 3)
     await _seed_events(repository, other_case_id, 3)
-    try:
-        mine = await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
-        theirs = await service.build_checkpoint(
-            case_id=other_case_id, start_sequence=1, end_sequence=3
-        )
-        assert mine.checkpoint.checkpoint_id != theirs.checkpoint.checkpoint_id
-        assert mine.checkpoint.root_hash != theirs.checkpoint.root_hash
+    mine = await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
+    theirs = await service.build_checkpoint(case_id=other_case_id, start_sequence=1, end_sequence=3)
+    assert mine.checkpoint.checkpoint_id != theirs.checkpoint.checkpoint_id
+    assert mine.checkpoint.root_hash != theirs.checkpoint.root_hash
 
-        wrong_scope = await repository.get_checkpoint(
-            mine.checkpoint.checkpoint_id, case_id=other_case_id
-        )
-        assert wrong_scope is None
-    finally:
-        async with repository._engine.begin() as conn:  # noqa: SLF001 - test-only cleanup
-            await conn.execute(
-                sa.delete(merkle_checkpoints_table).where(
-                    merkle_checkpoints_table.c.case_id == other_case_id
-                )
-            )
-            await conn.execute(
-                sa.delete(integrity_events_table).where(
-                    integrity_events_table.c.case_id == other_case_id
-                )
-            )
+    wrong_scope = await repository.get_checkpoint(
+        mine.checkpoint.checkpoint_id, case_id=other_case_id
+    )
+    assert wrong_scope is None
 
 
-async def test_verify_detects_a_changed_stored_leaf_hash(
+async def test_database_rejects_update_on_integrity_event(
     service: IntegrityService, case_id: UUID
 ) -> None:
     """Proof point 10."""
     repository = service._repository  # noqa: SLF001 - test-only access
     events = await _seed_events(repository, case_id, 3)
-    receipt = await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
+    await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
 
-    async with repository._engine.begin() as conn:  # noqa: SLF001 - direct tamper, bypassing the app
-        await conn.execute(
-            sa.update(integrity_events_table)
-            .where(integrity_events_table.c.integrity_event_id == events[0])
-            .values(canonical_payload_sha256="f" * 64)
-        )
-
-    result = await service.verify_checkpoint(receipt.checkpoint.checkpoint_id, case_id=case_id)
-    assert result.ok is False
-    assert result.root_matches is False
+    with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+        async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+            await conn.execute(
+                sa.update(integrity_events_table)
+                .where(integrity_events_table.c.integrity_event_id == events[0])
+                .values(canonical_payload_sha256="f" * 64)
+            )
 
 
-async def test_verify_detects_a_missing_leaf(service: IntegrityService, case_id: UUID) -> None:
+async def test_database_rejects_delete_on_integrity_event(
+    service: IntegrityService, case_id: UUID
+) -> None:
     """Proof point 11."""
     repository = service._repository  # noqa: SLF001 - test-only access
     events = await _seed_events(repository, case_id, 3)
-    receipt = await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
+    await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
 
-    async with repository._engine.begin() as conn:  # noqa: SLF001 - direct tamper, bypassing the app
-        await conn.execute(
-            sa.delete(integrity_events_table).where(
-                integrity_events_table.c.integrity_event_id == events[1]
+    with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+        async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+            await conn.execute(
+                sa.delete(integrity_events_table).where(
+                    integrity_events_table.c.integrity_event_id == events[1]
+                )
             )
-        )
-
-    result = await service.verify_checkpoint(receipt.checkpoint.checkpoint_id, case_id=case_id)
-    assert result.ok is False
-    assert result.leaf_count_matches is False
 
 
-async def test_verify_detects_a_changed_checkpoint_root(
+async def test_database_rejects_checkpoint_and_signature_mutation(
     service: IntegrityService, case_id: UUID
 ) -> None:
     """Proof point 13."""
@@ -202,16 +184,24 @@ async def test_verify_detects_a_changed_checkpoint_root(
     await _seed_events(repository, case_id, 3)
     receipt = await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
 
-    async with repository._engine.begin() as conn:  # noqa: SLF001 - direct tamper, bypassing the app
-        await conn.execute(
-            sa.update(merkle_checkpoints_table)
-            .where(merkle_checkpoints_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id)
-            .values(root_hash="e" * 64)
-        )
-
-    result = await service.verify_checkpoint(receipt.checkpoint.checkpoint_id, case_id=case_id)
-    assert result.ok is False
-    assert result.root_matches is False
+    statements = (
+        sa.update(merkle_checkpoints_table)
+        .where(merkle_checkpoints_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id)
+        .values(root_hash="e" * 64),
+        sa.delete(merkle_checkpoints_table).where(
+            merkle_checkpoints_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id
+        ),
+        sa.update(checkpoint_signatures_table)
+        .where(checkpoint_signatures_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id)
+        .values(key_id="changed"),
+        sa.delete(checkpoint_signatures_table).where(
+            checkpoint_signatures_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id
+        ),
+    )
+    for statement in statements:
+        with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+                await conn.execute(statement)
 
 
 async def test_full_build_verify_export_round_trip_succeeds(
