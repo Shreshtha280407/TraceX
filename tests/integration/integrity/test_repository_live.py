@@ -15,6 +15,8 @@ from uuid import UUID, uuid4
 import pytest
 import sqlalchemy as sa
 
+from app.contracts.common import SourceLocator
+from app.contracts.evidence import SourceType
 from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmission
 from app.modules.integrity.repository import (
     IntegrityRepository,
@@ -22,8 +24,11 @@ from app.modules.integrity.repository import (
     checkpoint_signatures_table,
     integrity_events_table,
     merkle_checkpoints_table,
+    structured_observation_provenance_table,
 )
 from app.modules.integrity.service import IntegrityService
+from app.modules.integrity.structured_provenance import build_structured_observation_provenance
+from tests.fixtures.factories import make_observation
 
 _NOW = datetime(2026, 9, 15, tzinfo=UTC)
 
@@ -199,6 +204,55 @@ async def test_database_rejects_checkpoint_and_signature_mutation(
         ),
     )
     for statement in statements:
+        with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+                await conn.execute(statement)
+
+
+async def test_structured_provenance_is_case_scoped_idempotent_and_append_only(
+    repository: IntegrityRepository, case_id: UUID
+) -> None:
+    """The durable safe projection has the same direct-SQL boundary as other leaves."""
+    observation = make_observation(
+        case_id=case_id,
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "caller-synthetic",
+            "callee_number": "callee-synthetic",
+            "source_signal_quality": {"outcome": "accepted"},
+        },
+        source_locator=SourceLocator(row=2),
+    )
+    projection = build_structured_observation_provenance(
+        observation=observation, evidence_sha256="a" * 64, source_type=SourceType.CDR
+    )
+    assert projection is not None
+    first = await repository.record_structured_provenance(
+        projection, source_created_at=_NOW, now=_NOW
+    )
+    second = await repository.record_structured_provenance(
+        projection, source_created_at=_NOW, now=_NOW
+    )
+    assert first == second
+    changed_observation = observation.model_copy(update={"source_locator": SourceLocator(row=3)})
+    changed_projection = build_structured_observation_provenance(
+        observation=changed_observation, evidence_sha256="a" * 64, source_type=SourceType.CDR
+    )
+    assert changed_projection is not None
+    with pytest.raises(IntegrityValidationError, match="structured provenance record"):
+        await repository.record_structured_provenance(
+            changed_projection, source_created_at=_NOW, now=_NOW
+        )
+    assert await repository.list_structured_provenance(uuid4()) == []
+
+    for statement in (
+        sa.update(structured_observation_provenance_table)
+        .where(structured_observation_provenance_table.c.provenance_id == first.provenance_id)
+        .values(canonical_payload_sha256="b" * 64),
+        sa.delete(structured_observation_provenance_table).where(
+            structured_observation_provenance_table.c.provenance_id == first.provenance_id
+        ),
+    ):
         with pytest.raises(sa.exc.DBAPIError, match="append-only"):
             async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
                 await conn.execute(statement)

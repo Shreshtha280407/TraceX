@@ -327,10 +327,15 @@ wave and post-Phase-5 validation gate.
 - **Append-only triggers are not superuser-proof.** A fully privileged
   PostgreSQL operator can disable triggers or alter rows; the protection is
   strong for ordinary application/database roles, not an absolute claim.
-- **Reconciliation is currently evidence/correlation scoped.** It repairs
-  known missing leaves from durable metadata only. Observation-batch replay
-  awaits a durable original ordering field; later modality/review producer
-  owners must add safe source adapters.
+- **Reconciliation is durable-source scoped.** It repairs evidence,
+  correlation, and Part 3 structured-provenance leaves from durable metadata
+  only. Observation-batch replay awaits a durable original ordering field;
+  later modality/review producer owners must add safe source adapters.
+- **Structured-provenance legacy boundary.** The Phase 6 Part 3 reconciler
+  replays only its durable safe projection records. It does not synthesize a
+  projection for observations accepted before this migration, nor does it
+  derive one from raw observation payloads. A fully privileged PostgreSQL
+  superuser can still bypass append-only triggers.
 - **Checkpoint building is an explicit action, not automatic.** There is
   no scheduler, background job, or per-event auto-checkpoint in this
   phase — an operator (or later automation, not built here) must invoke

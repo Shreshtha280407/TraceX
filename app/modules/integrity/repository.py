@@ -42,8 +42,12 @@ from app.modules.integrity.models import (
     IntegrityEventRecord,
     IntegrityEventSubmission,
     MerkleCheckpointRecord,
+    StructuredObservationProvenanceRecord,
 )
 from app.modules.integrity.signing import SignedRoot
+from app.modules.integrity.structured_provenance import (
+    StructuredObservationIntegrityProvenanceV1,
+)
 
 metadata = sa.MetaData()
 
@@ -105,6 +109,22 @@ checkpoint_signatures_table = sa.Table(
     sa.Column("signed_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+structured_observation_provenance_table = sa.Table(
+    "structured_observation_integrity_provenance",
+    metadata,
+    sa.Column("provenance_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("case_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("evidence_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("source_family", sa.Text(), nullable=False),
+    sa.Column("schema_version", sa.Text(), nullable=False),
+    sa.Column("canonical_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("canonical_payload_sha256", sa.Text(), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=False),
+    sa.Column("source_created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 
 class IntegrityValidationError(ValueError):
     """Raised when a submission or checkpoint range is rejected as unsafe/inconsistent."""
@@ -124,6 +144,10 @@ def _checkpoint_from_row(row: sa.RowMapping) -> MerkleCheckpointRecord:
 
 def _signature_from_row(row: sa.RowMapping) -> CheckpointSignatureRecord:
     return CheckpointSignatureRecord.model_validate(dict(row))
+
+
+def _structured_provenance_from_row(row: sa.RowMapping) -> StructuredObservationProvenanceRecord:
+    return StructuredObservationProvenanceRecord.model_validate(dict(row))
 
 
 def _event_fingerprint(
@@ -242,6 +266,104 @@ class IntegrityRepository:
                 )
             )
             return record
+
+    async def record_structured_provenance(
+        self,
+        projection: StructuredObservationIntegrityProvenanceV1,
+        *,
+        source_created_at: datetime,
+        now: datetime | None = None,
+    ) -> StructuredObservationProvenanceRecord:
+        """Persist one safe structured projection; exact retries replay, conflicts fail.
+
+        The payload hash is calculated from the exact projection that will be
+        used for its integrity leaf.  A same-case retry with changed safe
+        metadata therefore cannot overwrite the first accepted commitment.
+        """
+        now = now or datetime.now(UTC)
+        payload = projection.canonical_metadata()
+        payload_hash = projection.canonical_payload_sha256
+        async with self._engine.begin() as conn:
+            existing = (
+                (
+                    await conn.execute(
+                        sa.select(structured_observation_provenance_table).where(
+                            structured_observation_provenance_table.c.case_id == projection.case_id,
+                            structured_observation_provenance_table.c.idempotency_key
+                            == projection.idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                record = _structured_provenance_from_row(existing)
+                if (
+                    record.observation_id != projection.observation_id
+                    or record.canonical_payload_sha256 != payload_hash
+                    or record.canonical_payload != payload
+                ):
+                    raise IntegrityValidationError(
+                        "idempotency key conflicts with an existing structured provenance record"
+                    )
+                return record
+
+            provenance_id = deterministic_uuid(
+                "phase_6_structured_observation_provenance",
+                str(projection.case_id),
+                str(projection.observation_id),
+                projection.schema_version,
+            )
+            record = StructuredObservationProvenanceRecord(
+                provenance_id=provenance_id,
+                case_id=projection.case_id,
+                evidence_id=projection.evidence_id,
+                observation_id=projection.observation_id,
+                source_family=projection.source_family.value,
+                schema_version=projection.schema_version,
+                canonical_payload=payload,
+                canonical_payload_sha256=payload_hash,
+                idempotency_key=projection.idempotency_key,
+                source_created_at=source_created_at,
+                created_at=now,
+            )
+            await conn.execute(
+                sa.insert(structured_observation_provenance_table).values(
+                    provenance_id=record.provenance_id,
+                    case_id=record.case_id,
+                    evidence_id=record.evidence_id,
+                    observation_id=record.observation_id,
+                    source_family=record.source_family,
+                    schema_version=record.schema_version,
+                    canonical_payload=record.canonical_payload,
+                    canonical_payload_sha256=record.canonical_payload_sha256,
+                    idempotency_key=record.idempotency_key,
+                    source_created_at=record.source_created_at,
+                    created_at=record.created_at,
+                )
+            )
+            return record
+
+    async def list_structured_provenance(
+        self, case_id: UUID, *, limit: int = 500
+    ) -> list[StructuredObservationProvenanceRecord]:
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(structured_observation_provenance_table)
+                        .where(structured_observation_provenance_table.c.case_id == case_id)
+                        .order_by(structured_observation_provenance_table.c.created_at.asc())
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_structured_provenance_from_row(row) for row in rows]
 
     async def list_events_in_range(
         self, case_id: UUID, start_sequence: int, end_sequence: int

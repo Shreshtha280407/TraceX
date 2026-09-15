@@ -796,3 +796,12 @@ dated entry.
   checkpoints, and signatures.
 - [x] Bounded, idempotent evidence-event reconciliation command.
 - [ ] Live Docker/infrastructure release validation (deferred to Shreshtha Part 5).
+
+# Phase 6 Part 3 - Structured provenance integrity: Complete (static/unit gate)
+
+- [x] Added immutable, case-scoped safe provenance commitments for accepted
+  document/legal, OCR, CDR, and finance observations.
+- [x] Added exactly one idempotent `structured_observation_provenance` leaf per
+  eligible observation without changing generic lifecycle events or graph behavior.
+- [x] Added exact-projection reconciliation and append-only migration coverage.
+- [ ] Live PostgreSQL/Docker release validation is deferred to Shreshtha Part 5.

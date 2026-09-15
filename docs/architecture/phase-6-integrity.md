@@ -56,6 +56,40 @@ register their durable replay adapter when they add new integrity leaves.
 Live Docker/infrastructure validation is intentionally deferred to Phase 6
 Part 5 (Shreshtha); Part 2 does not start containers.
 
+## Part 3: structured observation provenance
+
+Part 3 adds exactly one additional `observation_published` leaf for every
+accepted document/legal, OCR, CDR, or finance canonical observation. Its
+subject is `structured_observation_provenance` and subject ID is the
+observation UUID. It does not replace or duplicate the existing one-per-batch
+`observation_batch` lifecycle leaf, and does not change source validation,
+graph projection, candidate generation, confidence, or correlation behavior.
+
+`StructuredObservationIntegrityProvenanceV1` is persisted in the append-only
+`structured_observation_integrity_provenance` table before its leaf. The
+idempotency key is
+`structured-provenance:<case_id>:<observation_id>:structured_provenance.v1`.
+The table stores the exact safe canonical projection and its SHA-256; exact
+retries replay while changed projections conflict. The table has the same
+PostgreSQL update/delete trigger boundary as all other integrity records.
+
+Direct fields are schema/case/evidence/observation identifiers, source
+family/type, evidence SHA-256, locator category, extractor identity/config,
+model version, and existing validation outcome. Sensitive values are SHA-256
+commitments only: locator, document/OCR text/span/bounding box, CDR
+row/time/caller/callee, and finance row/time/sender/receiver/reference/
+amount+currency. Page number and controlled categories may be direct. Raw
+document/OCR text, phone/account/UPI values, addresses, transaction reference,
+amount, narration, URI, credentials, and signing material are never stored or
+exposed through the projection, events, bundles, routes, or structured logs.
+
+Only already durable accepted observations are eligible. A present
+`source_signal_quality` of `rejected` or `incomplete` produces no projection.
+The Part 2 reconciliation command now replays only the exact stored safe
+projection, case-scoped and idempotently; it never derives history from a raw
+canonical observation payload. Observations predating this migration therefore
+receive no invented structured-provenance leaf.
+
 ## What this proves, and what it explicitly does not
 
 **This phase proves that TraceX can detect tampering with recorded

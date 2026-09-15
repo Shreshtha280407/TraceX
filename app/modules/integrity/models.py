@@ -179,3 +179,24 @@ class VerificationResult(IntegrityModel):
     signature_valid: bool
     ok: bool
     reason: str | None = None
+
+
+class StructuredObservationProvenanceRecord(IntegrityModel):
+    """Durable safe projection paired with one structured integrity leaf.
+
+    ``canonical_payload`` is already safe, committed metadata produced by
+    ``structured_provenance.py``; unlike normal observation payloads it never
+    contains an extracted entity, raw source locator, or source attribute.
+    """
+
+    provenance_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    observation_id: UUID
+    source_family: str
+    schema_version: str
+    canonical_payload: dict[str, Any]
+    canonical_payload_sha256: str
+    idempotency_key: str
+    source_created_at: datetime
+    created_at: datetime

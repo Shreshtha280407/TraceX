@@ -2863,3 +2863,11 @@ passed. Static ruff, mypy, and Alembic graph verification passed. The direct
 PostgreSQL trigger suite remains self-skipping when no already-running
 database exists; no Docker containers were started. Live Compose release
 validation is intentionally deferred to Shreshtha's Phase 6 Part 5 gate.
+
+## Phase 6 Part 3 (2026-09-15)
+
+Static/unit verification covered deterministic document/OCR/CDR/finance safe
+projections, raw-value exclusion, retry behavior, and exact case-scoped
+reconciliation replay. Docker and live PostgreSQL were not started; the final
+infrastructure migration/trigger/worker gate remains intentionally deferred to
+Shreshtha's Phase 6 Part 5 release validation.

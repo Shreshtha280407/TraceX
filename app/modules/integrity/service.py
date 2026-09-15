@@ -26,6 +26,9 @@ from app.modules.integrity.models import (
 from app.modules.integrity.repository import IntegrityRepository, IntegrityValidationError
 from app.modules.integrity.signing import load_signing_key
 from app.modules.integrity.signing import verify as verify_signature
+from app.modules.integrity.structured_provenance import (
+    StructuredObservationIntegrityProvenanceV1,
+)
 
 __all__ = [
     "IntegrityService",
@@ -43,6 +46,27 @@ class IntegrityService:
     ) -> IntegrityEventRecord:
         """Record one safe, case-scoped integrity event. Idempotent on exact retry."""
         return await self._repository.record_event(submission, now=now)
+
+    async def record_structured_observation_provenance(
+        self,
+        projection: StructuredObservationIntegrityProvenanceV1,
+        *,
+        source_created_at: datetime,
+        now: datetime | None = None,
+    ) -> IntegrityEventRecord:
+        """Persist the safe projection, then add its one additive observation leaf.
+
+        A primary observation has already committed when this seam is called.
+        If leaf recording fails, the immutable projection remains available to
+        the bounded reconciliation service; no generic lifecycle leaf is
+        emitted here.
+        """
+        await self._repository.record_structured_provenance(
+            projection, source_created_at=source_created_at, now=now
+        )
+        return await self.record_integrity_event(
+            projection.to_integrity_submission(source_created_at=source_created_at), now=now
+        )
 
     async def build_checkpoint(
         self,
