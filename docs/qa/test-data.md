@@ -369,3 +369,42 @@ benchmark measurement:
 No Operation Nightfall data, real police case data, real dataset content,
 real model weight, or production credential was used, referenced, or
 approximated anywhere in this module's tests or configs.
+
+## Phase 7 Part 2 — structured-data and local OCR benchmarking fixtures (Jasraj)
+
+No real FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data exists anywhere
+in this repository's tests -- none was downloaded onto this development
+machine, per this task's explicit rule:
+
+- **OCR fixtures**: `tests/unit/structured_processing/test_benchmark_adapters.py`
+  builds a small, invented FIR-style text fixture (`_FIR_TEXT`, e.g.
+  `"FIR No. TEST/2026/001"`/`"Police Station: Test PS"`/`"Phone:
+  9876543210"`, newline-separated to avoid the real extractor's greedy
+  `police_station` regex) and drives it through the real, unmodified
+  `document.fir_report.extract_fir_mentions` -- the same function
+  production OCR-derived text is fed through -- to compute an honest
+  field-extraction F1. `FakeOcrEngine` never touches a real image; it
+  returns a fixed string, or raises a categorized `OcrEngineError` when
+  handed one of three reserved marker byte-strings
+  (`FakeOcrEngine.UNREADABLE`/`UNSUPPORTED_FORMAT`/`EXECUTION_FAILURE`) to
+  simulate a per-document failure deterministically.
+- **CDR/finance fixtures**: small, inline, invented CSV rows (a synthetic
+  Indian-mobile-shaped caller/callee pair, a synthetic account/amount
+  pair) mirroring `tests/unit/structured_processing/test_cdr.py`'s/
+  `test_finance.py`'s own inline-bytes convention -- run through the real,
+  unmodified `structured.chunked_processing.assess_schema`/
+  `normalize_chunk`, the same seam production batch processing uses.
+- **CLI/safety fixtures**: `tests/unit/structured_processing/
+  test_benchmark_cli.py`/`test_benchmark_safety.py` point every
+  `TRACEX_BENCHMARK_*` environment variable at a pytest `tmp_path`
+  directory -- never a developer's real environment -- and use the same
+  small invented CDR/finance CSV rows above to prove a real local run
+  produces a genuinely safe result file.
+- **Integration smoke fixtures**: `tests/integration/structured_processing/
+  test_local_benchmark_smoke.py` self-skips (never fabricates a pass)
+  unless `TRACEX_BENCHMARK_DATA_ROOT` is actually set and the relevant
+  dataset directory actually exists and is non-empty -- the expected state
+  on this development machine, since no real dataset was downloaded here.
+
+No real FIR page, CDR row, phone number, financial transaction, model
+weight, or MacBook-local path appears anywhere in this module's tests.

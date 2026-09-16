@@ -367,3 +367,73 @@ See `docs/qa/test-matrix.md` for the full rows:
 `CDR-CHUNKED-001`, `FINANCE-CHUNKED-001`, `WORKER-DOC-BATCH-001`,
 `WORKER-STRUCTURED-BATCH-001`, `WORKER-CLIENT-BATCH-001`,
 `WORKER-LIVE-BATCH-001`.
+
+## Phase 7 Part 2: structured-data and local OCR benchmarking (Jasraj)
+
+Status: **in progress** — see
+`docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part 2"
+section for the full design, `docs/decisions/ADR-016-phase-7-evaluation-
+and-model-selection.md` for the frozen evaluation rules this benchmark
+layer must respect, and `docs/qa/known-limitations.md`'s "Phase 7 Part 2"
+section for what remains genuinely unverified until Aditya's MacBook
+pre-flight.
+
+Five new, purely additive modules under `app/modules/structured_processing/`
+— `benchmark_metrics.py`, `benchmark_validation.py`, `benchmark_adapters.py`,
+`benchmark.py`, `benchmark_cli.py` — measure this phase's *existing*
+production code (`document/fir_report.py`, `structured/chunked_processing.py`,
+`structured/cdr.py`, `structured/finance.py`) against the three datasets
+this task owns in Phase 7 Part 1's frozen manifest: `fir_icdar_2023`
+(document/FIR OCR), `gomask_voice_cdr` (CDR), `ibm_amlsim` (finance). None
+of Parts 1–6's production processors are modified — every benchmark
+adapter calls the same functions `worker.py` already calls in production,
+never a parallel extraction path.
+
+- **OCR** (`fir_icdar_2023`): an injectable `OcrEngine` protocol lets a
+  `FakeOcrEngine` (unit tests) or a real PaddleOCR-backed
+  `ConfiguredOcrEngine` (real runs, wired by the caller — this module
+  never imports `paddleocr` itself) stand in for either approved
+  candidate (`paddleocr-ppocrv5-mobile`/`-server`). Character/word error
+  rate is computed only when a sample carries reference text; field
+  extraction precision/recall/F1 reuses the *exact* existing
+  `document.fir_report.extract_fir_mentions` regex extractor over the
+  OCR'd text, never a bespoke benchmark-only extraction rule — so a
+  benchmark's field-extraction score genuinely measures "how well does
+  this OCR candidate preserve what the real FIR pipeline already depends
+  on," not an artificial proxy task.
+- **CDR/finance** (`gomask_voice_cdr`/`ibm_amlsim`): the one candidate,
+  `existing-deterministic-parsers`, wraps
+  `structured.chunked_processing.assess_schema`/`normalize_chunk` (the
+  *same* functions `worker.run_structured_batches_job` calls in
+  production) to get genuine per-row accept/reject accounting — a
+  malformed row is safely categorized by its `ProcessingError.code`
+  (a small fixed vocabulary) and never inflates the accepted count,
+  mirroring production's own "zero valid rows despite malformed ones is a
+  FAILED result, never a fabricated SUCCEEDED" policy exactly.
+- **Local-only, safe-by-construction**: every local filesystem root
+  (`TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT`) comes from an explicit environment
+  variable or CLI flag, never a hardcoded path; a missing dataset/model
+  artifact produces a truthful `BenchmarkRunStatus.UNAVAILABLE` result,
+  never a fabricated success; every result is Phase 7 Part 1's own frozen
+  `BenchmarkRunV1` (no parallel result contract), whose `metrics: dict[str,
+  float | int | None]` type constraint makes a raw string value in a
+  metric structurally impossible; `benchmark_validation.
+  reject_private_local_paths` additionally scans every free-text field for
+  an absolute/home-relative path before a result is written to disk.
+- **No dataset/model was downloaded, and no candidate is selected** —
+  every real run this session could attempt reports `UNAVAILABLE` (no
+  local FIR ICDAR/GoMask/AMLSim data or PaddleOCR installation exists on
+  this development machine, by design — see this task's "do not download"
+  rule). Aditya's MacBook pre-flight is where a real `SUCCEEDED`/`FAILED`
+  result first becomes possible; Gate C (not this task) selects a winner.
+
+See `docs/runbooks/local-development.md`'s "Phase 7 Part 2 benchmark CLI"
+and "Phase 7 Part 2 MacBook validation handoff" sections for the exact
+commands and pre-flight checklist.
+
+## QA test IDs owned by Jasraj (Phase 7 Part 2)
+
+See `docs/qa/test-matrix.md` for the full rows: `BENCH-VALIDATION-001`,
+`BENCH-OCR-001`, `BENCH-STRUCTURED-001`, `BENCH-CLI-001`,
+`BENCH-SAFETY-001`, `BENCH-SMOKE-001`.

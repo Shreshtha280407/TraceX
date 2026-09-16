@@ -468,3 +468,64 @@ oversights — see `docs/architecture/phase-7-evaluation-and-model-governance.md
   (`synth-case-dev-01`, etc.).** No actual synthetic case content --
   evidence, observations, or fixtures -- exists behind any of them yet.
   Later owners generate approved modality fixtures against this plan.
+
+# Phase 7 Part 2 evaluation: structured-data and local OCR benchmarking (Jasraj)
+
+All of the following are deliberate Part 2 scope boundaries, verified on
+Shreshtha's development laptop only -- real dataset/model validation is
+Aditya's MacBook pre-flight, not yet performed:
+
+- **No real FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim dataset was
+  downloaded, inspected, or benchmarked in this environment.** Every OCR/
+  CDR/finance benchmark test in this phase runs against small, invented,
+  synthetic fixtures (see `docs/qa/test-data.md`'s Phase 7 Part 2 section);
+  no real benchmark result -- a real CER/WER, a real field-extraction F1, a
+  real accepted/rejected row count -- exists anywhere in this phase's
+  committed artifacts.
+- **PaddleOCR is now a pinned, reproducible optional dependency, but
+  installation and API-shape verification were still not attempted.**
+  `paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
+  `[project.optional-dependencies] ocr-benchmark` group and resolved into
+  `uv.lock` (`uv add --optional ocr-benchmark --no-sync paddleocr
+  paddlepaddle`), specifically so Aditya's MacBook pre-flight runs `uv
+  sync --extra ocr-benchmark` for a reproducible install instead of an
+  ad hoc `pip install paddleocr` that would silently drift to whatever
+  version is newest that day. `uv sync --all-groups` (this project's
+  standard verification command) does **not** install this extra --
+  confirmed directly on this machine (`import paddleocr` fails after a
+  clean sync) -- so this remains true: `benchmark._build_paddleocr_engine`'s
+  real wiring is still a best-effort attempt written from PaddleOCR's
+  documented public API shape, not verified against an actually-installed
+  package, and may need a small adjustment once Aditya's pre-flight
+  installs the pinned version and exercises the real API for the first
+  time. Every unit test in this phase exercises the adapter layer
+  exclusively through `FakeOcrEngine` and needs no PaddleOCR, GPU, or
+  model download.
+- **The local OCR benchmark manifest format
+  (`benchmark_manifest.jsonl`) is invented by this task, not the real FIR
+  ICDAR 2023 annotation format.** A converter from the real ICDAR
+  annotation schema into this minimal JSON-Lines shape (`sample_id`/
+  `image_path`/`reference_text`/`expected_fields`) is deferred to Aditya's
+  MacBook pre-flight, since the real annotation format could not be
+  verified in this environment without downloading the dataset.
+- **`artifact_sha256` for the CDR/finance deterministic baseline is the
+  local input file's own SHA-256, not a model-weight hash.** There is no
+  model weight for `existing-deterministic-parsers` (a deterministic-rules
+  baseline, not an ML model) -- the input file's hash stands in as "the
+  artifact this run measured," satisfying `BenchmarkRunV1`'s own validator
+  requiring a non-null `artifact_sha256` for a `SUCCEEDED` status.
+- **No Part 2 candidate is selected.** Every dataset/candidate pair this
+  phase benchmarks keeps its Part 1 `selection_status` of `candidate`/
+  `conditional` -- Gate C selects a winning OCR candidate only after Parts
+  2-4 all have comparable real results, none of which exist yet.
+- **`benchmark.py`'s OCR dispatch assumes exactly two PaddleOCR variants,
+  distinguished by a `candidate_id` suffix (`"mobile"`/`"server"`).** This
+  mirrors Part 1's frozen two-candidate catalogue exactly; it would need a
+  small, explicit update if a future part ever adds a third OCR candidate.
+- **No live PaddleOCR/GPU/MacBook/Docker validation was run in this
+  environment.** Every test in `tests/unit/structured_processing/
+  test_benchmark_*.py` runs with no live infra, no GPU, and no downloaded
+  dataset or model -- exactly as required by this task's own rules. See
+  `docs/runbooks/local-development.md`'s "Phase 7 Part 2 MacBook validation
+  handoff" section for what Aditya's pre-flight must still verify before
+  this phase's benchmark capability can produce a real, trustworthy result.

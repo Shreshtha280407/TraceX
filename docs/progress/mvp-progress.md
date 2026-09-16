@@ -902,3 +902,69 @@ dated entry.
   Aditya packages locked bundles; Shreshtha freezes the correlation
   approach and runs the Phase 7 release gate) are not started. Phase 7 as
   a whole remains in progress; only this Part 1 entry is complete.
+
+## Phase 7 Part 2 — Jasraj structured-data and local OCR benchmarking: In progress
+
+Reproducible benchmark adapters, a safe CLI, and tests for the three
+datasets Part 1's frozen manifest assigns to Jasraj -- `fir_icdar_2023`
+(document/FIR OCR), `gomask_voice_cdr` (CDR), `ibm_amlsim` (finance) --
+built and tested on Shreshtha's laptop against synthetic fixtures only.
+This part produces valid, reproducible benchmark *capability*, not a
+selected winner: no real dataset/model artifact was downloaded or
+benchmarked in this environment, and no Part 2 candidate's
+`selection_status` moved past `candidate`/`conditional`.
+
+- [x] `app/modules/structured_processing/{benchmark_metrics,
+  benchmark_validation,benchmark_adapters,benchmark,benchmark_cli}.py`
+  (new, purely additive) -- typed, dependency-injected local benchmark
+  interface accepting only Part 1's frozen `fir_icdar_2023`/
+  `gomask_voice_cdr`/`ibm_amlsim` dataset IDs paired with
+  `paddleocr-ppocrv5-mobile`/`paddleocr-ppocrv5-server`/
+  `existing-deterministic-parsers`; local roots resolved only from
+  `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT` or an explicit CLI flag; artifact
+  availability checked before execution; a safe, typed `BenchmarkRunV1`
+  result written for every outcome, including a truthful `UNAVAILABLE`/
+  `FAILED` for a missing local artifact -- never a fabricated `SUCCEEDED`.
+- [x] OCR adapter: a replaceable `OcrEngine` protocol, a `FakeOcrEngine`
+  for tests, and a best-effort real-PaddleOCR wiring (dependency-injected,
+  not imported by the core module) that degrades safely to `UNAVAILABLE`
+  rather than crash or fabricate a result if the installed API doesn't
+  match. Field-extraction metrics reuse Nipun's/the existing
+  `document.fir_report.extract_fir_mentions` unchanged.
+- [x] CDR/finance adapter: reuses `structured.chunked_processing.
+  assess_schema`/`normalize_chunk` -- the exact seam
+  `worker.run_structured_batches_job` already uses in production -- for
+  genuine per-row accept/reject accounting; a file where every row fails
+  normalization reports `FAILED`, mirroring production's own policy (a
+  real bug this task's own tests caught and fixed -- see
+  `docs/qa/test-results.md`'s dated entry).
+- [x] 76 new focused tests (16 metrics, 19 adapters, 32 safety, 6 CLI, 3
+  self-skipping integration smoke) covering all 16 required proof points
+  from the task brief; see `docs/qa/test-matrix.md`'s "Phase 7 Part 2"
+  section for the full ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  document-structured-processing}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  additively, including a full MacBook validation handoff runbook section
+  for Aditya.
+- [x] `pyproject.toml`'s `[project.optional-dependencies] ocr-benchmark`
+  (`paddleocr`, `paddlepaddle`), resolved into `uv.lock` via `uv add
+  --optional ocr-benchmark --no-sync` -- a readiness fix so Aditya's
+  MacBook pre-flight installs a reproducible, exactly-pinned PaddleOCR via
+  `uv sync --extra ocr-benchmark`, never an ad hoc `pip install` that
+  would drift to an unpinned version. Confirmed this extra is not
+  installed by the standard `uv sync --all-groups` verification command,
+  and is still not installed/imported anywhere on this development
+  machine.
+- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
+  No FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data was downloaded
+  on Shreshtha's laptop (per this task's own rule); PaddleOCR is now
+  reproducibly pinned but still not installed or API-verified anywhere in
+  this environment; every test in this phase runs against synthetic
+  fixtures and a fake OCR engine only. This part is not complete until
+  Aditya pulls this exact branch on his Apple-Silicon MacBook, runs `uv
+  sync --extra ocr-benchmark`, resolves each artifact's licence/source
+  status, runs the real benchmark CLI against real local data, and
+  reports safe aggregate results back -- or transparently records any
+  unavailable asset as `blocked`, never a fabricated pass.

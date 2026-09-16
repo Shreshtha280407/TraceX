@@ -53,6 +53,10 @@ dependencies = [
 # drop-in `--extra` toggle.
 [project.optional-dependencies]
 gpu = ["onnxruntime-gpu>=1.20.0"]
+ocr-benchmark = [
+    "paddleocr>=2.10.0",
+    "paddlepaddle>=3.3.1",
+]
 
 [dependency-groups]
 dev = [

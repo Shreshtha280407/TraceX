@@ -3073,3 +3073,139 @@ production credential was used anywhere in this gate. No test, dataset
 download, model download, or benchmark run is claimed as done without
 having actually happened -- this part claims none of those, honestly, per
 its own explicit non-goals.
+
+## 2026-09-16 — Phase 7 Part 2 structured-data and local OCR benchmarking (Jasraj, dev-machine only)
+
+New additive `app/modules/structured_processing/{benchmark_metrics,
+benchmark_validation,benchmark_adapters,benchmark,benchmark_cli}.py`,
+implementing reproducible local benchmark adapters and a safe CLI for
+Part 1's three Jasraj-owned datasets (`fir_icdar_2023`, `gomask_voice_cdr`,
+`ibm_amlsim`) against their approved candidates. This entry covers only
+verification performed on Shreshtha's development laptop — **no real
+FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data, and no PaddleOCR
+installation, exists in this environment.** Real dataset/model validation
+is Aditya's MacBook pre-flight, not yet performed; see
+`docs/runbooks/local-development.md`'s "MacBook validation handoff"
+section.
+
+**A pre-existing Docker stack (`tracex-api`/`tracex-postgres`/
+`tracex-redis`/`tracex-neo4j`, plus MinIO) was already running throughout
+this session**, started by earlier work, not by this task -- per this
+task's own instruction not to start/stop/rebuild/disturb an existing
+stack, it was left exactly as found. This meant the full suite exercised
+live integration paths for every module that has one, not just unit tests
+-- a stronger run than Phase 7 Part 1's own dated entry, which had no
+Docker available that day.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups        -> Resolved 106 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2128 passed, 4 skipped,
+0 failed**, in 255s, one pre-existing unrelated warning (`audioop`
+deprecation, not from this phase's code). All 4 skips are expected and
+accounted for: 3 are this phase's own
+`tests/integration/structured_processing/test_local_benchmark_smoke.py`
+self-skipping because `TRACEX_BENCHMARK_DATA_ROOT` is unset on this
+machine (by design -- see the task's "do not download datasets on
+Shreshtha's laptop" rule), and 1 is the pre-existing, unrelated
+`test_ner.py` self-skip (Phase 3 Jasraj's NER model bootstrap, not
+performed in this environment, unrelated to this task). Zero failures,
+zero regressions to any of the prior 2124 tests -- proof point 15 (existing
+document/CDR/finance regression tests unaffected) confirmed by this run.
+
+**Focused Phase 7 Part 2 suite** (synthetic fixtures and a fake OCR engine
+only, no live infra, no PaddleOCR, no GPU, no dataset needed):
+
+```text
+uv run pytest tests/unit/structured_processing/test_benchmark_metrics.py    -> 16 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_adapters.py   -> 19 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_safety.py     -> 32 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_cli.py        ->  6 passed
+uv run pytest tests/integration/structured_processing/test_local_benchmark_smoke.py -> 3 skipped (expected; see above)
+```
+
+**Bugs found and fixed during this task's own development (all self-caught,
+before or during writing the formal test suite, never surfaced by a user
+correction)**:
+
+1. **`run_structured_benchmark` accepted a `SUCCEEDED` result with zero
+   valid rows.** A file where every row failed row-level normalization
+   (`accepted_row_count=0`, all rows rejected) originally reported
+   `SUCCEEDED` rather than `FAILED` -- caught by this task's own
+   `test_malformed_rows_never_inflate_accepted_or_emitted_counts` test.
+   Fixed by mirroring `worker.run_structured_batches_job`'s own existing
+   `total_valid == 0 and total_malformed > 0 -> FAILED` policy exactly, so
+   the benchmark layer's partial-success semantics match production's.
+2. **A field-extraction-F1 test fixture initially under-specified its own
+   expected fields**, causing a "perfect" OCR sample to score `F1=0.5`
+   instead of `1.0` -- traced to the fixture's `expected_fields` dict
+   listing only one of the three fields the real, unmodified
+   `extract_fir_mentions` genuinely recognizes in that fixture's text.
+   Fixed by verifying the real extractor's actual output against the
+   fixture text directly and completing the expected-fields dict to match.
+3. Two minor test-authoring bugs (a false-positive Neo4j-import string
+   scan matching this module's own "never writes to Neo4j" docstrings; a
+   `capsys.readouterr()` called twice, silently emptying the second read)
+   were caught and fixed before being reported here as passing.
+4. Two dead/redundant code blocks (an unused double-invocation of
+   `engine.recognize()`, an unused accumulation loop) were caught by
+   self-review immediately after writing, before any test ran, and
+   simplified.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this task. No dataset download,
+model download, PaddleOCR installation, or real benchmark result is
+claimed -- this part's own tests and documentation state that plainly, per
+this task's explicit "never claim a benchmark passed until Aditya runs it
+on the MacBook" rule.
+
+### 2026-09-16 readiness follow-up — PaddleOCR pinned as a reproducible optional dependency
+
+A user-requested readiness check found that `pyproject.toml`/`uv.lock`
+were unchanged despite the OCR benchmark path being designed around
+PaddleOCR -- meaning Aditya's pre-flight would have had no reproducible
+way to install it, and could have reached for an ad hoc `pip install
+paddleocr` that resolves an unpinned, undocumented version. Fixed:
+
+```text
+uv add --optional ocr-benchmark --no-sync paddleocr paddlepaddle
+  -> Resolved 132 packages in 34.88s
+```
+
+`pyproject.toml` gained `[project.optional-dependencies] ocr-benchmark =
+["paddleocr>=2.10.0", "paddlepaddle>=3.3.1"]` (uv-resolved versions, not
+invented); `uv.lock` gained the full resolved dependency graph for both
+packages (451 lines). `--no-sync` means the group was resolved and locked
+without being installed into this machine's venv -- confirmed directly
+(`import paddleocr` -> `ModuleNotFoundError`) both immediately after `uv
+add` and again after a full `uv sync --all-groups` re-run, proving the
+project's standard verification command still does not pull PaddleOCR
+onto this laptop. Aditya's pre-flight now runs `uv sync --extra
+ocr-benchmark` for a reproducible, exactly-pinned install instead.
+
+Full verification suite re-run after this change, all against the whole
+repository:
+
+```text
+uv run ruff format --check .  -> 502 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 210 source files
+git diff --check                -> clean
+docker compose config -q        -> valid
+uv run pytest -q                -> 2128 passed, 4 skipped, 0 failed (identical to the pre-change run)
+```
+
+`docs/architecture/phase-7-evaluation-and-model-governance.md`, `docs/qa/
+known-limitations.md`, `docs/progress/mvp-progress.md`, and
+`docs/runbooks/local-development.md`'s MacBook handoff (new step 2) were
+all updated to reflect this -- and to correct the now-stale "paddleocr is
+not added to pyproject.toml" sentence the same architecture doc previously
+stated.
