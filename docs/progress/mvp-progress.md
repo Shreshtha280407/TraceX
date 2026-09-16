@@ -968,3 +968,81 @@ benchmarked in this environment, and no Part 2 candidate's
   status, runs the real benchmark CLI against real local data, and
   reports safe aggregate results back -- or transparently records any
   unavailable asset as `blocked`, never a fabricated pass.
+
+## Phase 7 Part 3 — Gaurav visual benchmark foundation and local-model governance: In progress
+
+Reproducible benchmark adapters, a safe CLI, and tests for the three
+datasets Part 1's frozen manifest assigns to Gaurav -- `virat_ground`
+(detection + within-video tracking), `safe_unsafe_behaviour` (additional
+detection stress-testing only), `ufpr_alpr` (plate-region detection +
+plate-text OCR, licence-gated) -- built and tested on Shreshtha's laptop
+against synthetic fixtures and fake engines only. This part produces
+valid, reproducible benchmark *capability*, not a selected winner: no
+real dataset/model artifact was downloaded or benchmarked in this
+environment, and every one of Gaurav's real datasets/candidates remains
+`license_status: pending_verification`, structurally blocking any
+`SUCCEEDED` result until Aditya's MacBook Gate B pre-flight resolves it.
+
+- [x] `app/modules/media_processing/{visual_benchmark_metrics,
+  visual_benchmark_validation,visual_benchmark_adapters,visual_benchmark,
+  visual_benchmark_cli}.py` (new, purely additive; the pre-existing
+  `benchmark.py` pipeline-throughput benchmark was not touched) -- typed,
+  dependency-injected local benchmark interface accepting only Part 1's
+  frozen `virat_ground`/`safe_unsafe_behaviour`/`ufpr_alpr` dataset IDs
+  paired with `yolo11n`/`yolo11s`/`bytetrack`/
+  `paddleocr-lightweight-visual-text`; local roots resolved only from
+  `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT` or an explicit CLI flag; a licence-
+  clearance gate blocking `SUCCEEDED` while either the dataset's or the
+  candidate's own `license_status` is unresolved; artifact availability
+  checked before execution; a safe, typed `BenchmarkRunV1` result written
+  for every outcome, including a truthful `UNAVAILABLE` for a missing
+  local artifact or an unresolved licence -- never a fabricated
+  `SUCCEEDED`.
+- [x] Detection/tracking/visual-text adapters: replaceable
+  `DetectorEngine`/`TrackerEngine`/`VisualTextEngine` protocols, `Fake*`
+  engines for tests, and best-effort real-Ultralytics/real-PaddleOCR
+  wiring (dependency-injected, not imported at module load time) that
+  degrades safely to `UNAVAILABLE` rather than crash or fabricate a
+  result if the installed API doesn't match; real ByteTrack wiring is
+  explicitly deferred (always `UNAVAILABLE`) pending Aditya's pre-flight
+  resolving an actual installable package. Detection precision/recall/mAP
+  and tracking IDF1/MOTA/ID-switches are genuinely computed via IoU
+  matching against ground truth; HOTA is always `None` by documented
+  design, never an unstated approximation.
+- [x] A pre-existing, whole-module static safety test forbidding
+  `ultralytics`/`paddleocr` imports anywhere under `media_processing/`
+  (a Phase 2 closeout production boundary) required a narrow, tested
+  carve-out for `visual_benchmark*.py` files specifically -- found and
+  fixed via this task's own full-suite regression run, not by inspection
+  alone. Every other forbidden library remains forbidden in the benchmark
+  harness too, verified by a new dedicated test.
+- [x] `pyproject.toml`'s `[project.optional-dependencies] video-benchmark`
+  (`ultralytics`, `paddleocr`, `paddlepaddle`), resolved into `uv.lock`
+  via `uv add --optional video-benchmark --no-sync` -- confirmed not
+  installed by `uv sync --all-groups` and not present anywhere on this
+  development machine. Aditya's MacBook pre-flight runs `uv sync --extra
+  video-benchmark` for a reproducible, exactly-pinned install, never an
+  ad hoc `pip install`.
+- [x] 79 new focused tests (14 metrics, 14 adapters, 37 safety, 6 CLI, 3
+  self-skipping integration smoke, plus 5 new parametrized instances of a
+  production-safety test proving the ML-import carve-out is narrow)
+  covering all 16 required proof points from the task brief; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 3" section for the full
+  ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  media-processing-worker}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  additively, including a full MacBook Gate B validation handoff runbook
+  section for Aditya.
+- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
+  No VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour data was
+  downloaded on Shreshtha's laptop (per this task's own rule); no
+  Ultralytics/PaddleOCR installation was verified; real ByteTrack wiring
+  is not implemented at all; every test in this phase runs against
+  synthetic fixtures and fake engines only. This part is not complete
+  until Aditya pulls this exact branch on his Apple-Silicon MacBook,
+  resolves each artifact's licence/source status, runs the real benchmark
+  CLI against real local data, and reports safe aggregate results back --
+  or transparently records any unavailable asset as `blocked`, never a
+  fabricated pass.

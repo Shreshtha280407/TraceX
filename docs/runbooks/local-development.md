@@ -921,3 +921,141 @@ resolved, or a candidate fails to load, run the CLI anyway and let it
 produce its own truthful `UNAVAILABLE`/`FAILED` result — never substitute
 a different dataset or model silently, and never report a benchmark as
 having succeeded unless the CLI's own exit code and result JSON say so.
+
+## Visual benchmark foundation (Phase 7 Part 3 — Gaurav)
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part
+3" section for the full design. This part benchmarks exactly three Part-1
+frozen datasets against their approved candidates: `virat_ground`
+(detection: `yolo11n`/`yolo11s`; tracking: `bytetrack`),
+`safe_unsafe_behaviour` (detection only — additional stress-testing, no
+behaviour-classification candidate exists), `ufpr_alpr` (plate-region
+detection: `yolo11n`/`yolo11s`; plate OCR:
+`paddleocr-lightweight-visual-text`, licence-gated). No other
+dataset/candidate pair is accepted.
+
+### Benchmark CLI
+
+```bash
+# List every approved dataset/candidate/pair this harness supports:
+uv run python -m app.modules.media_processing.visual_benchmark_cli list-candidates
+
+export TRACEX_BENCHMARK_DATA_ROOT=/path/to/your/local/datasets
+export TRACEX_MODEL_CACHE_ROOT=/path/to/your/local/model/cache
+export TRACEX_BENCHMARK_OUTPUT_ROOT=./benchmark-runs   # git-ignored
+
+# Validate the request/local configuration without running anything:
+uv run python -m app.modules.media_processing.visual_benchmark_cli validate \
+    --dataset-id virat_ground --candidate-id yolo11n
+
+# Run a real benchmark (needs a verified model name/version/SHA-256 --
+# see the pre-flight below):
+uv run python -m app.modules.media_processing.visual_benchmark_cli run \
+    --dataset-id virat_ground --candidate-id yolo11n \
+    --model-name <verified-model-name> --model-version <verified-version> \
+    --model-sha256 <verified-sha256>
+```
+
+Exit code `0` means `succeeded`; `1` means a truthful `unavailable`/
+`failed` result (missing local data/model, an unresolved licence, every
+sample failed, etc.) was still written safely to the output root; `2`
+means the request itself was rejected (unknown dataset/candidate ID or an
+unsupported pairing) before any benchmark ran. A result file never
+contains a raw video frame, plate text, face, or local filesystem path —
+only aggregate metrics, safe metadata, and a `failure_reason_safe` string
+when relevant.
+
+**Every one of Gaurav's real datasets and candidates is currently
+`license_status: pending_verification`** in the committed manifest/catalog
+— `run` will report `unavailable` for every real combination until
+Aditya's MacBook pre-flight resolves and records each one's actual
+licence status (step 3 below). This is expected, not a bug.
+
+No Ultralytics/PaddleOCR installation, real dataset, or GPU exists on
+Shreshtha's laptop — every unit test for this part runs against `Fake*`
+engines and small synthetic detection/tracking/OCR fixtures (`uv run
+pytest tests/unit/media_processing/test_visual_benchmark_*.py -v`). The
+integration test that runs the real CLI as a subprocess
+(`tests/integration/media_processing/test_visual_benchmark_smoke.py`)
+self-skips cleanly here, since `TRACEX_BENCHMARK_DATA_ROOT` is unset.
+
+### Reproducible install: `uv sync --extra video-benchmark`
+
+`ultralytics`/`paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
+`[project.optional-dependencies] video-benchmark` group and resolved into
+`uv.lock` — never installed by the standard `uv sync --all-groups`
+verification command, and not installed anywhere on this development
+machine. Aditya's Mac installs the exact pinned versions via:
+
+```bash
+uv sync --extra video-benchmark
+```
+
+**Never `pip install ultralytics`/`pip install paddleocr` ad hoc** — that
+would silently resolve whatever is newest on PyPI that day, a different,
+unpinned version than this branch's engine wiring was written against,
+making any resulting benchmark number impossible to reproduce later.
+
+### MacBook Gate B pre-flight (Aditya)
+
+This benchmark capability is built and unit-tested, but **no real
+dataset, model, or benchmark result exists yet** — every number above
+came from synthetic fixtures and fake engines. Follow these steps in
+order:
+
+1. **Check out the exact pushed `gaurav` commit.** `git status --short &&
+   git branch --show-current && git log --oneline -5` — confirm you are
+   on the exact, unmerged commit this handoff refers to. Do not run
+   against any other branch or a locally modified tree.
+2. **Install reproducibly.** `uv sync --extra video-benchmark` — never an
+   ad hoc `pip install`. If `visual_benchmark._build_real_detector_
+   engine`/`_build_real_tracker_engine`/`_build_real_visual_text_engine`'s
+   wiring needs an adjustment to match the installed package's actual API
+   (a real possibility — this session could not import or exercise any of
+   them), fix it on this same branch and note the exact version that
+   required the fix. `_build_real_tracker_engine` already wires
+   Ultralytics' own bundled `BYTETracker`
+   (`model.track(..., tracker='bytetrack.yaml')`'s underlying class) --
+   no separate ByteTrack package is needed.
+3. **Resolve and record licence/source terms before downloading
+   anything**: VIRAT Ground, UFPR-ALPR, Safe/Unsafe Behaviour, and the two
+   Ultralytics YOLO11 releases (n-nano and s-small) plus the PaddleOCR
+   PP-OCRv5 mobile-lightweight release. Record each one's actual current
+   licence, official source, and release/version identifier — this
+   session could not verify any of these without downloading them, so
+   `dataset-manifest.v1.json`/`model-candidates.v1.json` still show
+   `license_status: "pending_verification"` for all of Gaurav's entries.
+4. **Update only safe fields.** If verification succeeds, change the
+   relevant `license_status` from `pending_verification` to `verified_
+   permissive`/`verified_restricted_noncommercial` (or to a documented
+   blocked state if unusable), and add safe version/source metadata —
+   never split definitions, never a `selected` status, never a dataset
+   swap, never a change to a success-metric threshold after seeing a
+   result.
+5. **Download each approved artefact into a git-ignored local directory
+   only** — under whatever path you point `TRACEX_BENCHMARK_DATA_ROOT`/
+   `TRACEX_MODEL_CACHE_ROOT` at (e.g. this repo's own gitignored
+   `local-data/`/`model-cache/`, or any other local path). Never commit a
+   downloaded file, a raw video/image, a plate crop, or a model weight.
+6. **Compute and locally record each artifact's real SHA-256** —
+   `shasum -a 256 <file>` — needed for `--model-sha256` on a real run.
+7. **Run the benchmark CLI commands above** with your own local
+   environment variables pointing at the real downloaded data/model
+   cache.
+8. **Record the actual hardware/execution backend you observed** — do
+   not assume Apple's Metal/MPS, CUDA, or any particular accelerator is
+   in use just because you're on a MacBook; report whatever
+   `hardware_profile`/backend Ultralytics/PaddleOCR themselves actually
+   report on this machine (or `cpu` if that's genuinely what ran).
+9. **Send back only the safe aggregate result JSON files** (from your
+   `TRACEX_BENCHMARK_OUTPUT_ROOT`) and terminal summaries — never a raw
+   video/image file, plate crop, face, or model weight. Leave every
+   candidate's `selection_status` as `candidate`/`conditional` — do not
+   mark any Part 3 candidate `selected`; Gate C makes that decision later,
+   after Parts 2-4 all have comparable results.
+
+If an artifact is genuinely unavailable, its licence terms can't be
+resolved, or a candidate fails to load, run the CLI anyway and let it
+produce its own truthful `unavailable`/`failed` result — never substitute
+a different dataset or model silently, and never report a benchmark as
+having succeeded unless the CLI's own exit code and result JSON say so.

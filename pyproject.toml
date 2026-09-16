@@ -57,6 +57,11 @@ ocr-benchmark = [
     "paddleocr>=3.7.0,<4",
     "paddlepaddle>=3.3.1",
 ]
+video-benchmark = [
+    "paddleocr>=2.10.0",
+    "paddlepaddle>=3.3.1",
+    "ultralytics>=8.4.153",
+]
 
 [dependency-groups]
 dev = [

@@ -473,3 +473,43 @@ All source access, checkout, and downloads in this Gate B record occurred on
 checkouts are respectively
 `3fa95d6f548631a84d6f3d9f23aca4c1865ee130b5d74ca858dabe6ee2e99bbf`
 and `5040563c22ae8d3a61dd905768d859cb6c3b8ba087f9296491382927d39a788e`.
+
+## Phase 7 Part 3 — visual benchmark foundation fixtures (Gaurav)
+
+No real VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour data exists
+anywhere in this repository's tests -- none was downloaded onto this
+development machine, per this task's explicit rule:
+
+- **Detection/tracking fixtures**: `tests/unit/media_processing/
+  test_visual_benchmark_metrics.py`/`test_visual_benchmark_adapters.py`
+  build small, invented `ObjectDetection`/`TrackSegment`/`GroundTruthBox`/
+  `GroundTruthTrack` values directly (arbitrary pixel coordinates like
+  `(10, 10, 50, 50)`, generic labels like `"person"`) -- no real image,
+  video frame, or surveillance footage is decoded anywhere in these
+  tests. Frames needed at all (for `FakeDetectorEngine`/
+  `FakeVisualTextEngine`, which key their failure-injection markers off a
+  frame's shape) reuse the existing, pre-established
+  `tests/fixtures/media_processing/synthetic.py::make_solid_frame` --
+  a synthetic, solid-color, in-memory numpy array, not a real photograph.
+- **Visual-text/plate-OCR fixtures**: a small, invented plate-like string
+  (`"ABC1234"`) is used purely to prove `character_error_rate`/
+  `field_extraction_prf` compute correctly -- it does not correspond to
+  any real vehicle, plate, or person.
+- **Safety/CLI fixtures**: `tests/unit/media_processing/
+  test_visual_benchmark_safety.py`/`test_visual_benchmark_cli.py` build
+  synthetic `DatasetManifestEntryV1`/`ModelCandidateV1` records directly
+  (to exercise the licence-clearance gate against both a pending and a
+  cleared status, since every *real* Part 3 manifest/catalog entry is
+  currently `pending_verification`) and point every
+  `TRACEX_BENCHMARK_*` environment variable at a pytest `tmp_path`
+  directory -- never a developer's real environment.
+- **Integration smoke fixtures**: `tests/integration/media_processing/
+  test_visual_benchmark_smoke.py` self-skips (never fabricates a pass)
+  unless `TRACEX_BENCHMARK_DATA_ROOT` is actually set and the relevant
+  dataset directory actually exists and is non-empty -- the expected
+  state on this development machine, since no real dataset was
+  downloaded here.
+
+No real surveillance footage, vehicle plate, face, person-identifying
+payload, model weight, or MacBook-local path appears anywhere in this
+module's tests.

@@ -1,14 +1,17 @@
 # Phase 7 Part 1: Evaluation Foundation, Dataset Manifest, and Local-Model Governance
 
 Owner: Nipun (Part 1); Jasraj (Part 2, this document's added section
-below). Status: **Part 1 in progress** (this document's own scope is
-complete and gated below); **Part 2 Gate B incomplete** (real AMLSim and
-both PaddleOCR runs succeeded, while the official GoMask download remains
-account-and-credit gated — see "Part 2: structured-data and local OCR
-benchmarking" below). Phase 7 overall is not complete. Part 1 freezes the
-referee and scoreboard later Phase 7 parts
-build against; it downloads no dataset, installs no model, and selects no
-winner.
+below); Gaurav (Part 3, this document's added section below). Status:
+**Part 1 in progress** (this document's own scope is complete and gated
+below); **Part 2 Gate B incomplete** (real AMLSim and both PaddleOCR runs
+succeeded, while the official GoMask download remains account-and-credit
+gated — see "Part 2: structured-data and local OCR benchmarking"
+below); **Part 3 in progress** (visual benchmark adapters/CLI built and
+tested against synthetic fixtures and fake engines; real dataset/model
+artifact validation status is recorded in the "Part 3" section below).
+Phase 7 overall is not complete. Part 1 freezes the referee and scoreboard
+later Phase 7 parts build against; it downloads no dataset, installs no
+model, and selects no winner.
 
 ## Phase 7 objective and part map
 
@@ -426,6 +429,174 @@ benchmark result is truthfully `unavailable`. Raw data, derived crops, model
 packages, caches, and result JSON remain outside Git. No Part 2 candidate is
 selected; Gate C selects a winner only after the remaining blocker and wider
 cross-modality evidence are resolved.
+
+## Part 3: visual benchmark foundation and local-model governance (Gaurav)
+
+Part 3 implements the reproducible benchmark adapters, safe CLI, and tests
+needed to *evaluate* the three datasets Part 1's manifest assigns to
+Gaurav: `virat_ground` (person/vehicle/object detection and within-video
+tracking), `safe_unsafe_behaviour` (additional detection stress-testing
+only — no behaviour-classification candidate is catalogued), and
+`ufpr_alpr` (plate-region detection and plate-text OCR, gated on licence
+approval). It does not select a winning detector/tracker/OCR
+candidate — Gate C does that, after Parts 2–4 all have comparable results.
+
+### Module layout
+
+`app/modules/media_processing/` gained five new, purely additive files —
+no existing production detection/tracking/OCR code (`analysis/`,
+`worker.py`, `ocr_adapter.py`, `ocr_batching.py`) was rewritten, and the
+pre-existing `benchmark.py` (a real-time processing-throughput benchmark
+for the production pipeline, unrelated to Phase 7) was not touched:
+
+| File | Responsibility |
+|---|---|
+| `visual_benchmark_metrics.py` | Pure functions: detection precision/recall/mAP (IoU-matched, VOC-style single-threshold AP), tracking IDF1/MOTA/ID-switches (a documented simplified IDF1; HOTA always `None` — see "Known simplifications" below), visual-text CER/WER/field PRF, percentile/median latency, platform-aware `peak_memory_mb`. |
+| `visual_benchmark_validation.py` | `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/`TRACEX_BENCHMARK_OUTPUT_ROOT` resolution; the Part 3 dataset/candidate/pair allow-lists; `require_license_cleared_for_real_execution` — the licence-clearance gate (see below); `reject_private_local_paths`. |
+| `visual_benchmark_adapters.py` | `DetectorEngine`/`TrackerEngine`/`VisualTextEngine` protocols (`Fake*Engine` for tests), `run_detection_benchmark`/`run_tracking_benchmark`/`run_visual_text_benchmark`, and the canonical-observation compatibility helpers (`build_observation_draft_for_*`/`observation_for_draft`). |
+| `visual_benchmark.py` | `run_benchmark` — the one orchestration entry point: validates the request, checks licence clearance, resolves local roots, checks artifact availability *before* executing, dispatches to the right adapter, writes a safe `BenchmarkRunV1` JSON result. |
+| `visual_benchmark_cli.py` | `uv run python -m app.modules.media_processing.visual_benchmark_cli {list-candidates,validate,run}` — see the runbook for full usage. |
+
+### Approved dataset/candidate pairs
+
+Exactly Gaurav's Phase 7 Part 1 manifest entries, cross-checked against
+the task's own "permitted benchmark use" column — no dataset/candidate
+combination outside this table is accepted, even though every ID involved
+is individually valid in the shared Part 1 catalogue:
+
+| Dataset | Candidates | Task |
+|---|---|---|
+| `virat_ground` | `yolo11n`, `yolo11s` | detection |
+| `virat_ground` | `bytetrack` | tracking |
+| `safe_unsafe_behaviour` | `yolo11n`, `yolo11s` | detection (stress test only) |
+| `ufpr_alpr` | `yolo11n`, `yolo11s` | detection (plate-region) |
+| `ufpr_alpr` | `paddleocr-lightweight-visual-text` | visual_text (plate OCR) |
+
+`safe_unsafe_behaviour` deliberately has no tracking or visual-text pair:
+the manifest's own `allowed_tasks` for it is "additional visual detection
+stress-testing" only, and no behaviour-classification candidate exists
+anywhere in Part 1's frozen catalogue — inventing one would be exactly the
+kind of unapproved new task/candidate this phase's rules forbid.
+
+### The licence-clearance execution gate
+
+`require_license_cleared_for_real_execution` blocks a `SUCCEEDED` result
+outright whenever either the dataset's or the candidate's own
+`license_status` is not `verified_permissive`/`verified_restricted_
+noncommercial`/`internal_only`. Checked *before* any local artifact is
+even looked for. Today, every one of Gaurav's three datasets and four
+candidates carries `license_status: "pending_verification"` in the
+committed manifest/catalog — meaning **no combination in this table can
+produce a real `SUCCEEDED` benchmark result until Aditya's MacBook
+pre-flight resolves and records each one's actual licence status.** A
+blocked request still produces a truthful `BenchmarkRunStatus.UNAVAILABLE`
+result naming the gate — never a crash, and never a silently-substituted
+different dataset/candidate.
+
+### Canonical observation/provenance compatibility
+
+`visual_benchmark_adapters.build_observation_draft_for_detection`/
+`_for_track_segment`/`_for_visual_text` build a real `MediaObservationDraft`
+from an accepted detection/track/OCR result, and `observation_for_draft`
+calls the exact, unmodified `provenance.build_extractor`/
+`draft_to_observation` functions production detection already uses —
+proving an accepted benchmark result *could* flow through the identical
+canonical `ObservationV1` seam, with no alternate observation format.
+Neither function is called anywhere in `run_benchmark`'s own path: a
+benchmark result is evaluation metadata, never primary evidence, and this
+task creates no new raw-evidence persistence path. A `TrackSegment`'s
+`local_track_id` becomes only a same-observation-ID discriminator, never
+an `ExtractedEntityMention` or any other identity-shaped field — a
+technical track ID cannot become a cross-camera or cross-case identity
+link through this seam, structurally, not only by convention.
+
+### Why `ultralytics`/`paddleocr` are lazily imported, and the safety-test carve-out this required
+
+`pyproject.toml` gained `[project.optional-dependencies] video-benchmark`
+(`ultralytics`, `paddleocr`, `paddlepaddle`), resolved into `uv.lock` via
+`uv add --optional video-benchmark --no-sync` — never installed on this
+development machine, and never pulled in by `uv sync --all-groups`
+(confirmed directly: `import ultralytics`/`import paddleocr` both still
+fail after a clean sync). Aditya's MacBook pre-flight installs the exact
+pinned versions via `uv sync --extra video-benchmark`, never an ad hoc
+`pip install`.
+
+`visual_benchmark.py`'s `_build_real_detector_engine`/
+`_build_real_tracker_engine`/`_build_real_visual_text_engine` import
+`ultralytics`/`paddleocr` lazily, inside the function, wrapped in
+`try/except ImportError` degrading to a safe
+`BenchmarkArtifactUnavailableError` — this session cannot install or
+exercise either library, so their exact API is written from documented
+public shape only, and may need a small adjustment once Aditya's
+pre-flight confirms the installed version's real API.
+
+This tripped a genuine, pre-existing, whole-module static safety test
+(`tests/unit/media_processing/test_media_safety.py::
+test_no_infrastructure_or_ml_library_is_imported`) that forbids
+`ultralytics`/`paddleocr` anywhere under `media_processing/` — a Phase 2
+closeout boundary keeping the *production* detector/OCR pipeline free of
+heavyweight ML toolchains. That boundary is correct for `analysis/`/
+`worker.py` and remains fully enforced there; it was never meant to (and
+structurally cannot, given Part 1's own frozen candidate catalogue) apply
+to an *evaluation* harness whose entire job is benchmarking exactly those
+two candidates. Fixed with a narrow, explicit exemption: files named
+`visual_benchmark*.py` are excluded from that one check only, and a new
+`test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+library` test proves every *other* forbidden library (databases, object
+storage, queues, `torch`/`tensorflow`/`sklearn`) remains forbidden in the
+benchmark harness too — not a blanket carve-out.
+
+### `_build_real_tracker_engine`: resolved via Ultralytics' own bundled ByteTrack
+
+Rather than a separate, pip-installable ByteTrack package, this wires
+Ultralytics' own bundled `BYTETracker` class
+(`ultralytics.trackers.byte_tracker.BYTETracker`) directly against
+externally-supplied per-timestamp detections — the identical tracker
+`model.track(..., tracker='bytetrack.yaml')` uses internally.
+`bytetrack.yaml` ships bundled inside the `ultralytics` package itself, so
+no separate model weight or download is needed for tracking specifically:
+ByteTrack's association step (Kalman filter + Hungarian matching) has no
+learned weights and no GPU path, so `"cpu"` is reported as an observed
+fact about the algorithm, not an assumption. This session cannot install
+or exercise `ultralytics`, so the exact internal API called here
+(`BYTETracker.update()`'s expected input shape) is written from its
+documented/observed public shape and may need a small adjustment once
+Aditya's MacBook pre-flight confirms the actually-installed version's
+API — any mismatch degrades to a safe `BenchmarkArtifactUnavailableError`,
+never a crash. The *tracking metric/aggregation logic itself*
+(`run_tracking_benchmark`) is fully implemented and tested against
+`FakeTrackerEngine`.
+
+### Known simplifications in the tracking metrics
+
+- **IDF1** uses a majority-vote per-ground-truth-track identity assignment,
+  not the optimal global bipartite assignment a full implementation (e.g.
+  `py-motmetrics`) solves — documented directly in `idf1`'s own docstring.
+- **HOTA is always `None`.** A correct HOTA requires a geometric-mean
+  detection/association-accuracy sweep across multiple IoU/alpha
+  thresholds; a partial/simplified HOTA would be easy to misread as the
+  real metric, so this harness reports `None` rather than an
+  approximation under the real metric's name — exactly the "never
+  fabricate a value where a measurement is unavailable" rule this task's
+  own contract requires.
+- **mAP is single-threshold (IoU ≥ 0.5), VOC-style 11-point interpolated
+  AP** — not COCO's mAP@[.5:.95] sweep across ten thresholds.
+
+None of these are silent: every one is documented in the relevant
+function's own docstring and re-stated in `docs/qa/known-limitations.md`.
+
+### Verification (Part 3)
+
+`uv sync --all-groups`, `ruff format --check .`, `ruff check .`,
+`mypy app`, `pytest`, `git diff --check`, and `docker compose config -q`
+all ran on this development machine — see `docs/qa/test-results.md`'s
+dated Phase 7 Part 3 entry for exact counts. No real VIRAT Ground/UFPR-ALPR/
+Safe-Unsafe-Behaviour dataset, no Ultralytics/PaddleOCR installation, and
+no GPU/MacBook validation was performed or is claimed here — every one of
+those is Aditya's MacBook Gate B pre-flight's job (see
+`docs/runbooks/local-development.md`). No Part 3 candidate is selected;
+Gate C selects a winner only after Parts 2–4 all have comparable real
+results.
 
 ## Verification (Part 1)
 

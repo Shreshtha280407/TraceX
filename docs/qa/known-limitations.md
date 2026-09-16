@@ -546,3 +546,101 @@ remain:
   will OCR at this accuracy. The later FIR ICDAR 2023 crop benchmark adds
   transcription metrics, while field-quality measurement remains unavailable
   for the ground-truth reason stated above.
+
+# Phase 7 Part 3 evaluation: visual benchmark foundation and local-model governance (Gaurav)
+
+All of the following are deliberate Part 3 scope boundaries, verified on
+Shreshtha's development laptop only -- real dataset/model validation is
+Aditya's MacBook Gate B pre-flight, not yet performed:
+
+- **No real VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour dataset was
+  downloaded, inspected, or benchmarked in this environment.** Every
+  detection/tracking/visual-text benchmark test in this phase runs
+  against small, invented, synthetic fixtures and fake engines (see
+  `docs/qa/test-data.md`'s Phase 7 Part 3 section); no real benchmark
+  result -- a real precision/recall/mAP, a real IDF1/MOTA, a real
+  character error rate -- exists anywhere in this phase's committed
+  artifacts.
+- **Every real Gaurav dataset and candidate is currently
+  `license_status: pending_verification`.** `require_license_cleared_
+  for_real_execution` blocks a `SUCCEEDED` result for all of them today
+  -- confirmed by a dedicated test
+  (`test_every_real_gaurav_dataset_and_candidate_is_currently_pending_
+  verification`). No Part 3 dataset/candidate combination can produce a
+  real completed benchmark until Aditya's MacBook pre-flight resolves and
+  records each one's actual licence status.
+- **No Ultralytics or PaddleOCR installation was attempted or verified.**
+  `ultralytics`/`paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
+  `[project.optional-dependencies] video-benchmark` group and resolved
+  into `uv.lock`, but never installed on this machine and never pulled in
+  by `uv sync --all-groups`. `visual_benchmark._build_real_detector_
+  engine`/`_build_real_visual_text_engine`'s real wiring is a best-effort
+  attempt written from each library's documented public API shape, not
+  verified against an actually-installed package -- it may need a small
+  adjustment once Aditya's MacBook pre-flight installs the pinned
+  versions and exercises the real API for the first time.
+- **Resolved: `_build_real_tracker_engine` now wires Ultralytics' own
+  bundled `BYTETracker`** (`ultralytics.trackers.byte_tracker.BYTETracker`,
+  the identical tracker `model.track(..., tracker='bytetrack.yaml')` uses
+  internally) against externally-supplied per-timestamp detections, lazily
+  imported inside this one function. No separate ByteTrack package or
+  model weight is needed -- `bytetrack.yaml` ships bundled inside the
+  `ultralytics` package itself, since ByteTrack's association step is a
+  Kalman-filter/Hungarian-matching algorithm, not a learned model. The
+  tracking metric/aggregation logic (`run_tracking_benchmark`) was already
+  fully implemented and tested against `FakeTrackerEngine`; the real-engine
+  construction glue degrades to a safe `BenchmarkArtifactUnavailableError`
+  -- never a crash -- whenever `ultralytics` is absent or its internal
+  `BYTETracker`/`bytetrack.yaml` API doesn't match this adapter's
+  best-effort wiring.
+- **HOTA is always `None`.** A correct HOTA requires a geometric-mean
+  detection/association-accuracy sweep across multiple IoU/alpha
+  thresholds; this harness deliberately reports `None` rather than ship
+  a simplified approximation under the real metric's name.
+- **IDF1 uses a simplified, majority-vote per-ground-truth-track identity
+  assignment**, not the optimal global bipartite assignment a full
+  implementation (e.g. `py-motmetrics`) solves. Documented directly in
+  `visual_benchmark_metrics.idf1`'s own docstring.
+- **mAP is single-threshold (IoU >= 0.5), VOC-style 11-point interpolated
+  Average Precision** -- not COCO's mAP@[.5:.95] sweep across ten
+  thresholds.
+- **The local benchmark manifest formats
+  (`benchmark_manifest.jsonl`/`tracking_manifest.jsonl`/
+  `visual_text_manifest.jsonl`) are invented by this task, not the real
+  VIRAT/UFPR-ALPR/Safe-Unsafe-Behaviour annotation formats.** A converter
+  from each real dataset's actual annotation schema into these minimal
+  JSON-Lines shapes is deferred to Aditya's MacBook pre-flight, since the
+  real annotation formats could not be verified in this environment
+  without downloading the datasets.
+- **`safe_unsafe_behaviour` has no behaviour-classification candidate.**
+  The manifest's own `allowed_tasks` for it is "additional visual
+  detection stress-testing" only; this harness benchmarks it with the
+  same YOLO11 detection candidates as `virat_ground`, never a
+  purpose-built behaviour classifier -- inventing one would be an
+  unapproved new task/candidate outside Part 1's frozen catalogue.
+- **No cross-camera identity capability exists, structurally, not only by
+  convention.** A `TrackSegment.local_track_id` becomes only a
+  same-observation-ID discriminator when passed through
+  `build_observation_draft_for_track_segment`/`observation_for_draft` --
+  never an `ExtractedEntityMention` or any other identity-shaped field --
+  proven by a dedicated test.
+- **The pre-existing whole-module "no infra/ML library" static safety
+  test (`test_media_safety.py::test_no_infrastructure_or_ml_library_is_
+  imported`) required a narrow, explicit carve-out for
+  `visual_benchmark*.py` files specifically**, since two of this task's
+  four approved candidates *are* the exact libraries (`ultralytics`,
+  `paddleocr`) that check was written to forbid in the *production*
+  detection/OCR pipeline. A new, dedicated test
+  (`test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+  library`) proves the carve-out is narrow -- every other forbidden
+  library (databases, object storage, queues, `torch`/`tensorflow`/
+  `sklearn`) remains forbidden in the benchmark harness too, and no
+  production file's exemption changed at all.
+- **No live PaddleOCR/Ultralytics/GPU/MacBook/Docker validation was run
+  in this environment.** Every test in `tests/unit/media_processing/
+  test_visual_benchmark_*.py` runs with no live infra, no GPU, and no
+  downloaded dataset or model -- exactly as required by this task's own
+  rules. See `docs/runbooks/local-development.md`'s "MacBook Gate B
+  pre-flight" section for what Aditya's pre-flight must still verify
+  before this phase's benchmark capability can produce a real,
+  trustworthy result.

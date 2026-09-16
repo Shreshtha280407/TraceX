@@ -3422,3 +3422,114 @@ real annotation crops to real reference transcriptions but has no defensible
 label-bearing `expected_fields` mapping. CER/WER therefore measure crop-level
 transcription distance only. Latency is per crop and RAM is process peak on
 this host. These results do not choose a model; Gate C owns selection.
+
+## 2026-09-16 — Phase 7 Part 3 visual benchmark foundation and local-model governance (Gaurav, dev-machine only)
+
+New additive `app/modules/media_processing/{visual_benchmark_metrics,
+visual_benchmark_validation,visual_benchmark_adapters,visual_benchmark,
+visual_benchmark_cli}.py`, implementing reproducible local benchmark
+adapters and a safe CLI for Part 1's three Gaurav-owned datasets
+(`virat_ground`, `safe_unsafe_behaviour`, `ufpr_alpr`) against their
+approved candidates (`yolo11n`, `yolo11s`, `bytetrack`,
+`paddleocr-lightweight-visual-text`). This entry covers only verification
+performed on Shreshtha's development laptop — **no real VIRAT Ground,
+UFPR-ALPR, or Safe/Unsafe Behaviour data, and no Ultralytics/PaddleOCR
+installation, exists in this environment.** Real dataset/model validation
+is Aditya's MacBook Gate B pre-flight, not yet performed; see
+`docs/runbooks/local-development.md`'s "MacBook Gate B pre-flight"
+section.
+
+**Branch/base verification**: confirmed on the exact, unmerged `gaurav`
+branch (`git branch --show-current` -> `gaurav`), working tree clean at
+the start of this task. `git rev-parse HEAD` and `git rev-parse
+origin/main` were identical (`f87b99c...`, "Completed
+nipun/part-1-5-phase-7 (#49)") — `gaurav` sits exactly at the last-fetched
+`origin/main` tip, not based on `jasraj`. A live `git fetch origin` inside
+this sandbox failed (`could not read Username for 'https://github.com'`
+-- no outbound git credentials configured here), so this could not be
+re-verified against GitHub directly in this session; the local record is
+the best available confirmation.
+
+**A pre-existing Docker stack (`tracex-api`/`tracex-postgres`/
+`tracex-redis`/`tracex-neo4j`/`tracex-minio`) was already running
+throughout this session**, started by earlier work, not by this task --
+per this task's own instruction not to start/stop/rebuild/disturb an
+existing stack, it was left exactly as found.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups        -> Resolved 170 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2131 passed, 4 skipped,
+0 failed**, in 257s, one pre-existing unrelated warning (`audioop`
+deprecation, not from this phase's code). All 4 skips are expected and
+accounted for: 3 are this phase's own
+`tests/integration/media_processing/test_visual_benchmark_smoke.py`
+self-skipping because `TRACEX_BENCHMARK_DATA_ROOT` is unset on this
+machine (by design -- see the task's "do not download datasets on this
+machine" rule), and 1 is the pre-existing, unrelated `test_ner.py`
+self-skip (Phase 3 Jasraj's NER model bootstrap, not performed in this
+environment, unrelated to this task). Zero failures, zero regressions to
+any other prior test.
+
+**Focused Phase 7 Part 3 suite** (synthetic fixtures and fake engines
+only, no live infra, no Ultralytics/PaddleOCR, no GPU, no dataset needed):
+
+```text
+uv run pytest tests/unit/media_processing/test_visual_benchmark_metrics.py   -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_adapters.py  -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_safety.py    -> 37 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_cli.py       ->  6 passed
+uv run pytest tests/integration/media_processing/test_visual_benchmark_smoke.py -> 3 skipped (expected; see above)
+uv run pytest tests/unit/media_processing/test_media_safety.py              -> 114 passed (includes 5 new parametrized instances)
+```
+
+**A real regression found and fixed during this task's own full-suite
+verification (self-caught, before being reported here as passing)**: the
+first full-suite run failed one pre-existing test --
+`tests/unit/media_processing/test_media_safety.py::
+test_no_infrastructure_or_ml_library_is_imported[visual_benchmark.py]`.
+That whole-module static AST scan (a genuine Phase 2 closeout production
+boundary keeping the *production* detector/OCR pipeline free of
+`ultralytics`/`paddleocr`/`torch`/etc.) correctly caught this task's own
+lazy, function-local `import ultralytics`/`import paddleocr` inside
+`visual_benchmark.py`'s best-effort real-engine wiring -- exactly the two
+libraries Part 1's own frozen candidate catalogue names as Gaurav's
+approved detection/OCR candidates. Root cause: that pre-existing test's
+scope predates Phase 7 and was never meant to (and structurally cannot)
+forbid an *evaluation* harness from importing the exact candidates it
+exists to benchmark. Fixed with a narrow, explicit, tested carve-out:
+`visual_benchmark*.py` files are excluded from that one check only, and a
+new `test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+library` test (5 new parametrized instances) proves every *other*
+forbidden library remains forbidden in the benchmark harness too -- not a
+blanket exemption, and no change to the boundary for any production file.
+Verified via re-running `tests/unit/media_processing/test_media_safety.py`
+(114 passed) and the full repository suite (2131 passed, 4 skipped, 0
+failed) after the fix.
+
+**Readiness fix applied proactively (the same lesson from this session's
+earlier Jasraj/Part 2 PaddleOCR pinning review), before being asked**:
+`pyproject.toml` gained `[project.optional-dependencies] video-benchmark =
+["paddleocr>=2.10.0", "paddlepaddle>=3.3.1", "ultralytics>=8.4.153"]`
+(uv-resolved versions, not invented), resolved into `uv.lock` via `uv add
+--optional video-benchmark --no-sync paddleocr paddlepaddle ultralytics`
+(`Resolved 170 packages in 5.62s`). Confirmed not installed by `uv sync
+--all-groups` and not importable anywhere on this machine both immediately
+after `uv add` and after a full re-sync. Aditya's MacBook pre-flight now
+runs `uv sync --extra video-benchmark` for a reproducible, exactly-pinned
+install instead of an ad hoc `pip install`.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this task. No dataset
+download, model download, Ultralytics/PaddleOCR installation, or real
+benchmark result is claimed -- this part's own tests and documentation
+state that plainly, per this task's explicit "never claim a benchmark
+passed until Aditya runs it on the MacBook" rule.
