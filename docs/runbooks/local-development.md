@@ -1105,3 +1105,208 @@ resolved, or a candidate fails to load, run the CLI anyway and let it
 produce its own truthful `unavailable`/`failed` result — never substitute
 a different dataset or model silently, and never report a benchmark as
 having succeeded unless the CLI's own exit code and result JSON say so.
+
+## Audio and social/chat benchmark foundation (Phase 7 Part 4 — Sarthak)
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part
+4" section for the full design. This part benchmarks exactly four Part-1
+frozen datasets against their approved candidates: `common_voice_indic`
+(ASR: `faster-whisper-small`/`faster-whisper-medium`; language ID:
+`fasttext-lid176`), `ami_meeting_corpus` (VAD: `silero-vad-v6`;
+diarization: `pyannote-community-local`/`deterministic-diarization-
+fallback`), `vast_social_text`/`vast_2014_mixed_records` (social/chat
+extraction: `existing-deterministic-social-parsers`). No other
+dataset/candidate pair is accepted.
+
+### Benchmark CLI
+
+```bash
+# List every approved dataset/candidate/pair this harness supports:
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli list-candidates
+
+export TRACEX_BENCHMARK_DATA_ROOT=/path/to/your/local/datasets
+export TRACEX_MODEL_CACHE_ROOT=/path/to/your/local/model/cache   # not needed for the social baseline
+export TRACEX_BENCHMARK_OUTPUT_ROOT=./benchmark-runs             # git-ignored
+
+# Validate the request/local configuration without running anything:
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli validate \
+    --dataset-id common_voice_indic --candidate-id faster-whisper-small
+
+# Run a real benchmark (ASR/VAD/diarization need a verified model name/
+# version/SHA-256 -- see the pre-flight below; the social baseline needs
+# neither a model cache root nor a verified artifact, since it wraps this
+# project's own existing deterministic parsers):
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+    --dataset-id vast_social_text --candidate-id existing-deterministic-social-parsers
+```
+
+Exit code `0` means `succeeded`; `1` means a truthful `unavailable`/
+`failed` result (missing local data/model, an unresolved licence, every
+sample failed, etc.) was still written safely to the output root; `2`
+means the request itself was rejected (unknown dataset/candidate ID or an
+unsupported pairing) before any benchmark ran. A result file never
+contains a raw transcript, message, participant name, phone number,
+handle, speaker label, credential, Hugging Face token, evidence URI, or
+local filesystem path — only aggregate metrics, safe metadata, and a
+`failure_reason_safe` string when relevant. Runs as a local host process
+— never through Docker Compose.
+
+**`vast_social_text`/`vast_2014_mixed_records` +
+`existing-deterministic-social-parsers` is already licence-cleared** —
+unlike every ASR/VAD/diarization pair (all currently blocked by
+unresolved licence status or a `conditional` selection status), this one
+pair is ready to run for real the moment a local dataset directory
+exists, with no optional package install and no gated-model token needed
+at all. This is Part 4's most immediately actionable path for Aditya's
+pre-flight.
+
+No faster-whisper/pyannote.audio/fastText installation, real dataset, or
+GPU exists on Shreshtha's laptop — every unit test for this part runs
+against `Fake*Engine`s and the real (but input-only-synthetic)
+deterministic social extractor (`uv run pytest tests/unit/
+communication_processing/test_audio_social_benchmark_*.py -v`). The
+integration test that runs the real CLI as a subprocess
+(`tests/integration/communication_processing/
+test_audio_social_benchmark_smoke.py`) self-skips cleanly here, since
+`TRACEX_BENCHMARK_DATA_ROOT` is unset.
+
+### Reproducible install: `uv sync --extra audio-social-benchmark`
+
+`faster-whisper`/`pyannote-audio`/`fasttext`/`torch` are declared in
+`pyproject.toml`'s `[project.optional-dependencies] audio-social-
+benchmark` group and resolved into `uv.lock` — never installed by the
+standard `uv sync --all-groups` verification command, and not installed
+anywhere on this development machine. Aditya's Mac installs the exact
+pinned versions via:
+
+```bash
+uv sync --extra audio-social-benchmark
+```
+
+**Never `pip install faster-whisper`/`pip install pyannote.audio`/
+`pip install fasttext`/`pip install torch` ad hoc** — that would silently
+resolve whatever is newest on PyPI that day, a different, unpinned
+version than this branch's engine wiring was written against, making any
+resulting benchmark number impossible to reproduce later.
+
+`torch` was added to this extra specifically for `_build_real_vad_engine`'s
+Silero VAD wiring, by explicit team decision — it remains scoped to this
+one optional extra and is never a production/base dependency, and
+`communication_processing`'s production ASR/diarization adapters still
+import neither `torch` nor any other heavyweight ML toolkit (see
+`audio/asr_adapter.py`'s docstring and `docs/qa/known-limitations.md`).
+
+**This benchmark never downloads a model from the network itself.**
+`_build_real_vad_engine` calls `torch.hub.load(..., source="local")`
+against a snapshot staged entirely by Aditya beforehand — it never fetches
+`snakers4/silero-vad` from GitHub, and never uses `source="github"`. The
+same is true of every other real engine here: `faster-whisper`,
+`pyannote.audio`, and fastText's `lid.176` are all loaded from local
+paths under `TRACEX_MODEL_CACHE_ROOT` that Aditya stages manually — see
+"MacBook Gate B pre-flight" below for exactly what to stage, where, and
+how each artifact's SHA-256 is recorded and verified.
+
+### MacBook Gate B pre-flight (Aditya)
+
+This benchmark capability is built and unit-tested, but **no real
+dataset, model, or benchmark result exists yet** (except one genuine
+local run against a synthetic, not real, directory noted above). Follow
+these steps in order:
+
+1. **Fetch and check out the exact pushed `sarthak` commit.** `git fetch
+   && git status --short && git branch --show-current && git log
+   --oneline -5` — confirm you are on the exact, unmerged commit this
+   handoff refers to. Do not run against any other branch or a locally
+   modified tree.
+2. **Install reproducibly.** `uv sync --extra audio-social-benchmark` —
+   never an ad hoc `pip install`. If `audio_social_benchmark._build_real_
+   asr_engine`/`_build_real_vad_engine`/`_build_real_diarization_engine`/
+   `_build_real_language_id_engine`'s wiring needs an adjustment to match
+   an installed package's actual API (a real possibility — this session
+   could not import or exercise any of them, including `torch`/Silero VAD
+   via `torch.hub.load`), fix it on this same branch and note the exact
+   version that required the fix.
+3. **Resolve and record licence/source terms before any download**:
+   Common Voice Indic, AMI Meeting Corpus, VAST (social text and 2014
+   mixed records), the two faster-whisper release sizes, Silero VAD v6,
+   pyannote.audio's community pipeline (including its local-use terms —
+   `pyannote-community-local` is `conditional` specifically because these
+   are not yet accepted), and fastText's `lid.176` model. `vast_social_
+   text`/`vast_2014_mixed_records` are already `license_status:
+   verified_permissive` in the frozen manifest — confirm this still holds
+   and record the exact release/version you use, rather than re-opening
+   the licence question from scratch.
+4. **Stage Silero VAD as a local Torch Hub source snapshot — never let
+   this benchmark fetch it itself.** `_build_real_vad_engine` refuses to
+   call `torch.hub.load` against GitHub; it only accepts
+   `torch.hub.load(..., source="local")` against a snapshot Aditya stages
+   himself. Clone (or otherwise obtain) the exact `snakers4/silero-vad`
+   revision you've verified the licence/source terms for into
+   `$TRACEX_MODEL_CACHE_ROOT/silero-vad/` (a plain local checkout with
+   `hubconf.py` at its root — the same layout `git clone` produces).
+   Record that exact revision/tag as the `--model-version` you pass to
+   the CLI. Compute `shasum -a 256
+   $TRACEX_MODEL_CACHE_ROOT/silero-vad/files/silero_vad.jit` (adjust this
+   relative path if the real repository's layout differs from what this
+   session assumed — see `_build_real_vad_engine`'s docstring) and pass
+   it as `--model-sha256`; a mismatch against what's actually staged
+   blocks the run safely rather than loading unverified weights.
+5. **Stage fastText's `lid.176` and its required faster-whisper
+   transcription stage, and record both as separate verified
+   artifacts.** `fasttext-lid176` classifies text, not audio, so
+   `_build_real_language_id_engine` chains a `faster-whisper`
+   transcription stage in front of it purely to produce text to classify
+   — a completed result is rejected unless *both* are staged and
+   verified, not just fastText's own model. Place fastText's model at
+   `$TRACEX_MODEL_CACHE_ROOT/lid.176.ftz` and a downloaded faster-whisper
+   model at `$TRACEX_MODEL_CACHE_ROOT/lid-transcription-stage/` (with its
+   weight file at `lid-transcription-stage/model.bin` — adjust if the
+   installed faster-whisper's actual file layout differs). Compute each
+   file's SHA-256 separately and pass them as `--model-sha256` (for
+   `lid.176.ftz`) and `--transcription-stage-model-sha256` (for
+   `lid-transcription-stage/model.bin`), alongside
+   `--transcription-stage-model-name`/`--transcription-stage-model-version`
+   naming the exact faster-whisper release used as the transcription
+   stage. Both hashes are verified against the actually-staged files
+   before either model loads.
+6. **Update only safe fields.** If verification succeeds, change the
+   relevant `license_status`/`selection_status` (e.g. lifting
+   `pyannote-community-local` from `conditional` to `candidate` only if
+   its local-use terms are genuinely accepted), and add safe version/
+   source metadata — never split definitions, never a `selected` status,
+   never a dataset swap, never a change to a success-metric threshold
+   after seeing a result.
+7. **Download only approved datasets and weights into a git-ignored local
+   directory** — under whatever path you point `TRACEX_BENCHMARK_DATA_
+   ROOT`/`TRACEX_MODEL_CACHE_ROOT` at. Never commit a downloaded file, a
+   raw recording, a transcript, a chat export, or a model weight.
+8. **Record source/version, candidate configuration, and SHA-256
+   values** — `shasum -a 256 <file>` — needed for `--model-sha256` (and,
+   for `fasttext-lid176`, `--transcription-stage-model-sha256`) on a real
+   ASR/VAD/diarization/language-ID run; steps 4 and 5 above already cover
+   Silero VAD's and the language-ID transcription stage's specific files.
+9. **Use any gated-model token only from your own local environment,
+   never Git or logs.** If pyannote.audio's pipeline requires a Hugging
+   Face access token, export it as your own local shell/environment
+   variable (e.g. `HF_TOKEN`) — never commit it, never put it in
+   `.env.example`, never print it, and never let it appear in a benchmark
+   result or log line.
+10. **Record the actual observed runtime backend and resource use** — do
+   not assume Apple's Metal/MPS, CUDA, or any particular accelerator is
+   in use just because you're on a MacBook; report whatever
+   `hardware_profile`/backend faster-whisper/pyannote.audio/fastText
+   themselves actually report on this machine (or `cpu` if that's
+   genuinely what ran).
+11. **Run approved benchmarks and return only safe aggregate results** —
+   never a raw transcript, message, participant name, phone number,
+   handle, speaker label, or model weight. Leave every candidate's
+   `selection_status` as `candidate`/`conditional` unless step 6 above
+   genuinely resolved it — do not mark any Part 4 candidate `selected`;
+   Gate C makes that decision later, after Parts 2-4 all have comparable
+   results.
+
+If an artifact is genuinely unavailable, its licence terms can't be
+resolved, or a candidate fails to load, run the CLI anyway and let it
+produce its own truthful `unavailable`/`failed` result — never substitute
+a different dataset or model silently, and never report a benchmark as
+having succeeded unless the CLI's own exit code and result JSON say so.

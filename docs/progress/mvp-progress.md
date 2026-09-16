@@ -1075,3 +1075,115 @@ decides after Parts 2-4 all have comparable results.
   aggregate results back -- or transparently records either as `blocked`,
   never a fabricated pass. Gate C's own repository-wide re-verification
   of this branch is also still pending.
+
+## Phase 7 Part 4 — Sarthak audio and social/chat benchmark foundation and local-model governance: In progress
+
+Reproducible benchmark adapters, a safe CLI, and tests for the four
+datasets Part 1's frozen manifest assigns to Sarthak -- `common_voice_
+indic` (ASR + language identification), `ami_meeting_corpus` (VAD +
+diarization mechanics only), `vast_social_text`/`vast_2014_mixed_records`
+(social/chat structured extraction) -- built and tested on Shreshtha's
+laptop against synthetic fixtures and fake engines. This part produces
+valid, reproducible benchmark *capability*, not a selected winner: no
+real dataset/model artifact was downloaded in this environment, and every
+real ASR/VAD/diarization candidate remains blocked by unresolved licence
+status or a `conditional` selection status.
+
+- [x] `app/modules/communication_processing/{audio_social_benchmark_
+  metrics,audio_social_benchmark_validation,audio_social_benchmark_
+  adapters,audio_social_benchmark,audio_social_benchmark_cli}.py` (new,
+  purely additive) -- typed, dependency-injected local benchmark
+  interface accepting only Part 1's frozen `common_voice_indic`/
+  `ami_meeting_corpus`/`vast_social_text`/`vast_2014_mixed_records`
+  dataset IDs paired with `faster-whisper-small`/`faster-whisper-medium`/
+  `silero-vad-v6`/`pyannote-community-local`/`deterministic-diarization-
+  fallback`/`fasttext-lid176`/`existing-deterministic-social-parsers`; a
+  three-way licence/conditional-status execution gate; artifact
+  availability checked before execution; a safe, typed `BenchmarkRunV1`
+  result written for every outcome.
+- [x] One narrowly-scoped, additive extension to Part 1's own frozen
+  `configs/benchmarks/model-candidates.v1.json`: `existing-deterministic-
+  social-parsers` (task `social_text_extraction`, owner `sarthak`,
+  `internal_only`) -- explicitly anticipated by Part 1's own
+  documentation ("a future part may catalogue a real candidate against
+  this task without a schema change"). Nothing existing in the catalogue
+  was modified; Part 1's own 42-test suite re-verified passing unchanged.
+- [x] ASR/diarization adapters reuse the exact existing
+  `TranscriptSegmentInput`/`DiarizationSegmentInput` canonical types and
+  `transcript_segments_to_mentions`/`diarization_segments_to_mentions`/
+  `mention_to_observation` production functions directly; the social
+  baseline's real engine (`DeterministicSocialExtractionEngine`) wraps
+  the unmodified `social/identifiers.py::extract_mentioned_identifiers`
+  with no lazy import needed at all. A recording-local speaker label
+  becomes only an `entity_type_hint="speaker_label_local"` mention,
+  proven never to become a cross-record identity claim.
+- [x] **A real, discovered asymmetry, honestly reported**: unlike
+  Jasraj's/Gaurav's Phase 7 parts (every real dataset/candidate blocked),
+  `vast_social_text`/`vast_2014_mixed_records` +
+  `existing-deterministic-social-parsers` is already licence-cleared
+  today -- confirmed by a real local CLI run against a synthetic dataset
+  directory during this task's own verification, producing a genuine
+  `succeeded` result with no optional dependency or model cache needed.
+- [x] A pre-existing, whole-module static safety test forbidding
+  `faster_whisper`/`pyannote`/`fasttext`/`torch`/`os` imports anywhere
+  under `communication_processing/` required a narrow, tested carve-out
+  for `audio_social_benchmark*.py` files specifically, mirroring Phase 7
+  Part 3's identical precedent. Every other forbidden library remains
+  forbidden in the benchmark harness too, verified by a new dedicated
+  test.
+- [x] `pyproject.toml`'s `[project.optional-dependencies]
+  audio-social-benchmark` (`faster-whisper`, `pyannote-audio`,
+  `fasttext`, `torch`), resolved into `uv.lock` via `uv add --optional
+  audio-social-benchmark --no-sync` -- confirmed not installed by `uv
+  sync --all-groups` and not present anywhere on this development
+  machine. `torch` was added by explicit team decision specifically for
+  `_build_real_vad_engine`'s Silero VAD wiring (`torch.hub.load`),
+  mirroring how Phase 7 Part 3's Ultralytics ByteTrack tracker was
+  completed after an analogous decision -- it remains scoped to this one
+  optional extra and is never a production/base dependency. Aditya's
+  MacBook pre-flight runs `uv sync --extra audio-social-benchmark`, never
+  an ad hoc `pip install`.
+- [x] **Both real-engine designs initially left unresolved are now wired
+  -- and then made fully offline and hash-verified.** `_build_real_vad_
+  engine` never calls `torch.hub.load` against GitHub: it requires a
+  Torch Hub *source snapshot* of `snakers4/silero-vad` staged manually
+  under `<model_cache_root>/silero-vad/` and loads it with
+  `torch.hub.load(..., source="local")`, verifying the snapshot's own
+  weight file's SHA-256 and that every resolved path stays inside the
+  configured model cache root before anything loads.
+  `_build_real_language_id_engine` chains its own internal
+  `faster-whisper` transcription stage in front of fastText's `lid.176`
+  text classifier (since `lid.176` classifies text, not audio),
+  attributing only the language *classification* -- never the
+  transcription stage -- to the `fasttext-lid176` candidate's own
+  name/version/hash, and now requires and hash-verifies a second,
+  independent `VerifiedModelArtifact` for the transcription stage itself
+  (folded into `inference_config_hash` since the frozen `BenchmarkRunV1`
+  contract has only one `artifact_sha256` field). Both degrade to a safe
+  `BenchmarkArtifactUnavailableError` -- never a crash, a silent
+  download, or a fabricated result -- on a missing artifact, an escaped
+  path, or a hash mismatch.
+- [x] 111 new focused tests (19 metrics, 20 adapters, 55 safety, 9 CLI, 3
+  self-skipping integration smoke, plus 5 new parametrized instances of a
+  production-safety test proving the ML-import carve-out is narrow)
+  covering all 17 required proof points from the task brief plus this
+  follow-up's own offline/hash-verification proof points; see
+  `docs/qa/test-matrix.md`'s "Phase 7 Part 4" section for the full
+  ID-to-test mapping.
+- [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
+  communication-processing-worker}.md`, `docs/qa/{test-matrix,test-data,
+  known-limitations}.md`, `docs/runbooks/local-development.md` updated
+  additively, including a full MacBook Gate B validation handoff runbook
+  section for Aditya.
+- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
+  No Common Voice Indic, AMI Meeting Corpus, or VAST data was downloaded
+  on Shreshtha's laptop (per this task's own rule); no faster-whisper/
+  pyannote.audio/fastText/torch installation was verified; every test in
+  this phase runs against synthetic fixtures and fake engines only
+  (except the one genuine local run against a synthetic, not real,
+  directory noted above). This part is not complete until Aditya pulls
+  this exact branch on his Apple-Silicon MacBook, resolves each
+  artifact's licence/source status, runs the real benchmark CLI against
+  real local data, and reports safe aggregate results back -- or
+  transparently records any unavailable asset as `blocked`, never a
+  fabricated pass.

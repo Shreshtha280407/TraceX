@@ -587,3 +587,49 @@ All source access and downloads in this Gate B record occurred on
 Intel Core i5-13420H (12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via
 `uv`); `nvidia-smi` present but reporting no driver -- confirmed no GPU
 backend was available, so every real result below genuinely ran on CPU.
+
+## Phase 7 Part 4 — audio and social/chat benchmark foundation fixtures (Sarthak)
+
+No real Common Voice Indic, AMI Meeting Corpus, or VAST data exists
+anywhere in this repository's tests -- none was downloaded onto this
+development machine, per this task's explicit rule:
+
+- **ASR/VAD/language-ID fixtures**: `tests/unit/communication_processing/
+  test_audio_social_benchmark_metrics.py`/`test_audio_social_benchmark_
+  adapters.py` build small, invented `TimeInterval`/`SpeakerTurn`/
+  `TranscriptSegmentInput`/`DiarizationSegmentInput` values directly
+  (arbitrary millisecond ranges, generic recording-local labels like
+  `"speaker_0"`/`"spk_A"`, invented short phrases like `"hello world"`) --
+  no real audio recording, transcript, or speaker turn is decoded or read
+  anywhere in these tests. `audio_bytes`/`audio_bytes=b"synthetic"`-style
+  fields are placeholder bytes only, never real WAV content, since the
+  `Fake*Engine`s never actually decode them.
+- **Social/chat fixtures**: a small, invented, synthetic Indian-mobile-
+  shaped phone number (`"9876543210"`, the same synthetic value used
+  throughout this repository's other test suites) embedded in an invented
+  message string (`"call me at 9876543210"`) is used to prove
+  `DeterministicSocialExtractionEngine` genuinely reuses the real,
+  unmodified `social/identifiers.py::extract_mentioned_identifiers` --
+  none of it corresponds to a real message, phone number, or person.
+- **Safety/CLI fixtures**: `tests/unit/communication_processing/
+  test_audio_social_benchmark_safety.py`/`test_audio_social_benchmark_
+  cli.py` build synthetic `DatasetManifestEntryV1`/`ModelCandidateV1`
+  records directly (to exercise the licence/conditional-status gate
+  against both blocked and cleared states) and point every
+  `TRACEX_BENCHMARK_*` environment variable at a pytest `tmp_path`
+  directory -- never a developer's real environment.
+- **Integration smoke fixtures**: `tests/integration/
+  communication_processing/test_audio_social_benchmark_smoke.py`
+  self-skips (never fabricates a pass) unless `TRACEX_BENCHMARK_DATA_ROOT`
+  is actually set and the relevant dataset directory actually exists and
+  is non-empty -- the expected state on this development machine. During
+  this task's own verification, a synthetic local `vast_social_text`
+  directory (one invented JSONL line, the same phone-number fixture
+  above) was used to confirm the real CLI genuinely reaches a `succeeded`
+  result for the one pair not blocked by licence today -- that synthetic
+  directory was created under the session scratchpad and removed
+  immediately after, never committed.
+
+No real speech, transcript, chat message, participant name, phone number,
+handle, speaker label, model weight, or MacBook-local path appears
+anywhere in this module's tests.
