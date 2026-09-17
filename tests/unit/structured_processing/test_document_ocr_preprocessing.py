@@ -1,13 +1,15 @@
-"""Regression coverage for the deterministic pre-OCR image binarization step.
+"""Regression coverage for the optional, off-by-default pre-OCR binarization step.
 
-Added after a confirmed macOS Gate B defect (Tesseract 5.5.0): the same
-rendered page produced a digit-insertion misread (`25000` -> `250000`) and
-dropped the FIR-number line entirely (no `fir_reference` at all) on that
-platform, while passing on the CI/dev environment's Tesseract version.
-Tesseract's own internal adaptive thresholding is exactly what varies
-between versions/platforms; these tests protect the new,
-version-independent alternative (`_prepare_image_for_ocr`) directly,
-without depending on any specific Tesseract behavior.
+`OcrConfig.binarize` was briefly `True` by default (commit f84aa4d) on the
+theory that a fixed threshold would be more cross-platform-portable than
+Tesseract's own internal adaptive thresholding. Real Gate B measurements on
+macOS Tesseract 5.5.0 disproved that: the fixed threshold destroyed valid
+characters Tesseract's own adaptive thresholding read correctly unassisted
+on that platform (recall dropped from an already-poor 0.33 to 0.00). It is
+now `False` by default -- these tests protect `_prepare_image_for_ocr`
+itself (still available as an explicit opt-in) directly, without depending
+on any specific Tesseract behavior, and guard against the default silently
+flipping back to `True` again.
 """
 
 from __future__ import annotations
@@ -67,11 +69,16 @@ def test_preprocessing_does_not_change_image_dimensions() -> None:
     assert prepared.size == image.size
 
 
+def test_binarize_defaults_to_off() -> None:
+    """Guards against the default silently flipping back on (see module docstring)."""
+    assert OcrConfig().binarize is False
+
+
 def test_ocr_config_hash_reflects_binarization_settings() -> None:
     """Provenance: a changed preprocessing config must change the recorded hash."""
-    base = ocr_config_hash(OcrConfig())
-    no_binarize = ocr_config_hash(OcrConfig(binarize=False))
-    different_threshold = ocr_config_hash(OcrConfig(binarization_threshold=200))
-    assert base != no_binarize
-    assert base != different_threshold
-    assert no_binarize != different_threshold
+    default = ocr_config_hash(OcrConfig())
+    opted_in = ocr_config_hash(OcrConfig(binarize=True))
+    different_threshold = ocr_config_hash(OcrConfig(binarize=True, binarization_threshold=200))
+    assert default != opted_in
+    assert default != different_threshold
+    assert opted_in != different_threshold

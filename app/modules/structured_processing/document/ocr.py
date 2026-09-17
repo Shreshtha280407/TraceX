@@ -65,13 +65,21 @@ class OcrConfig:
     page_segmentation_mode: int = 3
     #: Deterministic grayscale + fixed-threshold binarization applied to
     #: the rendered page image before OCR (see `_prepare_image_for_ocr`).
-    #: Snaps every pixel to pure black or white *before* Tesseract ever
-    #: sees the image, instead of relying on Tesseract's own internal
-    #: adaptive thresholding -- which is exactly what varies between
-    #: Tesseract versions/platforms and otherwise turns an ambiguous,
-    #: anti-aliased glyph edge into a version-dependent digit misread or
-    #: an entire line dropped below `min_confidence`.
-    binarize: bool = True
+    #: **Off by default.** It was briefly turned on by default (commit
+    #: f84aa4d) on the theory that a fixed threshold would be *more*
+    #: portable than Tesseract's own internal adaptive thresholding --
+    #: real Gate B measurements on macOS Tesseract 5.5.0 disproved that:
+    #: the fixed cut point destroyed valid characters that Tesseract's own
+    #: adaptive thresholding on that platform read correctly unassisted
+    #: (recall dropped from an already-poor 0.33 to 0.00, with no
+    #: `fir_reference` recovered at all). A local PSM x binarization sweep
+    #: on this environment's Tesseract found no measurable difference
+    #: either way (every combination already reads the fixtures at
+    #: recall=1.00 here), so there is no environment-backed evidence this
+    #: flag helps anywhere -- it is kept only as an explicit, documented
+    #: opt-in for an operator who has verified it helps on their own
+    #: specific deployment, never as an assumed improvement.
+    binarize: bool = False
     #: 8-bit grayscale cut point (0-255): a pixel at or above this value
     #: becomes pure white, below it becomes pure black. 128 (the exact
     #: midpoint) is the standard default for high-contrast black-on-white
