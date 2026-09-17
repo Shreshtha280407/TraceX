@@ -30,7 +30,22 @@ from app.modules.structured_processing.models import RawMention, TextSegment
 from app.modules.structured_processing.provenance import CONFIDENCE_REGEX_EXACT_MATCH
 
 _FIR_REFERENCE = re.compile(
-    r"F\.?I\.?R\.?\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9/\-]{2,29})",
+    # The literal "FIR" label is always required. What follows it (before
+    # the actual identifier) accepts the canonical "No."/"Number" label OR
+    # a short (<=6 letters) OCR-garbled stand-in for it -- observed on Gate
+    # B macOS Tesseract (5.5.0/5.5.3): "FIR Nex 91/2026", "FIR Ma 20/2026",
+    # "FIR Not 30/2026", where "No"/"No." was misread as a different short
+    # word. The identifier itself is never guessed at: the trailing
+    # lookahead requires it to actually contain a digit (every real FIR
+    # reference this project extracts -- "45/2026", "TEST/2026/001",
+    # "SECRET/9999/999" -- has one), which is exactly what keeps the
+    # tolerant short-word fallback from matching ordinary prose ("FIR
+    # discussions ..." never has a digit-bearing token immediately after
+    # a <=6-letter word, so it never matches; see
+    # test_fir_report.py::test_fir_reference_tolerates_an_ocr_garbled_label
+    # for both directions).
+    r"F\.?I\.?R\.?\s*(?:No\.?|Number|[A-Za-z]{1,6})\s*[:\-]?\s*"
+    r"(?=[A-Za-z0-9/\-]*\d)([A-Za-z0-9][A-Za-z0-9/\-]{2,29})",
     re.IGNORECASE,
 )
 _POLICE_STATION = re.compile(

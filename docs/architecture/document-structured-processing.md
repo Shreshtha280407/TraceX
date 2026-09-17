@@ -95,6 +95,60 @@ installed for `media_processing`). For a host-run worker: install
 `tesseract-ocr` (and any non-`eng` language pack via
 `tesseract-ocr-<lang>`) via your system's package manager.
 
+### Gate B macOS OCR configuration
+
+`OcrConfig`'s two OCR-quality knobs (`page_segmentation_mode`, `binarize`)
+were tuned twice against real Gate B evidence from Aditya's MacBook, not
+assumed from documentation or from this project's own (Linux) development
+environment, where every tested combination already reads the fixtures at
+`recall=1.00` and gives no distinguishing signal at all.
+
+**Round 1 (macOS Tesseract 5.5.0).** `binarize=True` (a fixed grayscale
+threshold applied before OCR, briefly the default in commit f84aa4d) was
+found to actively destroy valid characters on that Tesseract build: recall
+on the `91/2026` fixture dropped from an already-poor `0.33` to `0.00`,
+with no `fir_reference` recovered at all. Reverted to `binarize=False` by
+default.
+
+**Round 2 (macOS Tesseract 5.5.3).** A full matrix —
+`page_segmentation_mode` ∈ {3, 4, 6, 11, 12} × `binarize` ∈ {`False`,
+`True`} — was run against the real scanned-PDF fixtures for all three FIR
+identifiers this project's tests exercise. Measured results, `binarize=False`
+unless noted:
+
+| Fixture | PSM | Raw OCR text | Result |
+|---|---|---|---|
+| `91/2026` | 6 | `FIR Nex 91/2026 Police Station: Colaba Phone: 9876543210 Amount Rs. 25000` | recall `0.67` — `25000`/`9876543210` extracted, `91/2026` present in text but not (at the time) matched by the label regex |
+| `20/2026` | 6 | `FIR Ma 20/2026 Police Station: Colaba` | `20/2026` present in text but not (at the time) matched |
+| `30/2026` | 6 | `FIR Not 30/2026 tiled today` | `30/2026` present in text but not (at the time) matched |
+
+All `binarize=True` results were worse than the corresponding
+`binarize=False` result for every PSM tested (consistent with Round 1).
+No other tested PSM value (3, 4, 11, 12) recovered the label line better
+than PSM 6 did. **Decision: `page_segmentation_mode=6`,
+`binarize=False`.**
+
+In every one of the three cases above, Tesseract's own PSM-6 recognition
+of the FIR-label line was close but not exact — `No`/`No.` was misread as
+a short, different word (`Nex`, `Ma`, `Not`), while the actual identifier
+(`91/2026`, `20/2026`, `30/2026`) was read correctly. Since the raw text
+already contained the real identifier, the second half of the fix was in
+`document/fir_report.py`'s `_FIR_REFERENCE` regex, not in OCR
+configuration: the literal `FIR` label is still required, but the token
+between `FIR` and the identifier now also accepts a short (≤6 letters)
+OCR-garbled stand-in for `No`/`Number`, and the identifier itself is
+required (via lookahead) to actually contain a digit — the same structural
+requirement every real FIR reference in this project's fixtures already
+satisfies (`45/2026`, `TEST/2026/001`, `SECRET/9999/999`). This means the
+matcher still only ever emits an identifier that is genuinely present in
+the OCR text next to a genuine `FIR` mention; it does not invent, guess,
+or hard-code any value. See
+`tests/unit/structured_processing/test_fir_report.py::
+test_fir_reference_tolerates_an_ocr_garbled_label` (positive cases) and
+`test_fir_reference_garbled_label_tolerance_does_not_invent_a_match`
+(negative case: an unrelated digit-bearing identifier elsewhere in a
+sentence that also contains "FIR" is never emitted).
+
 ## Layout/text normalization
 
 `app/modules/structured_processing/document/normalization.py`.

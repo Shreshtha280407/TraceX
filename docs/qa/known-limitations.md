@@ -529,3 +529,19 @@ Aditya's MacBook pre-flight, not yet performed:
   `docs/runbooks/local-development.md`'s "Phase 7 Part 2 MacBook validation
   handoff" section for what Aditya's pre-flight must still verify before
   this phase's benchmark capability can produce a real, trustworthy result.
+- **Resolved (Gate B, Aditya's MacBook, real measurement): the document
+  OCR fallback's default configuration is now `page_segmentation_mode=6`,
+  `binarize=False`, and `fir_report.py`'s FIR-reference matcher tolerates a
+  short OCR-garbled label.** Two real macOS Tesseract builds (5.5.0,
+  5.5.3) both showed `binarize=True` actively harms recognition -- reverted
+  to off by default. A full PSM x binarize matrix on 5.5.3 found PSM 6 the
+  best-performing mode and every `binarize=True` result worse than its
+  `binarize=False` counterpart; no OS-specific branch or hard-coded fixture
+  value was introduced -- one deterministic default plus one narrowly
+  extended, still-evidence-bound regex. See `docs/architecture/
+  document-structured-processing.md`'s "Gate B macOS OCR configuration"
+  section for the full measured matrix and the exact regex reasoning. Not
+  yet re-verified against real macOS Tesseract after this change -- the
+  next Gate B run is what confirms it, not this environment's Linux
+  Tesseract (which showed no distinguishing signal for any tested
+  combination either before or after).

@@ -3209,3 +3209,49 @@ known-limitations.md`, `docs/progress/mvp-progress.md`, and
 all updated to reflect this -- and to correct the now-stale "paddleocr is
 not added to pyproject.toml" sentence the same architecture doc previously
 stated.
+
+## 2026-09-17 -- Gate B macOS OCR configuration, round 2 (real Tesseract 5.5.3 matrix)
+
+Real Gate B evidence from Aditya's MacBook (macOS, Tesseract 5.5.3),
+`page_segmentation_mode=6`, `binarize=False` (the round-1 default fixed
+after Tesseract 5.5.0 showed `binarize=True` was actively harmful):
+
+```text
+Fixture 91/2026: "FIR Nex 91/2026 Police Station: Colaba Phone: 9876543210 Amount Rs. 25000"
+  recall 0.67 -- 25000 and 9876543210 extracted, 91/2026 present in text but not matched.
+Fixture 20/2026: "FIR Ma 20/2026 Police Station: Colaba"
+  20/2026 present in text but not matched.
+Fixture 30/2026: "FIR Not 30/2026 tiled today"
+  30/2026 present in text but not matched.
+```
+
+All `binarize=True` results were worse than the corresponding
+`binarize=False` result; no other tested PSM (3, 4, 11, 12) recovered the
+label line better than PSM 6. Root cause: in every case Tesseract read the
+actual identifier correctly but misread `No`/`No.` as a short, unrelated
+word (`Nex`/`Ma`/`Not`), and `fir_report.py`'s `_FIR_REFERENCE` regex
+required the literal `No.`/`Number` token, so it never matched. Fixed by
+extending the regex to accept a short (<=6 letters) OCR-garbled stand-in
+for the label, gated by a lookahead requiring the identifier itself to
+contain a digit -- see `docs/architecture/document-structured-processing.md`'s
+"Gate B macOS OCR configuration" section for the full reasoning and
+`docs/qa/known-limitations.md`'s matching entry.
+
+Local verification (this environment: Linux, Tesseract 5.5.2 -- shows no
+distinguishing signal between any PSM/binarize combination either before
+or after this change, so this is a regression check, not a reproduction
+of the Gate B failure):
+
+```text
+uv run pytest -q tests/unit/structured_processing/test_ocr_field_match_precision.py tests/unit/structured_processing/test_worker_document_batches.py
+  -> 7 passed
+uv run pytest -q tests/unit/structured_processing
+  -> 359 passed, 1 skipped (skip is the pre-existing, unrelated NER-bootstrap skip)
+uv run ruff format --check .   -> 504 files already formatted
+uv run ruff check .             -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 210 source files
+git diff --check                -> clean
+```
+
+Not yet re-verified against real macOS Tesseract after this change --
+that confirmation is Aditya's next Gate B run, not this entry.

@@ -1,15 +1,23 @@
-"""Regression coverage for the optional, off-by-default pre-OCR binarization step.
+"""Regression coverage for Gate B's macOS OCR configuration decisions.
 
 `OcrConfig.binarize` was briefly `True` by default (commit f84aa4d) on the
 theory that a fixed threshold would be more cross-platform-portable than
 Tesseract's own internal adaptive thresholding. Real Gate B measurements on
-macOS Tesseract 5.5.0 disproved that: the fixed threshold destroyed valid
-characters Tesseract's own adaptive thresholding read correctly unassisted
-on that platform (recall dropped from an already-poor 0.33 to 0.00). It is
-now `False` by default -- these tests protect `_prepare_image_for_ocr`
-itself (still available as an explicit opt-in) directly, without depending
-on any specific Tesseract behavior, and guard against the default silently
-flipping back to `True` again.
+two macOS Tesseract builds (5.5.0, 5.5.3) disproved that: the fixed
+threshold destroyed valid characters Tesseract's own adaptive thresholding
+read correctly unassisted on that platform. It is now `False` by default.
+
+`OcrConfig.page_segmentation_mode` defaults to `6`, not `3`, per the same
+Gate B matrix (real macOS Tesseract 5.5.3): PSM 6 was the configuration
+that actually read the FIR-label line correctly; other tested PSM values
+were not better on that machine. See `docs/architecture/
+document-structured-processing.md`'s "Gate B macOS OCR configuration"
+section for the full matrix this decision is based on.
+
+These tests protect `_prepare_image_for_ocr` (still available as an
+explicit opt-in) and both defaults directly, without depending on any
+specific Tesseract behavior, and guard against either default silently
+regressing.
 """
 
 from __future__ import annotations
@@ -74,6 +82,15 @@ def test_binarize_defaults_to_off() -> None:
     assert OcrConfig().binarize is False
 
 
+def test_page_segmentation_mode_defaults_to_6() -> None:
+    """Guards the Gate B macOS matrix decision (PSM 6) against silent regression.
+
+    See `docs/architecture/document-structured-processing.md`'s "Gate B
+    macOS OCR configuration" section for the real measured matrix.
+    """
+    assert OcrConfig().page_segmentation_mode == 6
+
+
 def test_ocr_config_hash_reflects_binarization_settings() -> None:
     """Provenance: a changed preprocessing config must change the recorded hash."""
     default = ocr_config_hash(OcrConfig())
@@ -82,3 +99,10 @@ def test_ocr_config_hash_reflects_binarization_settings() -> None:
     assert default != opted_in
     assert default != different_threshold
     assert opted_in != different_threshold
+
+
+def test_ocr_config_hash_reflects_page_segmentation_mode() -> None:
+    """Provenance: a changed PSM must also change the recorded hash."""
+    default = ocr_config_hash(OcrConfig())
+    other_psm = ocr_config_hash(OcrConfig(page_segmentation_mode=3))
+    assert default != other_psm
