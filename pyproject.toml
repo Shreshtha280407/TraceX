@@ -121,6 +121,7 @@ module = [
     "pyarrow.*",
     "igraph.*",
     "leidenalg.*",
+    "paddleocr.*",
 ]
 ignore_missing_imports = true
 

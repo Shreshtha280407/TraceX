@@ -93,7 +93,7 @@ def _build_paddleocr_engine(
     crash or a fabricated result. See `docs/runbooks/local-development.md`.
     """
     try:
-        import paddleocr  # type: ignore[import-not-found]
+        import paddleocr
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "paddleocr is not installed in this environment -- run the MacBook "
