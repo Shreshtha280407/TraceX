@@ -149,6 +149,20 @@ test_fir_reference_tolerates_an_ocr_garbled_label` (positive cases) and
 (negative case: an unrelated digit-bearing identifier elsewhere in a
 sentence that also contains "FIR" is never emitted).
 
+**Confirmed on the real Gate B MacBook.** Aditya re-ran the focused
+structured-processing OCR tests and then the complete test suite on the
+actual Gate B machine (macOS, Python 3.12.7, Tesseract 5.5.3, pytesseract
+0.3.13, pypdfium2 5.13.0) with `page_segmentation_mode=6` and
+`binarize=False` in place and the tolerant FIR-label regex applied — both
+passed. Exact command and full-suite counts are recorded in
+`docs/qa/test-results.md`'s dated Gate B confirmation entry. This confirms
+the three fixtures this task measured (`91/2026`, `20/2026`, `30/2026`)
+recover correctly on that machine with this configuration; it does not
+claim that every future document type, layout, or real police evidence
+will OCR at this accuracy — see `docs/qa/known-limitations.md` for what
+remains unverified (a real benchmark dataset, real-world field-quality
+measurement).
+
 ## Layout/text normalization
 
 `app/modules/structured_processing/document/normalization.py`.

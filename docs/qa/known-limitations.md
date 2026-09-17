@@ -540,8 +540,16 @@ Aditya's MacBook pre-flight, not yet performed:
   value was introduced -- one deterministic default plus one narrowly
   extended, still-evidence-bound regex. See `docs/architecture/
   document-structured-processing.md`'s "Gate B macOS OCR configuration"
-  section for the full measured matrix and the exact regex reasoning. Not
-  yet re-verified against real macOS Tesseract after this change -- the
-  next Gate B run is what confirms it, not this environment's Linux
-  Tesseract (which showed no distinguishing signal for any tested
-  combination either before or after).
+  section for the full measured matrix and the exact regex reasoning.
+  **Confirmed** directly on the real Gate B MacBook (macOS, Python 3.12.7,
+  Tesseract 5.5.3, pytesseract 0.3.13, pypdfium2 5.13.0): the focused
+  structured-processing OCR tests and then the complete test suite
+  (`uv run pytest -q` -> 2046 passed, 96 skipped, 1 warning unrelated to
+  this change, 0 failed) both pass with this configuration in place -- see
+  `docs/qa/test-results.md`'s matching dated entry for the exact command
+  and counts. This confirms the three fixtures measured (`91/2026`,
+  `20/2026`, `30/2026`) recover correctly on that real machine; it is not
+  a claim that every future document type, layout, or real police evidence
+  will OCR at this accuracy. A real benchmark dataset (FIR ICDAR 2023 or
+  equivalent) and a real-world field-quality measurement remain pending --
+  unchanged from this same section's other entries above.

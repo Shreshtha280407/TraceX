@@ -3255,3 +3255,40 @@ git diff --check                -> clean
 
 Not yet re-verified against real macOS Tesseract after this change --
 that confirmation is Aditya's next Gate B run, not this entry.
+
+## 2026-09-17 -- Gate B macOS OCR configuration, confirmed on the real MacBook
+
+Aditya re-ran the round-2 configuration above (`page_segmentation_mode=6`,
+`binarize=False`, the tolerant FIR-label regex) directly on the real Gate B
+machine:
+
+```text
+Gate B OCR platform: Aditya's macOS MacBook
+Python: 3.12.7
+Tesseract: 5.5.3
+pytesseract: 0.3.13
+pypdfium2: 5.13.0
+
+Command:
+uv run pytest -q
+
+Result:
+2046 passed, 96 skipped, 1 warning, 0 failed
+Duration: 207.57 seconds
+```
+
+The one warning is a pre-existing, unrelated `Python 3.13` deprecation
+notice for `audioop` in
+`app/modules/communication_processing/audio/local_pipeline.py` -- not a
+structured-processing or OCR warning, and not something this task's
+change touches.
+
+This confirms the round-2 configuration and the focused OCR tests both
+pass on the real Gate B machine, not only in this project's own (Linux)
+development environment. It confirms the three measured fixtures
+(`91/2026`, `20/2026`, `30/2026`) recover correctly on that machine with
+this configuration -- it does not establish accuracy for other document
+types, layouts, or real police evidence, and it is not a real-dataset
+benchmark result. A real FIR ICDAR 2023 (or equivalent) benchmark and a
+real-world field-quality measurement remain pending, unchanged from
+`docs/qa/known-limitations.md`'s Phase 7 Part 2 entries.
