@@ -45,19 +45,32 @@ class InMemoryRateLimiter:
 
     `clock` is injectable (defaults to `time.monotonic`) so tests can
     control elapsed "time" without a real `sleep`.
+
+    The window is anchored to each key's own first attempt (reset only
+    once `RATE_LIMIT_WINDOW_SECONDS` has actually elapsed *since that
+    attempt*), matching `RedisRateLimiter`'s real semantics (`INCR` +
+    `EXPIRE` counts a fresh TTL from the first increment, never from an
+    absolute clock boundary). An earlier version instead floor-divided the
+    clock by the window length (`int(clock() // WINDOW)`), which aligns
+    window boundaries to absolute wall-clock time -- a burst of calls that
+    happens to straddle one of those boundaries (regardless of how many
+    attempts had already been made) silently resets the count to zero
+    mid-burst, letting every attempt after the boundary go uncounted and
+    never trip the limit. Anchoring to first-attempt time removes that
+    coincidental reset entirely.
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._buckets: dict[str, tuple[int, int]] = {}
+        self._buckets: dict[str, tuple[int, float]] = {}
 
     async def check_and_increment(self, key: str, *, limit: int) -> bool:
-        window = int(self._clock() // RATE_LIMIT_WINDOW_SECONDS)
-        count, bucket = self._buckets.get(key, (0, window))
-        if bucket != window:
-            count, bucket = 0, window
+        now = self._clock()
+        count, window_start = self._buckets.get(key, (0, now))
+        if now - window_start >= RATE_LIMIT_WINDOW_SECONDS:
+            count, window_start = 0, now
         count += 1
-        self._buckets[key] = (count, bucket)
+        self._buckets[key] = (count, window_start)
         return count <= limit
 
 
