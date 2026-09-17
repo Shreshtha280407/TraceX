@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytesseract
+from PIL import Image, ImageOps
 from pytesseract import Output, TesseractNotFoundError
 
 from app.contracts.common import BoundingBoxNormalized
@@ -62,6 +63,22 @@ class OcrConfig:
     #: a scanned document page, unlike media_processing's PSM 11 choice for
     #: an arbitrary photo/video frame (see that module's own OCR adapter).
     page_segmentation_mode: int = 3
+    #: Deterministic grayscale + fixed-threshold binarization applied to
+    #: the rendered page image before OCR (see `_prepare_image_for_ocr`).
+    #: Snaps every pixel to pure black or white *before* Tesseract ever
+    #: sees the image, instead of relying on Tesseract's own internal
+    #: adaptive thresholding -- which is exactly what varies between
+    #: Tesseract versions/platforms and otherwise turns an ambiguous,
+    #: anti-aliased glyph edge into a version-dependent digit misread or
+    #: an entire line dropped below `min_confidence`.
+    binarize: bool = True
+    #: 8-bit grayscale cut point (0-255): a pixel at or above this value
+    #: becomes pure white, below it becomes pure black. 128 (the exact
+    #: midpoint) is the standard default for high-contrast black-on-white
+    #: printed/rendered text and needs no per-image calibration once
+    #: `ImageOps.autocontrast` (always applied first) has already
+    #: stretched the image to use the full 0-255 range.
+    binarization_threshold: int = 128
     #: Override the `tesseract` binary path. `None` uses `pytesseract`'s
     #: own `PATH` lookup.
     tesseract_cmd: str | None = None
@@ -74,8 +91,33 @@ def ocr_config_hash(config: OcrConfig) -> str:
             "dpi": config.dpi,
             "min_confidence": config.min_confidence,
             "page_segmentation_mode": config.page_segmentation_mode,
+            "binarize": config.binarize,
+            "binarization_threshold": config.binarization_threshold,
         }
     )
+
+
+def _prepare_image_for_ocr(page_image: Image.Image, config: OcrConfig) -> Image.Image:
+    """Deterministic grayscale + fixed-threshold binarization before OCR.
+
+    A rendered PDF page reaches this point already having passed through
+    at least one platform-native rasterizer (`pypdfium2`, itself a
+    precompiled binary per platform/OS) that can introduce a different
+    amount of anti-aliasing/blur around glyph edges depending on the
+    exact platform build -- even for the identical `pypdfium2` Python
+    version. Left as partially-gray pixels, that ambiguity is resolved by
+    Tesseract's own internal thresholding, which is precisely what
+    differs between Tesseract versions and platforms and is not
+    something this project controls. Snapping every pixel to pure black
+    or white here, deterministically and before Tesseract ever runs,
+    removes that variable entirely: Tesseract always receives the same
+    two-tone input regardless of what blur the upstream renderer applied.
+    """
+    if not config.binarize:
+        return page_image
+    grayscale = ImageOps.autocontrast(page_image.convert("L"))
+    threshold = config.binarization_threshold
+    return grayscale.point(lambda pixel: 255 if pixel >= threshold else 0)
 
 
 @dataclass(frozen=True)
@@ -172,10 +214,17 @@ class DocumentPageOcrEngine:
         turned into a safe `ProcessingError(OCR_RUNTIME_UNAVAILABLE)` by
         the caller if `pytesseract` itself raises mid-recognition.
         """
-        width, height = page_image.size  # type: ignore[attr-defined]
+        prepared_image = _prepare_image_for_ocr(page_image, self.config)  # type: ignore[arg-type]
+        # Bounding boxes are normalized against the exact image OCR actually
+        # ran on (not the pre-preprocessing original) -- binarization here
+        # never resizes/crops, so the two are always the same size, but
+        # deriving `width`/`height` from `prepared_image` keeps that an
+        # invariant this code enforces rather than an assumption it makes
+        # (requirement: map regions back to the coordinate system OCR saw).
+        width, height = prepared_image.size
         try:
             data = pytesseract.image_to_data(
-                page_image,
+                prepared_image,
                 lang=self.config.language,
                 config=f"--psm {self.config.page_segmentation_mode}",
                 output_type=Output.DICT,
