@@ -795,3 +795,129 @@ five paths this phase added to `.gitignore`
 (`local-data/`, `model-cache/`, `benchmark-runs/`, `private-evaluation/`,
 `operation-nightfall-truth/`) -- never committed, and never referenced by
 anything other than a `local_path_placeholder` string in the manifest.
+
+## Structured-data and local OCR benchmarking (Phase 7 Part 2 — Jasraj)
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part
+2" section for the full design. This part benchmarks exactly three Part-1
+frozen datasets against their approved candidates: `fir_icdar_2023`
+(document/FIR OCR, `paddleocr-ppocrv5-mobile`/`paddleocr-ppocrv5-server`),
+`gomask_voice_cdr` and `ibm_amlsim` (both `existing-deterministic-parsers`,
+the same deterministic CDR/finance pipeline already in production — never
+an ML/fraud model). No other dataset/candidate pair is accepted.
+
+### Benchmark CLI
+
+Every local root comes from an explicit environment variable or CLI flag —
+never a hardcoded path:
+
+```bash
+export TRACEX_BENCHMARK_DATA_ROOT=/path/to/your/local/datasets
+export TRACEX_MODEL_CACHE_ROOT=/path/to/your/local/model/cache      # OCR only
+export TRACEX_BENCHMARK_OUTPUT_ROOT=./benchmark-runs                # git-ignored
+
+# CDR / finance (no model artifact needed):
+uv run python -m app.modules.structured_processing.benchmark_cli \
+    --dataset-id gomask_voice_cdr --candidate-id existing-deterministic-parsers
+
+uv run python -m app.modules.structured_processing.benchmark_cli \
+    --dataset-id ibm_amlsim --candidate-id existing-deterministic-parsers
+
+# OCR (needs a verified model name/version/SHA-256 -- see the pre-flight below):
+uv run python -m app.modules.structured_processing.benchmark_cli \
+    --dataset-id fir_icdar_2023 --candidate-id paddleocr-ppocrv5-mobile \
+    --model-name <verified-model-name> --model-version <verified-version> \
+    --model-sha256 <verified-sha256>
+```
+
+Exit code `0` means `SUCCEEDED`; `1` means a truthful `UNAVAILABLE`/`FAILED`
+result (missing local data/model, every row/document failed, etc.) was
+still written safely to the output root; `2` means the request itself was
+rejected (unknown dataset/candidate ID, an unsupported pairing, or a
+missing/misconfigured local root) before any benchmark ran. A result file
+never contains raw OCR text, a raw CDR/finance row, a phone number, an
+account value, a narration, or a local filesystem path — only aggregate
+metrics, safe metadata, and a `failure_reason_safe` string when relevant.
+
+Unit tests still use `FakeOcrEngine` and small synthetic CDR/finance fixtures;
+they never depend on external Gate B artifacts. Real Gate B inputs, model
+packages, caches, derived crops, and result JSON belong under an explicitly
+configured external root such as `$HOME/tracex-gateb-artifacts/jasraj`, never
+inside Git or a Docker image.
+
+### Gate B execution status (2026-09-20)
+
+The official AMLSim sample and both approved PP-OCRv5 candidates completed
+real local benchmarks. The official GoMask Voice CDR download requires an
+account and credits, so that CLI run is truthfully `unavailable` and Gate B
+is not fully complete. Exact source commits, artifact hashes, commands,
+backend versions, aggregate results, and result JSON hashes are recorded in
+`docs/qa/test-data.md` and `docs/qa/test-results.md`.
+
+PaddleOCR 3 uses separate detector and recognizer directories:
+`<model-cache>/<mobile|server>/{det,rec}`. Each directory must contain
+`inference.json`, `inference.pdiparams`, and `inference.yml`. Install the
+locked optional group with `uv sync --extra ocr-benchmark`. On the verified
+Linux CPU host, both candidates required `enable_mkldnn=False`; the result's
+`hardware_profile` records the actual PaddleOCR/PaddlePaddle versions,
+variant, CPU backend, and oneDNN state.
+
+### Original MacBook validation handoff (historical checklist)
+
+This checklist was written before the 2026-09-20 Gate B execution. Retain it
+as the safe procedure for a repeat on an Apple-Silicon MacBook; use the dated
+status above and `docs/qa/test-results.md` as the current record. Before a
+repeat, follow these steps in order:
+
+1. **Verify the branch.** `git status --short && git branch --show-current
+   && git log --oneline -5` — confirm you are on the exact, unmerged
+   `jasraj` branch and commit this handoff refers to. Do not run against
+   any other branch or a locally modified tree.
+2. **Install PaddleOCR reproducibly — never `pip install paddleocr` ad
+   hoc.** `uv sync --extra ocr-benchmark` installs the exact
+   `paddleocr`/`paddlepaddle` versions this branch's `uv.lock` was locked
+   against (`[project.optional-dependencies] ocr-benchmark` in
+   `pyproject.toml`). An ad hoc `pip install paddleocr` would silently
+   resolve whatever is newest on PyPI that day — a different, unpinned
+   version than this branch's verified PaddleOCR 3 wiring, making a repeat
+   impossible to compare. If the locked package cannot construct the engine,
+   preserve the failed/unavailable result and investigate the exact API or
+   backend error before changing code.
+3. **Re-check licence/source status before downloading.** FIR ICDAR 2023,
+   AMLSim, and PaddleOCR provenance is pinned in the benchmark manifests and
+   QA docs. GoMask remains account-and-credit gated with plan-dependent terms;
+   do not substitute another CDR dataset.
+4. **Update only safe fields.** Add safe version/source metadata when newly
+   verified; never change a candidate to `selected`, swap datasets, or alter
+   a success-metric threshold after seeing a result.
+5. **Download each artifact into a git-ignored local directory only** —
+   under whatever path you point `TRACEX_BENCHMARK_DATA_ROOT`/
+   `TRACEX_MODEL_CACHE_ROOT` at (e.g. this repo's own gitignored
+   `local-data/`/`model-cache/`, or any other local path). Never commit a
+   downloaded file, a raw dataset fragment, or a model weight.
+6. **Compute and locally record each artifact's real SHA-256** —
+   `shasum -a 256 <file>` — needed for `--model-sha256` on an OCR run and
+   useful to note for the dataset files too, even though only the model
+   weight's hash is required by the contract.
+7. **Run the benchmark CLI commands above** with your own local
+   environment variables pointing at the real downloaded data/model cache.
+8. **Record the actual hardware/execution backend you observed** — do not
+   assume Apple's Metal/MPS, CUDA, or any particular accelerator is in use
+   just because you're on a MacBook; report whatever `hardware_profile`/
+   hardware/backend PaddleOCR itself actually reports on this machine (or
+   `cpu` if that's genuinely what ran). Note that `paddlepaddle`'s official
+   PyPI wheels have had limited/no CUDA relevance on Apple Silicon in any
+   case — CPU execution on the Mac is the expected, not a degraded, path
+   unless you deliberately verify a Metal-accelerated build yourself.
+9. **Send back only the safe aggregate result JSON files** (from your
+   `TRACEX_BENCHMARK_OUTPUT_ROOT`) and terminal summaries — never a raw
+   dataset file, image, CDR/finance row, or model weight.
+10. **Leave every candidate's `selection_status` as `candidate`/
+    `conditional`.** Do not mark any Part 2 candidate `selected` — Gate C
+    makes that decision later, after Parts 2-4 all have comparable results.
+
+If an artifact is genuinely unavailable, its licence terms can't be
+resolved, or a candidate fails to load, run the CLI anyway and let it
+produce its own truthful `UNAVAILABLE`/`FAILED` result — never substitute
+a different dataset or model silently, and never report a benchmark as
+having succeeded unless the CLI's own exit code and result JSON say so.

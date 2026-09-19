@@ -25,7 +25,7 @@ dependencies = [
     "pwdlib[argon2]>=0.3.1",
     "opencv-python-headless>=5.0.0.93",
     "pillow>=12.3.0",
-    "numpy>=2.5.3",
+    "numpy>=2.3,<2.4",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
     "onnxruntime>=1.30.0",
@@ -53,6 +53,10 @@ dependencies = [
 # drop-in `--extra` toggle.
 [project.optional-dependencies]
 gpu = ["onnxruntime-gpu>=1.20.0"]
+ocr-benchmark = [
+    "paddleocr>=3.7.0,<4",
+    "paddlepaddle>=3.3.1",
+]
 
 [dependency-groups]
 dev = [
@@ -117,6 +121,7 @@ module = [
     "pyarrow.*",
     "igraph.*",
     "leidenalg.*",
+    "paddleocr.*",
 ]
 ignore_missing_imports = true
 

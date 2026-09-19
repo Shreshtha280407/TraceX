@@ -18,17 +18,18 @@
         "must not be treated as a real police FIR or real case evidence",
         "must not be used to infer real person/identity information"
       ],
-      "source_reference": "ICDAR 2023 competition track (exact competition/track name and organizer to be confirmed before download)",
-      "release_or_version": "pending_verification",
-      "license_status": "pending_verification",
-      "license_notes": "Academic competition dataset; exact license terms for redistribution/derivative use not yet verified against the source's own terms of use. Do not download or use until verified.",
+      "source_reference": "https://github.com/LegalDocumentProcessing/FIR_Dataset_ICDAR2023",
+      "release_or_version": "git commit cbaceec3b584e8f3ab7c6ab96e5b68eeef8a2235",
+      "license_status": "verified_permissive",
+      "license_notes": "The official repository README carries the MIT permission grant and copyright notice. Gate B used an unmodified official checkout plus local annotation-derived crops; neither source data nor crops are redistributed.",
       "local_path_placeholder": "local-data/fir_icdar_2023/",
       "git_storage_policy": "excluded_manifest_only",
-      "redistribution_status": "pending_verification",
-      "evaluation_status": "license_verification_required",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "complete",
       "known_limitations": [
         "ICDAR competition datasets are academic document-image samples, not real investigative FIRs",
-        "annotation quality/coverage for this specific track not yet independently reviewed"
+        "Gate B evaluated annotation-box crops and value transcription, not full-page layout recovery",
+        "the official annotations provide value text but not this project's expected_fields mapping, so field-extraction precision/recall/F1 are null"
       ]
     },
     {
@@ -46,17 +47,17 @@
         "must not be treated as real subscriber call records",
         "must not be used to infer a real phone owner's identity"
       ],
-      "source_reference": "pending_verification -- exact publisher/release page to be confirmed before download",
-      "release_or_version": "pending_verification",
+      "source_reference": "https://gomask.ai/marketplace/datasets/voice-call-detail-records-cdr-circuit-switched",
+      "release_or_version": "marketplace entry last updated 2026-01-06; 501 rows x 21 columns",
       "license_status": "pending_verification",
-      "license_notes": "Source/license terms not yet independently verified against the publisher's own release page.",
+      "license_notes": "Official source and terms were reviewed on 2026-09-20, but the download requires a GoMask account and credits and the applicable rights depend on the account plan/EULA. No artifact was acquired or substituted, so use remains blocked pending team direction.",
       "local_path_placeholder": "local-data/gomask_voice_cdr/",
       "git_storage_policy": "excluded_manifest_only",
       "redistribution_status": "pending_verification",
       "evaluation_status": "license_verification_required",
       "known_limitations": [
-        "dataset scale/format details not yet verified",
-        "may require format normalization before this project's CDR parser can ingest it"
+        "official download is account-and-credit gated, so no input hash or usable benchmark exists",
+        "the advertised 501-row, 21-column schema could not be inspected locally for parser compatibility"
       ]
     },
     {
@@ -74,17 +75,18 @@
         "must not be treated as real financial transactions or real account holders",
         "synthetic AML simulation output must never be presented as confirmed real-world money-laundering activity"
       ],
-      "source_reference": "IBM AMLSim public GitHub project (exact repository/release to be confirmed before download)",
-      "release_or_version": "pending_verification",
-      "license_status": "pending_verification",
-      "license_notes": "Open-source simulator; generated-dataset license terms depend on the exact release/configuration used and have not yet been verified.",
+      "source_reference": "https://github.com/IBM/AMLSim",
+      "release_or_version": "git commit 7338a4bcb1af9bcfea2201ad7daccfe2a4d569ca; sample/20K_fanin200.tgz",
+      "license_status": "verified_permissive",
+      "license_notes": "The selected sample archive is shipped in the official AMLSim repository under its Apache-2.0 LICENSE. Gate B keeps the archive and extracted CSV outside Git and does not redistribute either.",
       "local_path_placeholder": "local-data/ibm_amlsim/",
       "git_storage_policy": "excluded_manifest_only",
-      "redistribution_status": "pending_verification",
-      "evaluation_status": "license_verification_required",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "complete",
       "known_limitations": [
         "fully synthetic simulation output, not real financial behavior",
-        "money-laundering typologies are simulator-modeled, not empirically validated against real cases"
+        "money-laundering typologies are simulator-modeled, not empirically validated against real cases",
+        "the selected graph-transaction schema has a simulation step but no calendar timestamp or currency"
       ]
     },
     {

@@ -18,6 +18,40 @@ def test_fir_reference_requires_explicit_label() -> None:
     assert _mentions_of("case reference 45/2026 without a label", "fir_reference") == []
 
 
+def test_fir_reference_tolerates_an_ocr_garbled_label() -> None:
+    """Gate B (real macOS Tesseract 5.5.0/5.5.3, PSM 6): "No"/"No." is
+    sometimes misread as a different short word entirely. The FIR
+    reference must still be recovered as long as the literal "FIR" label
+    and a real, digit-bearing identifier are both actually present in the
+    text -- nothing here is generated from a fixture value, only matched
+    against text that genuinely contains it.
+    """
+    assert _mentions_of("FIR Nex 91/2026 filed today", "fir_reference") == ["91/2026"]
+    assert _mentions_of("FIR Ma 20/2026 Police Station: Colaba", "fir_reference") == ["20/2026"]
+    assert _mentions_of("FIR Not 30/2026 tiled today", "fir_reference") == ["30/2026"]
+    # The canonical, non-garbled forms this tolerance must not disturb.
+    assert _mentions_of("FIR No. TEST/2026/001", "fir_reference") == ["TEST/2026/001"]
+    assert _mentions_of("FIR No. SECRET/9999/999", "fir_reference") == ["SECRET/9999/999"]
+
+
+def test_fir_reference_garbled_label_tolerance_does_not_invent_a_match() -> None:
+    """Negative case: an unrelated, digit-bearing identifier elsewhere in
+    a sentence that also happens to contain "FIR" must not be emitted --
+    the tolerant short-word fallback only ever matches text immediately
+    adjacent to "FIR", never something a few prose words further along.
+    """
+    assert (
+        _mentions_of(
+            "The FIR mentions that account 12/2026 was flagged separately.", "fir_reference"
+        )
+        == []
+    )
+    assert (
+        _mentions_of("FIR discussions happened near account 12/2026 unrelated", "fir_reference")
+        == []
+    )
+
+
 def test_police_station_requires_explicit_label() -> None:
     assert _mentions_of("Police Station: MG Road", "police_station_mention") == ["MG Road"]
 

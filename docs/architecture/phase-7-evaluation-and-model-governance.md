@@ -1,9 +1,14 @@
 # Phase 7 Part 1: Evaluation Foundation, Dataset Manifest, and Local-Model Governance
 
-Owner: Nipun. Status: **Part 1 In progress** (this document's own scope is
-complete and gated below; Phase 7 overall is not). Part 1 freezes the
-referee and scoreboard later Phase 7 parts build against. It downloads no
-dataset, installs no model, and selects no winner.
+Owner: Nipun (Part 1); Jasraj (Part 2, this document's added section
+below). Status: **Part 1 in progress** (this document's own scope is
+complete and gated below); **Part 2 Gate B incomplete** (real AMLSim and
+both PaddleOCR runs succeeded, while the official GoMask download remains
+account-and-credit gated — see "Part 2: structured-data and local OCR
+benchmarking" below). Phase 7 overall is not complete. Part 1 freezes the
+referee and scoreboard later Phase 7 parts
+build against; it downloads no dataset, installs no model, and selects no
+winner.
 
 ## Phase 7 objective and part map
 
@@ -301,7 +306,128 @@ content:
    `prohibited_language` to name guilt-conclusion vocabulary explicitly, so
    a future edit cannot silently drop that constraint.
 
-## Verification
+## Part 2: structured-data and local OCR benchmarking (Jasraj)
+
+Part 2 implements the reproducible benchmark adapters, safe CLI, and
+tests needed to *evaluate* the three datasets Part 1's manifest assigns
+to Jasraj: `fir_icdar_2023` (document/FIR OCR), `gomask_voice_cdr` (CDR),
+`ibm_amlsim` (finance). It does not select a winning OCR model — Gate C
+does that, after Parts 2–4 all have comparable results.
+
+### Module layout
+
+`app/modules/structured_processing/` gained five files, all purely
+additive (no existing document/CDR/finance production code was rewritten):
+
+| File | Responsibility |
+|---|---|
+| `benchmark_metrics.py` | Pure functions: CER/WER (Levenshtein-based), field-extraction precision/recall/F1, percentile/median latency, `peak_memory_mb` (platform-aware — macOS reports `ru_maxrss` in bytes, Linux in kilobytes). No I/O. |
+| `benchmark_validation.py` | `TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/`TRACEX_BENCHMARK_OUTPUT_ROOT` resolution (explicit env var or CLI flag only, never a hardcoded path); the Part 2 dataset/candidate/pair allow-lists (narrower than Part 1's full catalogue — Gaurav's/Sarthak's/Shreshtha's entries are rejected here even though they're real in the manifest); `reject_private_local_paths`. |
+| `benchmark_adapters.py` | The `OcrEngine` protocol (`FakeOcrEngine` for tests, `ConfiguredOcrEngine` for a real, caller-injected recognition callable), `run_ocr_benchmark`, and `run_structured_benchmark` (CDR/finance, reusing `structured.chunked_processing`). |
+| `benchmark.py` | `run_benchmark` — the one orchestration entry point: validates the request, resolves local roots, checks artifact availability *before* executing, dispatches to the right adapter, writes a safe `BenchmarkRunV1` JSON result. |
+| `benchmark_cli.py` | `uv run python -m app.modules.structured_processing.benchmark_cli --dataset-id ... --candidate-id ...` — see the runbook for the full command and exit-code contract. |
+
+### Why the OCR field-extraction task reuses the real FIR extractor
+
+`benchmark_adapters._extracted_fields_from_text` calls
+`document.fir_report.extract_fir_mentions` unchanged over whatever text an
+OCR candidate produced. This was a deliberate choice over inventing a
+benchmark-only extraction rule: it means a candidate's field-extraction F1
+genuinely measures "how well does this OCR engine preserve the exact
+structure the production FIR pipeline already depends on to find a FIR
+number, phone number, police station, ..." — not an artificial proxy
+metric that could score well on OCR quality while saying nothing about
+this project's actual downstream extraction accuracy.
+
+### Why CDR/finance benchmarking reuses `chunked_processing.normalize_chunk`
+
+`run_structured_benchmark` calls `structured.chunked_processing.
+assess_schema`/`normalize_chunk` — the *exact* functions
+`worker.run_structured_batches_job` already calls in production — rather
+than calling `structured.cdr.normalize_cdr_records`/`structured.finance.
+normalize_financial_records` directly. Those two functions are all-or-
+nothing per call (one malformed record raises and discards the *entire*
+batch, confirmed by direct inspection of `structured/cdr.py`); only
+`normalize_chunk` gives genuine per-row accept/reject accounting (each
+record normalized independently, a malformed one safely categorized by
+`ProcessingError.code`, never aborting its neighbors). Benchmarking
+through the same seam production batching uses means the reported
+`accepted_row_count`/`rejected_row_count` numbers are exactly what a real
+worker run against the same file would also report — not a benchmark-only
+approximation.
+
+A file where *every* row fails row-level normalization reports a safe
+`BenchmarkRunStatus.FAILED` (mirroring `run_structured_batches_job`'s own
+`PARTIAL_ROW_FAILURES` policy exactly) rather than a `SUCCEEDED` result
+with a hollow `accepted_row_count: 0` — a genuine bug caught and fixed
+during this task's own test-writing (see `docs/qa/test-results.md`'s dated
+Phase 7 Part 2 entry).
+
+The official AMLSim sample is a deliberate, dataset-specific exception to
+the generic finance schema. Its exact
+`sourceNodeId,targetNodeId,value,time` header carries a simulation step and
+no currency. For `dataset_id=ibm_amlsim` only, the benchmark adapter validates
+the two node IDs, finite non-negative value, and non-negative integer step,
+then counts one simulator transaction per valid row. It does not manufacture
+a currency or calendar timestamp and does not weaken the production finance
+profile for any other dataset.
+
+### Local roots, artifact availability, and safe failure
+
+Every local filesystem root is resolved from an explicit environment
+variable (`TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+`TRACEX_BENCHMARK_OUTPUT_ROOT`) or an equivalent CLI flag — never a
+hardcoded developer path. A dataset's `local_path_placeholder` (e.g.
+`"local-data/gomask_voice_cdr/"`) has its frozen `local-data/` prefix
+stripped and the remainder joined onto `TRACEX_BENCHMARK_DATA_ROOT`, so
+the same portable manifest entry works whether that root is the repo's
+own gitignored `local-data/` directory or an entirely different path on
+Aditya's MacBook (an external drive, say).
+
+`run_benchmark` checks artifact availability *before* attempting to
+execute anything: a missing dataset directory, an ambiguous set of
+candidate input files (zero or more than one CSV/XLSX/JSON file where
+exactly one is expected), a missing OCR benchmark manifest, or missing
+verified model metadata (`--model-name`/`--model-version`/`--model-sha256`)
+all produce a truthful `BenchmarkRunStatus.UNAVAILABLE` result — never a
+crash, and never a fabricated `SUCCEEDED`. `BenchmarkRunV1`'s own Part 1
+validator additionally guarantees a `SUCCEEDED` OCR run cannot exist
+without `artifact_sha256` (the verified model weight's hash); for the
+CDR/finance deterministic baseline, `artifact_sha256` is the SHA-256 of
+the actual local input file processed — a real, computed value standing
+in for "the artifact this run measured" in the absence of a model weight.
+
+### Verified PaddleOCR 3 adapter
+
+`paddleocr`/`paddlepaddle` remain a reproducible optional dependency group.
+Gate B installed it through `uv`, resolved PaddleOCR 3.7.0 and PaddlePaddle
+3.3.1, and verified the real PaddleOCR 3 `predict` API with separate official
+PP-OCRv5 detector and recognizer inference directories. The adapter requires
+all six inference metadata/parameter files before construction, sends decoded
+RGB arrays to `predict`, and extracts `rec_texts` without storing raw OCR in a
+result JSON. It reports the actual package versions, variant, CPU device, and
+oneDNN state in `hardware_profile`.
+
+The official paddle3.0.0 inference packages failed during oneDNN PIR
+attribute conversion on this Linux CPU. Both complete real runs therefore
+used the plain CPU backend with `enable_mkldnn=False`, and disabled document
+orientation classification, document unwarping, and text-line orientation.
+The focused builder test fixes this API/configuration contract without
+requiring model weights. NumPy is constrained to `>=2.3,<2.4` because the
+verified PaddleX dependency rejects NumPy 2.4 or newer.
+
+### Verification (Part 2)
+
+Gate B subsequently ran the official AMLSim sample and both approved
+PaddleOCR candidates against the official FIR annotations; see
+`docs/qa/test-results.md` for commands, hashes, host/backend, and metrics.
+The official GoMask download remains account-and-credit gated, and its
+benchmark result is truthfully `unavailable`. Raw data, derived crops, model
+packages, caches, and result JSON remain outside Git. No Part 2 candidate is
+selected; Gate C selects a winner only after the remaining blocker and wider
+cross-modality evidence are resolved.
+
+## Verification (Part 1)
 
 `uv sync --all-groups`, `ruff format --check .`, `ruff check .`,
 `mypy app`, `pytest`, `git diff --check`, and `docker compose config -q`

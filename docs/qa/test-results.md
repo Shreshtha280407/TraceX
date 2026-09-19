@@ -3073,3 +3073,352 @@ production credential was used anywhere in this gate. No test, dataset
 download, model download, or benchmark run is claimed as done without
 having actually happened -- this part claims none of those, honestly, per
 its own explicit non-goals.
+
+## 2026-09-16 — Phase 7 Part 2 structured-data and local OCR benchmarking (Jasraj, dev-machine only)
+
+New additive `app/modules/structured_processing/{benchmark_metrics,
+benchmark_validation,benchmark_adapters,benchmark,benchmark_cli}.py`,
+implementing reproducible local benchmark adapters and a safe CLI for
+Part 1's three Jasraj-owned datasets (`fir_icdar_2023`, `gomask_voice_cdr`,
+`ibm_amlsim`) against their approved candidates. This entry covers only
+verification performed on Shreshtha's development laptop — **no real
+FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data, and no PaddleOCR
+installation, exists in this environment.** Real dataset/model validation
+is Aditya's MacBook pre-flight, not yet performed; see
+`docs/runbooks/local-development.md`'s "MacBook validation handoff"
+section.
+
+**A pre-existing Docker stack (`tracex-api`/`tracex-postgres`/
+`tracex-redis`/`tracex-neo4j`, plus MinIO) was already running throughout
+this session**, started by earlier work, not by this task -- per this
+task's own instruction not to start/stop/rebuild/disturb an existing
+stack, it was left exactly as found. This meant the full suite exercised
+live integration paths for every module that has one, not just unit tests
+-- a stronger run than Phase 7 Part 1's own dated entry, which had no
+Docker available that day.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups        -> Resolved 106 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2128 passed, 4 skipped,
+0 failed**, in 255s, one pre-existing unrelated warning (`audioop`
+deprecation, not from this phase's code). All 4 skips are expected and
+accounted for: 3 are this phase's own
+`tests/integration/structured_processing/test_local_benchmark_smoke.py`
+self-skipping because `TRACEX_BENCHMARK_DATA_ROOT` is unset on this
+machine (by design -- see the task's "do not download datasets on
+Shreshtha's laptop" rule), and 1 is the pre-existing, unrelated
+`test_ner.py` self-skip (Phase 3 Jasraj's NER model bootstrap, not
+performed in this environment, unrelated to this task). Zero failures,
+zero regressions to any of the prior 2124 tests -- proof point 15 (existing
+document/CDR/finance regression tests unaffected) confirmed by this run.
+
+**Focused Phase 7 Part 2 suite** (synthetic fixtures and a fake OCR engine
+only, no live infra, no PaddleOCR, no GPU, no dataset needed):
+
+```text
+uv run pytest tests/unit/structured_processing/test_benchmark_metrics.py    -> 16 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_adapters.py   -> 19 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_safety.py     -> 32 passed
+uv run pytest tests/unit/structured_processing/test_benchmark_cli.py        ->  6 passed
+uv run pytest tests/integration/structured_processing/test_local_benchmark_smoke.py -> 3 skipped (expected; see above)
+```
+
+**Bugs found and fixed during this task's own development (all self-caught,
+before or during writing the formal test suite, never surfaced by a user
+correction)**:
+
+1. **`run_structured_benchmark` accepted a `SUCCEEDED` result with zero
+   valid rows.** A file where every row failed row-level normalization
+   (`accepted_row_count=0`, all rows rejected) originally reported
+   `SUCCEEDED` rather than `FAILED` -- caught by this task's own
+   `test_malformed_rows_never_inflate_accepted_or_emitted_counts` test.
+   Fixed by mirroring `worker.run_structured_batches_job`'s own existing
+   `total_valid == 0 and total_malformed > 0 -> FAILED` policy exactly, so
+   the benchmark layer's partial-success semantics match production's.
+2. **A field-extraction-F1 test fixture initially under-specified its own
+   expected fields**, causing a "perfect" OCR sample to score `F1=0.5`
+   instead of `1.0` -- traced to the fixture's `expected_fields` dict
+   listing only one of the three fields the real, unmodified
+   `extract_fir_mentions` genuinely recognizes in that fixture's text.
+   Fixed by verifying the real extractor's actual output against the
+   fixture text directly and completing the expected-fields dict to match.
+3. Two minor test-authoring bugs (a false-positive Neo4j-import string
+   scan matching this module's own "never writes to Neo4j" docstrings; a
+   `capsys.readouterr()` called twice, silently emptying the second read)
+   were caught and fixed before being reported here as passing.
+4. Two dead/redundant code blocks (an unused double-invocation of
+   `engine.recognize()`, an unused accumulation loop) were caught by
+   self-review immediately after writing, before any test ran, and
+   simplified.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this task. No dataset download,
+model download, PaddleOCR installation, or real benchmark result is
+claimed -- this part's own tests and documentation state that plainly, per
+this task's explicit "never claim a benchmark passed until Aditya runs it
+on the MacBook" rule.
+
+### 2026-09-16 readiness follow-up — PaddleOCR pinned as a reproducible optional dependency
+
+A user-requested readiness check found that `pyproject.toml`/`uv.lock`
+were unchanged despite the OCR benchmark path being designed around
+PaddleOCR -- meaning Aditya's pre-flight would have had no reproducible
+way to install it, and could have reached for an ad hoc `pip install
+paddleocr` that resolves an unpinned, undocumented version. Fixed:
+
+```text
+uv add --optional ocr-benchmark --no-sync paddleocr paddlepaddle
+  -> Resolved 132 packages in 34.88s
+```
+
+`pyproject.toml` gained `[project.optional-dependencies] ocr-benchmark =
+["paddleocr>=2.10.0", "paddlepaddle>=3.3.1"]` (uv-resolved versions, not
+invented); `uv.lock` gained the full resolved dependency graph for both
+packages (451 lines). `--no-sync` means the group was resolved and locked
+without being installed into this machine's venv -- confirmed directly
+(`import paddleocr` -> `ModuleNotFoundError`) both immediately after `uv
+add` and again after a full `uv sync --all-groups` re-run, proving the
+project's standard verification command still does not pull PaddleOCR
+onto this laptop. Aditya's pre-flight now runs `uv sync --extra
+ocr-benchmark` for a reproducible, exactly-pinned install instead.
+
+Full verification suite re-run after this change, all against the whole
+repository:
+
+```text
+uv run ruff format --check .  -> 502 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 210 source files
+git diff --check                -> clean
+docker compose config -q        -> valid
+uv run pytest -q                -> 2128 passed, 4 skipped, 0 failed (identical to the pre-change run)
+```
+
+`docs/architecture/phase-7-evaluation-and-model-governance.md`, `docs/qa/
+known-limitations.md`, `docs/progress/mvp-progress.md`, and
+`docs/runbooks/local-development.md`'s MacBook handoff (new step 2) were
+all updated to reflect this -- and to correct the now-stale "paddleocr is
+not added to pyproject.toml" sentence the same architecture doc previously
+stated.
+
+## 2026-09-17 -- Gate B macOS OCR configuration, round 2 (real Tesseract 5.5.3 matrix)
+
+Real Gate B evidence from Aditya's MacBook (macOS, Tesseract 5.5.3),
+`page_segmentation_mode=6`, `binarize=False` (the round-1 default fixed
+after Tesseract 5.5.0 showed `binarize=True` was actively harmful):
+
+```text
+Fixture 91/2026: "FIR Nex 91/2026 Police Station: Colaba Phone: 9876543210 Amount Rs. 25000"
+  recall 0.67 -- 25000 and 9876543210 extracted, 91/2026 present in text but not matched.
+Fixture 20/2026: "FIR Ma 20/2026 Police Station: Colaba"
+  20/2026 present in text but not matched.
+Fixture 30/2026: "FIR Not 30/2026 tiled today"
+  30/2026 present in text but not matched.
+```
+
+All `binarize=True` results were worse than the corresponding
+`binarize=False` result; no other tested PSM (3, 4, 11, 12) recovered the
+label line better than PSM 6. Root cause: in every case Tesseract read the
+actual identifier correctly but misread `No`/`No.` as a short, unrelated
+word (`Nex`/`Ma`/`Not`), and `fir_report.py`'s `_FIR_REFERENCE` regex
+required the literal `No.`/`Number` token, so it never matched. Fixed by
+extending the regex to accept a short (<=6 letters) OCR-garbled stand-in
+for the label, gated by a lookahead requiring the identifier itself to
+contain a digit -- see `docs/architecture/document-structured-processing.md`'s
+"Gate B macOS OCR configuration" section for the full reasoning and
+`docs/qa/known-limitations.md`'s matching entry.
+
+Local verification (this environment: Linux, Tesseract 5.5.2 -- shows no
+distinguishing signal between any PSM/binarize combination either before
+or after this change, so this is a regression check, not a reproduction
+of the Gate B failure):
+
+```text
+uv run pytest -q tests/unit/structured_processing/test_ocr_field_match_precision.py tests/unit/structured_processing/test_worker_document_batches.py
+  -> 7 passed
+uv run pytest -q tests/unit/structured_processing
+  -> 359 passed, 1 skipped (skip is the pre-existing, unrelated NER-bootstrap skip)
+uv run ruff format --check .   -> 504 files already formatted
+uv run ruff check .             -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 210 source files
+git diff --check                -> clean
+```
+
+Not yet re-verified against real macOS Tesseract after this change --
+that confirmation is Aditya's next Gate B run, not this entry.
+
+## 2026-09-17 -- Gate B macOS OCR configuration, confirmed on the real MacBook
+
+Aditya re-ran the round-2 configuration above (`page_segmentation_mode=6`,
+`binarize=False`, the tolerant FIR-label regex) directly on the real Gate B
+machine:
+
+```text
+Gate B OCR platform: Aditya's macOS MacBook
+Python: 3.12.7
+Tesseract: 5.5.3
+pytesseract: 0.3.13
+pypdfium2: 5.13.0
+
+Command:
+uv run pytest -q
+
+Result:
+2046 passed, 96 skipped, 1 warning, 0 failed
+Duration: 207.57 seconds
+```
+
+The one warning is a pre-existing, unrelated `Python 3.13` deprecation
+notice for `audioop` in
+`app/modules/communication_processing/audio/local_pipeline.py` -- not a
+structured-processing or OCR warning, and not something this task's
+change touches.
+
+This confirms the round-2 configuration and the focused OCR tests both
+pass on the real Gate B machine, not only in this project's own (Linux)
+development environment. It confirms the three measured fixtures
+(`91/2026`, `20/2026`, `30/2026`) recover correctly on that machine with
+this configuration -- it does not establish accuracy for other document
+types, layouts, or real police evidence, and it is not a real-dataset
+benchmark result. A real FIR ICDAR 2023 (or equivalent) benchmark and a
+real-world field-quality measurement remain pending, unchanged from
+`docs/qa/known-limitations.md`'s Phase 7 Part 2 entries.
+
+## 2026-09-20 — Gate B real Jasraj benchmarks
+
+These measurements were made on the currently checked-out `jasraj` branch
+with all inputs, weights, caches, derived crops, and result JSON outside Git
+under `$HOME/tracex-gateb-artifacts/jasraj`. The execution host exposed to
+this session was Linux 7.0.2 x86_64, Python 3.12.13, an Intel Core
+i5-1135G7 CPU, and no GPU backend. This differs from the earlier macOS
+Tesseract verification above and is recorded separately.
+
+### IBM AMLSim
+
+The first real run rejected the official
+`sourceNodeId,targetNodeId,value,time` schema as `ambiguous_schema`. That
+exposed a compatibility defect: the generic finance profile requires a
+currency and calendar timestamp which AMLSim deliberately does not provide.
+The narrow benchmark adapter now recognizes only that exact schema for the
+`ibm_amlsim` dataset, validates IDs, finite non-negative values, and
+non-negative integer simulation steps, and counts one transaction per valid
+source row without inventing currency or calendar time. Focused regression
+tests cover accepted and malformed AMLSim-shaped rows. The generic production
+finance profile is unchanged.
+
+```bash
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id ibm_amlsim \
+  --candidate-id existing-deterministic-parsers \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development
+```
+
+Initial failed result:
+`finance-existing-deterministic-parsers-98a12a640696.json`, SHA-256
+`1fa049d6f27e7931216e78500ab64e78182a7aa699f220d131ea9d97dc2daaec`.
+Final succeeded result:
+`finance-existing-deterministic-parsers-2bfa2b5629eb.json`, SHA-256
+`554142bf94d0a0ae572d2c792eff9f0c8b097c604d17274c9927abc10863ab70`.
+It measured 118,250 input and accepted rows, 0 rejected rows, 118,250
+transaction events, normalization accuracy 1.0, schema-validation error rate
+0.0, 847.6981179992436 ms elapsed, and 140.984375 MiB peak RAM.
+
+These values establish complete structural acceptance of this selected
+synthetic AMLSim file. They do not establish real-world fraud detection,
+currency normalization, calendar-time correctness, or semantic accuracy
+against an independently labelled transaction truth set.
+
+### GoMask Voice CDR
+
+The official marketplace source was inspected, but its 501-row download
+requires a GoMask account and credits and its applicable use rights depend on
+the account plan/EULA. No substitute dataset was used. Running the required
+CLI against the deliberately empty local dataset directory produced a
+truthful `unavailable` result:
+
+```bash
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id gomask_voice_cdr \
+  --candidate-id existing-deterministic-parsers \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development
+```
+
+Result `gomask_voice_cdr-existing-deterministic-parsers-dcb1591c294b.json`
+has SHA-256
+`6a0fc5478d24f242221d52fcae99a0bc0126c653d748f1cde46f9c842a0134ea`,
+status `unavailable`, no metrics or artifact hash, and safe reason
+`expected exactly one CSV/XLSX/JSON input file in the dataset directory and
+found zero or more than one`. Gate B is therefore not fully complete.
+
+- GoMask Voice CDR / existing-deterministic-parsers: `unavailable`.
+  Reason: official dataset download is account-and-credit gated; no approved local
+  artifact was available to hash or benchmark.
+
+### FIR ICDAR 2023 with PP-OCRv5
+
+Both candidates used official paddle3.0.0 detector and recognizer inference
+packages, PaddleOCR 3.7.0, PaddlePaddle 3.3.1, CPU, document-orientation,
+unwarping, and text-line-orientation stages disabled, and oneDNN disabled.
+The latter was necessary because PaddlePaddle 3.3.1 failed to convert an
+array-of-double PIR attribute for these packages on this CPU; the plain CPU
+backend completed all samples. The artifact hashes below are deterministic
+SHA-256 digests of the detector archive bytes followed by the recognizer
+archive bytes for each candidate.
+
+```bash
+PADDLE_PDX_CACHE_HOME="$HOME/tracex-gateb-artifacts/jasraj/model-cache/paddlex-cache" \
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id fir_icdar_2023 \
+  --candidate-id paddleocr-ppocrv5-mobile \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --model-cache-root "$HOME/tracex-gateb-artifacts/jasraj/model-cache" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development \
+  --model-name PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec \
+  --model-version official-paddle3.0.0-inference-packages \
+  --model-sha256 0d6c552d532765040041b88dbf40999f25c0d6e73030c56c075065dd6f4af938
+
+PADDLE_PDX_CACHE_HOME="$HOME/tracex-gateb-artifacts/jasraj/model-cache/paddlex-cache" \
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id fir_icdar_2023 \
+  --candidate-id paddleocr-ppocrv5-server \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --model-cache-root "$HOME/tracex-gateb-artifacts/jasraj/model-cache" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development \
+  --model-name PP-OCRv5_server_det+PP-OCRv5_server_rec \
+  --model-version official-paddle3.0.0-inference-packages \
+  --model-sha256 5b1e0cf8b46f9641f6f90e642c2ee1eba25328cbc7eaaff2738722f7bce8ecb1
+```
+
+| Candidate | Status | CER | WER | p50 / p95 / p99 latency (ms) | Peak RAM (MiB) | Documents |
+|---|---:|---:|---:|---:|---:|---:|
+| `paddleocr-ppocrv5-mobile` | succeeded | 0.7609902781591976 | 0.9869081674353436 | 137.8839050012175 / 499.9964450034895 / 830.1075790004688 | 775.3046875 | 2,447 / 2,447 |
+| `paddleocr-ppocrv5-server` | succeeded | 0.7039433980812687 | 0.9401599626364644 | 325.4969799963874 / 795.2444769980502 / 1086.6854569976567 | 1190.73828125 | 2,447 / 2,447 |
+
+Mobile result `ocr-paddleocr-ppocrv5-mobile-2b1ecf3b1d5c.json` has SHA-256
+`c71ecd9997ee912c988b2b7b742c3df00504e3a4ab16f55b5a7012a5a5e31f0d`;
+server result `ocr-paddleocr-ppocrv5-server-99586f2d2bdf.json` has SHA-256
+`9a5d0499ed392b0bba5fbddf3deb708ac290b2c7789d9176384b90f11b4d5474`.
+VRAM and field-extraction precision/recall/F1 are null. The manifest maps
+real annotation crops to real reference transcriptions but has no defensible
+label-bearing `expected_fields` mapping. CER/WER therefore measure crop-level
+transcription distance only. Latency is per crop and RAM is process peak on
+this host. These results do not choose a model; Gate C owns selection.

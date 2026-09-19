@@ -95,6 +95,74 @@ installed for `media_processing`). For a host-run worker: install
 `tesseract-ocr` (and any non-`eng` language pack via
 `tesseract-ocr-<lang>`) via your system's package manager.
 
+### Gate B macOS OCR configuration
+
+`OcrConfig`'s two OCR-quality knobs (`page_segmentation_mode`, `binarize`)
+were tuned twice against real Gate B evidence from Aditya's MacBook, not
+assumed from documentation or from this project's own (Linux) development
+environment, where every tested combination already reads the fixtures at
+`recall=1.00` and gives no distinguishing signal at all.
+
+**Round 1 (macOS Tesseract 5.5.0).** `binarize=True` (a fixed grayscale
+threshold applied before OCR, briefly the default in commit f84aa4d) was
+found to actively destroy valid characters on that Tesseract build: recall
+on the `91/2026` fixture dropped from an already-poor `0.33` to `0.00`,
+with no `fir_reference` recovered at all. Reverted to `binarize=False` by
+default.
+
+**Round 2 (macOS Tesseract 5.5.3).** A full matrix —
+`page_segmentation_mode` ∈ {3, 4, 6, 11, 12} × `binarize` ∈ {`False`,
+`True`} — was run against the real scanned-PDF fixtures for all three FIR
+identifiers this project's tests exercise. Measured results, `binarize=False`
+unless noted:
+
+| Fixture | PSM | Raw OCR text | Result |
+|---|---|---|---|
+| `91/2026` | 6 | `FIR Nex 91/2026 Police Station: Colaba Phone: 9876543210 Amount Rs. 25000` | recall `0.67` — `25000`/`9876543210` extracted, `91/2026` present in text but not (at the time) matched by the label regex |
+| `20/2026` | 6 | `FIR Ma 20/2026 Police Station: Colaba` | `20/2026` present in text but not (at the time) matched |
+| `30/2026` | 6 | `FIR Not 30/2026 tiled today` | `30/2026` present in text but not (at the time) matched |
+
+All `binarize=True` results were worse than the corresponding
+`binarize=False` result for every PSM tested (consistent with Round 1).
+No other tested PSM value (3, 4, 11, 12) recovered the label line better
+than PSM 6 did. **Decision: `page_segmentation_mode=6`,
+`binarize=False`.**
+
+In every one of the three cases above, Tesseract's own PSM-6 recognition
+of the FIR-label line was close but not exact — `No`/`No.` was misread as
+a short, different word (`Nex`, `Ma`, `Not`), while the actual identifier
+(`91/2026`, `20/2026`, `30/2026`) was read correctly. Since the raw text
+already contained the real identifier, the second half of the fix was in
+`document/fir_report.py`'s `_FIR_REFERENCE` regex, not in OCR
+configuration: the literal `FIR` label is still required, but the token
+between `FIR` and the identifier now also accepts a short (≤6 letters)
+OCR-garbled stand-in for `No`/`Number`, and the identifier itself is
+required (via lookahead) to actually contain a digit — the same structural
+requirement every real FIR reference in this project's fixtures already
+satisfies (`45/2026`, `TEST/2026/001`, `SECRET/9999/999`). This means the
+matcher still only ever emits an identifier that is genuinely present in
+the OCR text next to a genuine `FIR` mention; it does not invent, guess,
+or hard-code any value. See
+`tests/unit/structured_processing/test_fir_report.py::
+test_fir_reference_tolerates_an_ocr_garbled_label` (positive cases) and
+`test_fir_reference_garbled_label_tolerance_does_not_invent_a_match`
+(negative case: an unrelated digit-bearing identifier elsewhere in a
+sentence that also contains "FIR" is never emitted).
+
+**Confirmed on the real Gate B MacBook.** Aditya re-ran the focused
+structured-processing OCR tests and then the complete test suite on the
+actual Gate B machine (macOS, Python 3.12.7, Tesseract 5.5.3, pytesseract
+0.3.13, pypdfium2 5.13.0) with `page_segmentation_mode=6` and
+`binarize=False` in place and the tolerant FIR-label regex applied — both
+passed. Exact command and full-suite counts are recorded in
+`docs/qa/test-results.md`'s dated Gate B confirmation entry. This confirms
+the three fixtures this task measured (`91/2026`, `20/2026`, `30/2026`)
+recover correctly on that machine with this configuration; it does not
+claim that every future document type, layout, or real police evidence
+will OCR at this accuracy — see `docs/qa/known-limitations.md` for what
+remains unverified (a real benchmark dataset, real-world field-quality
+measurement).
+
 ## Layout/text normalization
 
 `app/modules/structured_processing/document/normalization.py`.
@@ -367,3 +435,73 @@ See `docs/qa/test-matrix.md` for the full rows:
 `CDR-CHUNKED-001`, `FINANCE-CHUNKED-001`, `WORKER-DOC-BATCH-001`,
 `WORKER-STRUCTURED-BATCH-001`, `WORKER-CLIENT-BATCH-001`,
 `WORKER-LIVE-BATCH-001`.
+
+## Phase 7 Part 2: structured-data and local OCR benchmarking (Jasraj)
+
+Status: **in progress** — see
+`docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part 2"
+section for the full design, `docs/decisions/ADR-016-phase-7-evaluation-
+and-model-selection.md` for the frozen evaluation rules this benchmark
+layer must respect, and `docs/qa/known-limitations.md`'s "Phase 7 Part 2"
+section for what remains genuinely unverified until Aditya's MacBook
+pre-flight.
+
+Five new, purely additive modules under `app/modules/structured_processing/`
+— `benchmark_metrics.py`, `benchmark_validation.py`, `benchmark_adapters.py`,
+`benchmark.py`, `benchmark_cli.py` — measure this phase's *existing*
+production code (`document/fir_report.py`, `structured/chunked_processing.py`,
+`structured/cdr.py`, `structured/finance.py`) against the three datasets
+this task owns in Phase 7 Part 1's frozen manifest: `fir_icdar_2023`
+(document/FIR OCR), `gomask_voice_cdr` (CDR), `ibm_amlsim` (finance). None
+of Parts 1–6's production processors are modified — every benchmark
+adapter calls the same functions `worker.py` already calls in production,
+never a parallel extraction path.
+
+- **OCR** (`fir_icdar_2023`): an injectable `OcrEngine` protocol lets a
+  `FakeOcrEngine` (unit tests) or a real PaddleOCR-backed
+  `ConfiguredOcrEngine` (real runs, wired by the caller — this module
+  never imports `paddleocr` itself) stand in for either approved
+  candidate (`paddleocr-ppocrv5-mobile`/`-server`). Character/word error
+  rate is computed only when a sample carries reference text; field
+  extraction precision/recall/F1 reuses the *exact* existing
+  `document.fir_report.extract_fir_mentions` regex extractor over the
+  OCR'd text, never a bespoke benchmark-only extraction rule — so a
+  benchmark's field-extraction score genuinely measures "how well does
+  this OCR candidate preserve what the real FIR pipeline already depends
+  on," not an artificial proxy task.
+- **CDR/finance** (`gomask_voice_cdr`/`ibm_amlsim`): the one candidate,
+  `existing-deterministic-parsers`, wraps
+  `structured.chunked_processing.assess_schema`/`normalize_chunk` (the
+  *same* functions `worker.run_structured_batches_job` calls in
+  production) to get genuine per-row accept/reject accounting — a
+  malformed row is safely categorized by its `ProcessingError.code`
+  (a small fixed vocabulary) and never inflates the accepted count,
+  mirroring production's own "zero valid rows despite malformed ones is a
+  FAILED result, never a fabricated SUCCEEDED" policy exactly.
+- **Local-only, safe-by-construction**: every local filesystem root
+  (`TRACEX_BENCHMARK_DATA_ROOT`/`TRACEX_MODEL_CACHE_ROOT`/
+  `TRACEX_BENCHMARK_OUTPUT_ROOT`) comes from an explicit environment
+  variable or CLI flag, never a hardcoded path; a missing dataset/model
+  artifact produces a truthful `BenchmarkRunStatus.UNAVAILABLE` result,
+  never a fabricated success; every result is Phase 7 Part 1's own frozen
+  `BenchmarkRunV1` (no parallel result contract), whose `metrics: dict[str,
+  float | int | None]` type constraint makes a raw string value in a
+  metric structurally impossible; `benchmark_validation.
+  reject_private_local_paths` additionally scans every free-text field for
+  an absolute/home-relative path before a result is written to disk.
+- **No dataset/model was downloaded, and no candidate is selected** —
+  every real run this session could attempt reports `UNAVAILABLE` (no
+  local FIR ICDAR/GoMask/AMLSim data or PaddleOCR installation exists on
+  this development machine, by design — see this task's "do not download"
+  rule). Aditya's MacBook pre-flight is where a real `SUCCEEDED`/`FAILED`
+  result first becomes possible; Gate C (not this task) selects a winner.
+
+See `docs/runbooks/local-development.md`'s "Phase 7 Part 2 benchmark CLI"
+and "Phase 7 Part 2 MacBook validation handoff" sections for the exact
+commands and pre-flight checklist.
+
+## QA test IDs owned by Jasraj (Phase 7 Part 2)
+
+See `docs/qa/test-matrix.md` for the full rows: `BENCH-VALIDATION-001`,
+`BENCH-OCR-001`, `BENCH-STRUCTURED-001`, `BENCH-CLI-001`,
+`BENCH-SAFETY-001`, `BENCH-SMOKE-001`.

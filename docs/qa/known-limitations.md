@@ -468,3 +468,81 @@ oversights — see `docs/architecture/phase-7-evaluation-and-model-governance.md
   (`synth-case-dev-01`, etc.).** No actual synthetic case content --
   evidence, observations, or fixtures -- exists behind any of them yet.
   Later owners generate approved modality fixtures against this plan.
+
+# Phase 7 Part 2 evaluation: structured-data and local OCR benchmarking (Jasraj)
+
+Gate B resolved the AMLSim and PaddleOCR execution unknowns. These limits
+remain:
+
+- **GoMask Voice CDR is blocked.** The verified official marketplace entry
+  requires an account and credits to download its advertised 501 rows. The
+  applicable rights also depend on the account plan/EULA. No official input
+  file or SHA-256 exists locally, no substitute was used, and the CLI result
+  is truthfully `unavailable`. Gate B cannot be marked fully complete without
+  team direction and legitimate access.
+- **The FIR OCR metrics cover annotation-region crops, not full pages.** The
+  2,447 local samples are real crops derived from the official annotation
+  boxes across 544 referenced images. CER/WER measure only transcription
+  distance on those regions. Full-page layout recovery, real police evidence,
+  and generalization to other document sets are unmeasured.
+- **FIR field-extraction precision/recall/F1 are null.** The official source
+  provides value text and category/bounding-box metadata, not a defensible map
+  to this project's label-bearing `expected_fields`. Adding field labels would
+  have fabricated ground truth.
+- **The measured OCR runtime is host-specific.** Both candidates ran through
+  PaddleOCR 3.7.0/PaddlePaddle 3.3.1 on one Linux x86_64 Intel CPU with
+  oneDNN and optional orientation/unwarping stages disabled. VRAM is null.
+  These latency and RAM values are not Apple-Silicon, GPU, Docker, or LAN
+  measurements.
+- **The official AMLSim sample lacks currency and calendar timestamps.** The
+  dataset-specific benchmark path validates its node IDs, value, and integer
+  simulation step without inventing missing semantics. Its 1.0 normalization
+  accuracy means all 118,250 structurally valid simulator rows were accepted;
+  it is not a fraud-detection or independently labelled semantic-accuracy
+  measurement.
+- **`artifact_sha256` for the CDR/finance deterministic baseline is the
+  local input file's own SHA-256, not a model-weight hash.** There is no
+  model weight for `existing-deterministic-parsers` (a deterministic-rules
+  baseline, not an ML model) -- the input file's hash stands in as "the
+  artifact this run measured," satisfying `BenchmarkRunV1`'s own validator
+  requiring a non-null `artifact_sha256` for a `SUCCEEDED` status.
+- **No Part 2 candidate is selected.** Every dataset/candidate pair this
+  phase benchmarks keeps its Part 1 `selection_status` of `candidate`/
+  `conditional` -- Gate C selects a winning OCR candidate only after the
+  remaining blockers and cross-modality evidence are resolved.
+- **`benchmark.py`'s OCR dispatch assumes exactly two PaddleOCR variants,
+  distinguished by a `candidate_id` suffix (`"mobile"`/`"server"`).** This
+  mirrors Part 1's frozen two-candidate catalogue exactly; it would need a
+  small, explicit update if a future part ever adds a third OCR candidate.
+  ### Gate B CDR benchmark — GoMask deferred
+  The GoMask Voice CDR benchmark is deferred because the official artifact requires
+  legitimate account/credit access and review of the applicable EULA. No unofficial
+  substitute dataset or fabricated metric was used. The benchmark CLI records this
+  state as `unavailable`.
+- **No GPU, Docker, or LAN benchmark was run.** The real Gate B model runs
+  were intentionally local CPU runs. Deployment validation remains outside
+  Gate B.
+- **Resolved (Gate B, Aditya's MacBook, real measurement): the document
+  OCR fallback's default configuration is now `page_segmentation_mode=6`,
+  `binarize=False`, and `fir_report.py`'s FIR-reference matcher tolerates a
+  short OCR-garbled label.** Two real macOS Tesseract builds (5.5.0,
+  5.5.3) both showed `binarize=True` actively harms recognition -- reverted
+  to off by default. A full PSM x binarize matrix on 5.5.3 found PSM 6 the
+  best-performing mode and every `binarize=True` result worse than its
+  `binarize=False` counterpart; no OS-specific branch or hard-coded fixture
+  value was introduced -- one deterministic default plus one narrowly
+  extended, still-evidence-bound regex. See `docs/architecture/
+  document-structured-processing.md`'s "Gate B macOS OCR configuration"
+  section for the full measured matrix and the exact regex reasoning.
+  **Confirmed** directly on the real Gate B MacBook (macOS, Python 3.12.7,
+  Tesseract 5.5.3, pytesseract 0.3.13, pypdfium2 5.13.0): the focused
+  structured-processing OCR tests and then the complete test suite
+  (`uv run pytest -q` -> 2046 passed, 96 skipped, 1 warning unrelated to
+  this change, 0 failed) both pass with this configuration in place -- see
+  `docs/qa/test-results.md`'s matching dated entry for the exact command
+  and counts. This confirms the three fixtures measured (`91/2026`,
+  `20/2026`, `30/2026`) recover correctly on that real machine; it is not
+  a claim that every future document type, layout, or real police evidence
+  will OCR at this accuracy. The later FIR ICDAR 2023 crop benchmark adds
+  transcription metrics, while field-quality measurement remains unavailable
+  for the ground-truth reason stated above.

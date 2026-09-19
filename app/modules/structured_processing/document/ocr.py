@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytesseract
+from PIL import Image, ImageOps
 from pytesseract import Output, TesseractNotFoundError
 
 from app.contracts.common import BoundingBoxNormalized
@@ -58,10 +59,38 @@ class OcrConfig:
     #: Minimum per-line confidence (tesseract's own `0-100` scale, divided
     #: by 100 here) to keep a recognized region.
     min_confidence: float = 0.4
-    #: Page-segmentation mode 3 ("fully automatic page segmentation") suits
-    #: a scanned document page, unlike media_processing's PSM 11 choice for
-    #: an arbitrary photo/video frame (see that module's own OCR adapter).
-    page_segmentation_mode: int = 3
+    #: Page-segmentation mode. **6** ("assume a single uniform block of
+    #: text"), not 3, per real Gate B measurements: on macOS Tesseract
+    #: 5.5.3, PSM 6 was the configuration that actually read the FIR-label
+    #: line correctly (`91/2026`/`20/2026`/`30/2026` all present in the raw
+    #: text) -- other tested PSM values were not better on that machine.
+    #: See `docs/architecture/document-structured-processing.md`'s "Gate B
+    #: macOS OCR configuration" section for the full matrix.
+    page_segmentation_mode: int = 6
+    #: Deterministic grayscale + fixed-threshold binarization applied to
+    #: the rendered page image before OCR (see `_prepare_image_for_ocr`).
+    #: **Off by default.** It was briefly turned on by default (commit
+    #: f84aa4d) on the theory that a fixed threshold would be *more*
+    #: portable than Tesseract's own internal adaptive thresholding --
+    #: real Gate B measurements disproved that on two separate macOS
+    #: Tesseract builds now: 5.5.0 (recall dropped from an already-poor
+    #: 0.33 to 0.00, no `fir_reference` recovered at all) and 5.5.3 (every
+    #: `binarize=True` result was worse than the corresponding
+    #: `binarize=False` one). A local PSM x binarization sweep on this
+    #: environment's Tesseract found no measurable difference either way
+    #: (every combination already reads the fixtures at recall=1.00 here),
+    #: so there is no environment-backed evidence this flag helps
+    #: anywhere -- it is kept only as an explicit, documented opt-in for an
+    #: operator who has verified it helps on their own specific
+    #: deployment, never as an assumed improvement.
+    binarize: bool = False
+    #: 8-bit grayscale cut point (0-255): a pixel at or above this value
+    #: becomes pure white, below it becomes pure black. 128 (the exact
+    #: midpoint) is the standard default for high-contrast black-on-white
+    #: printed/rendered text and needs no per-image calibration once
+    #: `ImageOps.autocontrast` (always applied first) has already
+    #: stretched the image to use the full 0-255 range.
+    binarization_threshold: int = 128
     #: Override the `tesseract` binary path. `None` uses `pytesseract`'s
     #: own `PATH` lookup.
     tesseract_cmd: str | None = None
@@ -74,8 +103,33 @@ def ocr_config_hash(config: OcrConfig) -> str:
             "dpi": config.dpi,
             "min_confidence": config.min_confidence,
             "page_segmentation_mode": config.page_segmentation_mode,
+            "binarize": config.binarize,
+            "binarization_threshold": config.binarization_threshold,
         }
     )
+
+
+def _prepare_image_for_ocr(page_image: Image.Image, config: OcrConfig) -> Image.Image:
+    """Deterministic grayscale + fixed-threshold binarization before OCR.
+
+    A rendered PDF page reaches this point already having passed through
+    at least one platform-native rasterizer (`pypdfium2`, itself a
+    precompiled binary per platform/OS) that can introduce a different
+    amount of anti-aliasing/blur around glyph edges depending on the
+    exact platform build -- even for the identical `pypdfium2` Python
+    version. Left as partially-gray pixels, that ambiguity is resolved by
+    Tesseract's own internal thresholding, which is precisely what
+    differs between Tesseract versions and platforms and is not
+    something this project controls. Snapping every pixel to pure black
+    or white here, deterministically and before Tesseract ever runs,
+    removes that variable entirely: Tesseract always receives the same
+    two-tone input regardless of what blur the upstream renderer applied.
+    """
+    if not config.binarize:
+        return page_image
+    grayscale = ImageOps.autocontrast(page_image.convert("L"))
+    threshold = config.binarization_threshold
+    return grayscale.point(lambda pixel: 255 if pixel >= threshold else 0)
 
 
 @dataclass(frozen=True)
@@ -172,10 +226,17 @@ class DocumentPageOcrEngine:
         turned into a safe `ProcessingError(OCR_RUNTIME_UNAVAILABLE)` by
         the caller if `pytesseract` itself raises mid-recognition.
         """
-        width, height = page_image.size  # type: ignore[attr-defined]
+        prepared_image = _prepare_image_for_ocr(page_image, self.config)  # type: ignore[arg-type]
+        # Bounding boxes are normalized against the exact image OCR actually
+        # ran on (not the pre-preprocessing original) -- binarization here
+        # never resizes/crops, so the two are always the same size, but
+        # deriving `width`/`height` from `prepared_image` keeps that an
+        # invariant this code enforces rather than an assumption it makes
+        # (requirement: map regions back to the coordinate system OCR saw).
+        width, height = prepared_image.size
         try:
             data = pytesseract.image_to_data(
-                page_image,
+                prepared_image,
                 lang=self.config.language,
                 config=f"--psm {self.config.page_segmentation_mode}",
                 output_type=Output.DICT,
