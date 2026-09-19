@@ -81,6 +81,28 @@ class OcrCandidateArtifact:
     model_sha256: str
 
 
+def _safe_package_version(package_name: str) -> str:
+    """The installed distribution's version, or a safe sentinel if it can't be determined.
+
+    This is provenance metadata for `backend_label` only, never a
+    functional requirement -- a caller may have supplied a working
+    `paddleocr` import (real, or in `test_benchmark_safety.py`,
+    deliberately faked via `sys.modules` with no real `paddleocr`/
+    `paddlepaddle` distribution installed at all) without the
+    corresponding package metadata being queryable through
+    `importlib.metadata`. Letting that lookup fail here would abort
+    engine construction entirely over a label string, and would silently
+    reintroduce a real-package dependency into a test suite this
+    project's own docs already commit to needing neither PaddleOCR nor a
+    model download (see `docs/qa/known-limitations.md`'s Phase 7 Part 2
+    section).
+    """
+    try:
+        return importlib.metadata.version(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def _build_paddleocr_engine(
     *, model_cache_root: Path, artifact: OcrCandidateArtifact, variant: str
 ) -> OcrEngine:
@@ -145,8 +167,8 @@ def _build_paddleocr_engine(
                 lines.extend(text for text in texts if isinstance(text, str))
             return "\n".join(lines)
 
-        paddleocr_version = importlib.metadata.version("paddleocr")
-        paddlepaddle_version = importlib.metadata.version("paddlepaddle")
+        paddleocr_version = _safe_package_version("paddleocr")
+        paddlepaddle_version = _safe_package_version("paddlepaddle")
     except Exception as exc:  # noqa: BLE001 - any construction failure is a safe "unavailable"
         if isinstance(exc, BenchmarkArtifactUnavailableError):
             raise
