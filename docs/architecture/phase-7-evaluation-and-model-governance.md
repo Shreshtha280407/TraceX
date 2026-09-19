@@ -2,11 +2,11 @@
 
 Owner: Nipun (Part 1); Jasraj (Part 2, this document's added section
 below). Status: **Part 1 in progress** (this document's own scope is
-complete and gated below); **Part 2 in progress** (benchmark adapters/CLI
-built and tested against synthetic fixtures; real dataset/model artifact
-validation is deferred to Aditya's MacBook pre-flight — see "Part 2:
-structured-data and local OCR benchmarking" below). Phase 7 overall is not
-complete. Part 1 freezes the referee and scoreboard later Phase 7 parts
+complete and gated below); **Part 2 Gate B incomplete** (real AMLSim and
+both PaddleOCR runs succeeded, while the official GoMask download remains
+account-and-credit gated — see "Part 2: structured-data and local OCR
+benchmarking" below). Phase 7 overall is not complete. Part 1 freezes the
+referee and scoreboard later Phase 7 parts
 build against; it downloads no dataset, installs no model, and selects no
 winner.
 
@@ -363,6 +363,15 @@ with a hollow `accepted_row_count: 0` — a genuine bug caught and fixed
 during this task's own test-writing (see `docs/qa/test-results.md`'s dated
 Phase 7 Part 2 entry).
 
+The official AMLSim sample is a deliberate, dataset-specific exception to
+the generic finance schema. Its exact
+`sourceNodeId,targetNodeId,value,time` header carries a simulation step and
+no currency. For `dataset_id=ibm_amlsim` only, the benchmark adapter validates
+the two node IDs, finite non-negative value, and non-negative integer step,
+then counts one simulator transaction per valid row. It does not manufacture
+a currency or calendar timestamp and does not weaken the production finance
+profile for any other dataset.
+
 ### Local roots, artifact availability, and safe failure
 
 Every local filesystem root is resolved from an explicit environment
@@ -388,49 +397,35 @@ CDR/finance deterministic baseline, `artifact_sha256` is the SHA-256 of
 the actual local input file processed — a real, computed value standing
 in for "the artifact this run measured" in the absence of a model weight.
 
-### Why PaddleOCR is never imported by this benchmark layer directly
+### Verified PaddleOCR 3 adapter
 
-`paddleocr`/`paddlepaddle` are declared as a pinned, reproducible optional
-dependency group (`pyproject.toml`'s `[project.optional-dependencies]
-ocr-benchmark`, resolved into `uv.lock` via `uv add --optional
-ocr-benchmark --no-sync paddleocr paddlepaddle`) rather than a base
-runtime dependency — `uv sync --all-groups` (this project's standard
-verification command) does **not** install it, confirmed directly on this
-development machine (`import paddleocr` fails after a clean `uv sync
---all-groups`). This gives Aditya's MacBook pre-flight one reproducible
-command (`uv sync --extra ocr-benchmark`) that installs the exact locked
-versions this branch was authored against — never an ad hoc `pip install
-paddleocr`, which would resolve whatever happens to be newest on the day
-it's run and defeat this task's own reproducibility requirement.
+`paddleocr`/`paddlepaddle` remain a reproducible optional dependency group.
+Gate B installed it through `uv`, resolved PaddleOCR 3.7.0 and PaddlePaddle
+3.3.1, and verified the real PaddleOCR 3 `predict` API with separate official
+PP-OCRv5 detector and recognizer inference directories. The adapter requires
+all six inference metadata/parameter files before construction, sends decoded
+RGB arrays to `predict`, and extracts `rec_texts` without storing raw OCR in a
+result JSON. It reports the actual package versions, variant, CPU device, and
+oneDNN state in `hardware_profile`.
 
-Declaring the dependency does not mean this session verified it. This
-session still cannot install or import PaddleOCR (installing the group
-would still mean downloading a multi-hundred-megabyte ML framework onto
-Shreshtha's laptop, which this task's rules forbid) or verify its exact
-current Python API — inventing that API shape would risk exactly the kind
-of fabricated detail this task's rules forbid. `ConfiguredOcrEngine`/
-`RealOcrEngineConfig` still accept an already-constructed recognition
-callable as a plain dependency injection point; `benchmark.
-_build_paddleocr_engine` still contains only a best-effort real wiring
-attempt (documented as such) that degrades to a safe
-`BenchmarkArtifactUnavailableError` if the installed API doesn't match —
-the version pin makes the *install* reproducible, it does not by itself
-prove the wiring code is correct against it. Unit tests exercise the
-adapter layer exclusively through `FakeOcrEngine` and never require
-PaddleOCR, a GPU, or a model download.
+The official paddle3.0.0 inference packages failed during oneDNN PIR
+attribute conversion on this Linux CPU. Both complete real runs therefore
+used the plain CPU backend with `enable_mkldnn=False`, and disabled document
+orientation classification, document unwarping, and text-line orientation.
+The focused builder test fixes this API/configuration contract without
+requiring model weights. NumPy is constrained to `>=2.3,<2.4` because the
+verified PaddleX dependency rejects NumPy 2.4 or newer.
 
 ### Verification (Part 2)
 
-`uv sync --all-groups`, `ruff format --check .`, `ruff check .`,
-`mypy app`, `pytest`, `git diff --check`, and `docker compose config -q`
-all ran on this development machine — see `docs/qa/test-results.md`'s
-dated Phase 7 Part 2 entry for exact counts. No real FIR ICDAR 2023/
-GoMask Voice CDR/IBM AMLSim dataset, no PaddleOCR installation, and no
-Docker/GPU validation was performed or is claimed here — every one of
-those is Aditya's MacBook pre-flight's job (see
-`docs/runbooks/local-development.md`'s "Phase 7 Part 2 MacBook validation
-handoff" section). No Part 2 candidate is selected; Gate C selects a
-winner only after Parts 2–4 all have comparable real results.
+Gate B subsequently ran the official AMLSim sample and both approved
+PaddleOCR candidates against the official FIR annotations; see
+`docs/qa/test-results.md` for commands, hashes, host/backend, and metrics.
+The official GoMask download remains account-and-credit gated, and its
+benchmark result is truthfully `unavailable`. Raw data, derived crops, model
+packages, caches, and result JSON remain outside Git. No Part 2 candidate is
+selected; Gate C selects a winner only after the remaining blocker and wider
+cross-modality evidence are resolved.
 
 ## Verification (Part 1)
 

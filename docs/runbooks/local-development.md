@@ -839,21 +839,35 @@ never contains raw OCR text, a raw CDR/finance row, a phone number, an
 account value, a narration, or a local filesystem path — only aggregate
 metrics, safe metadata, and a `failure_reason_safe` string when relevant.
 
-No PaddleOCR installation, real dataset, or GPU exists on Shreshtha's
-laptop — every unit test for this part runs against a `FakeOcrEngine` and
-small synthetic CDR/finance fixtures (`uv run pytest tests/unit/
-structured_processing/test_benchmark_*.py -v`). The one integration test
-that runs the real CLI as a subprocess
-(`tests/integration/structured_processing/test_local_benchmark_smoke.py`)
-self-skips cleanly here, since `TRACEX_BENCHMARK_DATA_ROOT` is unset.
+Unit tests still use `FakeOcrEngine` and small synthetic CDR/finance fixtures;
+they never depend on external Gate B artifacts. Real Gate B inputs, model
+packages, caches, derived crops, and result JSON belong under an explicitly
+configured external root such as `$HOME/tracex-gateb-artifacts/jasraj`, never
+inside Git or a Docker image.
 
-### MacBook validation handoff (Aditya)
+### Gate B execution status (2026-09-20)
 
-This benchmark capability is built and unit-tested, but **no real dataset,
-model, or benchmark result exists yet** — every number above came from
-synthetic fixtures. Aditya's Apple-Silicon MacBook Pro is the local
-execution host for real validation (not a Docker container host for model
-runs). Before running anything, follow these steps in order:
+The official AMLSim sample and both approved PP-OCRv5 candidates completed
+real local benchmarks. The official GoMask Voice CDR download requires an
+account and credits, so that CLI run is truthfully `unavailable` and Gate B
+is not fully complete. Exact source commits, artifact hashes, commands,
+backend versions, aggregate results, and result JSON hashes are recorded in
+`docs/qa/test-data.md` and `docs/qa/test-results.md`.
+
+PaddleOCR 3 uses separate detector and recognizer directories:
+`<model-cache>/<mobile|server>/{det,rec}`. Each directory must contain
+`inference.json`, `inference.pdiparams`, and `inference.yml`. Install the
+locked optional group with `uv sync --extra ocr-benchmark`. On the verified
+Linux CPU host, both candidates required `enable_mkldnn=False`; the result's
+`hardware_profile` records the actual PaddleOCR/PaddlePaddle versions,
+variant, CPU backend, and oneDNN state.
+
+### Original MacBook validation handoff (historical checklist)
+
+This checklist was written before the 2026-09-20 Gate B execution. Retain it
+as the safe procedure for a repeat on an Apple-Silicon MacBook; use the dated
+status above and `docs/qa/test-results.md` as the current record. Before a
+repeat, follow these steps in order:
 
 1. **Verify the branch.** `git status --short && git branch --show-current
    && git log --oneline -5` — confirm you are on the exact, unmerged
@@ -865,27 +879,17 @@ runs). Before running anything, follow these steps in order:
    against (`[project.optional-dependencies] ocr-benchmark` in
    `pyproject.toml`). An ad hoc `pip install paddleocr` would silently
    resolve whatever is newest on PyPI that day — a different, unpinned
-   version than this branch's OCR wiring was written against, making any
-   resulting benchmark number impossible to reproduce later. If
-   `_build_paddleocr_engine`'s real wiring in `benchmark.py` needs an
-   adjustment to match the installed package's actual API (documented as a
-   real possibility — this session could not import or exercise
-   PaddleOCR), fix it on this same branch and note the exact version that
-   required the fix.
-3. **Resolve licence/source status for each artifact** before downloading
-   anything: FIR ICDAR 2023, GoMask Voice CDR, IBM AMLSim, and the two
-   PaddleOCR PP-OCRv5 candidate model releases (mobile and server/
-   high-accuracy variants). Record each one's actual current licence,
-   official source, and release/version identifier — this session could
-   not verify any of these without downloading them, so `dataset-
-   manifest.v1.json`/`model-candidates.v1.json` still show
-   `license_status: "pending_verification"` for all three datasets.
-4. **Update only safe fields.** If verification succeeds, change the
-   relevant `license_status` from `pending_verification` to `verified` (or
-   to `blocked` if it turns out unusable), and add safe version/source
-   metadata — never split definitions, never a `selected` status, never a
-   dataset swap, never a change to a success-metric threshold after seeing
-   a result.
+   version than this branch's verified PaddleOCR 3 wiring, making a repeat
+   impossible to compare. If the locked package cannot construct the engine,
+   preserve the failed/unavailable result and investigate the exact API or
+   backend error before changing code.
+3. **Re-check licence/source status before downloading.** FIR ICDAR 2023,
+   AMLSim, and PaddleOCR provenance is pinned in the benchmark manifests and
+   QA docs. GoMask remains account-and-credit gated with plan-dependent terms;
+   do not substitute another CDR dataset.
+4. **Update only safe fields.** Add safe version/source metadata when newly
+   verified; never change a candidate to `selected`, swap datasets, or alter
+   a success-metric threshold after seeing a result.
 5. **Download each artifact into a git-ignored local directory only** —
    under whatever path you point `TRACEX_BENCHMARK_DATA_ROOT`/
    `TRACEX_MODEL_CACHE_ROOT` at (e.g. this repo's own gitignored

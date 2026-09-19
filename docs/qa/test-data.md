@@ -372,9 +372,9 @@ approximated anywhere in this module's tests or configs.
 
 ## Phase 7 Part 2 — structured-data and local OCR benchmarking fixtures (Jasraj)
 
-No real FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data exists anywhere
-in this repository's tests -- none was downloaded onto this development
-machine, per this task's explicit rule:
+No real FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim data is committed or
+copied into this repository's tests. The unit and integration test fixtures
+remain synthetic and safe:
 
 - **OCR fixtures**: `tests/unit/structured_processing/test_benchmark_adapters.py`
   builds a small, invented FIR-style text fixture (`_FIR_TEXT`, e.g.
@@ -407,4 +407,69 @@ machine, per this task's explicit rule:
   on this development machine, since no real dataset was downloaded here.
 
 No real FIR page, CDR row, phone number, financial transaction, model
-weight, or MacBook-local path appears anywhere in this module's tests.
+weight, or host-local artifact path appears anywhere in this module's tests.
+
+## 2026-09-20 — Gate B external benchmark data (Jasraj)
+
+Gate B kept all source checkouts, derived inputs, model packages, caches,
+and result JSON files outside Git under
+`$HOME/tracex-gateb-artifacts/jasraj`. The repository contains only safe
+provenance and aggregate measurements.
+
+- **IBM AMLSim:** official source `https://github.com/IBM/AMLSim`, commit
+  `7338a4bcb1af9bcfea2201ad7daccfe2a4d569ca`, Apache-2.0. The selected
+  repository sample `sample/20K_fanin200.tgz` has SHA-256
+  `e2479ab7a1ecfcd369a7738c855364825561bf9d888d2ad53174e0ed10fd1f1b`.
+  Its extracted `transactions.csv` has SHA-256
+  `e56ed0df72cdf4f4b872cb0493800f72fd98e802627515a2484098eee998f36a`,
+  header `sourceNodeId,targetNodeId,value,time`, and 118,250 data rows.
+- **FIR Dataset ICDAR 2023:** official source
+  `https://github.com/LegalDocumentProcessing/FIR_Dataset_ICDAR2023`, commit
+  `cbaceec3b584e8f3ab7c6ab96e5b68eeef8a2235`. Its README includes the MIT
+  permission grant. `FIR_details.json` has SHA-256
+  `693a1e11bd116e2458898e43c48785853b6d6e99439f315b761063c0bb2a357a`
+  and contains 2,447 annotated regions over 544 referenced images. Gate B
+  produced 2,447 annotation-box PNG crops and a local
+  `benchmark_manifest.jsonl` with SHA-256
+  `bcad272548b14f1be0ea9cd870b08139cf14b5cc53568a8b45b514813f55baf0`.
+  Each record maps a crop to the annotation's real transcription and source
+  metadata. It deliberately omits `expected_fields`, because the source
+  supplies value text rather than this project's label-bearing field map.
+- **GoMask Voice CDR:** the official marketplace entry is
+  `https://gomask.ai/marketplace/datasets/voice-call-detail-records-cdr-circuit-switched`,
+  advertised as 501 rows by 21 columns and last updated 2026-01-06. The
+  download requires an account and credits. The official terms
+  (`https://gomask.ai/terms`, effective 2025-08-20) and EULA
+  (`https://gomask.ai/eula`) make the applicable use rights depend on the
+  account plan; the Free Plan is limited to evaluation. No file was
+  downloaded, hashed, or replaced with a different dataset.
+- **PaddleOCR:** the four official paddle3.0.0 inference archives and their
+  extracted model directories remain under the external model cache. Their
+  official source URLs are
+  `https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar`,
+  `https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar`,
+  `https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_det_infer.tar`,
+  and
+  `https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_rec_infer.tar`.
+  Archive SHA-256 values are mobile detector
+  `50446e5d01ac2a73d5319c89513281f6578414c888c602f9af13f93feefffc58`,
+  mobile recognizer
+  `566b9512b34e34a9f0db54d87b51fa5a0b9ed2cf1ab7e49728cc0b8b5a64f414`,
+  server detector
+  `22a33e0ba6a21425ea4192da03bf4395c9a0c67902bd924b7328fc859073045d`,
+  and server recognizer
+  `d99be2ffd348943ab52876179168be4fb5b14f5f0812f2ae4c76d89ec2ea750a`.
+  The corresponding `inference.pdiparams` SHA-256 values are
+  `afa1820cb16c1fd0dad589d0f8b389139061c1ef6d68019685fd07be997dda5b`,
+  `2460da90875937c94db97eba74ae3d9e5d4c4c57c42f1f41531c09a26bcc771a`,
+  `183146fe9d9910352f68482f623bcbbb9fa7b9e8fa1463b9ad288cef00524d2d`,
+  and `63853f062a5f4089befc16f565a68277618e0da5cb45468b49d11079de0ada77`
+  in the same order. The official model documentation is
+  `https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/OCR.en.md`;
+  PaddleOCR is Apache-2.0.
+
+All source access, checkout, and downloads in this Gate B record occurred on
+2026-09-20 IST. Git archive SHA-256 values for the exact AMLSim and FIR
+checkouts are respectively
+`3fa95d6f548631a84d6f3d9f23aca4c1865ee130b5d74ca858dabe6ee2e99bbf`
+and `5040563c22ae8d3a61dd905768d859cb6c3b8ba087f9296491382927d39a788e`.

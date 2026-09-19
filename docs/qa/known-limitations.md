@@ -471,43 +471,35 @@ oversights — see `docs/architecture/phase-7-evaluation-and-model-governance.md
 
 # Phase 7 Part 2 evaluation: structured-data and local OCR benchmarking (Jasraj)
 
-All of the following are deliberate Part 2 scope boundaries, verified on
-Shreshtha's development laptop only -- real dataset/model validation is
-Aditya's MacBook pre-flight, not yet performed:
+Gate B resolved the AMLSim and PaddleOCR execution unknowns. These limits
+remain:
 
-- **No real FIR ICDAR 2023, GoMask Voice CDR, or IBM AMLSim dataset was
-  downloaded, inspected, or benchmarked in this environment.** Every OCR/
-  CDR/finance benchmark test in this phase runs against small, invented,
-  synthetic fixtures (see `docs/qa/test-data.md`'s Phase 7 Part 2 section);
-  no real benchmark result -- a real CER/WER, a real field-extraction F1, a
-  real accepted/rejected row count -- exists anywhere in this phase's
-  committed artifacts.
-- **PaddleOCR is now a pinned, reproducible optional dependency, but
-  installation and API-shape verification were still not attempted.**
-  `paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
-  `[project.optional-dependencies] ocr-benchmark` group and resolved into
-  `uv.lock` (`uv add --optional ocr-benchmark --no-sync paddleocr
-  paddlepaddle`), specifically so Aditya's MacBook pre-flight runs `uv
-  sync --extra ocr-benchmark` for a reproducible install instead of an
-  ad hoc `pip install paddleocr` that would silently drift to whatever
-  version is newest that day. `uv sync --all-groups` (this project's
-  standard verification command) does **not** install this extra --
-  confirmed directly on this machine (`import paddleocr` fails after a
-  clean sync) -- so this remains true: `benchmark._build_paddleocr_engine`'s
-  real wiring is still a best-effort attempt written from PaddleOCR's
-  documented public API shape, not verified against an actually-installed
-  package, and may need a small adjustment once Aditya's pre-flight
-  installs the pinned version and exercises the real API for the first
-  time. Every unit test in this phase exercises the adapter layer
-  exclusively through `FakeOcrEngine` and needs no PaddleOCR, GPU, or
-  model download.
-- **The local OCR benchmark manifest format
-  (`benchmark_manifest.jsonl`) is invented by this task, not the real FIR
-  ICDAR 2023 annotation format.** A converter from the real ICDAR
-  annotation schema into this minimal JSON-Lines shape (`sample_id`/
-  `image_path`/`reference_text`/`expected_fields`) is deferred to Aditya's
-  MacBook pre-flight, since the real annotation format could not be
-  verified in this environment without downloading the dataset.
+- **GoMask Voice CDR is blocked.** The verified official marketplace entry
+  requires an account and credits to download its advertised 501 rows. The
+  applicable rights also depend on the account plan/EULA. No official input
+  file or SHA-256 exists locally, no substitute was used, and the CLI result
+  is truthfully `unavailable`. Gate B cannot be marked fully complete without
+  team direction and legitimate access.
+- **The FIR OCR metrics cover annotation-region crops, not full pages.** The
+  2,447 local samples are real crops derived from the official annotation
+  boxes across 544 referenced images. CER/WER measure only transcription
+  distance on those regions. Full-page layout recovery, real police evidence,
+  and generalization to other document sets are unmeasured.
+- **FIR field-extraction precision/recall/F1 are null.** The official source
+  provides value text and category/bounding-box metadata, not a defensible map
+  to this project's label-bearing `expected_fields`. Adding field labels would
+  have fabricated ground truth.
+- **The measured OCR runtime is host-specific.** Both candidates ran through
+  PaddleOCR 3.7.0/PaddlePaddle 3.3.1 on one Linux x86_64 Intel CPU with
+  oneDNN and optional orientation/unwarping stages disabled. VRAM is null.
+  These latency and RAM values are not Apple-Silicon, GPU, Docker, or LAN
+  measurements.
+- **The official AMLSim sample lacks currency and calendar timestamps.** The
+  dataset-specific benchmark path validates its node IDs, value, and integer
+  simulation step without inventing missing semantics. Its 1.0 normalization
+  accuracy means all 118,250 structurally valid simulator rows were accepted;
+  it is not a fraud-detection or independently labelled semantic-accuracy
+  measurement.
 - **`artifact_sha256` for the CDR/finance deterministic baseline is the
   local input file's own SHA-256, not a model-weight hash.** There is no
   model weight for `existing-deterministic-parsers` (a deterministic-rules
@@ -516,19 +508,20 @@ Aditya's MacBook pre-flight, not yet performed:
   requiring a non-null `artifact_sha256` for a `SUCCEEDED` status.
 - **No Part 2 candidate is selected.** Every dataset/candidate pair this
   phase benchmarks keeps its Part 1 `selection_status` of `candidate`/
-  `conditional` -- Gate C selects a winning OCR candidate only after Parts
-  2-4 all have comparable real results, none of which exist yet.
+  `conditional` -- Gate C selects a winning OCR candidate only after the
+  remaining blockers and cross-modality evidence are resolved.
 - **`benchmark.py`'s OCR dispatch assumes exactly two PaddleOCR variants,
   distinguished by a `candidate_id` suffix (`"mobile"`/`"server"`).** This
   mirrors Part 1's frozen two-candidate catalogue exactly; it would need a
   small, explicit update if a future part ever adds a third OCR candidate.
-- **No live PaddleOCR/GPU/MacBook/Docker validation was run in this
-  environment.** Every test in `tests/unit/structured_processing/
-  test_benchmark_*.py` runs with no live infra, no GPU, and no downloaded
-  dataset or model -- exactly as required by this task's own rules. See
-  `docs/runbooks/local-development.md`'s "Phase 7 Part 2 MacBook validation
-  handoff" section for what Aditya's pre-flight must still verify before
-  this phase's benchmark capability can produce a real, trustworthy result.
+  ### Gate B CDR benchmark — GoMask deferred
+  The GoMask Voice CDR benchmark is deferred because the official artifact requires
+  legitimate account/credit access and review of the applicable EULA. No unofficial
+  substitute dataset or fabricated metric was used. The benchmark CLI records this
+  state as `unavailable`.
+- **No GPU, Docker, or LAN benchmark was run.** The real Gate B model runs
+  were intentionally local CPU runs. Deployment validation remains outside
+  Gate B.
 - **Resolved (Gate B, Aditya's MacBook, real measurement): the document
   OCR fallback's default configuration is now `page_segmentation_mode=6`,
   `binarize=False`, and `fir_report.py`'s FIR-reference matcher tolerates a
@@ -550,6 +543,6 @@ Aditya's MacBook pre-flight, not yet performed:
   and counts. This confirms the three fixtures measured (`91/2026`,
   `20/2026`, `30/2026`) recover correctly on that real machine; it is not
   a claim that every future document type, layout, or real police evidence
-  will OCR at this accuracy. A real benchmark dataset (FIR ICDAR 2023 or
-  equivalent) and a real-world field-quality measurement remain pending --
-  unchanged from this same section's other entries above.
+  will OCR at this accuracy. The later FIR ICDAR 2023 crop benchmark adds
+  transcription metrics, while field-quality measurement remains unavailable
+  for the ground-truth reason stated above.

@@ -11,13 +11,13 @@
       "model_family": "PP-OCRv5",
       "variant": "mobile-lightweight",
       "execution_target": "cpu",
-      "license_status": "pending_verification",
-      "source_reference": "PaddleOCR PP-OCRv5 mobile release (exact model card/version to be pinned before download)",
+      "license_status": "verified_permissive",
+      "source_reference": "https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/OCR.en.md (official PP-OCRv5 mobile detector/recognizer inference packages)",
       "selection_status": "candidate",
       "required_metrics": ["character_error_rate", "word_error_rate", "field_extraction_f1", "latency_ms"],
       "known_limitations": [
-        "not yet downloaded or benchmarked in this phase",
-        "lightweight variant trades accuracy for speed/footprint -- measured, not assumed"
+        "Gate B measured the official paddle3.0.0 inference packages through PaddleOCR 3.7.0 and PaddlePaddle 3.3.1 on one Linux x86_64 CPU host",
+        "results cover 2,447 annotation-region crops, not full-page layout recovery or field extraction"
       ],
       "fallback_candidate_id": "existing-deterministic-parsers"
     },
@@ -30,13 +30,13 @@
       "model_family": "PP-OCRv5",
       "variant": "server-high-accuracy",
       "execution_target": "gpu_optional",
-      "license_status": "pending_verification",
-      "source_reference": "PaddleOCR PP-OCRv5 server release (exact model card/version to be pinned before download)",
+      "license_status": "verified_permissive",
+      "source_reference": "https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/OCR.en.md (official PP-OCRv5 server detector/recognizer inference packages)",
       "selection_status": "candidate",
       "required_metrics": ["character_error_rate", "word_error_rate", "field_extraction_f1", "latency_ms", "vram_mb"],
       "known_limitations": [
-        "not yet downloaded or benchmarked in this phase",
-        "higher-accuracy variant with a larger resource footprint -- measured, not assumed"
+        "Gate B measured the official paddle3.0.0 inference packages through PaddleOCR 3.7.0 and PaddlePaddle 3.3.1 on one Linux x86_64 CPU host",
+        "results cover 2,447 annotation-region crops, not full-page layout recovery or field extraction"
       ],
       "fallback_candidate_id": "paddleocr-ppocrv5-mobile"
     },

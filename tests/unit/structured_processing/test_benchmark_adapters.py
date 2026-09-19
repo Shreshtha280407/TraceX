@@ -259,6 +259,52 @@ def test_finance_benchmark_accepts_valid_rows_and_rejects_malformed_ones(tmp_pat
     assert run.metrics["rejected_row_count"] == 2
 
 
+def test_finance_benchmark_accepts_the_official_amlsim_schema(tmp_path: Path) -> None:
+    path = _write_csv(
+        tmp_path,
+        "transactions.csv",
+        "sourceNodeId,targetNodeId,value,time\n",
+        ["360,18984,103.55,1", "125,812,0.01,720"],
+    )
+    run = run_structured_benchmark(
+        task="finance",
+        input_path=path,
+        candidate_id="existing-deterministic-parsers",
+        dataset_id="ibm_amlsim",
+        split_id=SplitId.DEVELOPMENT,
+        inference_config={"profile": "official_amlsim_transaction_v1"},
+        now=_NOW,
+    )
+    assert run.status == BenchmarkRunStatus.SUCCEEDED
+    assert run.metrics["input_row_count"] == 2
+    assert run.metrics["accepted_row_count"] == 2
+    assert run.metrics["rejected_row_count"] == 0
+    assert run.metrics["mentions_emitted_count"] == 2
+
+
+def test_finance_benchmark_rejects_malformed_official_amlsim_rows(tmp_path: Path) -> None:
+    path = _write_csv(
+        tmp_path,
+        "transactions.csv",
+        "sourceNodeId,targetNodeId,value,time\n",
+        ["360,18984,103.55,1", "360,,5.00,2", "360,42,-1.00,3", "360,42,5.00,day-4"],
+    )
+    run = run_structured_benchmark(
+        task="finance",
+        input_path=path,
+        candidate_id="existing-deterministic-parsers",
+        dataset_id="ibm_amlsim",
+        split_id=SplitId.DEVELOPMENT,
+        inference_config={"profile": "official_amlsim_transaction_v1"},
+        now=_NOW,
+    )
+    assert run.status == BenchmarkRunStatus.SUCCEEDED
+    assert run.metrics["accepted_row_count"] == 1
+    assert run.metrics["rejected_row_count"] == 3
+    assert run.metrics["rejected_row_count_required_field_missing"] == 1
+    assert run.metrics["rejected_row_count_invalid_source_signal"] == 2
+
+
 # --- CDR / finance: malformed input cannot inflate counts (proof point 10) --
 
 

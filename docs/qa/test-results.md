@@ -3292,3 +3292,133 @@ types, layouts, or real police evidence, and it is not a real-dataset
 benchmark result. A real FIR ICDAR 2023 (or equivalent) benchmark and a
 real-world field-quality measurement remain pending, unchanged from
 `docs/qa/known-limitations.md`'s Phase 7 Part 2 entries.
+
+## 2026-09-20 — Gate B real Jasraj benchmarks
+
+These measurements were made on the currently checked-out `jasraj` branch
+with all inputs, weights, caches, derived crops, and result JSON outside Git
+under `$HOME/tracex-gateb-artifacts/jasraj`. The execution host exposed to
+this session was Linux 7.0.2 x86_64, Python 3.12.13, an Intel Core
+i5-1135G7 CPU, and no GPU backend. This differs from the earlier macOS
+Tesseract verification above and is recorded separately.
+
+### IBM AMLSim
+
+The first real run rejected the official
+`sourceNodeId,targetNodeId,value,time` schema as `ambiguous_schema`. That
+exposed a compatibility defect: the generic finance profile requires a
+currency and calendar timestamp which AMLSim deliberately does not provide.
+The narrow benchmark adapter now recognizes only that exact schema for the
+`ibm_amlsim` dataset, validates IDs, finite non-negative values, and
+non-negative integer simulation steps, and counts one transaction per valid
+source row without inventing currency or calendar time. Focused regression
+tests cover accepted and malformed AMLSim-shaped rows. The generic production
+finance profile is unchanged.
+
+```bash
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id ibm_amlsim \
+  --candidate-id existing-deterministic-parsers \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development
+```
+
+Initial failed result:
+`finance-existing-deterministic-parsers-98a12a640696.json`, SHA-256
+`1fa049d6f27e7931216e78500ab64e78182a7aa699f220d131ea9d97dc2daaec`.
+Final succeeded result:
+`finance-existing-deterministic-parsers-2bfa2b5629eb.json`, SHA-256
+`554142bf94d0a0ae572d2c792eff9f0c8b097c604d17274c9927abc10863ab70`.
+It measured 118,250 input and accepted rows, 0 rejected rows, 118,250
+transaction events, normalization accuracy 1.0, schema-validation error rate
+0.0, 847.6981179992436 ms elapsed, and 140.984375 MiB peak RAM.
+
+These values establish complete structural acceptance of this selected
+synthetic AMLSim file. They do not establish real-world fraud detection,
+currency normalization, calendar-time correctness, or semantic accuracy
+against an independently labelled transaction truth set.
+
+### GoMask Voice CDR
+
+The official marketplace source was inspected, but its 501-row download
+requires a GoMask account and credits and its applicable use rights depend on
+the account plan/EULA. No substitute dataset was used. Running the required
+CLI against the deliberately empty local dataset directory produced a
+truthful `unavailable` result:
+
+```bash
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id gomask_voice_cdr \
+  --candidate-id existing-deterministic-parsers \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development
+```
+
+Result `gomask_voice_cdr-existing-deterministic-parsers-dcb1591c294b.json`
+has SHA-256
+`6a0fc5478d24f242221d52fcae99a0bc0126c653d748f1cde46f9c842a0134ea`,
+status `unavailable`, no metrics or artifact hash, and safe reason
+`expected exactly one CSV/XLSX/JSON input file in the dataset directory and
+found zero or more than one`. Gate B is therefore not fully complete.
+
+- GoMask Voice CDR / existing-deterministic-parsers: `unavailable`.
+  Reason: official dataset download is account-and-credit gated; no approved local
+  artifact was available to hash or benchmark.
+
+### FIR ICDAR 2023 with PP-OCRv5
+
+Both candidates used official paddle3.0.0 detector and recognizer inference
+packages, PaddleOCR 3.7.0, PaddlePaddle 3.3.1, CPU, document-orientation,
+unwarping, and text-line-orientation stages disabled, and oneDNN disabled.
+The latter was necessary because PaddlePaddle 3.3.1 failed to convert an
+array-of-double PIR attribute for these packages on this CPU; the plain CPU
+backend completed all samples. The artifact hashes below are deterministic
+SHA-256 digests of the detector archive bytes followed by the recognizer
+archive bytes for each candidate.
+
+```bash
+PADDLE_PDX_CACHE_HOME="$HOME/tracex-gateb-artifacts/jasraj/model-cache/paddlex-cache" \
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id fir_icdar_2023 \
+  --candidate-id paddleocr-ppocrv5-mobile \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --model-cache-root "$HOME/tracex-gateb-artifacts/jasraj/model-cache" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development \
+  --model-name PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec \
+  --model-version official-paddle3.0.0-inference-packages \
+  --model-sha256 0d6c552d532765040041b88dbf40999f25c0d6e73030c56c075065dd6f4af938
+
+PADDLE_PDX_CACHE_HOME="$HOME/tracex-gateb-artifacts/jasraj/model-cache/paddlex-cache" \
+UV_CACHE_DIR=/tmp/tracex-uv-cache \
+uv run python -m app.modules.structured_processing.benchmark_cli \
+  --dataset-id fir_icdar_2023 \
+  --candidate-id paddleocr-ppocrv5-server \
+  --data-root "$HOME/tracex-gateb-artifacts/jasraj/data" \
+  --model-cache-root "$HOME/tracex-gateb-artifacts/jasraj/model-cache" \
+  --output-root "$HOME/tracex-gateb-artifacts/jasraj/results" \
+  --split-id development \
+  --model-name PP-OCRv5_server_det+PP-OCRv5_server_rec \
+  --model-version official-paddle3.0.0-inference-packages \
+  --model-sha256 5b1e0cf8b46f9641f6f90e642c2ee1eba25328cbc7eaaff2738722f7bce8ecb1
+```
+
+| Candidate | Status | CER | WER | p50 / p95 / p99 latency (ms) | Peak RAM (MiB) | Documents |
+|---|---:|---:|---:|---:|---:|---:|
+| `paddleocr-ppocrv5-mobile` | succeeded | 0.7609902781591976 | 0.9869081674353436 | 137.8839050012175 / 499.9964450034895 / 830.1075790004688 | 775.3046875 | 2,447 / 2,447 |
+| `paddleocr-ppocrv5-server` | succeeded | 0.7039433980812687 | 0.9401599626364644 | 325.4969799963874 / 795.2444769980502 / 1086.6854569976567 | 1190.73828125 | 2,447 / 2,447 |
+
+Mobile result `ocr-paddleocr-ppocrv5-mobile-2b1ecf3b1d5c.json` has SHA-256
+`c71ecd9997ee912c988b2b7b742c3df00504e3a4ab16f55b5a7012a5a5e31f0d`;
+server result `ocr-paddleocr-ppocrv5-server-99586f2d2bdf.json` has SHA-256
+`9a5d0499ed392b0bba5fbddf3deb708ac290b2c7789d9176384b90f11b4d5474`.
+VRAM and field-extraction precision/recall/F1 are null. The manifest maps
+real annotation crops to real reference transcriptions but has no defensible
+label-bearing `expected_fields` mapping. CER/WER therefore measure crop-level
+transcription distance only. Latency is per crop and RAM is process peak on
+this host. These results do not choose a model; Gate C owns selection.

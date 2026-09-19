@@ -20,17 +20,18 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
 from app.modules.evaluation.models import BenchmarkRunStatus, BenchmarkRunV1, SplitId
 from app.modules.structured_processing.document.fir_report import extract_fir_mentions
-from app.modules.structured_processing.errors import ProcessingError
-from app.modules.structured_processing.models import TextSegment
+from app.modules.structured_processing.errors import ErrorCode, ProcessingError
+from app.modules.structured_processing.models import RawRecord, TextSegment, normalize_header
 from app.modules.structured_processing.structured.chunked_processing import (
     assess_schema,
     iter_csv_record_chunks,
@@ -479,6 +480,81 @@ _NORMALIZE_TASK_PROFILE = {
     "finance": FINANCIAL_TRANSACTION_GENERIC_V1,
 }
 
+_OFFICIAL_AMLSIM_HEADER = ("sourcenodeid", "targetnodeid", "value", "time")
+
+
+@dataclass(frozen=True)
+class _StructuredRunAccumulator:
+    total_rows: int = 0
+    valid_rows: int = 0
+    malformed_by_code: dict[str, int] = field(default_factory=dict)
+    mentions_emitted: int = 0
+
+
+def _is_official_amlsim_header(dataset_id: str, header: Sequence[str]) -> bool:
+    """Match only AMLSim's published graph-transaction CSV schema.
+
+    That schema has a simulator step rather than a calendar timestamp and
+    supplies no currency. It therefore must not be passed through the generic
+    finance profile, whose stricter currency/timestamp requirements remain
+    correct for correlation-ready financial evidence.
+    """
+    return dataset_id == "ibm_amlsim" and tuple(map(normalize_header, header)) == (
+        _OFFICIAL_AMLSIM_HEADER
+    )
+
+
+def _amlsim_row_error_code(record: RawRecord) -> str | None:
+    """Validate one official AMLSim row without inventing missing semantics."""
+    values = {normalize_header(name): value for name, value in record.values.items()}
+    for field_name in ("sourcenodeid", "targetnodeid"):
+        value = values.get(field_name, "").strip()
+        if not value:
+            return ErrorCode.REQUIRED_FIELD_MISSING
+        if any(ord(char) < 32 for char in value):
+            return ErrorCode.INVALID_SOURCE_SIGNAL
+
+    try:
+        amount = Decimal(values.get("value", "").strip())
+    except InvalidOperation:
+        return ErrorCode.INVALID_SOURCE_SIGNAL
+    if not amount.is_finite() or amount < 0:
+        return ErrorCode.INVALID_SOURCE_SIGNAL
+
+    try:
+        simulation_step = int(values.get("time", "").strip())
+    except ValueError:
+        return ErrorCode.INVALID_SOURCE_SIGNAL
+    if simulation_step < 0:
+        return ErrorCode.INVALID_SOURCE_SIGNAL
+    return None
+
+
+def _accumulate_official_amlsim_chunks(
+    chunks: Iterable[list[RawRecord]],
+) -> _StructuredRunAccumulator:
+    """Count validated AMLSim transactions while keeping chunked memory bounds."""
+    total_rows = 0
+    valid_rows = 0
+    malformed_by_code: dict[str, int] = {}
+    for chunk in chunks:
+        total_rows += len(chunk)
+        for record in chunk:
+            error_code = _amlsim_row_error_code(record)
+            if error_code is None:
+                valid_rows += 1
+            else:
+                malformed_by_code[error_code] = malformed_by_code.get(error_code, 0) + 1
+    return _StructuredRunAccumulator(
+        total_rows=total_rows,
+        valid_rows=valid_rows,
+        malformed_by_code=malformed_by_code,
+        # The official row itself is one simulator transaction. No currency or
+        # calendar timestamp is inferred, and no extra account/amount mentions
+        # are claimed for this benchmark-only compatibility path.
+        mentions_emitted=valid_rows,
+    )
+
 
 def discover_single_input_file(dataset_dir: Path) -> Path | None:
     """The one CSV/XLSX/JSON file directly under `dataset_dir`, or `None`.
@@ -498,14 +574,6 @@ def discover_single_input_file(dataset_dir: Path) -> Path | None:
 
 def _content_kind_for(path: Path) -> str:
     return {".csv": "csv", ".xlsx": "xlsx", ".json": "json"}[path.suffix.lower()]
-
-
-@dataclass(frozen=True)
-class _StructuredRunAccumulator:
-    total_rows: int = 0
-    valid_rows: int = 0
-    malformed_by_code: dict[str, int] = field(default_factory=dict)
-    mentions_emitted: int = 0
 
 
 def run_structured_benchmark(
@@ -538,9 +606,12 @@ def run_structured_benchmark(
 
     started_monotonic = time.monotonic()
     try:
+        official_amlsim_schema = False
         if kind == "csv":
             header = peek_csv_header(data)
-            assess_schema(profile, header)
+            official_amlsim_schema = _is_official_amlsim_header(dataset_id, header)
+            if not official_amlsim_schema:
+                assess_schema(profile, header)
             chunks = iter_csv_record_chunks(data, batch_size=1_000)
         elif kind == "xlsx":
             header = peek_xlsx_header(data)
@@ -552,23 +623,26 @@ def run_structured_benchmark(
             assess_schema(profile, header)
             chunks = iter([records]) if records else iter(())
 
-        total_rows = 0
-        valid_rows = 0
-        mentions_emitted = 0
-        malformed_by_code: dict[str, int] = {}
-        for chunk in chunks:
-            result = normalize_chunk(profile, chunk)
-            total_rows += len(chunk)
-            valid_rows += result.valid_row_count
-            mentions_emitted += len(result.mentions)
-            for row in result.malformed_rows:
-                malformed_by_code[row.error_code] = malformed_by_code.get(row.error_code, 0) + 1
-        accumulator = _StructuredRunAccumulator(
-            total_rows=total_rows,
-            valid_rows=valid_rows,
-            malformed_by_code=malformed_by_code,
-            mentions_emitted=mentions_emitted,
-        )
+        if official_amlsim_schema:
+            accumulator = _accumulate_official_amlsim_chunks(chunks)
+        else:
+            total_rows = 0
+            valid_rows = 0
+            mentions_emitted = 0
+            malformed_by_code: dict[str, int] = {}
+            for chunk in chunks:
+                result = normalize_chunk(profile, chunk)
+                total_rows += len(chunk)
+                valid_rows += result.valid_row_count
+                mentions_emitted += len(result.mentions)
+                for row in result.malformed_rows:
+                    malformed_by_code[row.error_code] = malformed_by_code.get(row.error_code, 0) + 1
+            accumulator = _StructuredRunAccumulator(
+                total_rows=total_rows,
+                valid_rows=valid_rows,
+                malformed_by_code=malformed_by_code,
+                mentions_emitted=mentions_emitted,
+            )
     except ProcessingError as exc:
         completed_at = datetime.now(UTC)
         return BenchmarkRunV1(

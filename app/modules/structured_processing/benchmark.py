@@ -12,6 +12,8 @@ artifacts are missing.
 
 from __future__ import annotations
 
+import importlib.metadata
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,16 +84,8 @@ class OcrCandidateArtifact:
 def _build_paddleocr_engine(
     *, model_cache_root: Path, artifact: OcrCandidateArtifact, variant: str
 ) -> OcrEngine:
-    """Best-effort real PaddleOCR wiring.
-
-    This session cannot install or exercise PaddleOCR, so the exact
-    `paddleocr` Python API called here is written from its documented
-    public shape and may need a small adjustment once Aditya's MacBook
-    pre-flight confirms the actually-installed version's API -- any
-    mismatch degrades to a safe `BenchmarkArtifactUnavailableError`
-    (caught by `run_benchmark` into an `UNAVAILABLE` result), never a
-    crash or a fabricated result. See `docs/runbooks/local-development.md`.
-    """
+    """Construct the verified PaddleOCR 3.x local PP-OCRv5 pipeline."""
+    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(model_cache_root / "paddlex-cache"))
     try:
         import paddleocr
     except ImportError as exc:
@@ -102,24 +96,63 @@ def _build_paddleocr_engine(
         ) from exc
 
     try:
-        weights_dir = model_cache_root / variant
-        engine = paddleocr.PaddleOCR(det_model_dir=str(weights_dir), rec_model_dir=str(weights_dir))
+        variant_dir = model_cache_root / variant
+        detection_dir = variant_dir / "det"
+        recognition_dir = variant_dir / "rec"
+        required_files = (
+            detection_dir / "inference.json",
+            detection_dir / "inference.pdiparams",
+            detection_dir / "inference.yml",
+            recognition_dir / "inference.json",
+            recognition_dir / "inference.pdiparams",
+            recognition_dir / "inference.yml",
+        )
+        if not all(path.is_file() for path in required_files):
+            raise BenchmarkArtifactUnavailableError(
+                "configured PaddleOCR model cache is missing one or more verified "
+                "PP-OCRv5 inference files"
+            )
+
+        model_prefix = f"PP-OCRv5_{variant}"
+        engine = paddleocr.PaddleOCR(
+            text_detection_model_name=f"{model_prefix}_det",
+            text_detection_model_dir=str(detection_dir),
+            text_recognition_model_name=f"{model_prefix}_rec",
+            text_recognition_model_dir=str(recognition_dir),
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            device="cpu",
+            # PaddlePaddle 3.3.1 cannot execute these official paddle3.0.0
+            # inference packages through oneDNN on this CPU; the plain CPU
+            # backend is verified and deterministic for both candidates.
+            enable_mkldnn=False,
+        )
 
         def recognize_fn(image_bytes: bytes) -> str:
             import io
 
+            import numpy as np
             from PIL import Image  # already a transitive dependency via pypdfium2/Pillow
 
-            image = Image.open(io.BytesIO(image_bytes))
-            result = engine.ocr(image, cls=True)
-            lines = [line[1][0] for page in (result or []) for line in (page or [])]
+            with Image.open(io.BytesIO(image_bytes)) as source_image:
+                image = np.asarray(source_image.convert("RGB"))
+            lines: list[str] = []
+            for page in engine.predict(input=image):
+                payload = page.json
+                result = payload.get("res", {}) if isinstance(payload, dict) else {}
+                texts = result.get("rec_texts", []) if isinstance(result, dict) else []
+                lines.extend(text for text in texts if isinstance(text, str))
             return "\n".join(lines)
 
+        paddleocr_version = importlib.metadata.version("paddleocr")
+        paddlepaddle_version = importlib.metadata.version("paddlepaddle")
     except Exception as exc:  # noqa: BLE001 - any construction failure is a safe "unavailable"
+        if isinstance(exc, BenchmarkArtifactUnavailableError):
+            raise
         raise BenchmarkArtifactUnavailableError(
             "could not construct the local PaddleOCR engine with the configured "
-            "model cache -- verify the installed paddleocr API matches this "
-            "adapter during MacBook pre-flight"
+            "PP-OCRv5 model cache and installed benchmark dependencies"
         ) from exc
 
     return ConfiguredOcrEngine(
@@ -127,7 +160,10 @@ def _build_paddleocr_engine(
             model_name=artifact.model_name,
             model_version=artifact.model_version,
             model_sha256=artifact.model_sha256,
-            backend_label=f"paddleocr-{variant}-cpu",
+            backend_label=(
+                f"paddleocr-{paddleocr_version}-paddlepaddle-{paddlepaddle_version}-"
+                f"{variant}-cpu-mkldnn-off"
+            ),
             recognize_fn=recognize_fn,
         )
     )

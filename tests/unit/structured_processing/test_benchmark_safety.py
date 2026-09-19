@@ -7,15 +7,24 @@ anywhere in this file.
 
 from __future__ import annotations
 
+import io
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from app.modules.evaluation.catalog import load_model_candidate_catalog
 from app.modules.evaluation.manifest import load_dataset_manifest
 from app.modules.evaluation.models import CandidateTask
 from app.modules.evaluation.validation import UnsafeContentError
-from app.modules.structured_processing.benchmark import run_benchmark
+from app.modules.structured_processing.benchmark import (
+    OcrCandidateArtifact,
+    _build_paddleocr_engine,
+    run_benchmark,
+)
 from app.modules.structured_processing.benchmark_validation import (
     ALLOWED_CANDIDATE_IDS,
     ALLOWED_DATASET_CANDIDATE_PAIRS,
@@ -40,6 +49,50 @@ from app.modules.structured_processing.benchmark_validation import (
 
 _MANIFEST = load_dataset_manifest()
 _CATALOG = load_model_candidate_catalog()
+
+
+def test_paddleocr_builder_uses_verified_v5_model_directories_and_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    model_root = tmp_path / "models"
+    for component in ("det", "rec"):
+        component_dir = model_root / "mobile" / component
+        component_dir.mkdir(parents=True)
+        for filename in ("inference.json", "inference.pdiparams", "inference.yml"):
+            (component_dir / filename).write_bytes(b"fixture")
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+
+        def predict(self, *, input: object) -> list[SimpleNamespace]:  # noqa: A002
+            assert input is not None
+            return [SimpleNamespace(json={"res": {"rec_texts": ["real", "text"]}})]
+
+    monkeypatch.setitem(sys.modules, "paddleocr", SimpleNamespace(PaddleOCR=FakePaddleOCR))
+    monkeypatch.delenv("PADDLE_PDX_CACHE_HOME", raising=False)
+    engine = _build_paddleocr_engine(
+        model_cache_root=model_root,
+        artifact=OcrCandidateArtifact(
+            model_name="PP-OCRv5 mobile detector + recognizer",
+            model_version="paddle3.0.0 official inference package",
+            model_sha256="a" * 64,
+        ),
+        variant="mobile",
+    )
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(image_buffer, format="PNG")
+    result = engine.recognize(image_buffer.getvalue())
+
+    assert result.text == "real\ntext"
+    assert captured_kwargs["text_detection_model_name"] == "PP-OCRv5_mobile_det"
+    assert captured_kwargs["text_recognition_model_name"] == "PP-OCRv5_mobile_rec"
+    assert captured_kwargs["enable_mkldnn"] is False
+    assert captured_kwargs["device"] == "cpu"
+    assert "paddlex-cache" in os.environ["PADDLE_PDX_CACHE_HOME"]
 
 
 # --- proof points 1-2: only approved IDs are accepted -----------------------
