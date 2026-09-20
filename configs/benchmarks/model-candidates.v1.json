@@ -146,12 +146,13 @@
       "model_family": "Silero VAD",
       "variant": "v6",
       "execution_target": "cpu",
-      "license_status": "pending_verification",
-      "source_reference": "Silero VAD v6 public release (exact model card/license to be pinned before download)",
+      "license_status": "verified_permissive",
+      "source_reference": "snakers4/silero-vad, https://github.com/snakers4/silero-vad, commit 60b7ffa2 (2026-09-17), LICENSE file fetched directly from GitHub",
       "selection_status": "candidate",
       "required_metrics": ["voice_activity_detection_accuracy", "latency_ms"],
       "known_limitations": [
-        "not yet downloaded or benchmarked in this phase",
+        "Gate B, 2026-09-20 (Sarthak): LICENSE file fetched directly from https://github.com/snakers4/silero-vad confirms MIT, which permits commercial use; a shallow clone of that same commit was manually staged as an offline Torch Hub source snapshot (never auto-downloaded by the benchmark code) and used for a real local CPU VAD benchmark against ami_meeting_corpus -- see docs/qa/test-results.md",
+        "a real, narrow defect was found and fixed while wiring this candidate: the harness's pinned weight sub-path assumed the older `files/silero_vad.jit` repo layout, but the current upstream repository stores the JIT weight at `src/silero_vad/data/silero_vad.jit` (see audio_social_benchmark.py's `_SILERO_VAD_WEIGHT_RELATIVE_PATH`)",
         "VAD accuracy metric is Nipun's own minimal addition beyond the task spec's metrics table, since VAD had no explicit metrics row there"
       ],
       "fallback_candidate_id": null
@@ -326,6 +327,25 @@
         "selected over Logistic Regression only if it clears the documented material-improvement bar without an explainability regression (see ADR-016)"
       ],
       "fallback_candidate_id": "logistic-regression-correlation"
+    },
+    {
+      "schema_version": "v1",
+      "candidate_id": "existing-deterministic-social-parsers",
+      "owner": "sarthak",
+      "task": "social_text_extraction",
+      "framework": "internal",
+      "model_family": "deterministic-parser-rules",
+      "variant": "phase-1-4-baseline",
+      "execution_target": "deterministic_rules",
+      "license_status": "internal_only",
+      "source_reference": "app/modules/communication_processing/social/ (existing, already-shipped Phase 1-3 code)",
+      "selection_status": "candidate",
+      "required_metrics": ["extraction_precision", "extraction_recall", "extraction_f1", "language_handling_score", "latency_ms"],
+      "known_limitations": [
+        "the existing deterministic baseline this project already runs (WhatsApp/Telegram/Instagram/generic-JSON parsers, alias normalization/transliteration), not a new model download",
+        "an ML/LLM-based social-text extraction model is deliberately not forced in over this baseline unless a later part demonstrates a defined, measurable improvement -- added in Phase 7 Part 4 (Sarthak), since Part 1 deliberately left social_text_extraction forward-compatible-only with no candidate yet (see phase-7-evaluation-and-model-governance.md)"
+      ],
+      "fallback_candidate_id": null
     }
   ]
 }

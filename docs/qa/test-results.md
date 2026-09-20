@@ -3450,6 +3450,42 @@ this sandbox failed (`could not read Username for 'https://github.com'`
 re-verified against GitHub directly in this session; the local record is
 the best available confirmation.
 
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups        -> Resolved 170 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+## 2026-09-16 — Phase 7 Part 4 audio and social/chat benchmark foundation (Sarthak, dev-machine only)
+
+New additive `app/modules/communication_processing/{audio_social_
+benchmark_metrics,audio_social_benchmark_validation,audio_social_
+benchmark_adapters,audio_social_benchmark,audio_social_benchmark_cli}.py`,
+implementing reproducible local benchmark adapters and a safe CLI for
+Part 1's four Sarthak-owned datasets (`common_voice_indic`,
+`ami_meeting_corpus`, `vast_social_text`, `vast_2014_mixed_records`)
+against their approved candidates, plus one additive Part 1 catalogue
+entry (`existing-deterministic-social-parsers`). This entry covers only
+verification performed on Shreshtha's development laptop — **no real
+Common Voice Indic/AMI Meeting Corpus/VAST dataset, and no faster-whisper/
+pyannote.audio/fastText installation, exists in this environment**,
+except for one genuine local CLI run against a synthetic (not real)
+dataset directory, described below. Real dataset/model validation is
+Aditya's MacBook Gate B pre-flight, not yet performed; see
+`docs/runbooks/local-development.md`'s "MacBook Gate B pre-flight"
+section.
+
+**Branch/base verification**: confirmed on the exact, unmerged `sarthak`
+branch (`git branch --show-current` -> `sarthak`), working tree clean at
+the start of this task, `git rev-parse HEAD` identical to the last-fetched
+`origin/main` (`f87b99c...`, "Completed nipun/part-1-5-phase-7 (#49)") --
+not based on `jasraj` or `gaurav`.
+
 **A pre-existing Docker stack (`tracex-api`/`tracex-postgres`/
 `tracex-redis`/`tracex-neo4j`/`tracex-minio`) was already running
 throughout this session**, started by earlier work, not by this task --
@@ -3459,7 +3495,7 @@ existing stack, it was left exactly as found.
 **Static/type/format checks** (whole repository):
 
 ```text
-uv sync --all-groups        -> Resolved 170 packages, Checked 104 packages (up to date)
+uv sync --all-groups        -> Resolved 196 packages, Checked 104 packages (up to date)
 uv run ruff format --check . -> 502 files already formatted
 uv run ruff check .          -> All checks passed!
 uv run mypy app               -> Success: no issues found in 210 source files
@@ -3728,3 +3764,497 @@ generated frame/manifest/result JSON lives under
 `git status --short` showing no such paths. No Part 3 candidate is
 selected; Gate C selects a winner only after Parts 2-4 all have
 comparable results.
+
+**Full repository suite**: `uv run pytest -q` -- **2164 passed, 4 skipped,
+0 failed**, in 257s, one pre-existing unrelated warning (`audioop`
+deprecation). All 4 skips are expected: 3 are this phase's own
+`tests/integration/communication_processing/test_audio_social_benchmark_
+smoke.py` self-skipping because `TRACEX_BENCHMARK_DATA_ROOT` is unset on
+this machine (by design), and 1 is the pre-existing, unrelated
+`test_ner.py` self-skip (Phase 3 Jasraj's NER model bootstrap).
+
+**An unrelated, pre-existing flaky test was found and confirmed
+unrelated**, not caused by this task: the first full-suite run (before
+this dated one) failed
+`tests/unit/access_control/test_api.py::test_refresh_rate_limit_returns_429`
+(`1 failed, 2163 passed, 4 skipped`). Re-running it alone passed (11.25s);
+re-running the entire `access_control` test file alone reproduced the
+same failure (`1 failed, 137 passed`) -- proving the flakiness is
+order/timing-dependent *within `access_control`'s own suite*
+(`InMemoryRateLimiter` keys its window off real wall-clock time via
+`self._clock() // RATE_LIMIT_WINDOW_SECONDS`), not caused by this task's
+`communication_processing`/`configs/benchmarks/model-candidates.v1.json`
+changes (`git status --short` confirms zero files touched outside this
+task's own additive scope). The re-run reported above passed cleanly.
+Not fixed here -- `access_control` is another owner's module, outside
+this task's scope; flagged in `docs/qa/known-limitations.md` for team
+awareness.
+
+**Focused Phase 7 Part 4 suite** (synthetic fixtures and fake engines,
+plus the real deterministic social extractor, only -- no live infra, no
+faster-whisper/pyannote.audio/fastText, no GPU, no dataset needed):
+
+```text
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_metrics.py  -> 19 passed
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_adapters.py  -> 20 passed
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_safety.py    -> 47 passed
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_cli.py       ->  8 passed
+uv run pytest tests/integration/communication_processing/test_audio_social_benchmark_smoke.py -> 3 skipped (expected; see above)
+uv run pytest tests/unit/communication_processing/test_module_safety.py                    -> 142 passed (includes 5 new parametrized instances)
+```
+
+**A real local CLI run was performed against a synthetic (not real)
+dataset directory**, to prove the discovered licence-cleared pair
+genuinely works end to end, not only in unit tests: a temporary directory
+under this session's own scratchpad was populated with one invented
+`vast_social_text/messages.jsonl` line (`{"sample_id": "m1",
+"message_text": "call me at 9876543210", "expected_mentions":
+[["phone_number", "9876543210"]]}` -- the same synthetic phone number used
+throughout this repository's other tests), `TRACEX_BENCHMARK_DATA_ROOT`
+was pointed at it, and the real
+`audio_social_benchmark_cli run --dataset-id vast_social_text
+--candidate-id existing-deterministic-social-parsers` command produced a
+genuine `"status": "succeeded"` result with a real `artifact_sha256` (the
+input file's own SHA-256) -- confirmed via the integration smoke test's
+real-execution path. The synthetic directory was deleted immediately
+after and nothing from it was committed.
+
+**Readiness note (the same lesson from this session's earlier Jasraj/
+Gaurav PaddleOCR/Ultralytics pinning reviews), applied proactively**:
+`pyproject.toml` gained `[project.optional-dependencies]
+audio-social-benchmark = ["faster-whisper>=1.2.1", "fasttext>=0.9.3",
+"pyannote-audio>=4.0.7"]` (uv-resolved versions, not invented), resolved
+into `uv.lock` via `uv add --optional audio-social-benchmark --no-sync`
+(`Resolved 196 packages in 9.54s`). Confirmed not installed by `uv sync
+--all-groups` and not importable anywhere on this machine both
+immediately after `uv add` and after a full re-sync. `torch` was
+deliberately **not** added -- see `docs/qa/known-limitations.md`'s note
+on Silero VAD's real wiring being left unresolved rather than reopening
+this project's existing torch-avoidance boundary unilaterally.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this task. No dataset
+download, model download, faster-whisper/pyannote.audio/fastText
+installation, or real benchmark result against real data is claimed --
+this part's own tests and documentation state that plainly, per this
+task's explicit "never claim a benchmark passed until Aditya runs it on
+the MacBook" rule.
+
+## 2026-09-16 — Phase 7 Part 4 follow-up: Silero VAD and fastText language-ID wiring resolved (Sarthak, dev-machine only)
+
+Two designs the entry above left unresolved -- `_build_real_vad_engine`
+(unconditionally raised, VAD's real wiring genuinely missing) and
+`_build_real_language_id_engine` (confirmed `fasttext` was loadable, then
+unconditionally raised, citing the audio/text mismatch) -- were resolved
+per explicit instruction, on the same `sarthak` branch, in the same
+environment as the entry above:
+
+- `_build_real_vad_engine` now wires real Silero VAD via
+  `torch.hub.load('snakers4/silero-vad', model='silero_vad',
+  trust_repo=True)`, with a lazy `import torch` confined to this one
+  function, WAV decoding via stdlib `wave`, and per-sample `EngineError`
+  categorization (`unreadable`/`execution_failure`).
+- `_build_real_language_id_engine` now chains an internal
+  `faster-whisper` `WhisperModel` transcription stage in front of
+  fastText's `lid.176` classifier, attributing only the language
+  classification -- never the transcription stage -- to the
+  `fasttext-lid176` candidate's own name/version/hash. This was chosen
+  over reusing an ASR engine's own built-in language-detection output,
+  which would misattribute that result to the wrong model under this
+  candidate's label.
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md`'s
+"Silero VAD and fastText language-ID: resolved per explicit team
+decision" section for the full design writeup.
+
+**Dependency change**: `torch` was added to the existing
+`[project.optional-dependencies] audio-social-benchmark` extra (not a new
+extra) via `uv add --optional audio-social-benchmark --no-sync torch`
+(`Resolved 196 packages in 1.94s` -- the same package count as before,
+since `pyannote-audio` already pulled `torch` in transitively; making it
+a direct, explicit dependency added platform-specific lock metadata,
+hence the larger `uv.lock` diff). Confirmed **not** installed, both
+immediately after `uv add` and after a full `uv sync --all-groups`
+(`import torch` fails both times). `torch` remains scoped to this one
+optional extra and is never a production/base dependency; the module
+safety carve-out (`_BENCHMARK_HARNESS_ML_EXEMPTIONS` in
+`tests/unit/communication_processing/test_module_safety.py`) was extended
+to include `"torch"`, alongside its own updated docstring/comment --
+`test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+import` confirms every other forbidden library (including
+`transformers`/`whisper`/`speechbrain`/`librosa`/`sklearn`/`numpy`)
+remains forbidden in the benchmark harness.
+
+**One new test added**: `test_real_language_id_engine_is_unavailable_
+without_its_transcription_stage` fakes `fasttext` as importable (via
+`monkeypatch.setitem(sys.modules, ...)`) while leaving `faster_whisper`
+genuinely absent, proving the two-stage design's second check is real
+and not skipped once the first import succeeds. The two pre-existing
+tests (`test_real_vad_engine_reports_unavailable_and_never_crashes`,
+`test_real_language_id_engine_is_unavailable_without_fasttext_installed`)
+still pass against the new implementations and were tightened to assert
+on the exact missing-library name (`torch`/`fasttext`) in the raised
+message.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups         -> Resolved 196 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2165 passed, 4
+skipped, 0 failed**, in 257s (one pre-existing, unrelated `audioop`
+deprecation warning) -- exactly +1 over the entry above's 2164, matching
+the one new test added, with zero regressions. The `access_control`
+rate-limit flaky test noted above did not reappear this run.
+
+**Focused Phase 7 Part 4 suite**:
+
+```text
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_safety.py -> 48 passed
+uv run pytest tests/unit/communication_processing/test_module_safety.py                 -> 157 passed
+```
+
+No `torch`/Silero VAD/fastText-chained-transcription installation or
+execution was performed or verified in this environment -- both remain
+best-effort wiring written from each library's documented public API
+shape, manually spot-checked only for safe degradation (both functions
+correctly raise `BenchmarkArtifactUnavailableError`, never crash, when
+their required library is absent -- confirmed via an ad hoc script, not
+just the test suite). Real verification is still Aditya's MacBook Gate B
+pre-flight.
+
+## 2026-09-16 — Phase 7 Part 4 follow-up: offline-only, hash-verified VAD and language-ID wiring (Sarthak, dev-machine only)
+
+A second follow-up on the same two engines: the entry above resolved
+*whether* to wire real Silero VAD and chain a transcription stage in
+front of fastText, but left two gaps -- `_build_real_vad_engine` still
+called `torch.hub.load("snakers4/silero-vad", ...)` against a live
+GitHub repository string (a real runtime network dependency for a
+supposedly "local" benchmark), and `_build_real_language_id_engine`
+recorded only its primary `fasttext-lid176` artifact, leaving its
+required faster-whisper transcription-stage dependency unverified and
+unrecorded. Both are now closed, on the same `sarthak` branch, same
+environment as both entries above:
+
+- `_build_real_vad_engine` never calls `torch.hub.load` against GitHub or
+  any network source. It requires a Torch Hub *source snapshot* of
+  `snakers4/silero-vad` staged manually under
+  `<model_cache_root>/silero-vad/` and loads it with
+  `torch.hub.load(..., source="local")`, which only ever reads local
+  files. Every resolved path is checked to stay inside the configured
+  model cache root (`_resolve_within_model_cache_root`, rejecting e.g. a
+  symlink escape), and `artifact.model_sha256` is verified against the
+  snapshot's own pinned weight file (`files/silero_vad.jit`) before
+  anything loads.
+- `_build_real_language_id_engine`/`_run_language_id` now require a
+  second, independent `VerifiedModelArtifact` for the faster-whisper
+  transcription stage (`transcription_stage_artifact`, no default) in
+  addition to the primary fastText artifact -- a completed result is
+  rejected if either is absent. Both artifacts' local files
+  (`lid.176.ftz` and `lid-transcription-stage/model.bin`) are hash-
+  verified the same way VAD's snapshot is. Since the frozen
+  `BenchmarkRunV1` contract has only one `artifact_sha256` field, the
+  transcription stage's own name/version/SHA-256 are folded into
+  `inference_config_hash`'s input instead (`run_benchmark` gained a new
+  `verified_transcription_stage_artifact` parameter, threaded through the
+  CLI as `--transcription-stage-model-name`/`-version`/`-sha256`).
+
+See `docs/architecture/phase-7-evaluation-and-model-governance.md`'s
+"Silero VAD and fastText language-ID: resolved per explicit team
+decision, then made fully offline and hash-verified" section for the
+full design writeup, and `docs/runbooks/local-development.md`'s
+renumbered MacBook Gate B pre-flight (now 11 steps) for exactly what
+Aditya stages, where, and how each SHA-256 is recorded.
+
+**Dependency change**: none. `torch` was already declared in the
+`audio-social-benchmark` extra by the prior follow-up; this one only
+changes how it's called (`source="local"` instead of the implicit
+GitHub-fetching default) and adds path/hash-verification logic -- no
+`pyproject.toml`/`uv.lock` change was needed, confirmed via `git diff
+--stat pyproject.toml uv.lock` showing the identical diff as before this
+follow-up.
+
+**Seven new tests** added to `test_audio_social_benchmark_safety.py`:
+`test_real_vad_engine_never_loads_from_a_remote_torch_hub_source` (a fake
+`torch.hub.load` asserts `source == "local"` and rejects a GitHub-style
+`repo_or_dir`), `test_real_vad_engine_reaches_adapter_seam_with_valid_
+local_configuration` (a validly staged snapshot + matching hash returns a
+usable engine with no network access), `test_real_vad_engine_blocked_
+when_local_snapshot_missing`, `test_real_vad_engine_blocked_when_
+snapshot_path_escapes_model_cache_root` (a symlink pointing outside the
+model cache root is rejected), `test_real_vad_engine_blocked_on_
+artifact_hash_mismatch`, `test_language_id_result_requires_a_
+transcription_stage_artifact` (tested at the `_run_language_id` level,
+below the licence gate that would otherwise block `fasttext-lid176`
+first), and `test_language_id_result_never_leaks_transcript_text_or_
+local_paths` (a distinctive marker transcript, produced by a faked
+transcription stage, is proven to never appear in the returned
+`LanguageIdEngineResult`, alongside the usual no-local-path/no-raw-
+model-bytes checks). One new test added to `test_audio_social_benchmark_
+cli.py`: `test_run_accepts_transcription_stage_artifact_flags_for_
+language_id`, confirming the CLI's three new flags parse and thread
+through `run_benchmark` without error. The three pre-existing
+missing-optional-dependency tests were updated for the new required
+parameters (`model_cache_root` for VAD, `transcription_stage_artifact`
+for language-ID) and tightened to assert the exact missing-library name.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups         -> Resolved 196 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; no stack was running to disturb)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2173 passed, 4
+skipped, 0 failed**, in 258s (one pre-existing, unrelated `audioop`
+deprecation warning) -- exactly +8 over the entry above's 2165, matching
+the eight new tests added, with zero regressions. The `access_control`
+rate-limit flaky test noted in an earlier entry did not reappear.
+
+**Focused Phase 7 Part 4 suite**:
+
+```text
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_safety.py -> 55 passed
+uv run pytest tests/unit/communication_processing/test_audio_social_benchmark_cli.py     -> 9 passed
+uv run pytest tests/unit/communication_processing/test_module_safety.py                  -> 157 passed
+```
+
+No `torch`/Silero VAD/fastText/faster-whisper installation or execution
+was performed in this environment -- every new test fakes the relevant
+module via `sys.modules` injection (never a real download or install),
+proving the offline/hash-verification *logic* without needing the real
+libraries present. Real verification against actually-staged artifacts
+is still Aditya's MacBook Gate B pre-flight.
+
+## 2026-09-20 — Gate B real Sarthak benchmarks
+
+These measurements were made on the currently checked-out `sarthak`
+branch (rebased onto the latest `origin/main`, which by this point
+included Jasraj's and Gaurav's own real Gate B Parts 2/3 work), with all
+downloaded parquet shards, model snapshots, extracted audio, and result
+JSON outside Git under `$HOME/tracex-gateb-artifacts/sarthak`. Real host
+profile: Arch Linux, kernel 7.2.4-arch1-2, x86_64, Intel Core i5-13420H
+(12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via `uv`); `torch.cuda.
+is_available()` returned `False` and `nvidia-smi` reported no driver --
+genuinely CPU-only, despite the resolved `torch==2.14.0+cu130` wheel
+(that build tag reflects the pinned resolution, not GPU usage).
+
+**Dependency install**: `uv sync --extra audio-social-benchmark` resolved
+and installed `torch==2.14.0+cu130`, `pyannote-audio==4.0.7` (plus
+`pyannote-core`/`pyannote-database`/`pyannote-metrics`/`pyannote-pipeline`),
+`faster-whisper==1.2.1`, `fasttext`, and their transitive dependencies in
+47s.
+
+**Real dataset**: AMI Meeting Corpus `ihm` test-split shard
+`ihm/test-00000-of-00004.parquet` (241,989,739 bytes, SHA-256
+`d95920dccc6924c15215239461bf5d1152fe07c9c61add073bd12da26dd602e0`)
+downloaded from its official Hugging Face mirror `edinburghcstr/ami`
+(University of Edinburgh CSTR, CC BY 4.0, no account/gate) via
+`huggingface_hub.hf_hub_download`. A real, fixed 20-utterance subset
+(chronological, meeting `EN2002c`, speakers `MEE071`/`MEE073`/`FEO072`,
+~35.9s total real speech) was extracted, re-encoded from IEEE-float WAV
+to 16-bit PCM WAV (via `scipy.io.wavfile`, since Python's stdlib `wave`
+cannot read format-tag 3) with no other content change, and converted
+into this harness's own `benchmark_manifest.jsonl`/
+`diarization_manifest.jsonl` formats -- exact provenance and hashes in
+`docs/qa/test-data.md`.
+
+**Real model**: `snakers4/silero-vad` shallow-cloned at commit `60b7ffa2`
+(2026-09-17, MIT licence, fully public, no account/gate) into
+`$TRACEX_MODEL_CACHE_ROOT/silero-vad/` as an offline Torch Hub source
+snapshot. Pinned weight `src/silero_vad/data/silero_vad.jit`, SHA-256
+`e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720`.
+
+**Real regressions found and fixed during this task's own Gate B
+execution (all self-caught by actually running the real candidates for
+the first time -- previously this code could not be installed or
+exercised at all)**:
+
+1. **`_SILERO_VAD_WEIGHT_RELATIVE_PATH` assumed an outdated
+   `snakers4/silero-vad` repository layout** (`files/silero_vad.jit`) --
+   confirmed directly against a real clone that the current repository's
+   own `hubconf.py` loads `src/silero_vad/data/silero_vad.jit` instead.
+   Fixed in `audio_social_benchmark.py`; the corresponding test fixture
+   in `test_audio_social_benchmark_safety.py::_stage_silero_snapshot` was
+   updated to match.
+2. **`_run_diarization` never branched on `candidate.candidate_id` at
+   all** -- every diarization request, regardless of the candidate
+   named, called `_build_real_diarization_engine` (pyannote-only
+   wiring). Selecting `deterministic-diarization-fallback` therefore
+   silently ran pyannote's own local-use/model-loading checks and
+   reported pyannote's failure message under the wrong candidate's name.
+   Fixed with a new `_build_deterministic_diarization_fallback_engine`
+   (always reports a safe, correctly-attributed `BenchmarkArtifactUnavailableError`
+   naming the real architectural reason: no local raw-audio
+   speaker-segmentation model exists in this phase, per
+   `audio/diarization_adapter.py`'s `UnavailableDiarizationAdapter`) plus
+   a real dispatch branch, and a new regression test
+   (`test_deterministic_diarization_fallback_never_dispatches_to_pyannote`).
+3. **Three pre-existing unit tests' `ImportError`-branch assumptions
+   became stale once torch/fasttext/faster_whisper were genuinely
+   installed**: `test_real_vad_engine_reports_unavailable_and_never_
+   crashes`, `test_real_language_id_engine_is_unavailable_without_
+   fasttext_installed`, and `test_real_language_id_engine_is_unavailable_
+   without_its_transcription_stage` all failed once their target
+   `ImportError` branch became unreachable. Fixed by forcing each
+   module's absence via `monkeypatch.setitem(sys.modules, name, None)`
+   (raises `ImportError` on import regardless of real installation
+   state), keeping them real regression tests on any machine.
+4. **mypy's treatment of `faster_whisper`/`fasttext`/`torch`/
+   `pyannote.audio` changed once they were genuinely installed** --
+   previously-correct `# type: ignore[import-not-found]` comments became
+   `unused-ignore` errors (mypy now sees `import-untyped`, or for
+   `torch`/`pyannote` which ship `py.typed`, follows their real stubs and
+   surfaces internal typing issues). Fixed by adding `faster_whisper.*`/
+   `fasttext.*` to `pyproject.toml`'s existing plain
+   `ignore_missing_imports` override list, and `torch.*`/`pyannote.*` to
+   a `follow_imports = "skip"` override alongside the existing
+   `ultralytics.*` entry (identical precedent from Phase 7 Part 3's Gate
+   B); removed the four now-unused inline `# type: ignore` comments; and
+   added an explicit `engine: DiarizationEngine` annotation in
+   `_run_diarization` (mypy could not otherwise infer a sensible type
+   across a branch whose first arm calls a `NoReturn` function).
+
+**Real benchmark commands and results**:
+
+```bash
+export TRACEX_BENCHMARK_DATA_ROOT=$HOME/tracex-gateb-artifacts/sarthak/data
+export TRACEX_MODEL_CACHE_ROOT=$HOME/tracex-gateb-artifacts/sarthak/models
+export TRACEX_BENCHMARK_OUTPUT_ROOT=$HOME/tracex-gateb-artifacts/sarthak/results
+
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id silero-vad-v6 \
+  --model-name silero-vad --model-version "snakers4/silero-vad@60b7ffa2" \
+  --model-sha256 e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720
+```
+
+```json
+{
+  "schema_version": "v1",
+  "run_id": "ami_meeting_corpus-silero-vad-v6-0e439b039c19",
+  "candidate_id": "silero-vad-v6",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "vad",
+  "runtime_environment": "phase7-part4-audio-social-benchmark-cli-v1",
+  "hardware_profile": "cpu",
+  "artifact_sha256": "e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720",
+  "metrics": {
+    "voice_activity_detection_accuracy": 0.22388059701492538,
+    "vad_precision": 1.0,
+    "vad_recall": 0.22388059701492538,
+    "vad_f1": 0.36585365853658536,
+    "latency_ms": 4.53,
+    "ram_mb": 568.75,
+    "sample_count": 20,
+    "sample_success_count": 20,
+    "sample_failure_count": 0,
+    "latency_p50_ms": 4.53,
+    "latency_p95_ms": 35.45
+  },
+  "status": "succeeded",
+  "failure_reason_safe": null
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-silero-vad-v6-0e439b039c19.json`. Precision 1.0 means
+every frame Silero flagged as speech genuinely was speech; recall 0.224
+reflects this benchmark's own deliberately coarse ground truth (each
+whole utterance clip labelled as speech, including natural edge silence
+AMI's own segmentation leaves in some clips) -- see
+`docs/qa/known-limitations.md` for the full explanation. This is a real,
+honestly-measured number, not a target to optimize against in this
+phase.
+
+```bash
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id deterministic-diarization-fallback \
+  --model-name deterministic-diarization-fallback --model-version phase-4-baseline \
+  --model-sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+```json
+{
+  "run_id": "ami_meeting_corpus-deterministic-diarization-fallback-8fb827c6bfdb",
+  "candidate_id": "deterministic-diarization-fallback",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "diarization",
+  "hardware_profile": "unavailable",
+  "artifact_sha256": null,
+  "metrics": {},
+  "status": "unavailable",
+  "failure_reason_safe": "'deterministic-diarization-fallback' has no local raw-audio speaker-segmentation model in this phase -- it only imports externally-supplied speaker turns via the existing diarization-import path (UnavailableDiarizationAdapter in app/modules/communication_processing/audio/diarization_adapter.py); a from-audio benchmark of this candidate is unavailable by design"
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-deterministic-diarization-fallback-8fb827c6bfdb.json`.
+This is the *correct*, honest outcome (not a bug) after fix #2 above --
+this candidate was never meant to produce learned speaker segmentation.
+
+```bash
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id pyannote-community-local \
+  --model-name pyannote-community-local --model-version unknown \
+  --model-sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+```json
+{
+  "run_id": "ami_meeting_corpus-pyannote-community-local-abedabe4efdb",
+  "candidate_id": "pyannote-community-local",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "diarization",
+  "hardware_profile": "unavailable",
+  "artifact_sha256": null,
+  "metrics": {},
+  "status": "unavailable",
+  "failure_reason_safe": "candidate 'pyannote-community-local' licence status is 'pending_verification', not yet cleared for a real benchmark run"
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-pyannote-community-local-abedabe4efdb.json`. This
+task never attempted to access, download, or accept pyannote's own
+local-use terms -- an explicit team/Gate C adoption decision, not this
+task's to make.
+
+**`common_voice_indic`/`vast_social_text`/`vast_2014_mixed_records` --
+no real benchmark command was run.** No accessible real dataset exists
+for these in this environment (platform migration; broken TLS
+certificate chain, respectively) -- see `docs/qa/known-limitations.md`
+and `docs/qa/test-data.md` for the exact evidence. Running the CLI
+against an empty/placeholder directory to manufacture a cosmetic
+`unavailable` result was deliberately not done.
+
+**Focused verification (Sarthak-relevant scope)**:
+
+```text
+uv sync --extra audio-social-benchmark                                                    -> resolved 196 packages in 47s (real install used for every command below)
+uv run ruff format --check app/modules/communication_processing/ tests/unit/communication_processing/ pyproject.toml -> 67 files already formatted
+uv run ruff check app/modules/communication_processing/ tests/unit/communication_processing/                          -> All checks passed
+uv run mypy app/modules/communication_processing                                          -> Success: no issues found in 38 source files
+uv run mypy app                                                                            -> Success: no issues found in 220 source files
+uv run pytest -q tests/unit/communication_processing/                                     -> 496 passed
+uv run pytest -q tests/unit/evaluation/                                                    -> 42 passed
+uv run pytest -q tests/integration/communication_processing/test_audio_social_benchmark_smoke.py -> 1 passed, 2 skipped (common_voice_indic/vast_social_text absent; ami_meeting_corpus present, real subprocess CLI run exercised the fixed diarization dispatch)
+git diff --check                                                                           -> clean
+uv sync --all-groups                                                                       -> confirms torch/faster-whisper/pyannote.audio/fastText are NOT part of the baseline dependency set (uninstalls them, exactly as intended -- the same convention already documented for Gaurav's `video-benchmark` extra in Phase 7 Part 3's Gate B); run last, after every command above had already completed against the real `audio-social-benchmark` extra
+```
+
+`uv run mypy app` (full scope, not only the Sarthak-relevant path) was
+also run once here because the `pyproject.toml` mypy override change is
+shared, repo-wide configuration -- confirmed zero regressions elsewhere.
+The full repository test suite and `docker compose config` were not
+re-run in this task, per its own scope rules; Gate C owns final
+repository-wide verification.

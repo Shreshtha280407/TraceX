@@ -63,6 +63,12 @@ video-benchmark = [
     "paddlepaddle>=3.3.1",
     "ultralytics>=8.4.153",
 ]
+audio-social-benchmark = [
+    "faster-whisper>=1.2.1",
+    "fasttext>=0.9.3",
+    "pyannote-audio>=4.0.7",
+    "torch>=2.14.0",
+]
 
 [dependency-groups]
 dev = [
@@ -128,17 +134,20 @@ module = [
     "igraph.*",
     "leidenalg.*",
     "paddleocr.*",
+    "faster_whisper.*",
+    "fasttext.*",
 ]
 ignore_missing_imports = true
 
-# `ultralytics` ships a `py.typed` marker, so once it's actually installed
-# (this project's `video-benchmark` optional extra) mypy reads its real,
-# loosely/partially-typed stubs instead of treating it as opaque -- unlike
-# the modules above, `ignore_missing_imports` alone has no effect once a
-# module IS found, so this needs its own override with `follow_imports =
-# "skip"` too, to type-check identically whether or not it's installed.
+# `ultralytics`/`torch`/`pyannote` ship a `py.typed` marker, so once one is
+# actually installed (this project's `video-benchmark`/`audio-social-
+# benchmark` optional extras) mypy reads its real, loosely/partially-typed
+# stubs instead of treating it as opaque -- unlike the modules above,
+# `ignore_missing_imports` alone has no effect once a module IS found, so
+# these need their own override with `follow_imports = "skip"` too, to
+# type-check identically whether or not they are installed.
 [[tool.mypy.overrides]]
-module = ["ultralytics.*"]
+module = ["ultralytics.*", "torch.*", "pyannote.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

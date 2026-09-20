@@ -587,3 +587,123 @@ All source access and downloads in this Gate B record occurred on
 Intel Core i5-13420H (12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via
 `uv`); `nvidia-smi` present but reporting no driver -- confirmed no GPU
 backend was available, so every real result below genuinely ran on CPU.
+
+## Phase 7 Part 4 — audio and social/chat benchmark foundation fixtures (Sarthak)
+
+No real Common Voice Indic, AMI Meeting Corpus, or VAST data exists
+anywhere in this repository's tests -- none was downloaded onto this
+development machine, per this task's explicit rule:
+
+- **ASR/VAD/language-ID fixtures**: `tests/unit/communication_processing/
+  test_audio_social_benchmark_metrics.py`/`test_audio_social_benchmark_
+  adapters.py` build small, invented `TimeInterval`/`SpeakerTurn`/
+  `TranscriptSegmentInput`/`DiarizationSegmentInput` values directly
+  (arbitrary millisecond ranges, generic recording-local labels like
+  `"speaker_0"`/`"spk_A"`, invented short phrases like `"hello world"`) --
+  no real audio recording, transcript, or speaker turn is decoded or read
+  anywhere in these tests. `audio_bytes`/`audio_bytes=b"synthetic"`-style
+  fields are placeholder bytes only, never real WAV content, since the
+  `Fake*Engine`s never actually decode them.
+- **Social/chat fixtures**: a small, invented, synthetic Indian-mobile-
+  shaped phone number (`"9876543210"`, the same synthetic value used
+  throughout this repository's other test suites) embedded in an invented
+  message string (`"call me at 9876543210"`) is used to prove
+  `DeterministicSocialExtractionEngine` genuinely reuses the real,
+  unmodified `social/identifiers.py::extract_mentioned_identifiers` --
+  none of it corresponds to a real message, phone number, or person.
+- **Safety/CLI fixtures**: `tests/unit/communication_processing/
+  test_audio_social_benchmark_safety.py`/`test_audio_social_benchmark_
+  cli.py` build synthetic `DatasetManifestEntryV1`/`ModelCandidateV1`
+  records directly (to exercise the licence/conditional-status gate
+  against both blocked and cleared states) and point every
+  `TRACEX_BENCHMARK_*` environment variable at a pytest `tmp_path`
+  directory -- never a developer's real environment.
+- **Integration smoke fixtures**: `tests/integration/
+  communication_processing/test_audio_social_benchmark_smoke.py`
+  self-skips (never fabricates a pass) unless `TRACEX_BENCHMARK_DATA_ROOT`
+  is actually set and the relevant dataset directory actually exists and
+  is non-empty -- the expected state on this development machine. During
+  this task's own verification, a synthetic local `vast_social_text`
+  directory (one invented JSONL line, the same phone-number fixture
+  above) was used to confirm the real CLI genuinely reaches a `succeeded`
+  result for the one pair not blocked by licence today -- that synthetic
+  directory was created under the session scratchpad and removed
+  immediately after, never committed.
+
+No real speech, transcript, chat message, participant name, phone number,
+handle, speaker label, model weight, or MacBook-local path appears
+anywhere in this module's tests.
+
+### Phase 7 Part 4 Gate B — real audio benchmark data (2026-09-20, Sarthak)
+
+Unlike the synthetic-only fixtures above (still exactly as described,
+unchanged), Gate B required real, reproducible dataset/model artifacts.
+Everything below was downloaded/derived on Shreshtha's laptop, stored
+entirely outside Git under `$HOME/tracex-gateb-artifacts/sarthak/`
+(`.gitignore`d and never staged), and is reproducible from the exact
+commands recorded here.
+
+- **Source**: AMI Meeting Corpus, `ihm` configuration, `test` split, one
+  parquet shard: `edinburghcstr/ami` on Hugging Face (the corpus's own
+  host institution, University of Edinburgh CSTR),
+  `ihm/test-00000-of-00004.parquet` (241,989,739 bytes), fetched via
+  `huggingface_hub.hf_hub_download(repo_id="edinburghcstr/ami",
+  repo_type="dataset", filename="ihm/test-00000-of-00004.parquet")` — a
+  fully public download, no account/gate/click-through required.
+  SHA-256: `d95920dccc6924c15215239461bf5d1152fe07c9c61add073bd12da26dd602e0`.
+  Saved to `sources/ihm/test-00000-of-00004.parquet`.
+- **Real subset extracted**: the first 20 real utterances (chronological,
+  by `begin_time`) from real meeting `EN2002c` (3 real speakers:
+  `MEE071`, `MEE073`, `FEO072`), ~35.9s of real speech total. Each row's
+  `audio.bytes` (IEEE-float WAV, decoded with `scipy.io.wavfile` since
+  Python's stdlib `wave` module cannot read format-tag 3) was re-encoded
+  losslessly to 16-bit PCM WAV — no resampling, trimming, or content
+  change — and written as one file per utterance under
+  `data/ami_meeting_corpus/ami-EN2002c-<audio_id>.wav`, alongside the
+  harness's own invented `benchmark_manifest.jsonl` (real `reference_text`
+  per utterance from the parquet's own `text` field; `ground_truth_speech_
+  ms` set to the clip's full duration, since each clip is itself a
+  human-annotated speech segment — see known-limitations.md for what this
+  does and does not prove about VAD recall).
+- **Real diarization "session"**: the same 20 real utterance clips,
+  concatenated in chronological order with a fixed, inserted 300ms digital
+  silence gap between each (`data/ami_meeting_corpus/ami-EN2002c-
+  session.wav`, 41,620ms total, SHA-256
+  `54e01cae154de7cd5f7e97b09559a14282ba438ebe17107d0bdfe4fd0cea2670`) plus
+  `diarization_manifest.jsonl` with real cumulative `ground_truth_turns`
+  (real `speaker_id` values, computed start/end offsets). This is an
+  honest reconstruction, not the original continuous meeting recording:
+  every speech sample and speaker label inside it is real AMI content:
+  only the silence gaps and the file's overall sequencing are this task's
+  own construction. The extraction script is not checked into the
+  repository (a one-off local tool, not project source); its exact logic
+  is described above so it is fully reproducible from the same source
+  parquet.
+- **Model**: `snakers4/silero-vad`, shallow-cloned at commit `60b7ffa2`
+  (2026-09-17) directly from GitHub (a fully public repository, MIT
+  licence, no account/gate) into
+  `models/silero-vad/` as an offline Torch Hub source snapshot. Pinned
+  weight `src/silero_vad/data/silero_vad.jit`, SHA-256
+  `e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720`.
+- **Common Voice (`common_voice_indic`) — genuinely deferred**: Mozilla
+  relocated the Common Voice corpus off Hugging Face to a separate
+  "Mozilla Data Collective" platform (its own distinct account system,
+  effective October 2025); `mozilla-foundation/common_voice_17_0`/
+  `common_voice_13_0` on Hugging Face are effectively emptied (2 files
+  only) and `common_voice_11_0`/`common_voice_16_1` return a real 404
+  `RepositoryNotFoundError`, confirmed via the authenticated
+  `huggingface_hub.HfApi()` client, not merely a login-gate 401. No real
+  Common Voice data was downloaded or used this session; `faster-whisper-
+  small`/`faster-whisper-medium`/`fasttext-lid176` therefore have no
+  accessible real dataset to benchmark against in this environment.
+- **VAST Challenge (`vast_social_text`/`vast_2014_mixed_records`) —
+  genuinely deferred**: the official host `visualdata.wustl.edu` presents
+  a broken TLS certificate chain (`OpenSSL verify result: unable to get
+  local issuer certificate`, code 20), confirmed independently via both
+  `WebFetch` and a direct `curl -v` from this machine — a real
+  connectivity/trust failure, not a licence gate. No insecure/unverified
+  download was attempted. Third-party GitHub mirrors of VAST 2014
+  solution repositories were found but deliberately not used as a data
+  source, since their own redistribution rights for the raw challenge
+  files are unverified. No real VAST data was downloaded or used this
+  session.

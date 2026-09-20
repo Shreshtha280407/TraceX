@@ -110,3 +110,22 @@ Every emitted item is a canonical `ObservationV1` with `schema_version`, `case_i
 ## Non-goals (this phase)
 
 Everything `CLAUDE.md` and Phase 1 already ruled out remains ruled out: raw MP3/WAV/MP4 ASR, speaker-diarization ML models (Whisper/NeMo/pyannote/cloud AI/LLMs/embeddings/vector search), automatic transliteration-based identity matching, automatic alias/entity merging, `EntityV1`/`EventV1` creation, Neo4j writes/graph projection/candidate scoring/hypotheses, social-media API scraping, frontend, new auth/RBAC/ABAC, new queue systems, public worker-admin APIs, changes to frozen `V1` contracts, Merkle roots/signatures. This worker adds exactly one new capability: turning a claimed communication-related `WorkerJobV1` into a submitted `WorkerResultV1` through the existing internal API, for the seven profiles above (two of which are reachable via a real upload today; see "Routing boundary").
+
+## Phase 7 Part 4 audio/social candidate-model benchmark (Sarthak)
+
+A second, entirely separate capability exists alongside the worker above:
+`uv run python -m app.modules.communication_processing.audio_social_benchmark_cli`
+(new `audio_social_benchmark*.py` files) evaluates *candidate* ASR/VAD/
+diarization/language-ID/social-extraction models (faster-whisper, Silero
+VAD, pyannote.audio, fastText, and this project's own existing
+deterministic social/chat parsers) against Phase 7 Part 1's dataset
+manifest and result contracts -- a model-selection benchmark, not this
+worker's own claim/process/submit contract. This document's own
+"Non-goals" section above ruled out "speaker-diarization ML models
+(Whisper/NeMo/pyannote/...)" for *this worker* -- Phase 7 Part 4 is the
+later, explicitly-approved phase that evaluates exactly those candidates,
+built as a wholly additive harness that never changes this worker's or
+any other production audio/social code. See
+`docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part 4"
+section for the full design, and `docs/runbooks/local-development.md` for
+CLI usage and the MacBook Gate B pre-flight handoff.

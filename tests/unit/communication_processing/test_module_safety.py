@@ -52,9 +52,49 @@ _LOCAL_COMMAND_BACKENDS = {
     "audio/diarization_adapter.py",
 }
 
+# Phase 7 Part 4's evaluation-only benchmark harness
+# (`audio_social_benchmark*.py`) is deliberately exempt from two checks
+# below, narrowly, not blanket:
+#
+# 1. `_FORBIDDEN_IMPORTS`, for exactly `faster_whisper`/`pyannote`/
+#    `fasttext`/`torch` -- these four approved Phase 7 candidate
+#    libraries (faster-whisper, pyannote.audio, fastText, and torch for
+#    Silero VAD via `torch.hub`) are imported lazily and only inside a
+#    best-effort real-engine wiring function, never at module import time
+#    and never reachable from `worker.py`'s production dispatch. This
+#    harness has no path into `process_job`'s WorkerJobV1-in/
+#    WorkerResultV1-out contract at all -- it is Part 1's separate
+#    evaluation contract instead (see
+#    `docs/architecture/phase-7-evaluation-and-model-governance.md`).
+# 2. The `os` check in `test_no_subprocess_or_shell_execution`, since
+#    local-root resolution (`TRACEX_BENCHMARK_DATA_ROOT` and friends) reads
+#    `os.environ` directly, mirroring every other Phase 7 benchmark
+#    harness's identical pattern.
+#
+# Every *other* forbidden import (databases, object storage, queues,
+# `transformers`/`whisper`/`speechbrain`/`librosa`/`sklearn`/`numpy`, and
+# `subprocess` itself) remains forbidden in the benchmark harness too --
+# proven by
+# `test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_import`
+# below, not just asserted in this comment.
+_BENCHMARK_HARNESS_FILE_PREFIX = "audio_social_benchmark"
+_BENCHMARK_HARNESS_ML_EXEMPTIONS = {"faster_whisper", "pyannote", "fasttext", "torch"}
+
 
 def _python_files() -> list[Path]:
     return sorted(MODULE_ROOT.rglob("*.py"))
+
+
+def _is_benchmark_harness_file(path: Path) -> bool:
+    return path.name.startswith(_BENCHMARK_HARNESS_FILE_PREFIX)
+
+
+def _non_benchmark_python_files() -> list[Path]:
+    return [p for p in _python_files() if not _is_benchmark_harness_file(p)]
+
+
+def _benchmark_harness_python_files() -> list[Path]:
+    return [p for p in _python_files() if _is_benchmark_harness_file(p)]
 
 
 def _imported_module_roots(tree: ast.Module) -> set[str]:
@@ -93,6 +133,28 @@ def test_no_forbidden_infra_or_ml_import(path: Path) -> None:
     forbidden = imported & _FORBIDDEN_IMPORTS
     if str(path.relative_to(MODULE_ROOT)) in _LOCAL_COMMAND_BACKENDS:
         forbidden.discard("subprocess")
+    if _is_benchmark_harness_file(path):
+        forbidden -= _BENCHMARK_HARNESS_ML_EXEMPTIONS
+    assert not forbidden, f"{path} imports forbidden module(s): {forbidden}"
+
+
+@pytest.mark.parametrize(
+    "path", _benchmark_harness_python_files(), ids=lambda p: str(p.relative_to(MODULE_ROOT))
+)
+def test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_import(
+    path: Path,
+) -> None:
+    """The `faster_whisper`/`pyannote`/`fasttext`/`torch` exemption above is narrow, not blanket.
+
+    Every other entry in `_FORBIDDEN_IMPORTS` (databases, object storage,
+    queues, `subprocess`, `transformers`/`whisper`/`speechbrain`/`librosa`/
+    `sklearn`/`numpy`) remains forbidden in the benchmark harness too --
+    only its four approved Phase 7 candidate libraries are exempt.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported = _imported_module_roots(tree)
+    still_forbidden = _FORBIDDEN_IMPORTS - _BENCHMARK_HARNESS_ML_EXEMPTIONS
+    forbidden = imported & still_forbidden
     assert not forbidden, f"{path} imports forbidden module(s): {forbidden}"
 
 
@@ -122,4 +184,10 @@ def test_no_subprocess_or_shell_execution(path: Path) -> None:
     assert "subprocess" not in imported or relative_path in _LOCAL_COMMAND_BACKENDS, (
         f"{path} imports subprocess"
     )
+    if _is_benchmark_harness_file(path):
+        # Local-root resolution (TRACEX_BENCHMARK_DATA_ROOT and friends)
+        # reads `os.environ` directly -- see the module-level comment above
+        # `_BENCHMARK_HARNESS_ML_EXEMPTIONS`. `subprocess` is still fully
+        # forbidden here, unlike the two named command-bridge files.
+        return
     assert "os" not in imported, f"{path} imports os -- this module never needs OS-level access"

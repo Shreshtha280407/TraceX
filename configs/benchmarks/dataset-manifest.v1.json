@@ -159,17 +159,18 @@
         "must not be treated as real case audio or real suspect/witness speech",
         "must not be used for voice-biometric identity claims (explicitly out of scope)"
       ],
-      "source_reference": "AMI Meeting Corpus public release (exact license terms to be independently re-verified before download)",
-      "release_or_version": "pending_verification",
-      "license_status": "pending_verification",
-      "license_notes": "Publicly available for research; exact current license/attribution terms not yet independently re-verified for this project's use.",
+      "source_reference": "AMI Meeting Corpus official release (https://groups.inf.ed.ac.uk/ami/download/, University of Edinburgh CSTR) and its Hugging Face mirror https://huggingface.co/datasets/edinburghcstr/ami (ihm config, test split, shard ihm/test-00000-of-00004.parquet)",
+      "release_or_version": "edinburghcstr/ami Hugging Face mirror, ihm config, test split",
+      "license_status": "verified_permissive",
+      "license_notes": "Gate B, 2026-09-20 (Sarthak): independently re-verified directly from the official host institution -- the AMI Meeting Corpus's own download page (groups.inf.ed.ac.uk/ami/download/) states the corpus is released under a Creative Commons Attribution 4.0 International (CC BY 4.0) licence, and the edinburghcstr/ami Hugging Face dataset card (the same institution's own mirror) confirms `license: cc-by-4.0` in its metadata. CC BY 4.0 permits commercial use with attribution; no account, signup, or click-through agreement was required to fetch the ihm/test-00000-of-00004.parquet shard used for this benchmark.",
       "local_path_placeholder": "local-data/ami_meeting_corpus/",
       "git_storage_policy": "excluded_manifest_only",
-      "redistribution_status": "pending_verification",
-      "evaluation_status": "license_verification_required",
+      "redistribution_status": "not_redistributed",
+      "evaluation_status": "in_progress",
       "known_limitations": [
         "scripted/semi-scripted meeting scenarios, not real investigative audio",
-        "predominantly English-language meetings, not representative of this project's target-language mix"
+        "predominantly English-language meetings, not representative of this project's target-language mix",
+        "Gate B (2026-09-20, Sarthak) benchmarked one small, fixed, real subset only: 20 consecutive real utterances (~36s of real speech) from meeting EN2002c's ihm test split, plus one synthetic concatenation of those same 20 real clips (with 300ms inserted silence gaps) used as a diarization-mechanics 'session' -- not the corpus's full audio, and not a continuous original meeting recording; see docs/qa/test-data.md for exact provenance and hashes"
       ]
     },
     {
