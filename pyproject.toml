@@ -57,6 +57,12 @@ ocr-benchmark = [
     "paddleocr>=3.7.0,<4",
     "paddlepaddle>=3.3.1",
 ]
+video-benchmark = [
+    "lap>=0.5.13",
+    "paddleocr>=2.10.0",
+    "paddlepaddle>=3.3.1",
+    "ultralytics>=8.4.153",
+]
 
 [dependency-groups]
 dev = [
@@ -124,6 +130,17 @@ module = [
     "paddleocr.*",
 ]
 ignore_missing_imports = true
+
+# `ultralytics` ships a `py.typed` marker, so once it's actually installed
+# (this project's `video-benchmark` optional extra) mypy reads its real,
+# loosely/partially-typed stubs instead of treating it as opaque -- unlike
+# the modules above, `ignore_missing_imports` alone has no effect once a
+# module IS found, so this needs its own override with `follow_imports =
+# "skip"` too, to type-check identically whether or not it's installed.
+[[tool.mypy.overrides]]
+module = ["ultralytics.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

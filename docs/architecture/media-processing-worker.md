@@ -160,6 +160,24 @@ uv run python -m app.modules.media_processing.benchmark <path/to/image_or_video>
 
 Runs the real pipeline (real detector/OCR if configured) once against a local file and reports **measured** results only — media size/duration, sampled frame count, device used (`cpu`/`cuda`), per-stage timings, throughput, and observation counts. Never fabricates or extrapolates a promised throughput figure; see `docs/qa/test-results.md` for actual measured runs on this project's development hardware.
 
+## Phase 7 Part 3 visual candidate-model benchmark (Gaurav)
+
+A second, entirely separate benchmark exists alongside the one above:
+`uv run python -m app.modules.media_processing.visual_benchmark_cli` (new
+`visual_benchmark*.py` files) evaluates *candidate* detector/tracker/OCR
+models (Ultralytics YOLO11n/YOLO11s, ByteTrack, a lightweight PaddleOCR
+visual-text variant) against Phase 7 Part 1's dataset manifest and
+result contracts — a model-selection benchmark, not the pipeline-
+throughput benchmark above. This module's own "Non-goals (this phase)"
+section below ruled out "model-accuracy benchmarking against a labeled
+dataset" for the Phase 2 closeout that built the *production*
+detector/OCR/tracker — Phase 7 Part 3 is that later, explicitly-approved
+phase, built as a wholly additive harness that never changes
+`analysis/`/`worker.py`'s production behavior. See
+`docs/architecture/phase-7-evaluation-and-model-governance.md`'s "Part 3"
+section for the full design, and `docs/runbooks/local-development.md` for
+CLI usage and the MacBook Gate B pre-flight handoff.
+
 ## Graph integration — no code changes needed
 
 Media observations reach the existing durable graph-projection queue automatically and unmodified, exactly as before this phase — see `docs/architecture/graph-projection.md`.

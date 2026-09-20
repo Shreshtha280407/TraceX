@@ -62,9 +62,27 @@ _FORBIDDEN_INFRA_AND_ML_IMPORTS = {
 #: This module never resolves detections/tracks into identities or graph objects.
 _FORBIDDEN_CONTRACT_IMPORTS = {"EntityV1", "EventV1"}
 
+#: Phase 7 Part 3's evaluation-only benchmark harness (`visual_benchmark*.py`)
+#: is deliberately exempt from `_FORBIDDEN_INFRA_AND_ML_IMPORTS` alone --
+#: two of its four approved Phase 7 candidates (Ultralytics YOLO11,
+#: PaddleOCR) *are* `ultralytics`/`paddleocr`, imported lazily and only
+#: inside a best-effort real-engine wiring function, never at module import
+#: time and never reachable from `worker.py`'s production dispatch. This
+#: harness has no path into `process_job`'s WorkerJobV1-in/WorkerResultV1-out
+#: contract at all -- it is Part 1's separate evaluation contract instead
+#: (see `docs/architecture/phase-7-evaluation-and-model-governance.md`).
+#: It still must (and does) pass every other static check in this file,
+#: including never importing a sibling feature module or an
+#: Entity/EventV1 contract.
+_BENCHMARK_HARNESS_FILE_PREFIX = "visual_benchmark"
+
 
 def _python_files() -> list[Path]:
     return sorted(MODULE_ROOT.rglob("*.py"))
+
+
+def _non_benchmark_python_files() -> list[Path]:
+    return [p for p in _python_files() if not p.name.startswith(_BENCHMARK_HARNESS_FILE_PREFIX)]
 
 
 def _imported_module_roots(tree: ast.Module) -> set[str]:
@@ -104,11 +122,35 @@ def test_no_sibling_feature_module_is_imported(path: Path) -> None:
         assert not matches, f"{path} imports {matches} -- owned by a different module"
 
 
-@pytest.mark.parametrize("path", _python_files(), ids=lambda p: str(p.relative_to(MODULE_ROOT)))
+@pytest.mark.parametrize(
+    "path", _non_benchmark_python_files(), ids=lambda p: str(p.relative_to(MODULE_ROOT))
+)
 def test_no_infrastructure_or_ml_library_is_imported(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported = _imported_module_roots(tree)
     forbidden = imported & _FORBIDDEN_INFRA_AND_ML_IMPORTS
+    assert not forbidden, f"{path} imports forbidden infra/ML library: {forbidden}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [p for p in _python_files() if p.name.startswith(_BENCHMARK_HARNESS_FILE_PREFIX)],
+    ids=lambda p: str(p.relative_to(MODULE_ROOT)),
+)
+def test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_library(
+    path: Path,
+) -> None:
+    """The `ultralytics`/`paddleocr` exemption above is narrow, not a blanket one.
+
+    Every other entry in `_FORBIDDEN_INFRA_AND_ML_IMPORTS` (databases,
+    object storage, queues, `torch`/`tensorflow`/`sklearn`) remains
+    forbidden in the benchmark harness too -- only its two approved
+    Phase 7 candidate libraries are exempt.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported = _imported_module_roots(tree)
+    still_forbidden = _FORBIDDEN_INFRA_AND_ML_IMPORTS - {"ultralytics", "paddleocr"}
+    forbidden = imported & still_forbidden
     assert not forbidden, f"{path} imports forbidden infra/ML library: {forbidden}"
 
 

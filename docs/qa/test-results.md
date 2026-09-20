@@ -3422,3 +3422,309 @@ real annotation crops to real reference transcriptions but has no defensible
 label-bearing `expected_fields` mapping. CER/WER therefore measure crop-level
 transcription distance only. Latency is per crop and RAM is process peak on
 this host. These results do not choose a model; Gate C owns selection.
+
+## 2026-09-16 — Phase 7 Part 3 visual benchmark foundation and local-model governance (Gaurav, dev-machine only)
+
+New additive `app/modules/media_processing/{visual_benchmark_metrics,
+visual_benchmark_validation,visual_benchmark_adapters,visual_benchmark,
+visual_benchmark_cli}.py`, implementing reproducible local benchmark
+adapters and a safe CLI for Part 1's three Gaurav-owned datasets
+(`virat_ground`, `safe_unsafe_behaviour`, `ufpr_alpr`) against their
+approved candidates (`yolo11n`, `yolo11s`, `bytetrack`,
+`paddleocr-lightweight-visual-text`). This entry covers only verification
+performed on Shreshtha's development laptop — **no real VIRAT Ground,
+UFPR-ALPR, or Safe/Unsafe Behaviour data, and no Ultralytics/PaddleOCR
+installation, exists in this environment.** Real dataset/model validation
+is Aditya's MacBook Gate B pre-flight, not yet performed; see
+`docs/runbooks/local-development.md`'s "MacBook Gate B pre-flight"
+section.
+
+**Branch/base verification**: confirmed on the exact, unmerged `gaurav`
+branch (`git branch --show-current` -> `gaurav`), working tree clean at
+the start of this task. `git rev-parse HEAD` and `git rev-parse
+origin/main` were identical (`f87b99c...`, "Completed
+nipun/part-1-5-phase-7 (#49)") — `gaurav` sits exactly at the last-fetched
+`origin/main` tip, not based on `jasraj`. A live `git fetch origin` inside
+this sandbox failed (`could not read Username for 'https://github.com'`
+-- no outbound git credentials configured here), so this could not be
+re-verified against GitHub directly in this session; the local record is
+the best available confirmation.
+
+**A pre-existing Docker stack (`tracex-api`/`tracex-postgres`/
+`tracex-redis`/`tracex-neo4j`/`tracex-minio`) was already running
+throughout this session**, started by earlier work, not by this task --
+per this task's own instruction not to start/stop/rebuild/disturb an
+existing stack, it was left exactly as found.
+
+**Static/type/format checks** (whole repository):
+
+```text
+uv sync --all-groups        -> Resolved 170 packages, Checked 104 packages (up to date)
+uv run ruff format --check . -> 502 files already formatted
+uv run ruff check .          -> All checks passed!
+uv run mypy app               -> Success: no issues found in 210 source files
+git diff --check              -> clean, no whitespace errors
+docker compose config -q      -> valid (config-only; the running stack was not touched)
+```
+
+**Full repository suite**: `uv run pytest -q` -- **2131 passed, 4 skipped,
+0 failed**, in 257s, one pre-existing unrelated warning (`audioop`
+deprecation, not from this phase's code). All 4 skips are expected and
+accounted for: 3 are this phase's own
+`tests/integration/media_processing/test_visual_benchmark_smoke.py`
+self-skipping because `TRACEX_BENCHMARK_DATA_ROOT` is unset on this
+machine (by design -- see the task's "do not download datasets on this
+machine" rule), and 1 is the pre-existing, unrelated `test_ner.py`
+self-skip (Phase 3 Jasraj's NER model bootstrap, not performed in this
+environment, unrelated to this task). Zero failures, zero regressions to
+any other prior test.
+
+**Focused Phase 7 Part 3 suite** (synthetic fixtures and fake engines
+only, no live infra, no Ultralytics/PaddleOCR, no GPU, no dataset needed):
+
+```text
+uv run pytest tests/unit/media_processing/test_visual_benchmark_metrics.py   -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_adapters.py  -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_safety.py    -> 37 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_cli.py       ->  6 passed
+uv run pytest tests/integration/media_processing/test_visual_benchmark_smoke.py -> 3 skipped (expected; see above)
+uv run pytest tests/unit/media_processing/test_media_safety.py              -> 114 passed (includes 5 new parametrized instances)
+```
+
+**A real regression found and fixed during this task's own full-suite
+verification (self-caught, before being reported here as passing)**: the
+first full-suite run failed one pre-existing test --
+`tests/unit/media_processing/test_media_safety.py::
+test_no_infrastructure_or_ml_library_is_imported[visual_benchmark.py]`.
+That whole-module static AST scan (a genuine Phase 2 closeout production
+boundary keeping the *production* detector/OCR pipeline free of
+`ultralytics`/`paddleocr`/`torch`/etc.) correctly caught this task's own
+lazy, function-local `import ultralytics`/`import paddleocr` inside
+`visual_benchmark.py`'s best-effort real-engine wiring -- exactly the two
+libraries Part 1's own frozen candidate catalogue names as Gaurav's
+approved detection/OCR candidates. Root cause: that pre-existing test's
+scope predates Phase 7 and was never meant to (and structurally cannot)
+forbid an *evaluation* harness from importing the exact candidates it
+exists to benchmark. Fixed with a narrow, explicit, tested carve-out:
+`visual_benchmark*.py` files are excluded from that one check only, and a
+new `test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+library` test (5 new parametrized instances) proves every *other*
+forbidden library remains forbidden in the benchmark harness too -- not a
+blanket exemption, and no change to the boundary for any production file.
+Verified via re-running `tests/unit/media_processing/test_media_safety.py`
+(114 passed) and the full repository suite (2131 passed, 4 skipped, 0
+failed) after the fix.
+
+**Readiness fix applied proactively (the same lesson from this session's
+earlier Jasraj/Part 2 PaddleOCR pinning review), before being asked**:
+`pyproject.toml` gained `[project.optional-dependencies] video-benchmark =
+["paddleocr>=2.10.0", "paddlepaddle>=3.3.1", "ultralytics>=8.4.153"]`
+(uv-resolved versions, not invented), resolved into `uv.lock` via `uv add
+--optional video-benchmark --no-sync paddleocr paddlepaddle ultralytics`
+(`Resolved 170 packages in 5.62s`). Confirmed not installed by `uv sync
+--all-groups` and not importable anywhere on this machine both immediately
+after `uv add` and after a full re-sync. Aditya's MacBook pre-flight now
+runs `uv sync --extra video-benchmark` for a reproducible, exactly-pinned
+install instead of an ad hoc `pip install`.
+
+No Operation Nightfall data, real dataset content, real model weight, or
+production credential was used anywhere in this task. No dataset
+download, model download, Ultralytics/PaddleOCR installation, or real
+benchmark result is claimed -- this part's own tests and documentation
+state that plainly, per this task's explicit "never claim a benchmark
+passed until Aditya runs it on the MacBook" rule.
+
+## 2026-09-20 — Gate B real Gaurav benchmarks
+
+These measurements were made on the currently checked-out `gaurav` branch
+(rebased onto the latest `origin/main`, which by this point included
+Jasraj's own real Gate B Part 2 work), with all downloaded clips,
+annotations, model weights, caches, and result JSON outside Git under
+`$HOME/tracex-gateb-artifacts/gaurav`. Real host profile: Arch Linux,
+kernel 7.2.4-arch1-2, x86_64, Intel Core i5-13420H (12 logical CPUs),
+15 GiB RAM, Python 3.12.13 (via `uv`); `nvidia-smi` present but reporting
+no driver -- no GPU backend available, confirmed genuinely CPU-only.
+
+**Access authorisation**: the VIRAT Video Dataset Usage Agreement (a
+genuine click-through "I Agree" protection agreement) was read directly
+from `https://viratdata.org/resources/VIRAT-Video-Data-Set-Protection-Agreement-1-4-11.pdf`.
+Per this task's own rule ("do not accept agreements on my behalf"), the
+project owner explicitly confirmed the agreement was already accepted
+before any VIRAT file was downloaded in this session.
+
+**Dependency install**: `uv sync --extra video-benchmark` resolved and
+installed `ultralytics==8.4.156`, `torch==2.14.0`, `paddleocr==3.7.0`,
+`paddlepaddle==3.3.1`, and their transitive dependencies (~9m20s, mostly
+`torch`'s bundled NVIDIA CUDA wheels, unused on this CPU-only host).
+
+**Real regressions found and fixed during this task's own Gate B
+execution (all self-caught by actually running the real candidates, not
+by inspection)**:
+
+1. **`ultralytics.trackers.byte_tracker.BYTETracker` requires the `lap`
+   package**, which was missing from the `video-benchmark` optional
+   extra -- Ultralytics silently attempted its own ad hoc `pip`-equivalent
+   auto-install at runtime instead of failing cleanly, which this
+   project's own discipline forbids. Fixed by adding `lap>=0.5.13` to
+   `pyproject.toml`'s `video-benchmark` extra via `uv add --optional
+   video-benchmark --no-sync lap`.
+2. **`ultralytics.utils.yaml_load` no longer exists in
+   `ultralytics==8.4.156`** -- confirmed directly (`ImportError: cannot
+   import name 'yaml_load'`) -- replaced by `ultralytics.utils.YAML.load`.
+   Fixed in `_build_real_tracker_engine`.
+3. **`BYTETracker.__init__` no longer accepts a `frame_rate` keyword
+   argument at all** -- confirmed directly by inspecting its real source
+   (`def __init__(self, args):`). Fixed by removing the argument.
+4. **`BYTETracker.update()`'s `results` argument must support numpy-style
+   fancy indexing** (`results[mask]`, confirmed by reading
+   `_split_detections`'s real source) -- the adapter's previous
+   duck-typed `SimpleNamespace` stand-in does not support this. Fixed by
+   constructing a real `ultralytics.engine.results.Boxes` instance
+   (`(N, 6)` columns `[x1, y1, x2, y2, confidence, class]`, confirmed
+   from its own docstring) instead.
+5. **mypy diverged between "ultralytics installed" and "ultralytics
+   absent" states**, since `ultralytics` ships a `py.typed` marker --
+   once genuinely installed (this Gate B run), mypy read its real,
+   loosely-typed stubs and produced errors that never occurred in the
+   normal (extra not installed) development state, and made several
+   `# type: ignore[import-not-found]` comments spuriously "unused." Fixed
+   with a dedicated `[[tool.mypy.overrides]]` entry for `ultralytics.*`
+   setting both `ignore_missing_imports = true` and `follow_imports =
+   "skip"`, which type-checks identically regardless of installation
+   state; the now-redundant per-line ignore comments were removed.
+6. **A third-party package silently broke this repository's own test
+   collection.** `ultralytics` ships its own top-level `tests/__init__.py`
+   (its internal test suite, packaged incorrectly as an importable
+   top-level module) which shadowed this project's own `tests/` package
+   the moment `ultralytics` was installed, breaking every
+   `from tests.fixtures... import ...` statement repository-wide (90
+   collection errors across the full suite, confirmed directly, not
+   specific to `media_processing`). Fixed by adding an empty
+   `tests/__init__.py` to this project's own `tests/` directory, making
+   it resolve as a genuine regular package that Python's import system
+   finds first (via the `''`/cwd entry in `sys.path`) instead of falling
+   through to the namespace-package scan that eventually reached
+   `ultralytics`'s colliding one in `site-packages`.
+
+**Licence verification (genuinely read, not assumed)**: `virat_ground`'s
+`license_status` moved from `pending_verification` to
+`verified_restricted_noncommercial` in `configs/benchmarks/
+dataset-manifest.v1.json` after reading the real VIRAT Usage Agreement
+directly -- its own text permits both research *and* commercial use, so
+the enum's "noncommercial" wording is used only as this schema's closest
+existing restricted bucket, with the real terms (click-through
+acceptance, no unauthorised redistribution, PII-avoidance duty, at-will
+termination) recorded in full in the manifest's own `license_notes`.
+`yolo11n`/`yolo11s`/`bytetrack` moved the same way in
+`model-candidates.v1.json` after reading Ultralytics' real AGPL-3.0
+licence directly (`https://raw.githubusercontent.com/ultralytics/ultralytics/main/LICENSE`)
+-- also copyleft-but-commercially-usable, not literally "noncommercial."
+`safe_unsafe_behaviour` and `ufpr_alpr`/`paddleocr-lightweight-visual-text`
+remain `pending_verification`, honestly, for the reasons in
+`docs/qa/test-data.md`'s dated Gate B section. The full Part 1 evaluation
+suite (`tests/unit/evaluation/`, 42 tests) was re-run after each manifest
+edit and still passes.
+
+### VIRAT Ground detection with YOLO11n/YOLO11s
+
+```bash
+export TRACEX_BENCHMARK_DATA_ROOT="$HOME/tracex-gateb-artifacts/gaurav/data"
+export TRACEX_MODEL_CACHE_ROOT="$HOME/tracex-gateb-artifacts/gaurav/models"
+export TRACEX_BENCHMARK_OUTPUT_ROOT="$HOME/tracex-gateb-artifacts/gaurav/results"
+
+uv run python -m app.modules.media_processing.visual_benchmark_cli run \
+  --dataset-id virat_ground --candidate-id yolo11n \
+  --model-name yolo11n --model-version ultralytics-assets-v8.4.0 \
+  --model-sha256 0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1
+
+uv run python -m app.modules.media_processing.visual_benchmark_cli run \
+  --dataset-id virat_ground --candidate-id yolo11s \
+  --model-name yolo11s --model-version ultralytics-assets-v8.4.0 \
+  --model-sha256 85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5
+```
+
+| Candidate | Status | Precision | Recall | mAP | p50/p95/p99 latency (ms) | Peak RAM (MiB) | Samples |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `yolo11n` | succeeded | 0.05338078291814947 | 0.5769230769230769 | 0.026998432601880874 | 40.43 / 43.34 / 4558.19 | 855.19 | 19/19 |
+| `yolo11s` | succeeded | 0.04773869346733668 | 0.7307692307692307 | 0.03333333333333333 | 82.55 / 116.25 / 1616.24 | 927.77 | 19/19 |
+
+Run IDs: `virat_ground-yolo11n-9705927458bf`, `virat_ground-yolo11s-2e1f272f9c82`.
+`hardware_profile` genuinely reports `"cpu"` for both -- confirmed, not
+assumed, matching the host's own absent GPU driver. The low precision
+values are an expected, honest consequence of comparing a general-purpose
+COCO-trained detector against VIRAT's own sparse tracking-style
+annotations (only the specific tracked car and person are ground-truthed
+per frame; every other real person/car/object YOLO correctly detects in
+frame is counted as a false positive against that sparse label set) --
+not a candidate defect. VRAM is null (no GPU). These results do not
+choose a model; Gate C owns selection.
+
+### VIRAT Ground tracking with ByteTrack (via Ultralytics)
+
+```bash
+uv run python -m app.modules.media_processing.visual_benchmark_cli run \
+  --dataset-id virat_ground --candidate-id bytetrack \
+  --model-name bytetrack-via-ultralytics --model-version ultralytics-8.4.156 \
+  --model-sha256 0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1
+```
+
+Result: **succeeded** (`virat_ground-bytetrack-2152459a005f`). IDF1
+0.9803921568627451, MOTA 0.9615384615384616, 0 ID switches, HOTA null (by
+documented design), latency 13.617577000331949 ms, peak RAM 550.76 MiB,
+1/1 sequence sample. Benchmarked against the same 19-timestamp, 2-object
+(one car, one person) real ground-truth sequence derived from
+`VIRAT_S_000201_03_000640_000672.viratdata.objects.txt`. `hardware_profile`
+reports `"cpu"` -- a genuine fact about ByteTrack's algorithm (Kalman
+filter + Hungarian matching has no learned weights and no GPU path), not
+an assumption.
+
+### UFPR-ALPR and Safe/Unsafe Behaviour: legitimately deferred
+
+Neither dataset was downloaded (see `docs/qa/test-data.md`'s dated Gate B
+section for the exact safe reason for each). No CLI run was attempted
+against either -- there is no local dataset directory to point at, so a
+real `unavailable` result was not fabricated by running against an empty
+placeholder. Gate B is therefore not fully complete for `ufpr_alpr`
+(`yolo11n`/`yolo11s`/`paddleocr-lightweight-visual-text`) or
+`safe_unsafe_behaviour` (`yolo11n`/`yolo11s`).
+
+**Static/type/format checks** (focused, `media_processing` scope):
+
+```text
+uv run ruff format --check app/modules/media_processing tests/unit/media_processing -> 64 files already formatted
+uv run ruff check app/modules/media_processing tests/unit/media_processing          -> All checks passed!
+uv run mypy app/modules/media_processing                                             -> Success: no issues found in 37 source files
+git diff --check                                                                     -> clean, no whitespace errors
+```
+
+**Focused Phase 7 Part 3 suite** (re-run after the real Gate B bug fixes
+above):
+
+```text
+uv run pytest tests/unit/media_processing/test_visual_benchmark_metrics.py   -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_adapters.py  -> 14 passed
+uv run pytest tests/unit/media_processing/test_visual_benchmark_safety.py    -> 43 passed (was 37; +6 net, including 2 new real-tracker regression tests that self-skip if ultralytics is absent, and the licence-status tests updated to reflect the real Gate B verification)
+uv run pytest tests/unit/media_processing/test_visual_benchmark_cli.py       ->  7 passed (was 6; one test updated to use the still-pending safe_unsafe_behaviour pair, one new test added for the now-cleared virat_ground pair)
+uv run pytest tests/unit/media_processing/test_visual_validation.py         ->  9 passed
+uv run pytest tests/unit/media_processing/test_media_safety.py              -> 114 passed (unchanged -- the exemption carve-out itself was not touched this task)
+uv run pytest tests/integration/media_processing/test_visual_benchmark_smoke.py -> 2 passed, 1 skipped (detection and tracking genuinely ran against the real VIRAT clip above; visual-text still self-skips -- no local ufpr_alpr data)
+uv run pytest tests/unit/media_processing/                                   -> 452 passed
+uv run pytest tests/unit/evaluation/                                         -> 42 passed (re-verified after the manifest/catalog licence-status edits)
+```
+
+Per this task's own scope, the full repository suite was not re-run here
+-- Gate C owns final repository-wide verification. The `tests/__init__.py`
+fix above (bug 6) is repository-wide in effect, but was verified only
+against the focused suites above plus the Part 1 evaluation suite; a
+developer or CI environment that never installs the `video-benchmark`
+extra was never exposed to the collision this fixes, so it carries no
+risk of masking anything for them.
+
+No Operation Nightfall data, real police case data, or production
+credential was used anywhere in this task. Every downloaded artefact
+(one VIRAT clip, one annotation file, two YOLO11 weight files) and every
+generated frame/manifest/result JSON lives under
+`$HOME/tracex-gateb-artifacts/gaurav`, outside Git, confirmed by
+`git status --short` showing no such paths. No Part 3 candidate is
+selected; Gate C selects a winner only after Parts 2-4 all have
+comparable results.

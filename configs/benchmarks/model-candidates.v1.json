@@ -68,12 +68,13 @@
       "model_family": "YOLO11",
       "variant": "n-nano",
       "execution_target": "cpu",
-      "license_status": "pending_verification",
-      "source_reference": "Ultralytics YOLO11n release (exact model card/version to be pinned before download; AGPL-3.0 upstream terms to verify against this project's licensing)",
+      "license_status": "verified_restricted_noncommercial",
+      "source_reference": "Official Ultralytics assets release v8.4.0, https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt (verified via installed `ultralytics==8.4.156`'s own `get_github_assets()`)",
       "selection_status": "candidate",
       "required_metrics": ["precision", "recall", "map", "latency_ms", "ram_mb"],
       "known_limitations": [
-        "not yet downloaded or benchmarked in this phase",
+        "the `ultralytics` package itself is AGPL-3.0 (verified directly) -- copyleft, not simply 'noncommercial': it permits commercial use but requires distributed/network-served derivative source disclosure unless a commercial Ultralytics Enterprise licence is purchased; 'noncommercial' here is only this schema's closest existing restricted bucket",
+        "Gate B benchmarked this exact weight file (SHA-256 0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1) against 19 real annotated frames from one small VIRAT_Ground clip -- not a full-dataset benchmark",
         "nano variant favors speed/footprint over accuracy -- measured, not assumed"
       ],
       "fallback_candidate_id": null
@@ -87,12 +88,13 @@
       "model_family": "YOLO11",
       "variant": "s-small",
       "execution_target": "gpu_optional",
-      "license_status": "pending_verification",
-      "source_reference": "Ultralytics YOLO11s release (exact model card/version to be pinned before download; AGPL-3.0 upstream terms to verify against this project's licensing)",
+      "license_status": "verified_restricted_noncommercial",
+      "source_reference": "Official Ultralytics assets release v8.4.0, https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11s.pt (verified via installed `ultralytics==8.4.156`'s own `get_github_assets()`)",
       "selection_status": "candidate",
       "required_metrics": ["precision", "recall", "map", "latency_ms", "vram_mb"],
       "known_limitations": [
-        "not yet downloaded or benchmarked in this phase",
+        "the `ultralytics` package itself is AGPL-3.0 (verified directly) -- copyleft, not simply 'noncommercial': it permits commercial use but requires distributed/network-served derivative source disclosure unless a commercial Ultralytics Enterprise licence is purchased; 'noncommercial' here is only this schema's closest existing restricted bucket",
+        "Gate B benchmarked this exact weight file (SHA-256 85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5) against 19 real annotated frames from one small VIRAT_Ground clip -- not a full-dataset benchmark; no GPU was available on the Gate B host, so this ran CPU-only despite `gpu_optional`",
         "higher-accuracy variant with a larger resource footprint -- measured, not assumed"
       ],
       "fallback_candidate_id": "yolo11n"
@@ -106,13 +108,13 @@
       "model_family": "ByteTrack",
       "variant": "default",
       "execution_target": "cpu",
-      "license_status": "pending_verification",
-      "source_reference": "ByteTrack public release (exact repository/license to be pinned before download)",
+      "license_status": "verified_restricted_noncommercial",
+      "source_reference": "This candidate's real, executed code path is Ultralytics' own bundled `ultralytics.trackers.byte_tracker.BYTETracker` (the same class `model.track(..., tracker='bytetrack.yaml')` uses internally) -- not the original, separately-licensed ifzhang/ByteTrack MIT repository. Its actual licence exposure is therefore the `ultralytics` package's own AGPL-3.0 (https://raw.githubusercontent.com/ultralytics/ultralytics/main/LICENSE), verified directly, not ByteTrack's upstream MIT terms.",
       "selection_status": "candidate",
       "required_metrics": ["idf1", "hota", "mota", "id_switches", "latency_ms"],
       "known_limitations": [
         "the only tracking candidate considered -- no face recognition, appearance-based person re-identification, or biometric identity model is a candidate here, by explicit project boundary",
-        "not yet downloaded or benchmarked in this phase"
+        "Gate B benchmarked ByteTrack's association algorithm (no learned weight of its own) against ground-truth detections for 2 tracked objects across 19 real annotated timestamps from one small VIRAT_Ground clip"
       ],
       "fallback_candidate_id": null
     },

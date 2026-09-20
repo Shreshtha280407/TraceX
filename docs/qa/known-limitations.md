@@ -546,3 +546,122 @@ remain:
   will OCR at this accuracy. The later FIR ICDAR 2023 crop benchmark adds
   transcription metrics, while field-quality measurement remains unavailable
   for the ground-truth reason stated above.
+
+# Phase 7 Part 3 evaluation: visual benchmark foundation and local-model governance (Gaurav)
+
+The following record Part 3's state after **Gate B (2026-09-20, on
+Shreshtha's laptop)** actually downloaded real data, installed real
+dependencies, and ran real benchmarks for `virat_ground` -- see
+`docs/qa/test-data.md`/`docs/qa/test-results.md`'s dated Gate B sections
+for exact sources, hashes, commands, and measured values:
+
+- **`virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` are real, genuinely
+  benchmarked, and licence-cleared.** Gate B read the actual VIRAT Video
+  Dataset Usage Agreement and Ultralytics' actual AGPL-3.0 licence
+  directly, downloaded one small real VIRAT clip (with its official
+  annotations) and two real YOLO11 weight files, and ran the real
+  `visual_benchmark_cli` against them -- producing genuine `SUCCEEDED`
+  detection (`yolo11n`/`yolo11s`) and tracking (`bytetrack`) results with
+  real precision/recall/mAP/IDF1/MOTA values, not synthetic fixtures.
+  `license_status` moved from `pending_verification` to
+  `verified_restricted_noncommercial` in both
+  `configs/benchmarks/dataset-manifest.v1.json` and
+  `model-candidates.v1.json` for exactly these four entries.
+- **`safe_unsafe_behaviour` and `ufpr_alpr`/`paddleocr-lightweight-
+  visual-text` remain `pending_verification`, legitimately deferred, not
+  silently skipped.** `safe_unsafe_behaviour`'s frozen manifest entry has
+  no pinned `source_reference` at all (`"pending_verification"`) to
+  benchmark against; `ufpr_alpr` requires a formal academic access-request
+  process this task did not attempt to bypass. `require_license_cleared_
+  for_real_execution` still blocks a `SUCCEEDED` result for both, and a
+  dedicated test documents exactly this split
+  (`test_every_real_gaurav_dataset_and_candidate_licence_status_is_
+  documented`).
+- **Ultralytics (with PaddleOCR/PaddlePaddle) was genuinely installed and
+  exercised for the first time during Gate B**, via `uv sync --extra
+  video-benchmark`. This surfaced and fixed real API-drift bugs no mock
+  could have caught: `ultralytics.utils.yaml_load` no longer exists in
+  `ultralytics==8.4.156` (replaced by `ultralytics.utils.YAML.load`),
+  `BYTETracker.__init__` no longer accepts a `frame_rate` argument at
+  all, `BYTETracker.update()` requires a real, numpy-indexable
+  `ultralytics.engine.results.Boxes` instance rather than a duck-typed
+  stand-in, and the `lap` package (needed by `BYTETracker` internally)
+  was missing from the `video-benchmark` extra and has been added. See
+  `docs/qa/test-results.md`'s dated Gate B entry for the full list,
+  including a `follow_imports = "skip"` mypy override this installation
+  also required (`ultralytics` ships a `py.typed` marker, so mypy's
+  behaviour otherwise differed between installed/uninstalled states) and
+  a repository-wide `tests/__init__.py` fix (`ultralytics` ships its own
+  colliding top-level `tests` package that shadowed this project's own
+  once installed).
+- **`_build_real_tracker_engine` wires Ultralytics' own bundled
+  `BYTETracker`** (`ultralytics.trackers.byte_tracker.BYTETracker`, the
+  identical tracker `model.track(..., tracker='bytetrack.yaml')` uses
+  internally) against externally-supplied per-timestamp detections,
+  lazily imported inside this one function. No separate ByteTrack package
+  or model weight is needed -- `bytetrack.yaml` ships bundled inside the
+  `ultralytics` package itself, since ByteTrack's association step is a
+  Kalman-filter/Hungarian-matching algorithm, not a learned model. Its
+  actual licence exposure is therefore `ultralytics`'s own AGPL-3.0, not
+  the separately-licensed upstream ifzhang/ByteTrack MIT repository. The
+  real-engine construction glue degrades to a safe
+  `BenchmarkArtifactUnavailableError` -- never a crash -- whenever
+  `ultralytics` is absent.
+- **HOTA is always `None`.** A correct HOTA requires a geometric-mean
+  detection/association-accuracy sweep across multiple IoU/alpha
+  thresholds; this harness deliberately reports `None` rather than ship
+  a simplified approximation under the real metric's name.
+- **IDF1 uses a simplified, majority-vote per-ground-truth-track identity
+  assignment**, not the optimal global bipartite assignment a full
+  implementation (e.g. `py-motmetrics`) solves. Documented directly in
+  `visual_benchmark_metrics.idf1`'s own docstring.
+- **mAP is single-threshold (IoU >= 0.5), VOC-style 11-point interpolated
+  Average Precision** -- not COCO's mAP@[.5:.95] sweep across ten
+  thresholds.
+- **The local benchmark manifest formats
+  (`benchmark_manifest.jsonl`/`tracking_manifest.jsonl`/
+  `visual_text_manifest.jsonl`) remain this task's own invented shapes,
+  not a real dataset's native annotation format.** Gate B did write and
+  exercise a real, working converter from VIRAT's actual
+  `objects.txt` annotation format (`object_id object_duration
+  currentframe bbox_left bbox_top bbox_width bbox_height object_type`,
+  confirmed directly from a real downloaded file) into these JSON-Lines
+  shapes for `virat_ground` specifically -- see
+  `docs/qa/test-data.md`'s dated Gate B section. No such converter exists
+  yet for UFPR-ALPR or Safe/Unsafe Behaviour's own real annotation
+  formats, since neither dataset was downloaded (both remain
+  legitimately deferred).
+- **`safe_unsafe_behaviour` has no behaviour-classification candidate.**
+  The manifest's own `allowed_tasks` for it is "additional visual
+  detection stress-testing" only; this harness benchmarks it with the
+  same YOLO11 detection candidates as `virat_ground`, never a
+  purpose-built behaviour classifier -- inventing one would be an
+  unapproved new task/candidate outside Part 1's frozen catalogue.
+- **No cross-camera identity capability exists, structurally, not only by
+  convention.** A `TrackSegment.local_track_id` becomes only a
+  same-observation-ID discriminator when passed through
+  `build_observation_draft_for_track_segment`/`observation_for_draft` --
+  never an `ExtractedEntityMention` or any other identity-shaped field --
+  proven by a dedicated test.
+- **The pre-existing whole-module "no infra/ML library" static safety
+  test (`test_media_safety.py::test_no_infrastructure_or_ml_library_is_
+  imported`) required a narrow, explicit carve-out for
+  `visual_benchmark*.py` files specifically**, since two of this task's
+  four approved candidates *are* the exact libraries (`ultralytics`,
+  `paddleocr`) that check was written to forbid in the *production*
+  detection/OCR pipeline. A new, dedicated test
+  (`test_benchmark_harness_still_forbids_every_non_candidate_infra_or_ml_
+  library`) proves the carve-out is narrow -- every other forbidden
+  library (databases, object storage, queues, `torch`/`tensorflow`/
+  `sklearn`) remains forbidden in the benchmark harness too, and no
+  production file's exemption changed at all.
+- **Ultralytics was validated live during Gate B; PaddleOCR/GPU/Docker
+  were not.** Gate B genuinely installed and exercised `ultralytics`
+  against real YOLO11 weights and a real VIRAT clip (see above). No
+  PaddleOCR installation was exercised against any real image (`ufpr_alpr`
+  remains deferred), no GPU was available on the Gate B host (confirmed
+  via `nvidia-smi` reporting no driver, not assumed), and this task never
+  touched Docker. The committed unit test suite in `tests/unit/
+  media_processing/test_visual_benchmark_*.py` still runs entirely
+  against synthetic fixtures and fake engines, independent of what is or
+  isn't installed on any given machine.
