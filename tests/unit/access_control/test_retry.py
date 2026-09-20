@@ -83,6 +83,61 @@ async def test_backoff_delay_is_bounded_and_uses_injected_sleep() -> None:
     assert all(d <= 1.0 for d in delays)
 
 
+async def test_jitter_is_clamped_and_cannot_make_backoff_unbounded() -> None:
+    delays: list[float] = []
+
+    async def _record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    await retry_async(
+        _FlakyOperation(failures=1),
+        operation_name="graph_read_query",
+        max_attempts=2,
+        base_delay_seconds=1.0,
+        max_delay_seconds=1.0,
+        sleep=_record_sleep,
+        jitter=lambda: 1_000_000.0,
+    )
+    assert delays == [1.1]
+
+
+async def test_unsafe_operation_name_is_rejected_before_work() -> None:
+    op = _FlakyOperation(failures=0)
+    with pytest.raises(ValueError, match="safe identifier"):
+        await retry_async(op, operation_name="graph read\npassword=value")
+    assert op.call_count == 0
+
+
+async def test_retry_exhaustion_log_contains_type_not_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class _Logger:
+        def warning(self, event: str, **values: object) -> None:
+            events.append((event, values))
+
+        def error(self, event: str, **values: object) -> None:
+            events.append((event, values))
+
+    monkeypatch.setattr("app.modules.access_control.retry.logger", _Logger())
+    op = _FlakyOperation(failures=2)
+    with pytest.raises(ConnectionError, match="transient"):
+        await retry_async(
+            op,
+            operation_name="graph_read_query",
+            max_attempts=2,
+            sleep=_no_sleep,
+            jitter=lambda: 0.0,
+        )
+    assert [event for event, _ in events] == [
+        "operation.retry_scheduled",
+        "operation.retry_exhausted",
+    ]
+    assert "transient" not in repr(events)
+    assert all(values["exc_type"] == "ConnectionError" for _, values in events)
+
+
 # --- Scenario 21: never retries token/session/auth operations --------------
 
 

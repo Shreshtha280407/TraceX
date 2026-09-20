@@ -936,3 +936,32 @@ code change.
   accuracy conclusion about Silero VAD or this project's diarization
   approach. No winning candidate was selected -- that remains Gate C's
   decision.
+
+# Phase 7 Gate C + Aditya Part 5 (2026-09-20)
+
+- The current Gate B evidence is frozen as `gate-b-v1`. Only the two FIR
+  OCR results and IBM AMLSim deterministic-parser result have the complete
+  approved dataset/configuration/artifact/result hash chain. GoMask remains
+  unavailable. VIRAT and AMI measurements remain preserved but deferred from
+  release selection because their manifests are `in_progress` and their
+  external safe-result hashes are not present in Git. No metric or hash was
+  invented to close that gap.
+- Every other planned/inaccessible dataset and candidate remains explicitly
+  deferred or unavailable. Any future expansion requires a new versioned
+  manifest/evaluation cycle; it cannot silently replace this release's
+  evidence.
+- Gate C retains the existing deterministic Phase 5 rules baseline only. It
+  does not select the final relationship-scoring ML algorithm. Logistic
+  Regression, XGBoost, LightGBM, calibration, comparison, and final freeze
+  remain Shreshtha Part 6 work.
+- `/readyz` can prove dependency/capability reachability, not that an external
+  extraction worker process is alive. It reports worker process liveness as
+  `not_observed`; no heartbeat registry was invented.
+- Correlation outbox retry exhaustion stops the current worker process and
+  leaves durable events queued. Operator restart/reconciliation remains
+  required after the underlying graph service recovers.
+- Collection endpoints are bounded to 200 rows per request but do not yet
+  return cursor metadata. This release prevents unbounded reads; cursor-based
+  pagination remains later API work.
+- No Docker, LAN, new dataset/model acquisition, training, frontend, or full
+  repository suite was run for Gate C, by scope.

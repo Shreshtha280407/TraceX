@@ -382,19 +382,20 @@ class HypothesisRepository:
             )
         return _hypothesis(row) if row else None
 
-    async def list_hypotheses(self, case_id: UUID) -> list[HypothesisRecord]:
+    async def list_hypotheses(
+        self, case_id: UUID, *, limit: int | None = None
+    ) -> list[HypothesisRecord]:
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("hypothesis query limit must be between 1 and 200")
+        statement = (
+            sa.select(hypotheses_table)
+            .where(hypotheses_table.c.case_id == case_id)
+            .order_by(hypotheses_table.c.created_at.desc())
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
         async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        sa.select(hypotheses_table)
-                        .where(hypotheses_table.c.case_id == case_id)
-                        .order_by(hypotheses_table.c.created_at.desc())
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            rows = (await conn.execute(statement)).mappings().all()
         return [_hypothesis(row) for row in rows]
 
     async def list_actions(self, case_id: UUID) -> list[HypothesisActionRecord]:

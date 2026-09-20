@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from collections.abc import Awaitable, Callable
 
+import structlog
+
+from app.core.errors import get_request_id
 from app.modules.access_control.errors import RetryNotAllowedError
 
 #: Operation names this helper must never retry, regardless of the
@@ -33,6 +37,8 @@ NEVER_RETRY_OPERATIONS: frozenset[str] = frozenset(
 )
 
 DEFAULT_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (TimeoutError, ConnectionError)
+_SAFE_OPERATION_NAME = re.compile(r"^[a-z0-9_.-]{1,64}$")
+logger = structlog.get_logger(__name__)
 
 
 async def retry_async[T](
@@ -63,16 +69,38 @@ async def retry_async[T](
     """
     if operation_name in NEVER_RETRY_OPERATIONS:
         raise RetryNotAllowedError(f"operation {operation_name!r} must never be retried")
+    if not _SAFE_OPERATION_NAME.fullmatch(operation_name):
+        raise ValueError("operation_name must be a bounded safe identifier")
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
+    if base_delay_seconds < 0 or max_delay_seconds < 0:
+        raise ValueError("retry delays must be >= 0")
 
     for attempt in range(1, max_attempts + 1):
         try:
             return await operation()
-        except retryable_exceptions:
+        except retryable_exceptions as exc:
             if attempt == max_attempts:
+                logger.error(
+                    "operation.retry_exhausted",
+                    request_id=get_request_id() or None,
+                    operation_name=operation_name,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    exc_type=type(exc).__name__,
+                )
                 raise
             delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
-            delay += delay * 0.1 * jitter()
+            jitter_fraction = min(1.0, max(0.0, jitter()))
+            delay += delay * 0.1 * jitter_fraction
+            logger.warning(
+                "operation.retry_scheduled",
+                request_id=get_request_id() or None,
+                operation_name=operation_name,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                delay_seconds=delay,
+                exc_type=type(exc).__name__,
+            )
             await sleep(delay)
     raise AssertionError("unreachable: loop always returns or raises")

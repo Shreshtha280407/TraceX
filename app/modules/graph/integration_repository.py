@@ -452,19 +452,20 @@ class GraphCorrelationIntegrationRepository:
             )
         return _correlation(row) if row else None
 
-    async def list_correlations(self, case_id: UUID) -> list[CorrelationRecord]:
+    async def list_correlations(
+        self, case_id: UUID, *, limit: int | None = None
+    ) -> list[CorrelationRecord]:
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("correlation query limit must be between 1 and 200")
+        statement = (
+            sa.select(correlation_records_table)
+            .where(correlation_records_table.c.case_id == case_id)
+            .order_by(correlation_records_table.c.created_at.desc())
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
         async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        sa.select(correlation_records_table)
-                        .where(correlation_records_table.c.case_id == case_id)
-                        .order_by(correlation_records_table.c.created_at.desc())
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            rows = (await conn.execute(statement)).mappings().all()
         return [_correlation(row) for row in rows]
 
     async def get_candidate_link(
@@ -488,19 +489,20 @@ class GraphCorrelationIntegrationRepository:
             )
         return _candidate(row) if row else None
 
-    async def list_candidates(self, case_id: UUID) -> list[CandidateLinkRecord]:
+    async def list_candidates(
+        self, case_id: UUID, *, limit: int | None = None
+    ) -> list[CandidateLinkRecord]:
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("candidate query limit must be between 1 and 200")
+        statement = (
+            sa.select(candidate_links_table)
+            .where(candidate_links_table.c.case_id == case_id)
+            .order_by(candidate_links_table.c.created_at.desc())
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
         async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        sa.select(candidate_links_table)
-                        .where(candidate_links_table.c.case_id == case_id)
-                        .order_by(candidate_links_table.c.created_at.desc())
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            rows = (await conn.execute(statement)).mappings().all()
         return [_candidate(row) for row in rows]
 
     async def get_event(self, case_id: UUID, event_id: UUID) -> GraphUpdateEventRecord | None:

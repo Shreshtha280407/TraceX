@@ -50,6 +50,23 @@ def test_valid_config_loads(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.contract_version == "v1"
 
 
+def test_release_configuration_id_rejects_paths_and_log_unsafe_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql+asyncpg://u:p@localhost:5432/db")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "secret")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("MINIO_ENDPOINT", "localhost:9000")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "secret")
+    monkeypatch.setenv("RELEASE_CONFIGURATION_ID", "/tmp/model\nunsafe-value")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
 def test_blank_worker_token_and_pepper_normalize_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """Security regression, now applied to both worker-identity secrets.
 

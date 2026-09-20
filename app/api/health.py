@@ -20,6 +20,35 @@ SERVICE_NAME = "tracex-api"
 SERVICE_VERSION = "0.1.0"
 
 
+def _operational_components(results: dict[str, bool]) -> dict[str, dict[str, object]]:
+    """Safe derived capability health, without pretending to observe worker processes.
+
+    The API can prove the worker control-plane and graph dependencies are
+    reachable.  It cannot prove an external worker process is alive because
+    no worker-heartbeat registry exists; that limitation is explicit in the
+    response rather than reported as a fabricated healthy worker.
+    """
+
+    def status_for(*dependencies: str) -> str:
+        return "ok" if all(results.get(name, False) for name in dependencies) else "unavailable"
+
+    return {
+        "worker_control_plane": {
+            "status": status_for("postgres", "redis", "minio"),
+            "dependencies": ["postgres", "redis", "minio"],
+            "worker_process_liveness": "not_observed",
+        },
+        "graph_projection": {
+            "status": status_for("postgres", "neo4j"),
+            "dependencies": ["postgres", "neo4j"],
+        },
+        "correlation_outbox": {
+            "status": status_for("postgres", "neo4j"),
+            "dependencies": ["postgres", "neo4j"],
+        },
+    }
+
+
 @router.get("/healthz")
 async def healthz() -> dict[str, str]:
     """Liveness: the FastAPI process is up. Never checks dependencies."""
@@ -50,11 +79,12 @@ async def readyz(
     """
     results = dict(await asyncio.gather(*(_probe(name, fn) for name, fn in checks.items())))
     dependencies = {name: ("ok" if ok else "unavailable") for name, ok in results.items()}
+    components = _operational_components(results)
     healthy = all(results.values())
 
     if healthy:
         response.status_code = status.HTTP_200_OK
-        return {"status": "ok", "dependencies": dependencies}
+        return {"status": "ok", "dependencies": dependencies, "components": components}
 
     response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     body = error_body(
@@ -63,6 +93,7 @@ async def readyz(
         get_request_id(),
     )
     body["dependencies"] = dependencies
+    body["components"] = components
     return body
 
 

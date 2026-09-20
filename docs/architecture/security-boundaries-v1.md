@@ -88,3 +88,18 @@ If Redis is unreachable when a login/refresh attempt needs a rate-limit check, `
 ## LAN boundary
 
 See `docs/runbooks/lan-development.md` for the full local-network setup. Summary: PostgreSQL, Neo4j, Redis, and MinIO are never exposed to the LAN — only the API port is, from one designated host, over plain HTTP, for local demo/development only.
+
+## Phase 7 Gate C additions
+
+Case-scoped graph, correlation, candidate-review, and hypothesis routes keep
+the default-deny authorization dependency ahead of route-level data access.
+Their collection queries now validate a maximum of 200 rows at the HTTP
+boundary and apply the bound in PostgreSQL. The internal pgvector path remains
+same-case and bounded; no public vector or model-execution endpoint was added.
+
+The Gate C release configuration is a committed ID/hash allow-list, not an
+operator-supplied model path. Correlation generation verifies the exact frozen
+deterministic rules component before its first case-data read. The disable
+switch fails closed and logs only safe identifiers. Retry and readiness logs
+contain dependency/component names, counts, request IDs, and exception types,
+never case content, connection text, or submitted values.

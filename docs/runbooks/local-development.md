@@ -1345,11 +1345,42 @@ a repeat run on a different machine. Follow these steps in order:
    handle, speaker label, or model weight. Leave every candidate's
    `selection_status` as `candidate`/`conditional` unless step 6 above
    genuinely resolved it — do not mark any Part 4 candidate `selected`;
-   Gate C makes that decision later, after Parts 2-4 all have comparable
-   results.
+   a future versioned evaluation cycle makes that decision. Gate C froze
+   evidence and retained the deterministic correlation baseline; it did not
+   select a modality winner.
 
 If an artifact is genuinely unavailable, its licence terms can't be
 resolved, or a candidate fails to load, run the CLI anyway and let it
 produce its own truthful `unavailable`/`failed` result — never substitute
 a different dataset or model silently, and never report a benchmark as
 having succeeded unless the CLI's own exit code and result JSON say so.
+
+## Gate C configuration disable and recovery
+
+The normal local setting is:
+
+```dotenv
+RELEASE_CONFIGURATION_ID=tracex-release-v1-baseline
+RELEASE_CONFIGURATION_DISABLED=false
+```
+
+Only IDs in `configs/benchmarks/release-freeze.v1.json` are accepted. Never
+point this setting at a file, model name, or local artifact path.
+
+To stop relationship scoring without changing or deleting evidence, set:
+
+```dotenv
+RELEASE_CONFIGURATION_DISABLED=true
+```
+
+Restart the API/intelligence worker process so settings are reloaded. A
+correlation generation attempt then fails before case observations are read
+and emits the safe `evaluation.release_configuration_disabled` signal. Existing
+correlations and queued durable outbox events are not deleted. Record the
+operator/time/reason in the deployment's change log; no case content belongs
+in that record.
+
+After the incident is resolved, verify the committed freeze and focused tests,
+restore `RELEASE_CONFIGURATION_DISABLED=false`, and restart. Do not bypass a
+hash mismatch or unknown ID: restore the known committed configuration, or
+create a separately reviewed/versioned release freeze.
