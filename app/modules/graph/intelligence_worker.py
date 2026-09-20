@@ -35,6 +35,7 @@ import signal
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -55,7 +56,6 @@ logger = structlog.get_logger(__name__)
 
 _DEFAULT_LEASE_SECONDS = 120
 _DEFAULT_BATCH_SIZE = 25
-_DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 
 
 def _configure_logging() -> None:
@@ -97,31 +97,89 @@ async def _interruptible_wait(shutdown_event: asyncio.Event, seconds: float) -> 
         await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
 
 
-async def replay_loop(settings: Settings, *, shutdown_event: asyncio.Event) -> str:
+@dataclass(frozen=True)
+class ReplayLoopSummary:
+    iterations: int
+    total_claimed: int
+    total_succeeded: int
+    total_retrying: int
+    total_failed: int
+    stopped_reason: str
+
+
+async def replay_loop(
+    settings: Settings,
+    *,
+    shutdown_event: asyncio.Event,
+    poll_interval_seconds: float | None = None,
+    max_backoff_seconds: float | None = None,
+    max_consecutive_failures: int | None = None,
+) -> ReplayLoopSummary:
     """Continuously replay `graph_update_events` batches until `shutdown_event` is set.
 
-    Mirrors `graph.worker.run_loop`'s shape (claim-again-immediately on real
-    work, sleep on an empty batch, always drain the current batch before
-    honoring shutdown) without duplicating its exponential-backoff/failure-
-    ceiling machinery -- a Neo4j outage already has no retry ceiling by
-    design in this outbox (see `docs/architecture/phase-5-integration.md`),
-    so there is nothing here for a backoff cutoff to protect against beyond
-    what `replay_graph_updates` itself already handles per event.
+    Every batch is bounded. Repeated driver failures or batches returned
+    entirely/partly for retry use bounded exponential backoff and stop the
+    process after the configured consecutive-failure ceiling. Durable events
+    remain queued for an operator-controlled restart; the loop never spins or
+    retries forever during a graph outage.
     """
     postgres_engine = create_postgres_engine(settings)
     repository = GraphCorrelationIntegrationRepository(postgres_engine)
     neo4j_driver = create_driver(settings)
     graph = Neo4jGraphRepository(neo4j_driver)
     handler = make_correlation_projection_handler(graph)
+    poll_interval = (
+        poll_interval_seconds
+        if poll_interval_seconds is not None
+        else settings.graph_projector_poll_interval_seconds
+    )
+    backoff_cap = (
+        max_backoff_seconds
+        if max_backoff_seconds is not None
+        else settings.graph_projector_max_backoff_seconds
+    )
+    failure_limit = (
+        max_consecutive_failures
+        if max_consecutive_failures is not None
+        else settings.graph_projector_max_consecutive_failures
+    )
+    iterations = total_claimed = total_succeeded = total_retrying = total_failed = 0
+    consecutive_failures = 0
     try:
         while not shutdown_event.is_set():
-            summary = await replay_graph_updates(
-                repository,
-                handler,
-                lease_seconds=_DEFAULT_LEASE_SECONDS,
-                batch_size=_DEFAULT_BATCH_SIZE,
-                now=datetime.now(UTC),
-            )
+            iterations += 1
+            try:
+                summary = await replay_graph_updates(
+                    repository,
+                    handler,
+                    lease_seconds=_DEFAULT_LEASE_SECONDS,
+                    batch_size=_DEFAULT_BATCH_SIZE,
+                    now=datetime.now(UTC),
+                )
+            except Exception as exc:
+                consecutive_failures += 1
+                logger.error(
+                    "graph.intelligence_worker.replay_iteration_failed",
+                    exc_type=type(exc).__name__,
+                    consecutive_failures=consecutive_failures,
+                )
+                if consecutive_failures >= failure_limit:
+                    return ReplayLoopSummary(
+                        iterations,
+                        total_claimed,
+                        total_succeeded,
+                        total_retrying,
+                        total_failed,
+                        "max_consecutive_failures",
+                    )
+                backoff = min(poll_interval * (2**consecutive_failures), backoff_cap)
+                await _interruptible_wait(shutdown_event, backoff)
+                continue
+
+            total_claimed += summary.claimed
+            total_succeeded += summary.succeeded
+            total_retrying += summary.retrying
+            total_failed += summary.failed
             logger.info(
                 "graph.intelligence_worker.replay_batch_processed",
                 claimed=summary.claimed,
@@ -129,15 +187,37 @@ async def replay_loop(settings: Settings, *, shutdown_event: asyncio.Event) -> s
                 retrying=summary.retrying,
                 failed=summary.failed,
             )
+            if summary.retrying > 0:
+                consecutive_failures += 1
+                if consecutive_failures >= failure_limit:
+                    return ReplayLoopSummary(
+                        iterations,
+                        total_claimed,
+                        total_succeeded,
+                        total_retrying,
+                        total_failed,
+                        "max_consecutive_failures",
+                    )
+                backoff = min(poll_interval * (2**consecutive_failures), backoff_cap)
+                await _interruptible_wait(shutdown_event, backoff)
+                continue
+            consecutive_failures = 0
             if summary.claimed == 0:
-                await _interruptible_wait(shutdown_event, _DEFAULT_POLL_INTERVAL_SECONDS)
+                await _interruptible_wait(shutdown_event, poll_interval)
     finally:
         await repository.close()
         await graph.close()
-    return "shutdown_requested"
+    return ReplayLoopSummary(
+        iterations,
+        total_claimed,
+        total_succeeded,
+        total_retrying,
+        total_failed,
+        "shutdown_requested",
+    )
 
 
-async def _replay_loop_with_signal_handling(settings: Settings) -> str:
+async def _replay_loop_with_signal_handling(settings: Settings) -> ReplayLoopSummary:
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -230,13 +310,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.replay_loop:
         try:
-            asyncio.run(_replay_loop_with_signal_handling(settings))
+            loop_summary = asyncio.run(_replay_loop_with_signal_handling(settings))
         except Exception as exc:  # a startup/connection failure, not a per-event outcome
             logger.error(
                 "graph.intelligence_worker.replay_loop_failed", exc_type=type(exc).__name__
             )
             return 1
-        return 0
+        logger.info(
+            "graph.intelligence_worker.replay_loop_completed",
+            iterations=loop_summary.iterations,
+            total_claimed=loop_summary.total_claimed,
+            total_succeeded=loop_summary.total_succeeded,
+            total_retrying=loop_summary.total_retrying,
+            total_failed=loop_summary.total_failed,
+            stopped_reason=loop_summary.stopped_reason,
+        )
+        return 0 if loop_summary.stopped_reason == "shutdown_requested" else 1
 
     try:
         case_id = UUID(args.case_id)

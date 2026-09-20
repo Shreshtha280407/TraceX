@@ -150,17 +150,28 @@ class CandidateReviewRepository:
             )
         return _record(row) if row else None
 
-    async def list_decisions(self, case_id: UUID) -> list[CandidateReviewDecisionRecord]:
-        async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        sa.select(candidate_review_decisions_table)
-                        .where(candidate_review_decisions_table.c.case_id == case_id)
-                        .order_by(candidate_review_decisions_table.c.created_at.asc())
-                    )
-                )
-                .mappings()
-                .all()
+    async def list_decisions(
+        self,
+        case_id: UUID,
+        *,
+        candidate_link_ids: tuple[UUID, ...] | None = None,
+        limit: int | None = None,
+    ) -> list[CandidateReviewDecisionRecord]:
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("review decision query limit must be between 1 and 200")
+        statement = (
+            sa.select(candidate_review_decisions_table)
+            .where(candidate_review_decisions_table.c.case_id == case_id)
+            .order_by(candidate_review_decisions_table.c.created_at.asc())
+        )
+        if candidate_link_ids is not None:
+            if not candidate_link_ids:
+                return []
+            statement = statement.where(
+                candidate_review_decisions_table.c.candidate_link_id.in_(candidate_link_ids)
             )
+        if limit is not None:
+            statement = statement.limit(limit)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
         return [_record(row) for row in rows]

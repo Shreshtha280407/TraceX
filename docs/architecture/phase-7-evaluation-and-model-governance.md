@@ -1006,3 +1006,24 @@ list: no downloaded datasets, no downloaded model weights, no benchmark
 results, no final model winner, no final correlation winner, and no LAN
 validation. All by design, not oversight — see "What Part 1 explicitly
 does not do" above.
+
+## Gate C release freeze (2026-09-20, Aditya Part 5)
+
+Gate C is recorded in `configs/benchmarks/release-freeze.v1.json` and
+ADR-017. It freezes the current Gate B evidence as the immutable
+`gate-b-v1` cycle and binds it to the exact hashes of the three V1 source
+catalogues. Only the two FIR OCR runs and IBM AMLSim deterministic-parser run
+have a complete approved hash chain. The documented VIRAT and AMI aggregate
+measurements remain frozen evidence but are deferred from release selection;
+their manifests remain `in_progress` and their external result-file hashes are
+not present in the repository. All other unavailable/deferred entries remain
+explicitly so. Future expansion requires a new versioned manifest/evaluation
+cycle, never an in-place replacement of this evidence.
+
+The release retains only the existing `phase5_preliminary_rules_v1`
+deterministic correlation baseline, with no artifact loading. The pipeline
+checks the frozen ID and canonical configuration hash before reading case data.
+`RELEASE_CONFIGURATION_DISABLED=true` is the fail-closed operational rollback.
+Gate C makes no final relationship-scoring ML choice: Logistic Regression vs
+XGBoost/LightGBM evaluation, calibration, and final freeze remain Shreshtha
+Part 6.

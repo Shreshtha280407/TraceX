@@ -23,6 +23,8 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.contracts.observation import ObservationV1
+from app.core.config import get_settings
+from app.modules.evaluation.release_freeze import require_release_component
 from app.modules.graph.integration_models import (
     CorrelationSubmission,
     CorrelationSubmissionReceipt,
@@ -38,7 +40,7 @@ from app.modules.graph.intelligence.correlation import (
 )
 from app.modules.graph.intelligence.models import AnalyticsResult, MotifMatch
 from app.modules.graph.intelligence.retrieval import retrieve_candidates
-from app.modules.graph.intelligence.scoring import score_candidates
+from app.modules.graph.intelligence.scoring import RULES_CONFIG_HASH, score_candidates
 from app.modules.graph.intelligence.sourcing import (
     build_motif_edges,
     descriptors_from_observation,
@@ -54,6 +56,18 @@ logger = structlog.get_logger(__name__)
 #: seam (Phase 6) -- built from IDs/counts/status only, never observation
 #: text. See `docs/architecture/phase-6-integrity.md`.
 CORRELATION_COMPLETED_SCHEMA_VERSION = "correlation_completed.v1"
+
+
+def _require_frozen_relationship_configuration() -> None:
+    """Fail closed before retrieval/scoring if Gate C is disabled or changed."""
+    settings = get_settings()
+    require_release_component(
+        configuration_id=settings.release_configuration_id,
+        purpose="relationship_scoring",
+        candidate_id="phase5-rules-baseline",
+        configuration_sha256=RULES_CONFIG_HASH,
+        disabled=settings.release_configuration_disabled,
+    )
 
 
 async def _record_correlation_integrity_event_safely(
@@ -120,6 +134,7 @@ def build_case_correlation_submission(
     reason -- both are normal, expected outcomes for a case with too little
     correlatable evidence yet, not a failure.
     """
+    _require_frozen_relationship_configuration()
     if any(observation.case_id != case_id for observation in observations):
         raise ValueError("all observations passed to a case correlation pass must match case_id")
     descriptors = tuple(
@@ -158,6 +173,9 @@ async def run_case_correlation_pass(
     caller/test) and, when present, only records a `correlation_completed`
     integrity event for a genuinely new (non-replayed) submission.
     """
+    # Deliberately before the first SQL read: a disabled, unknown, or
+    # hash-mismatched configuration never touches case data.
+    _require_frozen_relationship_configuration()
     observations = await fetch_case_observations(engine, case_id)
     submission = build_case_correlation_submission(observations, case_id)
     if submission is None:

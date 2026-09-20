@@ -77,6 +77,8 @@ from app.modules.integrity.dependencies import get_integrity_service
 from app.modules.integrity.service import IntegrityService
 
 router = APIRouter(prefix="/api/v1/cases", tags=["graph"])
+DEFAULT_INTEGRATION_LIMIT = 50
+MAX_INTEGRATION_LIMIT = 200
 
 
 def _integration_unavailable() -> HTTPException:
@@ -134,10 +136,11 @@ async def list_graph_correlations(
         GraphCorrelationIntegrationRepository,
         Depends(get_graph_correlation_integration_repository),
     ],
+    limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
 ) -> CorrelationListResponse:
     """List durable reviewable propositions, never asserted relationships."""
     try:
-        correlations = await repository.list_correlations(case_id)
+        correlations = await repository.list_correlations(case_id, limit=limit)
         items = []
         for correlation in correlations:
             event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
@@ -178,10 +181,13 @@ async def list_graph_candidates(
         GraphCorrelationIntegrationRepository,
         Depends(get_graph_correlation_integration_repository),
     ],
+    limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
 ) -> CandidateListResponse:
     """Return candidate links as candidates; no endpoint confirms or merges them."""
     try:
-        return CandidateListResponse(items=tuple(await repository.list_candidates(case_id)))
+        return CandidateListResponse(
+            items=tuple(await repository.list_candidates(case_id, limit=limit))
+        )
     except sa.exc.SQLAlchemyError as exc:
         raise _integration_unavailable() from exc
 
@@ -194,11 +200,12 @@ async def list_hypothesis_integration_refs(
         GraphCorrelationIntegrationRepository,
         Depends(get_graph_correlation_integration_repository),
     ],
+    limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
 ) -> HypothesisIntegrationListResponse:
     """Expose supplied hypothesis references only; this module generates none."""
     try:
         items = []
-        for correlation in await repository.list_correlations(case_id):
+        for correlation in await repository.list_correlations(case_id, limit=limit):
             if correlation.hypothesis_reference is None:
                 continue
             event = await repository.get_event_for_correlation(case_id, correlation.correlation_id)
@@ -250,12 +257,16 @@ async def list_candidates_for_review(
     review_repository: Annotated[
         CandidateReviewRepository, Depends(get_candidate_review_repository)
     ],
+    limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
 ) -> CandidateReviewListResponse:
     try:
-        candidates = await repository.list_candidates(case_id)
+        candidates = await repository.list_candidates(case_id, limit=limit)
+        candidate_ids = tuple(candidate.candidate_link_id for candidate in candidates)
         decisions = {
             decision.candidate_link_id: decision
-            for decision in await review_repository.list_decisions(case_id)
+            for decision in await review_repository.list_decisions(
+                case_id, candidate_link_ids=candidate_ids, limit=limit
+            )
         }
         items = tuple(
             candidate_review_view(candidate, decisions.get(candidate.candidate_link_id))
@@ -343,9 +354,12 @@ async def list_hypotheses(
     case_id: UUID,
     principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
     repository: Annotated[HypothesisRepository, Depends(get_hypothesis_repository)],
+    limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
 ) -> HypothesisListResponse:
     try:
-        return HypothesisListResponse(items=tuple(await repository.list_hypotheses(case_id)))
+        return HypothesisListResponse(
+            items=tuple(await repository.list_hypotheses(case_id, limit=limit))
+        )
     except sa.exc.SQLAlchemyError as exc:
         raise _integration_unavailable() from exc
 

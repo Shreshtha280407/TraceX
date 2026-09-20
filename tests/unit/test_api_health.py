@@ -60,6 +60,21 @@ async def test_readyz_returns_200_when_all_dependencies_healthy(
         "redis": "ok",
         "minio": "ok",
     }
+    assert body["components"] == {
+        "worker_control_plane": {
+            "status": "ok",
+            "dependencies": ["postgres", "redis", "minio"],
+            "worker_process_liveness": "not_observed",
+        },
+        "graph_projection": {
+            "status": "ok",
+            "dependencies": ["postgres", "neo4j"],
+        },
+        "correlation_outbox": {
+            "status": "ok",
+            "dependencies": ["postgres", "neo4j"],
+        },
+    }
 
 
 async def test_readyz_returns_503_with_safe_body_when_dependency_fails(
@@ -72,6 +87,9 @@ async def test_readyz_returns_503_with_safe_body_when_dependency_fails(
     assert body["error"]["code"] == "dependency_unavailable"
     assert body["dependencies"]["neo4j"] == "unavailable"
     assert body["dependencies"]["postgres"] == "ok"
+    assert body["components"]["worker_control_plane"]["status"] == "ok"
+    assert body["components"]["graph_projection"]["status"] == "unavailable"
+    assert body["components"]["correlation_outbox"]["status"] == "unavailable"
 
     # Never leak connection strings, credentials, or exception internals.
     raw = response.text

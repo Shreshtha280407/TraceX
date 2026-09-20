@@ -58,24 +58,29 @@ class _FakeIntegrationRepository:
 
     def __init__(self) -> None:
         self.error: Exception | None = None
+        self.calls: list[tuple[str, Any]] = []
 
     def _raise_if_needed(self) -> None:
         if self.error is not None:
             raise self.error
 
-    async def list_correlations(self, case_id: Any) -> list[Any]:
+    async def list_correlations(self, case_id: Any, *, limit: int | None = None) -> list[Any]:
+        self.calls.append(("list_correlations", (case_id, limit)))
         self._raise_if_needed()
         return []
 
     async def get_correlation(self, case_id: Any, correlation_id: Any) -> None:
+        self.calls.append(("get_correlation", (case_id, correlation_id)))
         self._raise_if_needed()
         return None
 
     async def get_event_for_correlation(self, case_id: Any, correlation_id: Any) -> None:
+        self.calls.append(("get_event_for_correlation", (case_id, correlation_id)))
         self._raise_if_needed()
         return None
 
-    async def list_candidates(self, case_id: Any) -> list[Any]:
+    async def list_candidates(self, case_id: Any, *, limit: int | None = None) -> list[Any]:
+        self.calls.append(("list_candidates", (case_id, limit)))
         self._raise_if_needed()
         return []
 
@@ -273,7 +278,9 @@ async def test_all_phase5_integration_reads_require_authentication(client: Async
 
 
 async def test_cross_case_integration_read_is_denied_before_object_lookup(
-    client: AsyncClient, ac_repository: FakeAccessControlRepository
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    integration_repository: _FakeIntegrationRepository,
 ) -> None:
     token, _case_a_id = await _authenticated_member(client, ac_repository)
     _other_token, case_b_id = await _authenticated_member(client, ac_repository)
@@ -282,6 +289,10 @@ async def test_cross_case_integration_read_is_denied_before_object_lookup(
         f"/api/v1/cases/{case_b_id}/graph/correlations/{uuid4()}",
         f"/api/v1/cases/{case_b_id}/graph/candidates",
         f"/api/v1/cases/{case_b_id}/graph/hypotheses",
+        f"/api/v1/cases/{case_b_id}/candidates",
+        f"/api/v1/cases/{case_b_id}/candidates/{uuid4()}",
+        f"/api/v1/cases/{case_b_id}/hypotheses",
+        f"/api/v1/cases/{case_b_id}/hypotheses/{uuid4()}",
     )
     for path in paths:
         response = await client.get(path, headers={"Authorization": f"Bearer {token}"})
@@ -292,6 +303,7 @@ async def test_cross_case_integration_read_is_denied_before_object_lookup(
     ]
     assert len(denials) == len(paths)
     assert all(event.metadata_safe_json == {"action": "graph_read"} for event in denials)
+    assert integration_repository.calls == [], "authorization must run before graph/SQL lookup"
 
 
 async def test_postgres_outage_on_correlation_read_returns_a_safe_service_error(
@@ -339,6 +351,26 @@ async def test_limit_zero_is_rejected(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ("graph/correlations", "graph/candidates", "graph/hypotheses", "candidates", "hypotheses"),
+)
+async def test_all_graph_collection_limits_are_validated_before_repository_work(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    integration_repository: _FakeIntegrationRepository,
+    suffix: str,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/{suffix}",
+        params={"limit": 201},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
+    assert integration_repository.calls == []
 
 
 async def test_negative_offset_is_rejected(

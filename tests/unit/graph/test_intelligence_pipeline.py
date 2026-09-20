@@ -8,14 +8,20 @@ The I/O half (`run_case_correlation_pass`/`run_case_analytics_snapshot`/
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from app.contracts.common import Extractor, SourceLocator
 from app.contracts.observation import ExtractedEntityMention, ObservationV1
+from app.modules.evaluation.release_freeze import ReleaseFreezeError
+from app.modules.graph.intelligence import pipeline as pipeline_module
 from app.modules.graph.intelligence.models import CandidateStatus
-from app.modules.graph.intelligence.pipeline import build_case_correlation_submission
+from app.modules.graph.intelligence.pipeline import (
+    build_case_correlation_submission,
+    run_case_correlation_pass,
+)
 
 _EXTRACTOR = Extractor(name="fixture", version="1.0.0", config_hash="h", model_version="n/a")
 
@@ -160,3 +166,28 @@ def test_submission_status_is_needs_review_never_a_verified_status() -> None:
     # `CandidateStatus`/`PropositionStatus` both deliberately have no
     # "verified"/"merged"/"identity_confirmed" member at all.
     assert "verified" not in {status.value for status in CandidateStatus}
+
+
+async def test_disabled_release_configuration_fails_before_case_data_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retrieval_called = False
+
+    async def _fetch(*_args: object, **_kwargs: object) -> list[ObservationV1]:
+        nonlocal retrieval_called
+        retrieval_called = True
+        return []
+
+    monkeypatch.setattr(pipeline_module, "fetch_case_observations", _fetch)
+    monkeypatch.setattr(
+        pipeline_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            release_configuration_id="tracex-release-v1-baseline",
+            release_configuration_disabled=True,
+        ),
+    )
+
+    with pytest.raises(ReleaseFreezeError, match="disabled"):
+        await run_case_correlation_pass(object(), object(), uuid4())  # type: ignore[arg-type]
+    assert retrieval_called is False

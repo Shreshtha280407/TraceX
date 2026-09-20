@@ -209,6 +209,16 @@ class Settings(BaseSettings):
     graph_projector_max_backoff_seconds: float = Field(default=60.0, gt=0)
     graph_projector_max_consecutive_failures: int = Field(default=5, ge=1)
 
+    # --- Phase 7 Gate C release configuration ---
+    # This ID must resolve inside the committed, hash-bound Gate C freeze.
+    # Arbitrary model names or local paths are never accepted here.  The
+    # independent disable switch is the safe operational rollback: when set,
+    # correlation generation fails closed before retrieving case data.
+    release_configuration_id: str = Field(
+        default="tracex-release-v1-baseline", pattern=r"^[a-z0-9_.\-]{1,120}$"
+    )
+    release_configuration_disabled: bool = Field(default=False)
+
     # --- Media detection/OCR (Phase 2 closeout -- Nipun) ---
     # Typed, explicit local-model configuration -- see
     # docs/architecture/media-processing-worker.md's "Model asset bootstrap".

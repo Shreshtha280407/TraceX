@@ -1221,3 +1221,24 @@ this task. No Part 4 candidate is selected; Gate C decides after Parts
   found for these three, or a MacBook/alternate-network pre-flight
   resolves access -- or transparently records the asset as `blocked`,
   never a fabricated pass.
+
+## Phase 7 Gate C + Aditya Part 5 (2026-09-20)
+
+- [x] Synced `aditya` with `origin/main`/`origin/aditya`; all three started at
+  `e7a5b11`, so no rebase or conflict resolution was necessary.
+- [x] Added the hash-bound `gate-b-v1` release freeze with explicit governance
+  for all 14 datasets and 18 candidates, three fully approved result chains,
+  one frozen unavailable result, and retained/deferred VIRAT/AMI evidence.
+- [x] Kept `phase5_preliminary_rules_v1` as the only enabled release execution
+  component; no model artifact loading and no final relationship ML choice.
+- [x] Added fail-closed configuration/hash enforcement before correlation case
+  data retrieval plus the explicit `RELEASE_CONFIGURATION_DISABLED` rollback.
+- [x] Bounded graph/correlation/candidate/review/hypothesis API reads and
+  extended cross-case-before-lookup coverage.
+- [x] Added safe capability readiness, bounded retry telemetry/exhaustion, and
+  bounded correlation-outbox backoff/termination.
+- [x] Focused Gate C/security/graph/worker/health tests: 299 passed. Static
+  results and exact final commands are recorded in `docs/qa/test-results.md`.
+- [ ] Shreshtha Part 6: run the separate relationship-scoring ML comparison,
+  calibration, and final selection/freeze. Deferred datasets remain deferred
+  until a new versioned evaluation cycle.

@@ -95,7 +95,7 @@ class _FakeIntegrationRepository:
         self.case_id = case_id
         self.correlation, self.candidate, self.event = _records(case_id)
 
-    async def list_correlations(self, case_id):
+    async def list_correlations(self, case_id, *, limit=None):
         return [self.correlation] if case_id == self.case_id else []
 
     async def get_correlation(self, case_id, correlation_id):
@@ -108,7 +108,7 @@ class _FakeIntegrationRepository:
             return self.event
         return None
 
-    async def list_candidates(self, case_id):
+    async def list_candidates(self, case_id, *, limit=None):
         return [self.candidate] if case_id == self.case_id else []
 
 

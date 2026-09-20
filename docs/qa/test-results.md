@@ -4256,5 +4256,93 @@ uv sync --all-groups                                                            
 also run once here because the `pyproject.toml` mypy override change is
 shared, repo-wide configuration -- confirmed zero regressions elsewhere.
 The full repository test suite and `docker compose config` were not
-re-run in this task, per its own scope rules; Gate C owns final
-repository-wide verification.
+re-run in this task, per its own scope rules; the later release process owns
+any repository-wide/Docker verification not covered by Gate C's focused gate.
+
+## 2026-09-20 — Phase 7 Gate C + Aditya Part 5
+
+### Synchronization
+
+- Started on `aditya` with a clean tree at `e7a5b11`.
+- The first sandboxed `git fetch origin --prune` was denied because `.git`
+  was mounted read-only. The approved retry completed successfully.
+- `git rev-list --left-right --count origin/aditya...HEAD` returned `0 0`.
+- `git rev-list --left-right --count origin/main...HEAD` returned `0 0`.
+  No rebase or conflict resolution was required.
+
+### Focused verification
+
+```text
+UV_CACHE_DIR=/tmp/tracex-uv-cache uv run --no-sync pytest -q \
+  tests/unit/test_config.py \
+  tests/unit/evaluation \
+  tests/unit/access_control/test_policy.py \
+  tests/unit/access_control/test_case_access_audit.py \
+  tests/unit/access_control/test_retry.py \
+  tests/security/access_control tests/security/graph \
+  tests/unit/graph/test_graph_api.py \
+  tests/unit/graph/test_queries.py \
+  tests/unit/graph/test_intelligence_pipeline.py \
+  tests/unit/graph/test_intelligence_vector_store.py \
+  tests/unit/graph/test_integration_api.py \
+  tests/unit/graph/test_review_service.py \
+  tests/unit/graph/test_worker_loop.py \
+  tests/unit/graph/test_intelligence_worker_loop.py \
+  tests/unit/test_api_health.py
+-> 299 passed in 35.57s
+
+UV_CACHE_DIR=/tmp/tracex-uv-cache uv run --no-sync ruff format --check \
+  app/api/health.py app/core/config.py \
+  app/modules/access_control/retry.py \
+  app/modules/evaluation/release_freeze.py app/modules/graph/api.py \
+  app/modules/graph/hypothesis_repository.py \
+  app/modules/graph/integration_repository.py \
+  app/modules/graph/intelligence/pipeline.py \
+  app/modules/graph/intelligence_worker.py \
+  app/modules/graph/review_repository.py \
+  tests/unit/access_control/test_retry.py \
+  tests/unit/evaluation/test_release_freeze.py \
+  tests/unit/graph/test_graph_api.py \
+  tests/unit/graph/test_integration_api.py \
+  tests/unit/graph/test_intelligence_pipeline.py \
+  tests/unit/graph/test_intelligence_worker_loop.py \
+  tests/unit/test_api_health.py tests/unit/test_config.py
+-> 18 files already formatted
+
+UV_CACHE_DIR=/tmp/tracex-uv-cache uv run --no-sync ruff check \
+  app/api/health.py app/core/config.py \
+  app/modules/access_control/retry.py \
+  app/modules/evaluation/release_freeze.py app/modules/graph/api.py \
+  app/modules/graph/hypothesis_repository.py \
+  app/modules/graph/integration_repository.py \
+  app/modules/graph/intelligence/pipeline.py \
+  app/modules/graph/intelligence_worker.py \
+  app/modules/graph/review_repository.py \
+  tests/unit/access_control/test_retry.py \
+  tests/unit/evaluation/test_release_freeze.py \
+  tests/unit/graph/test_graph_api.py \
+  tests/unit/graph/test_integration_api.py \
+  tests/unit/graph/test_intelligence_pipeline.py \
+  tests/unit/graph/test_intelligence_worker_loop.py \
+  tests/unit/test_api_health.py tests/unit/test_config.py
+-> All checks passed
+
+UV_CACHE_DIR=/tmp/tracex-uv-cache uv run --no-sync mypy app
+-> Success: no issues found in 221 source files
+
+jq empty configs/benchmarks/release-freeze.v1.json
+-> exit 0
+
+git diff --check
+-> exit 0, no output
+```
+
+An earlier format/check pass found one unformatted file and four E501 lines
+in `release_freeze.py`; `uv run --no-sync ruff format` corrected them, and
+the successful final commands above are the post-fix results. An earlier
+combined focused test run passed 60 tests in 30.04s. Two intermediate focused
+matrices passed 294 tests in 35.60s and 35.74s before the final 299-test
+matrix above.
+
+No Docker command, new dataset/model acquisition, full repository test suite,
+training, or final relationship-scoring comparison was run.
