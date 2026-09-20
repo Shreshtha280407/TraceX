@@ -341,7 +341,33 @@ def test_real_diarization_engine_is_unavailable_without_pyannote_installed(tmp_p
         )
 
 
-def test_real_language_id_engine_is_unavailable_without_fasttext_installed(tmp_path: Path) -> None:
+def test_deterministic_diarization_fallback_never_dispatches_to_pyannote(tmp_path: Path) -> None:
+    """`deterministic-diarization-fallback` has no local raw-audio model --
+    it must never be routed through `_build_real_diarization_engine`
+    (pyannote's own wiring), even though both candidates share the
+    `diarization` task. Regression test for a real Gate B (2026-09-20,
+    Sarthak) defect: `_run_diarization` previously ignored `candidate_id`
+    entirely and always built the pyannote engine, so selecting the
+    deterministic fallback candidate silently ran pyannote's local-use/
+    model-loading checks and reported its unrelated failure message.
+    """
+    artifact = VerifiedModelArtifact(model_name="x", model_version="1", model_sha256="a" * 64)
+    with pytest.raises(
+        audio_social_benchmark_adapters.BenchmarkArtifactUnavailableError,
+        match="diarization-import path",
+    ):
+        audio_social_benchmark._build_deterministic_diarization_fallback_engine(artifact=artifact)
+
+
+def test_real_language_id_engine_is_unavailable_without_fasttext_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forces `fasttext`'s absence via `sys.modules[name] = None` (which makes
+    `import fasttext` raise `ImportError` regardless of whether the package is
+    actually installed) so this stays a real regression test even on a host
+    with the `audio-social-benchmark` extra installed.
+    """
+    monkeypatch.setitem(sys.modules, "fasttext", None)
     artifact = VerifiedModelArtifact(model_name="x", model_version="1", model_sha256="a" * 64)
     with pytest.raises(
         audio_social_benchmark_adapters.BenchmarkArtifactUnavailableError, match="fasttext"
@@ -357,12 +383,15 @@ def test_real_language_id_engine_is_unavailable_without_its_transcription_stage(
     """`fasttext-lid176` classifies text, not audio -- this harness chains a
     `faster_whisper` transcription stage in front of it (see
     `_build_real_language_id_engine`'s docstring). With `fasttext` faked as
-    importable but `faster_whisper` genuinely absent, the function must still
-    report `faster_whisper` as the missing piece, proving the second stage of
-    the check is real and not skipped once the first import succeeds.
+    importable and `faster_whisper` forced absent (`sys.modules[name] = None`,
+    which raises `ImportError` regardless of whether the package is actually
+    installed), the function must still report `faster_whisper` as the
+    missing piece, proving the second stage of the check is real and not
+    skipped once the first import succeeds.
     """
     fake_fasttext = ModuleType("fasttext")
     monkeypatch.setitem(sys.modules, "fasttext", fake_fasttext)
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
     artifact = VerifiedModelArtifact(model_name="x", model_version="1", model_sha256="a" * 64)
     with pytest.raises(
         audio_social_benchmark_adapters.BenchmarkArtifactUnavailableError, match="faster_whisper"
@@ -488,7 +517,17 @@ def test_language_id_result_never_leaks_transcript_text_or_local_paths(
     assert stage_weight_bytes.hex() not in serialized
 
 
-def test_real_vad_engine_reports_unavailable_and_never_crashes(tmp_path: Path) -> None:
+def test_real_vad_engine_reports_unavailable_and_never_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises the `ImportError` branch of `_build_real_vad_engine`.
+
+    Forces `torch`'s absence via `sys.modules["torch"] = None` (which raises
+    `ImportError` regardless of whether the package is actually installed) so
+    this stays a real regression test even on a host with the
+    `audio-social-benchmark` extra installed.
+    """
+    monkeypatch.setitem(sys.modules, "torch", None)
     artifact = VerifiedModelArtifact(model_name="x", model_version="1", model_sha256="a" * 64)
     with pytest.raises(
         audio_social_benchmark_adapters.BenchmarkArtifactUnavailableError, match="torch"
@@ -503,7 +542,7 @@ _SILERO_WEIGHT_SHA256 = hashlib.sha256(_SILERO_WEIGHT_BYTES).hexdigest()
 
 
 def _stage_silero_snapshot(model_cache_root: Path) -> None:
-    weight_path = model_cache_root / "silero-vad" / "files" / "silero_vad.jit"
+    weight_path = model_cache_root / "silero-vad" / "src" / "silero_vad" / "data" / "silero_vad.jit"
     weight_path.parent.mkdir(parents=True)
     weight_path.write_bytes(_SILERO_WEIGHT_BYTES)
 

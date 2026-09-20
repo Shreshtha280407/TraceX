@@ -1206,12 +1206,54 @@ paths under `TRACEX_MODEL_CACHE_ROOT` that Aditya stages manually — see
 "MacBook Gate B pre-flight" below for exactly what to stage, where, and
 how each artifact's SHA-256 is recorded and verified.
 
-### MacBook Gate B pre-flight (Aditya)
+### Gate B execution status (2026-09-20)
 
-This benchmark capability is built and unit-tested, but **no real
-dataset, model, or benchmark result exists yet** (except one genuine
-local run against a synthetic, not real, directory noted above). Follow
-these steps in order:
+Gate B ran directly on Shreshtha's laptop (no separate MacBook available).
+Real host profile: Arch Linux, kernel 7.2.4-arch1-2, x86_64, Intel Core
+i5-13420H (12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via `uv`); no GPU
+(confirmed via `torch.cuda.is_available()` returning `False` and
+`nvidia-smi` reporting no driver — `torch==2.14.0+cu130` was installed
+because that is the pinned resolved wheel, not because a GPU was used).
+`ami_meeting_corpus` + `silero-vad-v6` produced a real, `succeeded` VAD
+result against one real, fixed 20-utterance subset from one real AMI
+meeting, benchmarked with a real, offline-staged `snakers4/silero-vad`
+snapshot — all outside Git under `$HOME/tracex-gateb-artifacts/sarthak`.
+`ami_meeting_corpus` + `deterministic-diarization-fallback` produced a
+real, correctly-attributed `unavailable` result (no local raw-audio
+speaker-segmentation model exists in this phase, by design).
+`pyannote-community-local` remains genuinely blocked (licence/conditional
+status untouched). `common_voice_indic` and `vast_social_text`/
+`vast_2014_mixed_records` remain legitimately deferred (see
+`docs/qa/known-limitations.md`). Exact source URLs, hashes, commands, and
+measured metrics are in `docs/qa/test-data.md` and
+`docs/qa/test-results.md`'s dated Gate B sections — not repeated here.
+
+A real, narrow defect in this runbook's own pre-flight checklist below
+was found and fixed during Gate B: step 4's `shasum -a 256
+$TRACEX_MODEL_CACHE_ROOT/silero-vad/files/silero_vad.jit` path assumed an
+outdated `snakers4/silero-vad` repository layout. A real clone (commit
+`60b7ffa2`, 2026-09-17) confirms the actual current path is
+`$TRACEX_MODEL_CACHE_ROOT/silero-vad/src/silero_vad/data/silero_vad.jit`
+— `_SILERO_VAD_WEIGHT_RELATIVE_PATH` in `audio_social_benchmark.py` and
+this runbook's own step 4 below were both corrected to match.
+
+If you repeat this on a fresh checkout, follow the same steps as the
+"Original MacBook pre-flight checklist" below for `common_voice_indic`/
+`vast_social_text`/`vast_2014_mixed_records`/`pyannote-community-local`
+specifically (they still need an accessible real source or an accepted
+local-use agreement); `ami_meeting_corpus`'s and `silero-vad-v6`'s
+licences are already resolved and recorded.
+
+### Original MacBook Gate B pre-flight checklist (historical, retained for `common_voice_indic`/`vast_social_text`/`vast_2014_mixed_records`/`pyannote-community-local`)
+
+This checklist was written before the 2026-09-20 Gate B execution above.
+`ami_meeting_corpus`/`silero-vad-v6`/`deterministic-diarization-fallback`
+no longer need it — their licence/source status is already resolved and
+recorded (or, for the deterministic fallback, correctly reports
+`unavailable` by design, needing no licence at all). Retain it as the
+safe procedure for `common_voice_indic`/`vast_social_text`/
+`vast_2014_mixed_records`/`pyannote-community-local` specifically, or for
+a repeat run on a different machine. Follow these steps in order:
 
 1. **Fetch and check out the exact pushed `sarthak` commit.** `git fetch
    && git status --short && git branch --show-current && git log
@@ -1246,11 +1288,12 @@ these steps in order:
    `hubconf.py` at its root — the same layout `git clone` produces).
    Record that exact revision/tag as the `--model-version` you pass to
    the CLI. Compute `shasum -a 256
-   $TRACEX_MODEL_CACHE_ROOT/silero-vad/files/silero_vad.jit` (adjust this
-   relative path if the real repository's layout differs from what this
-   session assumed — see `_build_real_vad_engine`'s docstring) and pass
-   it as `--model-sha256`; a mismatch against what's actually staged
-   blocks the run safely rather than loading unverified weights.
+   $TRACEX_MODEL_CACHE_ROOT/silero-vad/src/silero_vad/data/silero_vad.jit`
+   (confirmed against a real clone, commit `60b7ffa2`, during the
+   2026-09-20 Gate B execution above — this superseded an earlier,
+   incorrect `files/silero_vad.jit` assumption) and pass it as
+   `--model-sha256`; a mismatch against what's actually staged blocks the
+   run safely rather than loading unverified weights.
 5. **Stage fastText's `lid.176` and its required faster-whisper
    transcription stage, and record both as separate verified
    artifacts.** `fasttext-lid176` classifies text, not audio, so

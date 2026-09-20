@@ -1076,7 +1076,7 @@ decides after Parts 2-4 all have comparable results.
   never a fabricated pass. Gate C's own repository-wide re-verification
   of this branch is also still pending.
 
-## Phase 7 Part 4 — Sarthak audio and social/chat benchmark foundation and local-model governance: In progress
+## Phase 7 Part 4 — Sarthak audio and social/chat benchmark foundation and local-model governance: In progress (Gate B partially complete)
 
 Reproducible benchmark adapters, a safe CLI, and tests for the four
 datasets Part 1's frozen manifest assigns to Sarthak -- `common_voice_
@@ -1084,10 +1084,20 @@ indic` (ASR + language identification), `ami_meeting_corpus` (VAD +
 diarization mechanics only), `vast_social_text`/`vast_2014_mixed_records`
 (social/chat structured extraction) -- built and tested on Shreshtha's
 laptop against synthetic fixtures and fake engines. This part produces
-valid, reproducible benchmark *capability*, not a selected winner: no
-real dataset/model artifact was downloaded in this environment, and every
-real ASR/VAD/diarization candidate remains blocked by unresolved licence
-status or a `conditional` selection status.
+valid, reproducible benchmark *capability*, not a selected winner. Gate B
+(2026-09-20, run directly on Shreshtha's laptop) genuinely downloaded
+real AMI Meeting Corpus data, installed real torch/pyannote.audio/
+faster-whisper/fastText dependencies, and produced a real `SUCCEEDED` VAD
+benchmark result for `ami_meeting_corpus` + `silero-vad-v6`, plus a real,
+correctly-attributed `unavailable` result for `deterministic-diarization-
+fallback` -- see `docs/qa/test-data.md`/`docs/qa/test-results.md`'s dated
+Gate B sections. `common_voice_indic` (Mozilla's platform migration off
+Hugging Face) and `vast_social_text`/`vast_2014_mixed_records` (a broken
+TLS certificate chain on the official host) remain legitimately deferred
+-- not silently skipped. `pyannote-community-local` remains genuinely
+blocked by its own unresolved licence/conditional status, untouched by
+this task. No Part 4 candidate is selected; Gate C decides after Parts
+2-4 all have comparable results.
 
 - [x] `app/modules/communication_processing/{audio_social_benchmark_
   metrics,audio_social_benchmark_validation,audio_social_benchmark_
@@ -1175,15 +1185,39 @@ status or a `conditional` selection status.
   known-limitations}.md`, `docs/runbooks/local-development.md` updated
   additively, including a full MacBook Gate B validation handoff runbook
   section for Aditya.
-- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
-  No Common Voice Indic, AMI Meeting Corpus, or VAST data was downloaded
-  on Shreshtha's laptop (per this task's own rule); no faster-whisper/
-  pyannote.audio/fastText/torch installation was verified; every test in
-  this phase runs against synthetic fixtures and fake engines only
-  (except the one genuine local run against a synthetic, not real,
-  directory noted above). This part is not complete until Aditya pulls
-  this exact branch on his Apple-Silicon MacBook, resolves each
-  artifact's licence/source status, runs the real benchmark CLI against
-  real local data, and reports safe aggregate results back -- or
-  transparently records any unavailable asset as `blocked`, never a
-  fabricated pass.
+- [x] **Gate B (2026-09-20): real `ami_meeting_corpus` data downloaded and
+  benchmarked.** A real AMI Meeting Corpus test-split parquet shard
+  (`edinburghcstr/ami`, CC BY 4.0, no account/gate) was downloaded, and a
+  real, fixed 20-utterance subset from one real meeting was extracted and
+  benchmarked. `ami_meeting_corpus` and `silero-vad-v6` moved from
+  `pending_verification` to `verified_permissive` after reading their
+  real governing licences (CC BY 4.0; MIT) directly.
+- [x] `silero-vad-v6` + `ami_meeting_corpus`: a real, offline-staged
+  `snakers4/silero-vad` snapshot produced a genuine `succeeded`
+  `BenchmarkRunV1` (recall 0.224, precision 1.0, F1 0.366, all CPU-only,
+  no fabricated GPU claim) -- see `docs/qa/test-results.md`.
+- [x] **Two real defects found and fixed while exercising this Part's
+  real-engine wiring for the first time**: Silero VAD's pinned weight
+  sub-path assumed an outdated upstream repository layout; and
+  `_run_diarization` never branched on `candidate_id`, so
+  `deterministic-diarization-fallback` was silently routed through
+  pyannote's own wiring. Both fixed with regression tests -- see
+  `docs/qa/known-limitations.md`'s Gate B section.
+- [x] Three pre-existing unit tests' `ImportError`-branch assumptions
+  (torch/fasttext/faster_whisper "never installed") were fixed to force
+  each module's absence explicitly, so they remain real regression
+  coverage now that the `audio-social-benchmark` extra is genuinely
+  installed in this environment.
+- [ ] **`common_voice_indic` and `vast_social_text`/
+  `vast_2014_mixed_records` remain genuinely deferred, not fabricated.**
+  Common Voice relocated off Hugging Face to a separate "Mozilla Data
+  Collective" account platform; VAST Challenge's official host presents a
+  broken TLS certificate chain. `faster-whisper-small/medium`,
+  `fasttext-lid176`, and the social-extraction candidate therefore have
+  no real accessible dataset to benchmark against in this environment.
+  `pyannote-community-local` remains genuinely blocked by its own
+  unresolved licence/conditional status, untouched by this task. This
+  part is not universally complete until an accessible real source is
+  found for these three, or a MacBook/alternate-network pre-flight
+  resolves access -- or transparently records the asset as `blocked`,
+  never a fabricated pass.

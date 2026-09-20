@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 from uuid import uuid4
 
 from app.modules.communication_processing.audio_social_benchmark_adapters import (
@@ -101,11 +102,12 @@ class VerifiedModelArtifact:
 #: subdirectory of `TRACEX_MODEL_CACHE_ROOT` -- never fetched by this code.
 _SILERO_VAD_SNAPSHOT_SUBDIR = "silero-vad"
 #: The snapshot's own pinned model-weight file, hashed against
-#: `VerifiedModelArtifact.model_sha256` before anything is loaded. Best
-#: effort: mirrors the real `snakers4/silero-vad` repository's published
-#: layout, but this session cannot install/inspect it directly -- adjust
-#: during MacBook pre-flight if the staged snapshot's real layout differs.
-_SILERO_VAD_WEIGHT_RELATIVE_PATH = "files/silero_vad.jit"
+#: `VerifiedModelArtifact.model_sha256` before anything is loaded. Confirmed
+#: against a real `snakers4/silero-vad` clone (commit `60b7ffa2`, 2026-09-17)
+#: during Sarthak's Gate B: `hubconf.py`'s `silero_vad()` loads
+#: `src/silero_vad/data/silero_vad.jit`, not the older `files/silero_vad.jit`
+#: layout this constant originally assumed.
+_SILERO_VAD_WEIGHT_RELATIVE_PATH = "src/silero_vad/data/silero_vad.jit"
 #: fastText's own model file, staged directly under the model cache root.
 _FASTTEXT_LID_MODEL_RELATIVE_PATH = "lid.176.ftz"
 #: The faster-whisper transcription-stage model directory `fasttext-lid176`
@@ -177,7 +179,7 @@ def _build_real_asr_engine(
     result. See `docs/runbooks/local-development.md`.
     """
     try:
-        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+        from faster_whisper import WhisperModel
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "faster_whisper is not installed in this environment -- run the "
@@ -252,7 +254,7 @@ def _build_real_vad_engine(*, model_cache_root: Path, artifact: VerifiedModelArt
     `docs/runbooks/local-development.md`.
     """
     try:
-        import torch  # type: ignore[import-not-found]
+        import torch
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "torch is not installed in this environment -- run the MacBook "
@@ -348,7 +350,7 @@ def _build_real_diarization_engine(
     actually-installed version's API.
     """
     try:
-        from pyannote.audio import Pipeline  # type: ignore[import-not-found]
+        from pyannote.audio import Pipeline
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "pyannote.audio is not installed in this environment -- run the "
@@ -397,6 +399,34 @@ def _build_real_diarization_engine(
     return _RealDiarizationEngine()
 
 
+def _build_deterministic_diarization_fallback_engine(
+    *,
+    artifact: VerifiedModelArtifact,  # noqa: ARG001 - kept for a uniform call signature
+) -> NoReturn:
+    """`deterministic-diarization-fallback` maps to this project's own,
+    already-shipped diarization-import path -- see
+    `app/modules/communication_processing/audio/diarization_adapter.py`'s
+    `UnavailableDiarizationAdapter`, "the only production `DiarizationAdapter`
+    in this phase: always defers. No local diarization model is bundled,
+    cached, or auto-downloaded, per CLAUDE.md's Phase 1 non-goals". That
+    adapter only ever imports externally-supplied speaker turns
+    (`audio/diarization_import.py`); it never derives them from raw audio.
+    A from-audio diarization benchmark of this candidate is therefore
+    expected to be unavailable by design -- this always raises, so a
+    caller never gets pyannote's unrelated local-use/model-loading gate
+    (from `_build_real_diarization_engine`) mislabelled as this
+    candidate's own result.
+    """
+    raise BenchmarkArtifactUnavailableError(
+        "'deterministic-diarization-fallback' has no local raw-audio "
+        "speaker-segmentation model in this phase -- it only imports "
+        "externally-supplied speaker turns via the existing "
+        "diarization-import path (UnavailableDiarizationAdapter in "
+        "app/modules/communication_processing/audio/diarization_adapter.py); "
+        "a from-audio benchmark of this candidate is unavailable by design"
+    )
+
+
 def _build_real_language_id_engine(
     *,
     model_cache_root: Path,
@@ -432,7 +462,7 @@ def _build_real_language_id_engine(
     leaves this function. See `docs/runbooks/local-development.md`.
     """
     try:
-        import fasttext  # type: ignore[import-not-found]
+        import fasttext
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "fasttext is not installed in this environment -- run the MacBook "
@@ -910,11 +940,17 @@ def _run_diarization(
     if not samples:
         raise BenchmarkArtifactUnavailableError("benchmark manifest named zero usable samples")
     verified = _require_artifact(artifact, task_name="diarization")
-    if model_cache_root is None:
-        raise BenchmarkArtifactUnavailableError(
-            "a model cache root is required for a real diarization run"
+    engine: DiarizationEngine
+    if candidate.candidate_id == "deterministic-diarization-fallback":
+        engine = _build_deterministic_diarization_fallback_engine(artifact=verified)
+    else:
+        if model_cache_root is None:
+            raise BenchmarkArtifactUnavailableError(
+                "a model cache root is required for a real diarization run"
+            )
+        engine = _build_real_diarization_engine(
+            model_cache_root=model_cache_root, artifact=verified
         )
-    engine = _build_real_diarization_engine(model_cache_root=model_cache_root, artifact=verified)
     return run_diarization_benchmark(
         engine=engine,
         samples=samples,

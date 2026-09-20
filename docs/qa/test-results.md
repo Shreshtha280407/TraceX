@@ -4035,3 +4035,226 @@ module via `sys.modules` injection (never a real download or install),
 proving the offline/hash-verification *logic* without needing the real
 libraries present. Real verification against actually-staged artifacts
 is still Aditya's MacBook Gate B pre-flight.
+
+## 2026-09-20 — Gate B real Sarthak benchmarks
+
+These measurements were made on the currently checked-out `sarthak`
+branch (rebased onto the latest `origin/main`, which by this point
+included Jasraj's and Gaurav's own real Gate B Parts 2/3 work), with all
+downloaded parquet shards, model snapshots, extracted audio, and result
+JSON outside Git under `$HOME/tracex-gateb-artifacts/sarthak`. Real host
+profile: Arch Linux, kernel 7.2.4-arch1-2, x86_64, Intel Core i5-13420H
+(12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via `uv`); `torch.cuda.
+is_available()` returned `False` and `nvidia-smi` reported no driver --
+genuinely CPU-only, despite the resolved `torch==2.14.0+cu130` wheel
+(that build tag reflects the pinned resolution, not GPU usage).
+
+**Dependency install**: `uv sync --extra audio-social-benchmark` resolved
+and installed `torch==2.14.0+cu130`, `pyannote-audio==4.0.7` (plus
+`pyannote-core`/`pyannote-database`/`pyannote-metrics`/`pyannote-pipeline`),
+`faster-whisper==1.2.1`, `fasttext`, and their transitive dependencies in
+47s.
+
+**Real dataset**: AMI Meeting Corpus `ihm` test-split shard
+`ihm/test-00000-of-00004.parquet` (241,989,739 bytes, SHA-256
+`d95920dccc6924c15215239461bf5d1152fe07c9c61add073bd12da26dd602e0`)
+downloaded from its official Hugging Face mirror `edinburghcstr/ami`
+(University of Edinburgh CSTR, CC BY 4.0, no account/gate) via
+`huggingface_hub.hf_hub_download`. A real, fixed 20-utterance subset
+(chronological, meeting `EN2002c`, speakers `MEE071`/`MEE073`/`FEO072`,
+~35.9s total real speech) was extracted, re-encoded from IEEE-float WAV
+to 16-bit PCM WAV (via `scipy.io.wavfile`, since Python's stdlib `wave`
+cannot read format-tag 3) with no other content change, and converted
+into this harness's own `benchmark_manifest.jsonl`/
+`diarization_manifest.jsonl` formats -- exact provenance and hashes in
+`docs/qa/test-data.md`.
+
+**Real model**: `snakers4/silero-vad` shallow-cloned at commit `60b7ffa2`
+(2026-09-17, MIT licence, fully public, no account/gate) into
+`$TRACEX_MODEL_CACHE_ROOT/silero-vad/` as an offline Torch Hub source
+snapshot. Pinned weight `src/silero_vad/data/silero_vad.jit`, SHA-256
+`e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720`.
+
+**Real regressions found and fixed during this task's own Gate B
+execution (all self-caught by actually running the real candidates for
+the first time -- previously this code could not be installed or
+exercised at all)**:
+
+1. **`_SILERO_VAD_WEIGHT_RELATIVE_PATH` assumed an outdated
+   `snakers4/silero-vad` repository layout** (`files/silero_vad.jit`) --
+   confirmed directly against a real clone that the current repository's
+   own `hubconf.py` loads `src/silero_vad/data/silero_vad.jit` instead.
+   Fixed in `audio_social_benchmark.py`; the corresponding test fixture
+   in `test_audio_social_benchmark_safety.py::_stage_silero_snapshot` was
+   updated to match.
+2. **`_run_diarization` never branched on `candidate.candidate_id` at
+   all** -- every diarization request, regardless of the candidate
+   named, called `_build_real_diarization_engine` (pyannote-only
+   wiring). Selecting `deterministic-diarization-fallback` therefore
+   silently ran pyannote's own local-use/model-loading checks and
+   reported pyannote's failure message under the wrong candidate's name.
+   Fixed with a new `_build_deterministic_diarization_fallback_engine`
+   (always reports a safe, correctly-attributed `BenchmarkArtifactUnavailableError`
+   naming the real architectural reason: no local raw-audio
+   speaker-segmentation model exists in this phase, per
+   `audio/diarization_adapter.py`'s `UnavailableDiarizationAdapter`) plus
+   a real dispatch branch, and a new regression test
+   (`test_deterministic_diarization_fallback_never_dispatches_to_pyannote`).
+3. **Three pre-existing unit tests' `ImportError`-branch assumptions
+   became stale once torch/fasttext/faster_whisper were genuinely
+   installed**: `test_real_vad_engine_reports_unavailable_and_never_
+   crashes`, `test_real_language_id_engine_is_unavailable_without_
+   fasttext_installed`, and `test_real_language_id_engine_is_unavailable_
+   without_its_transcription_stage` all failed once their target
+   `ImportError` branch became unreachable. Fixed by forcing each
+   module's absence via `monkeypatch.setitem(sys.modules, name, None)`
+   (raises `ImportError` on import regardless of real installation
+   state), keeping them real regression tests on any machine.
+4. **mypy's treatment of `faster_whisper`/`fasttext`/`torch`/
+   `pyannote.audio` changed once they were genuinely installed** --
+   previously-correct `# type: ignore[import-not-found]` comments became
+   `unused-ignore` errors (mypy now sees `import-untyped`, or for
+   `torch`/`pyannote` which ship `py.typed`, follows their real stubs and
+   surfaces internal typing issues). Fixed by adding `faster_whisper.*`/
+   `fasttext.*` to `pyproject.toml`'s existing plain
+   `ignore_missing_imports` override list, and `torch.*`/`pyannote.*` to
+   a `follow_imports = "skip"` override alongside the existing
+   `ultralytics.*` entry (identical precedent from Phase 7 Part 3's Gate
+   B); removed the four now-unused inline `# type: ignore` comments; and
+   added an explicit `engine: DiarizationEngine` annotation in
+   `_run_diarization` (mypy could not otherwise infer a sensible type
+   across a branch whose first arm calls a `NoReturn` function).
+
+**Real benchmark commands and results**:
+
+```bash
+export TRACEX_BENCHMARK_DATA_ROOT=$HOME/tracex-gateb-artifacts/sarthak/data
+export TRACEX_MODEL_CACHE_ROOT=$HOME/tracex-gateb-artifacts/sarthak/models
+export TRACEX_BENCHMARK_OUTPUT_ROOT=$HOME/tracex-gateb-artifacts/sarthak/results
+
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id silero-vad-v6 \
+  --model-name silero-vad --model-version "snakers4/silero-vad@60b7ffa2" \
+  --model-sha256 e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720
+```
+
+```json
+{
+  "schema_version": "v1",
+  "run_id": "ami_meeting_corpus-silero-vad-v6-0e439b039c19",
+  "candidate_id": "silero-vad-v6",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "vad",
+  "runtime_environment": "phase7-part4-audio-social-benchmark-cli-v1",
+  "hardware_profile": "cpu",
+  "artifact_sha256": "e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720",
+  "metrics": {
+    "voice_activity_detection_accuracy": 0.22388059701492538,
+    "vad_precision": 1.0,
+    "vad_recall": 0.22388059701492538,
+    "vad_f1": 0.36585365853658536,
+    "latency_ms": 4.53,
+    "ram_mb": 568.75,
+    "sample_count": 20,
+    "sample_success_count": 20,
+    "sample_failure_count": 0,
+    "latency_p50_ms": 4.53,
+    "latency_p95_ms": 35.45
+  },
+  "status": "succeeded",
+  "failure_reason_safe": null
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-silero-vad-v6-0e439b039c19.json`. Precision 1.0 means
+every frame Silero flagged as speech genuinely was speech; recall 0.224
+reflects this benchmark's own deliberately coarse ground truth (each
+whole utterance clip labelled as speech, including natural edge silence
+AMI's own segmentation leaves in some clips) -- see
+`docs/qa/known-limitations.md` for the full explanation. This is a real,
+honestly-measured number, not a target to optimize against in this
+phase.
+
+```bash
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id deterministic-diarization-fallback \
+  --model-name deterministic-diarization-fallback --model-version phase-4-baseline \
+  --model-sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+```json
+{
+  "run_id": "ami_meeting_corpus-deterministic-diarization-fallback-8fb827c6bfdb",
+  "candidate_id": "deterministic-diarization-fallback",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "diarization",
+  "hardware_profile": "unavailable",
+  "artifact_sha256": null,
+  "metrics": {},
+  "status": "unavailable",
+  "failure_reason_safe": "'deterministic-diarization-fallback' has no local raw-audio speaker-segmentation model in this phase -- it only imports externally-supplied speaker turns via the existing diarization-import path (UnavailableDiarizationAdapter in app/modules/communication_processing/audio/diarization_adapter.py); a from-audio benchmark of this candidate is unavailable by design"
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-deterministic-diarization-fallback-8fb827c6bfdb.json`.
+This is the *correct*, honest outcome (not a bug) after fix #2 above --
+this candidate was never meant to produce learned speaker segmentation.
+
+```bash
+uv run python -m app.modules.communication_processing.audio_social_benchmark_cli run \
+  --dataset-id ami_meeting_corpus --candidate-id pyannote-community-local \
+  --model-name pyannote-community-local --model-version unknown \
+  --model-sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+```json
+{
+  "run_id": "ami_meeting_corpus-pyannote-community-local-abedabe4efdb",
+  "candidate_id": "pyannote-community-local",
+  "dataset_id": "ami_meeting_corpus",
+  "task": "diarization",
+  "hardware_profile": "unavailable",
+  "artifact_sha256": null,
+  "metrics": {},
+  "status": "unavailable",
+  "failure_reason_safe": "candidate 'pyannote-community-local' licence status is 'pending_verification', not yet cleared for a real benchmark run"
+}
+```
+
+Result file: `$HOME/tracex-gateb-artifacts/sarthak/results/
+ami_meeting_corpus-pyannote-community-local-abedabe4efdb.json`. This
+task never attempted to access, download, or accept pyannote's own
+local-use terms -- an explicit team/Gate C adoption decision, not this
+task's to make.
+
+**`common_voice_indic`/`vast_social_text`/`vast_2014_mixed_records` --
+no real benchmark command was run.** No accessible real dataset exists
+for these in this environment (platform migration; broken TLS
+certificate chain, respectively) -- see `docs/qa/known-limitations.md`
+and `docs/qa/test-data.md` for the exact evidence. Running the CLI
+against an empty/placeholder directory to manufacture a cosmetic
+`unavailable` result was deliberately not done.
+
+**Focused verification (Sarthak-relevant scope)**:
+
+```text
+uv sync --extra audio-social-benchmark                                                    -> resolved 196 packages in 47s (real install used for every command below)
+uv run ruff format --check app/modules/communication_processing/ tests/unit/communication_processing/ pyproject.toml -> 67 files already formatted
+uv run ruff check app/modules/communication_processing/ tests/unit/communication_processing/                          -> All checks passed
+uv run mypy app/modules/communication_processing                                          -> Success: no issues found in 38 source files
+uv run mypy app                                                                            -> Success: no issues found in 220 source files
+uv run pytest -q tests/unit/communication_processing/                                     -> 496 passed
+uv run pytest -q tests/unit/evaluation/                                                    -> 42 passed
+uv run pytest -q tests/integration/communication_processing/test_audio_social_benchmark_smoke.py -> 1 passed, 2 skipped (common_voice_indic/vast_social_text absent; ami_meeting_corpus present, real subprocess CLI run exercised the fixed diarization dispatch)
+git diff --check                                                                           -> clean
+uv sync --all-groups                                                                       -> confirms torch/faster-whisper/pyannote.audio/fastText are NOT part of the baseline dependency set (uninstalls them, exactly as intended -- the same convention already documented for Gaurav's `video-benchmark` extra in Phase 7 Part 3's Gate B); run last, after every command above had already completed against the real `audio-social-benchmark` extra
+```
+
+`uv run mypy app` (full scope, not only the Sarthak-relevant path) was
+also run once here because the `pyproject.toml` mypy override change is
+shared, repo-wide configuration -- confirmed zero regressions elsewhere.
+The full repository test suite and `docker compose config` were not
+re-run in this task, per its own scope rules; Gate C owns final
+repository-wide verification.

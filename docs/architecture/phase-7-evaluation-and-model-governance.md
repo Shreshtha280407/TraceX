@@ -915,6 +915,79 @@ job (see `docs/runbooks/local-development.md`). No Part 4 candidate is
 selected; Gate C selects a winner only after Parts 2–4 all have
 comparable real results.
 
+### Gate B execution status (2026-09-20)
+
+Gate B ran directly on Shreshtha's laptop (no separate MacBook available)
+and genuinely downloaded real data, installed real dependencies, and
+produced real benchmark results for `ami_meeting_corpus`. Exact source
+URLs, commit/shard identifiers, artifact hashes, commands, host profile,
+and measured values are recorded in `docs/qa/test-data.md` and
+`docs/qa/test-results.md`'s dated Gate B sections — summarised here.
+**This is Gate B complete for the one dataset with genuinely available,
+licence-cleared real access; it is not universally complete for Part 4.**
+
+- **`ami_meeting_corpus` + `silero-vad-v6`: real, succeeded.** A real
+  AMI Meeting Corpus test-split parquet shard was downloaded from its
+  official Hugging Face mirror (`edinburghcstr/ami`, the corpus's own
+  host institution, University of Edinburgh CSTR — no account or gate
+  required), 20 real consecutive utterances from one real meeting were
+  extracted and converted into this harness's own manifest format, and
+  benchmarked against a real, offline-staged `snakers4/silero-vad`
+  snapshot (MIT). `ami_meeting_corpus` and `silero-vad-v6` both moved
+  from `pending_verification` to `verified_permissive` after reading the
+  real governing licences directly (AMI: CC BY 4.0; Silero VAD: MIT).
+- **`ami_meeting_corpus` + `deterministic-diarization-fallback`: real,
+  correctly `unavailable` by design.** This candidate has no local
+  raw-audio speaker-segmentation model in this phase (see
+  `app/modules/communication_processing/audio/diarization_adapter.py`'s
+  `UnavailableDiarizationAdapter`) — a real run against the same real
+  AMI subset correctly reports this, not a fabricated success.
+- **`ami_meeting_corpus` + `pyannote-community-local`: real, genuinely
+  blocked, untouched.** Its `license_status` stays `pending_verification`
+  and `selection_status` stays `conditional` — this task never attempted
+  to access or accept pyannote's own local-use terms, an adoption
+  decision reserved for an explicit team/Gate C call.
+- **`common_voice_indic`/`vast_social_text`/`vast_2014_mixed_records`:
+  legitimately deferred, not fabricated.** Common Voice relocated off
+  Hugging Face to a separate "Mozilla Data Collective" account platform
+  (effective October 2025, confirmed via the authenticated `HfApi()`
+  client — genuine 404s, not a login gate); the VAST Challenge's official
+  host presents a broken TLS certificate chain (confirmed via both
+  `WebFetch` and direct `curl -v`), and unverified third-party mirrors
+  were deliberately not used as a substitute data source. Neither
+  candidate pairing was run against an empty placeholder to manufacture a
+  cosmetic `unavailable` result — see `docs/qa/known-limitations.md`'s
+  Gate B section for the exact reasoning.
+- **Two real defects found and fixed** while actually exercising this
+  Part's real-engine wiring for the first time (previously written
+  best-effort, from documented API shape only, since torch/pyannote could
+  not be installed at all before this session): (1) Silero VAD's pinned
+  weight sub-path assumed an outdated `snakers4/silero-vad` repository
+  layout (`files/silero_vad.jit`) — the real, currently-cloned repository
+  stores it at `src/silero_vad/data/silero_vad.jit`; (2)
+  `_run_diarization` never branched on `candidate_id`, so selecting
+  `deterministic-diarization-fallback` silently ran pyannote's own wiring
+  and reported pyannote's failure message under the wrong candidate's
+  name. Both are fixed with regression tests. Full detail in
+  `docs/qa/known-limitations.md`'s and `docs/qa/test-results.md`'s dated
+  Gate B entries.
+- **Three pre-existing unit tests' `ImportError`-branch assumptions
+  became stale** the moment the real `audio-social-benchmark` extra was
+  installed (torch/fasttext/faster_whisper genuinely present for the
+  first time); fixed by forcing each module's absence via
+  `sys.modules[name] = None` rather than relying on the extra never being
+  installed, so the tests remain real regression coverage either way.
+- **Focused verification re-run after all fixes**: `ruff format --check`,
+  `ruff check`, `mypy`, and `pytest` scoped to `app/modules/
+  communication_processing`/`tests/unit/communication_processing`, plus
+  the Part 1 evaluation suite (`tests/unit/evaluation/`, 42 tests) — all
+  passing, exact counts in `docs/qa/test-results.md`. The full repository
+  suite was not re-run here; Gate C owns final repository-wide
+  verification.
+
+No Part 4 candidate is selected; Gate C selects a winner only after
+Parts 2–4 all have comparable real results.
+
 ## Verification (Part 1)
 
 `uv sync --all-groups`, `ruff format --check .`, `ruff check .`,
