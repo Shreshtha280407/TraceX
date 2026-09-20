@@ -549,50 +549,64 @@ remain:
 
 # Phase 7 Part 3 evaluation: visual benchmark foundation and local-model governance (Gaurav)
 
-All of the following are deliberate Part 3 scope boundaries, verified on
-Shreshtha's development laptop only -- real dataset/model validation is
-Aditya's MacBook Gate B pre-flight, not yet performed:
+The following record Part 3's state after **Gate B (2026-09-20, on
+Shreshtha's laptop)** actually downloaded real data, installed real
+dependencies, and ran real benchmarks for `virat_ground` -- see
+`docs/qa/test-data.md`/`docs/qa/test-results.md`'s dated Gate B sections
+for exact sources, hashes, commands, and measured values:
 
-- **No real VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour dataset was
-  downloaded, inspected, or benchmarked in this environment.** Every
-  detection/tracking/visual-text benchmark test in this phase runs
-  against small, invented, synthetic fixtures and fake engines (see
-  `docs/qa/test-data.md`'s Phase 7 Part 3 section); no real benchmark
-  result -- a real precision/recall/mAP, a real IDF1/MOTA, a real
-  character error rate -- exists anywhere in this phase's committed
-  artifacts.
-- **Every real Gaurav dataset and candidate is currently
-  `license_status: pending_verification`.** `require_license_cleared_
-  for_real_execution` blocks a `SUCCEEDED` result for all of them today
-  -- confirmed by a dedicated test
-  (`test_every_real_gaurav_dataset_and_candidate_is_currently_pending_
-  verification`). No Part 3 dataset/candidate combination can produce a
-  real completed benchmark until Aditya's MacBook pre-flight resolves and
-  records each one's actual licence status.
-- **No Ultralytics or PaddleOCR installation was attempted or verified.**
-  `ultralytics`/`paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
-  `[project.optional-dependencies] video-benchmark` group and resolved
-  into `uv.lock`, but never installed on this machine and never pulled in
-  by `uv sync --all-groups`. `visual_benchmark._build_real_detector_
-  engine`/`_build_real_visual_text_engine`'s real wiring is a best-effort
-  attempt written from each library's documented public API shape, not
-  verified against an actually-installed package -- it may need a small
-  adjustment once Aditya's MacBook pre-flight installs the pinned
-  versions and exercises the real API for the first time.
-- **Resolved: `_build_real_tracker_engine` now wires Ultralytics' own
-  bundled `BYTETracker`** (`ultralytics.trackers.byte_tracker.BYTETracker`,
-  the identical tracker `model.track(..., tracker='bytetrack.yaml')` uses
-  internally) against externally-supplied per-timestamp detections, lazily
-  imported inside this one function. No separate ByteTrack package or
-  model weight is needed -- `bytetrack.yaml` ships bundled inside the
+- **`virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` are real, genuinely
+  benchmarked, and licence-cleared.** Gate B read the actual VIRAT Video
+  Dataset Usage Agreement and Ultralytics' actual AGPL-3.0 licence
+  directly, downloaded one small real VIRAT clip (with its official
+  annotations) and two real YOLO11 weight files, and ran the real
+  `visual_benchmark_cli` against them -- producing genuine `SUCCEEDED`
+  detection (`yolo11n`/`yolo11s`) and tracking (`bytetrack`) results with
+  real precision/recall/mAP/IDF1/MOTA values, not synthetic fixtures.
+  `license_status` moved from `pending_verification` to
+  `verified_restricted_noncommercial` in both
+  `configs/benchmarks/dataset-manifest.v1.json` and
+  `model-candidates.v1.json` for exactly these four entries.
+- **`safe_unsafe_behaviour` and `ufpr_alpr`/`paddleocr-lightweight-
+  visual-text` remain `pending_verification`, legitimately deferred, not
+  silently skipped.** `safe_unsafe_behaviour`'s frozen manifest entry has
+  no pinned `source_reference` at all (`"pending_verification"`) to
+  benchmark against; `ufpr_alpr` requires a formal academic access-request
+  process this task did not attempt to bypass. `require_license_cleared_
+  for_real_execution` still blocks a `SUCCEEDED` result for both, and a
+  dedicated test documents exactly this split
+  (`test_every_real_gaurav_dataset_and_candidate_licence_status_is_
+  documented`).
+- **Ultralytics (with PaddleOCR/PaddlePaddle) was genuinely installed and
+  exercised for the first time during Gate B**, via `uv sync --extra
+  video-benchmark`. This surfaced and fixed real API-drift bugs no mock
+  could have caught: `ultralytics.utils.yaml_load` no longer exists in
+  `ultralytics==8.4.156` (replaced by `ultralytics.utils.YAML.load`),
+  `BYTETracker.__init__` no longer accepts a `frame_rate` argument at
+  all, `BYTETracker.update()` requires a real, numpy-indexable
+  `ultralytics.engine.results.Boxes` instance rather than a duck-typed
+  stand-in, and the `lap` package (needed by `BYTETracker` internally)
+  was missing from the `video-benchmark` extra and has been added. See
+  `docs/qa/test-results.md`'s dated Gate B entry for the full list,
+  including a `follow_imports = "skip"` mypy override this installation
+  also required (`ultralytics` ships a `py.typed` marker, so mypy's
+  behaviour otherwise differed between installed/uninstalled states) and
+  a repository-wide `tests/__init__.py` fix (`ultralytics` ships its own
+  colliding top-level `tests` package that shadowed this project's own
+  once installed).
+- **`_build_real_tracker_engine` wires Ultralytics' own bundled
+  `BYTETracker`** (`ultralytics.trackers.byte_tracker.BYTETracker`, the
+  identical tracker `model.track(..., tracker='bytetrack.yaml')` uses
+  internally) against externally-supplied per-timestamp detections,
+  lazily imported inside this one function. No separate ByteTrack package
+  or model weight is needed -- `bytetrack.yaml` ships bundled inside the
   `ultralytics` package itself, since ByteTrack's association step is a
-  Kalman-filter/Hungarian-matching algorithm, not a learned model. The
-  tracking metric/aggregation logic (`run_tracking_benchmark`) was already
-  fully implemented and tested against `FakeTrackerEngine`; the real-engine
-  construction glue degrades to a safe `BenchmarkArtifactUnavailableError`
-  -- never a crash -- whenever `ultralytics` is absent or its internal
-  `BYTETracker`/`bytetrack.yaml` API doesn't match this adapter's
-  best-effort wiring.
+  Kalman-filter/Hungarian-matching algorithm, not a learned model. Its
+  actual licence exposure is therefore `ultralytics`'s own AGPL-3.0, not
+  the separately-licensed upstream ifzhang/ByteTrack MIT repository. The
+  real-engine construction glue degrades to a safe
+  `BenchmarkArtifactUnavailableError` -- never a crash -- whenever
+  `ultralytics` is absent.
 - **HOTA is always `None`.** A correct HOTA requires a geometric-mean
   detection/association-accuracy sweep across multiple IoU/alpha
   thresholds; this harness deliberately reports `None` rather than ship
@@ -606,12 +620,17 @@ Aditya's MacBook Gate B pre-flight, not yet performed:
   thresholds.
 - **The local benchmark manifest formats
   (`benchmark_manifest.jsonl`/`tracking_manifest.jsonl`/
-  `visual_text_manifest.jsonl`) are invented by this task, not the real
-  VIRAT/UFPR-ALPR/Safe-Unsafe-Behaviour annotation formats.** A converter
-  from each real dataset's actual annotation schema into these minimal
-  JSON-Lines shapes is deferred to Aditya's MacBook pre-flight, since the
-  real annotation formats could not be verified in this environment
-  without downloading the datasets.
+  `visual_text_manifest.jsonl`) remain this task's own invented shapes,
+  not a real dataset's native annotation format.** Gate B did write and
+  exercise a real, working converter from VIRAT's actual
+  `objects.txt` annotation format (`object_id object_duration
+  currentframe bbox_left bbox_top bbox_width bbox_height object_type`,
+  confirmed directly from a real downloaded file) into these JSON-Lines
+  shapes for `virat_ground` specifically -- see
+  `docs/qa/test-data.md`'s dated Gate B section. No such converter exists
+  yet for UFPR-ALPR or Safe/Unsafe Behaviour's own real annotation
+  formats, since neither dataset was downloaded (both remain
+  legitimately deferred).
 - **`safe_unsafe_behaviour` has no behaviour-classification candidate.**
   The manifest's own `allowed_tasks` for it is "additional visual
   detection stress-testing" only; this harness benchmarks it with the
@@ -636,11 +655,13 @@ Aditya's MacBook Gate B pre-flight, not yet performed:
   library (databases, object storage, queues, `torch`/`tensorflow`/
   `sklearn`) remains forbidden in the benchmark harness too, and no
   production file's exemption changed at all.
-- **No live PaddleOCR/Ultralytics/GPU/MacBook/Docker validation was run
-  in this environment.** Every test in `tests/unit/media_processing/
-  test_visual_benchmark_*.py` runs with no live infra, no GPU, and no
-  downloaded dataset or model -- exactly as required by this task's own
-  rules. See `docs/runbooks/local-development.md`'s "MacBook Gate B
-  pre-flight" section for what Aditya's pre-flight must still verify
-  before this phase's benchmark capability can produce a real,
-  trustworthy result.
+- **Ultralytics was validated live during Gate B; PaddleOCR/GPU/Docker
+  were not.** Gate B genuinely installed and exercised `ultralytics`
+  against real YOLO11 weights and a real VIRAT clip (see above). No
+  PaddleOCR installation was exercised against any real image (`ufpr_alpr`
+  remains deferred), no GPU was available on the Gate B host (confirmed
+  via `nvidia-smi` reporting no driver, not assumed), and this task never
+  touched Docker. The committed unit test suite in `tests/unit/
+  media_processing/test_visual_benchmark_*.py` still runs entirely
+  against synthetic fixtures and fake engines, independent of what is or
+  isn't installed on any given machine.

@@ -95,17 +95,16 @@ class VerifiedModelArtifact:
 def _build_real_detector_engine(
     *, model_cache_root: Path, artifact: VerifiedModelArtifact, variant: str
 ) -> DetectorEngine:
-    """Best-effort real Ultralytics YOLO11 wiring.
+    """Real Ultralytics YOLO11 wiring, verified against `ultralytics==8.4.156`.
 
-    This session cannot install or exercise Ultralytics, so the exact API
-    called here is written from its documented public shape and may need a
-    small adjustment once Aditya's MacBook pre-flight confirms the
-    actually-installed version's API -- any mismatch degrades to a safe
-    `BenchmarkArtifactUnavailableError`, never a crash or a fabricated
+    Gate B installed `ultralytics` for real and exercised this path end to
+    end against real YOLO11n/YOLO11s weights and real VIRAT Ground frames
+    -- any mismatch on a different installed version still degrades to a
+    safe `BenchmarkArtifactUnavailableError`, never a crash or a fabricated
     result. See `docs/runbooks/local-development.md`.
     """
     try:
-        from ultralytics import YOLO  # type: ignore[import-not-found]
+        from ultralytics import YOLO
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "ultralytics is not installed in this environment -- run the MacBook "
@@ -157,7 +156,7 @@ def _build_real_detector_engine(
 
 
 def _build_real_tracker_engine(*, artifact: VerifiedModelArtifact) -> TrackerEngine:
-    """Best-effort real Ultralytics ByteTrack wiring.
+    """Real Ultralytics ByteTrack wiring, verified against `ultralytics==8.4.156`.
 
     Uses Ultralytics' own `BYTETracker` class directly -- the identical
     tracker `model.track(..., tracker='bytetrack.yaml')` uses internally
@@ -170,21 +169,22 @@ def _build_real_tracker_engine(*, artifact: VerifiedModelArtifact) -> TrackerEng
     is needed for ByteTrack specifically, since it is a Kalman-filter/
     Hungarian-matching association algorithm, not a learned model.
 
-    This session cannot install or exercise `ultralytics`, so the exact
-    internal API called here (`BYTETracker.update()`'s expected input
-    shape) is written from its documented/observed public shape and may
-    need a small adjustment once Aditya's MacBook pre-flight confirms the
-    actually-installed version's API -- any mismatch degrades to a safe
-    `BenchmarkArtifactUnavailableError`, never a crash or a fabricated
-    result. See `docs/runbooks/local-development.md`.
+    Gate B installed `ultralytics` for real and exercised this path end to
+    end. Its config-loading API changed between versions -- older releases
+    exposed a module-level `ultralytics.utils.yaml_load`, but
+    `ultralytics==8.4.156` replaced it with `ultralytics.utils.YAML.load`
+    (confirmed directly: `yaml_load` no longer exists on
+    `ultralytics.utils`). Any mismatch on a different installed version
+    still degrades to a safe `BenchmarkArtifactUnavailableError`, never a
+    crash or a fabricated result. See `docs/runbooks/local-development.md`.
     """
     try:
-        from ultralytics.trackers.byte_tracker import BYTETracker  # type: ignore[import-not-found]
-        from ultralytics.utils import (  # type: ignore[import-not-found]
+        from ultralytics.trackers.byte_tracker import BYTETracker
+        from ultralytics.utils import (
+            YAML,
             IterableSimpleNamespace,
-            yaml_load,
         )
-        from ultralytics.utils.checks import check_yaml  # type: ignore[import-not-found]
+        from ultralytics.utils.checks import check_yaml
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "ultralytics is not installed in this environment -- run the MacBook "
@@ -193,7 +193,7 @@ def _build_real_tracker_engine(*, artifact: VerifiedModelArtifact) -> TrackerEng
         ) from exc
 
     try:
-        tracker_config = IterableSimpleNamespace(**yaml_load(check_yaml("bytetrack.yaml")))
+        tracker_config = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
     except Exception as exc:  # noqa: BLE001 - any config-loading failure is a safe "unavailable"
         raise BenchmarkArtifactUnavailableError(
             "could not load Ultralytics' bundled bytetrack.yaml tracker configuration "
@@ -209,32 +209,33 @@ def _build_real_tracker_engine(*, artifact: VerifiedModelArtifact) -> TrackerEng
     )
 
     def _detections_as_boxes_like(detections: list[ObjectDetection], labels: list[str]) -> object:
-        """A minimal duck-typed stand-in for `ultralytics.engine.results.Boxes`.
+        """Builds a real `ultralytics.engine.results.Boxes` from our own `ObjectDetection`s.
 
-        `BYTETracker.update()` reads `.xywh`/`.xyxy`/`.conf`/`.cls` as
-        numpy arrays off its `results` argument -- constructed here
-        directly from our own `ObjectDetection`s rather than requiring a
-        real Ultralytics `Boxes` instance.
+        `BYTETracker.update()`'s `results` argument must support numpy-style
+        fancy indexing (`results[mask]`) -- confirmed directly by reading
+        `_split_detections`'s real source in `ultralytics==8.4.156` -- which
+        a plain duck-typed `SimpleNamespace` does not support. `Boxes` is
+        Ultralytics' own real, public class for exactly this shape:
+        `(N, 6)` columns `[x1, y1, x2, y2, confidence, class]` (confirmed
+        directly from its own docstring/properties).
         """
-        from types import SimpleNamespace
-
         import numpy as np
+        from ultralytics.engine.results import Boxes
 
-        xyxy = np.array(
-            [[d.box.x_min, d.box.y_min, d.box.x_max, d.box.y_max] for d in detections],
-            dtype=float,
-        )
-        xywh = np.column_stack(
+        rows = [
             [
-                (xyxy[:, 0] + xyxy[:, 2]) / 2.0,
-                (xyxy[:, 1] + xyxy[:, 3]) / 2.0,
-                xyxy[:, 2] - xyxy[:, 0],
-                xyxy[:, 3] - xyxy[:, 1],
+                d.box.x_min,
+                d.box.y_min,
+                d.box.x_max,
+                d.box.y_max,
+                d.confidence,
+                labels.index(d.label),
             ]
-        )
-        conf = np.array([d.confidence for d in detections], dtype=float)
-        cls = np.array([labels.index(d.label) for d in detections], dtype=float)
-        return SimpleNamespace(xyxy=xyxy, xywh=xywh, conf=conf, cls=cls)
+            for d in detections
+        ]
+        max_x = max((row[2] for row in rows), default=1.0)
+        max_y = max((row[3] for row in rows), default=1.0)
+        return Boxes(np.array(rows, dtype=float), orig_shape=(int(max_y) + 1, int(max_x) + 1))
 
     @dataclass
     class _AccumulatingTrack:
@@ -246,7 +247,11 @@ def _build_real_tracker_engine(*, artifact: VerifiedModelArtifact) -> TrackerEng
             self, detections_by_time_ms: Mapping[int, Sequence[ObjectDetection]]
         ) -> TrackerEngineResult:
             try:
-                tracker = BYTETracker(tracker_config, frame_rate=30)
+                # `ultralytics==8.4.156`'s `BYTETracker.__init__` takes only
+                # `args` -- confirmed directly by inspecting its real source;
+                # older versions additionally accepted `frame_rate`, which no
+                # longer exists as a parameter at all.
+                tracker = BYTETracker(tracker_config)
             except Exception as exc:  # noqa: BLE001 - construction failure is a safe "unavailable"
                 raise EngineError(
                     "execution_failure", "could not construct the ByteTrack tracker instance"
@@ -312,7 +317,7 @@ def _build_real_visual_text_engine(
 ) -> VisualTextEngine:
     """Best-effort real PaddleOCR wiring, applied to visual-text/plate crops."""
     try:
-        import paddleocr  # type: ignore[import-not-found]
+        import paddleocr
     except ImportError as exc:
         raise BenchmarkArtifactUnavailableError(
             "paddleocr is not installed in this environment -- run the MacBook "

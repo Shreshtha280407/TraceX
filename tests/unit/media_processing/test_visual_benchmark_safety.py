@@ -11,6 +11,7 @@ loaded from a real downloaded dataset or model.
 from __future__ import annotations
 
 import inspect
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -217,16 +218,51 @@ def test_verified_dataset_and_candidate_clear_the_gate() -> None:
     require_license_cleared_for_real_execution(dataset, candidate)  # must not raise
 
 
-def test_every_real_gaurav_dataset_and_candidate_is_currently_pending_verification() -> None:
-    """Documents today's actual state: no Part 3 combo can produce SUCCEEDED yet."""
+def test_every_real_gaurav_dataset_and_candidate_licence_status_is_documented() -> None:
+    """Documents today's actual state after Gate B's real verification.
+
+    `virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` are now genuinely
+    licence-cleared (Gate B read the real VIRAT Usage Agreement and the
+    real Ultralytics AGPL-3.0 licence directly). `safe_unsafe_behaviour`
+    and `ufpr_alpr` remain `pending_verification` -- both are legitimately
+    deferred (no pinned source for the former; an academic access-request
+    gate for the latter), not silently skipped.
+    """
     manifest = load_dataset_manifest()
     catalog = load_model_candidate_catalog()
-    for dataset_id in ALLOWED_DATASET_IDS:
+    cleared_datasets = {"virat_ground"}
+    still_pending_datasets = {"safe_unsafe_behaviour", "ufpr_alpr"}
+    assert cleared_datasets | still_pending_datasets == ALLOWED_DATASET_IDS
+    for dataset_id in cleared_datasets:
+        dataset = validate_dataset_id(manifest, dataset_id)
+        assert dataset.license_status != LicenseStatus.PENDING_VERIFICATION
+    for dataset_id in still_pending_datasets:
         dataset = validate_dataset_id(manifest, dataset_id)
         assert dataset.license_status == LicenseStatus.PENDING_VERIFICATION
-    for candidate_id in ALLOWED_CANDIDATE_IDS:
+
+    cleared_candidates = {"yolo11n", "yolo11s", "bytetrack"}
+    still_pending_candidates = {"paddleocr-lightweight-visual-text"}
+    assert cleared_candidates | still_pending_candidates == ALLOWED_CANDIDATE_IDS
+    for candidate_id in cleared_candidates:
+        candidate = validate_candidate_id(catalog, candidate_id)
+        assert candidate.license_status != LicenseStatus.PENDING_VERIFICATION
+    for candidate_id in still_pending_candidates:
         candidate = validate_candidate_id(catalog, candidate_id)
         assert candidate.license_status == LicenseStatus.PENDING_VERIFICATION
+
+
+def test_virat_ground_and_yolo_candidates_now_clear_the_licence_gate() -> None:
+    """The genuinely discovered, real-verified pair this Gate B run produced
+    actual `SUCCEEDED` results for -- confirmed by a real local CLI run
+    against a real downloaded clip during this task's own verification
+    (see `docs/qa/test-results.md`).
+    """
+    manifest = load_dataset_manifest()
+    catalog = load_model_candidate_catalog()
+    dataset = validate_dataset_id(manifest, "virat_ground")
+    for candidate_id in ("yolo11n", "yolo11s", "bytetrack"):
+        candidate = validate_candidate_id(catalog, candidate_id)
+        require_license_cleared_for_real_execution(dataset, candidate)  # must not raise
 
 
 # --- Artifact-hash requirement (frozen Part 1 BenchmarkRunV1 validator) --
@@ -337,9 +373,22 @@ def _artifact() -> visual_benchmark.VerifiedModelArtifact:
     )
 
 
+def _force_import_error(monkeypatch: pytest.MonkeyPatch, module_name: str) -> None:
+    """Forces `import <module_name>` to raise `ImportError`, even if the real
+    package is genuinely installed in this environment (as it is on a real
+    Gate B host that has run `uv sync --extra video-benchmark`). Setting a
+    `None` entry in `sys.modules` is documented CPython behaviour for
+    exactly this -- it does not require the package to be absent, so this
+    test's meaning does not depend on which packages happen to be installed
+    wherever it runs.
+    """
+    monkeypatch.setitem(sys.modules, module_name, None)
+
+
 def test_real_detector_engine_is_unavailable_without_ultralytics_installed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _force_import_error(monkeypatch, "ultralytics")
     with pytest.raises(
         visual_benchmark_adapters.BenchmarkArtifactUnavailableError, match="ultralytics"
     ):
@@ -348,12 +397,15 @@ def test_real_detector_engine_is_unavailable_without_ultralytics_installed(
         )
 
 
-def test_real_tracker_engine_is_unavailable_without_ultralytics_installed() -> None:
+def test_real_tracker_engine_is_unavailable_without_ultralytics_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The ByteTrack integration itself is complete -- see visual_benchmark.py's
     `_build_real_tracker_engine` -- this proves it degrades safely only
-    because `ultralytics` genuinely is not installed here, not because the
-    wiring was left unfinished.
+    because `ultralytics` is unavailable, not because the wiring was left
+    unfinished.
     """
+    _force_import_error(monkeypatch, "ultralytics")
     with pytest.raises(
         visual_benchmark_adapters.BenchmarkArtifactUnavailableError, match="ultralytics"
     ):
@@ -361,11 +413,53 @@ def test_real_tracker_engine_is_unavailable_without_ultralytics_installed() -> N
 
 
 def test_real_visual_text_engine_is_unavailable_without_paddleocr_installed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _force_import_error(monkeypatch, "paddleocr")
     with pytest.raises(
         visual_benchmark_adapters.BenchmarkArtifactUnavailableError, match="paddleocr"
     ):
         visual_benchmark._build_real_visual_text_engine(
             model_cache_root=tmp_path, artifact=_artifact()
         )
+
+
+# --- Real Ultralytics ByteTrack wiring: genuine Gate B regression coverage -
+#
+# These self-skip (never fabricate a pass) if `ultralytics` is not actually
+# installed -- exactly the "no live infra needed for the rest of this file"
+# convention this module's own docstring describes, extended here because
+# Gate B genuinely installed `ultralytics` and found two real API-drift bugs
+# a mock could not have caught: `ultralytics.utils.yaml_load` no longer
+# exists (replaced by `YAML.load`), and `BYTETracker.__init__` no longer
+# accepts a `frame_rate` keyword argument at all.
+
+
+def test_real_tracker_engine_builds_successfully_when_ultralytics_is_installed() -> None:
+    pytest.importorskip("ultralytics")
+    engine = visual_benchmark._build_real_tracker_engine(artifact=_artifact())
+    assert hasattr(engine, "track")
+    assert callable(engine.track)
+
+
+def test_real_tracker_engine_tracks_a_real_object_across_frames() -> None:
+    """Regression test for the real Gate B bugs this module's own git
+    history fixed: `YAML.load` replacing `yaml_load`, `BYTETracker`
+    dropping its `frame_rate` parameter, and needing a real
+    `ultralytics.engine.results.Boxes` instance (which supports numpy-style
+    indexing) rather than a plain `SimpleNamespace` duck-type.
+    """
+    pytest.importorskip("ultralytics")
+    from app.modules.media_processing.analysis.interfaces import ObjectDetection
+    from app.modules.media_processing.image.geometry import PixelBoundingBox
+
+    engine = visual_benchmark._build_real_tracker_engine(artifact=_artifact())
+    detection = ObjectDetection(
+        label="car",
+        confidence=0.9,
+        box=PixelBoundingBox(x_min=10.0, y_min=10.0, x_max=50.0, y_max=50.0),
+    )
+    detections_by_time_ms = {0: (detection,), 33: (detection,), 66: (detection,)}
+    result = engine.track(detections_by_time_ms)
+    assert len(result.tracks) >= 1
+    assert result.backend == "cpu"

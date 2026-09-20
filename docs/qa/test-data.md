@@ -476,9 +476,11 @@ and `5040563c22ae8d3a61dd905768d859cb6c3b8ba087f9296491382927d39a788e`.
 
 ## Phase 7 Part 3 — visual benchmark foundation fixtures (Gaurav)
 
-No real VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour data exists
-anywhere in this repository's tests -- none was downloaded onto this
-development machine, per this task's explicit rule:
+No real VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour data was used
+in this module's own unit tests -- every unit-test fixture below remains
+synthetic even after Gate B (see the dated Gate B section further down
+for the separate, real external data used only outside the committed
+test suite):
 
 - **Detection/tracking fixtures**: `tests/unit/media_processing/
   test_visual_benchmark_metrics.py`/`test_visual_benchmark_adapters.py`
@@ -498,18 +500,90 @@ development machine, per this task's explicit rule:
 - **Safety/CLI fixtures**: `tests/unit/media_processing/
   test_visual_benchmark_safety.py`/`test_visual_benchmark_cli.py` build
   synthetic `DatasetManifestEntryV1`/`ModelCandidateV1` records directly
-  (to exercise the licence-clearance gate against both a pending and a
-  cleared status, since every *real* Part 3 manifest/catalog entry is
-  currently `pending_verification`) and point every
-  `TRACEX_BENCHMARK_*` environment variable at a pytest `tmp_path`
-  directory -- never a developer's real environment.
+  to exercise the licence-clearance gate against both a pending and a
+  cleared status; two of these tests use the real, now-cleared
+  `virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` catalogue entries
+  directly (proving the real Gate B licence change), while the "still
+  blocked" tests use `safe_unsafe_behaviour`/`ufpr_alpr`, both still
+  genuinely `pending_verification`. Every `TRACEX_BENCHMARK_*`
+  environment variable in these unit tests still points at a pytest
+  `tmp_path` directory -- never a developer's real environment.
 - **Integration smoke fixtures**: `tests/integration/media_processing/
   test_visual_benchmark_smoke.py` self-skips (never fabricates a pass)
   unless `TRACEX_BENCHMARK_DATA_ROOT` is actually set and the relevant
-  dataset directory actually exists and is non-empty -- the expected
-  state on this development machine, since no real dataset was
-  downloaded here.
+  dataset directory actually exists and is non-empty. Run against the
+  real Gate B `$HOME/tracex-gateb-artifacts/gaurav/data` root during this
+  task's own verification, the detection and tracking smoke tests
+  genuinely passed against the real `virat_ground` clip described below;
+  the visual-text smoke test still self-skips, since no `ufpr_alpr` data
+  exists locally (deferred -- see below).
 
 No real surveillance footage, vehicle plate, face, person-identifying
 payload, model weight, or MacBook-local path appears anywhere in this
-module's tests.
+module's *committed* tests.
+
+## 2026-09-20 — Gate B external benchmark data (Gaurav)
+
+Gate B kept all source checkouts, derived crops/frames, model weights,
+caches, and result JSON files outside Git under
+`$HOME/tracex-gateb-artifacts/gaurav`. The repository contains only safe
+provenance and aggregate measurements (in `configs/benchmarks/` and
+below).
+
+- **VIRAT Ground**: official Kitware Data mirror, "VIRAT Video Dataset
+  Release 2.0" collection
+  (`https://data.kitware.com/#collection/56f56db28d777f753209ba9f/folder/56f57e748d777f753209bed6`,
+  confirmed `public: true` via the Girder API), governed by the VIRAT
+  Video Dataset Usage Agreement
+  (`https://viratdata.org/resources/VIRAT-Video-Data-Set-Protection-Agreement-1-4-11.pdf`,
+  read directly -- a genuine click-through "I Agree" protection agreement
+  requiring every individual with access to sign it; access for this run
+  was confirmed already accepted by the project owner before any
+  download). Selected exactly one small clip from the `videos_original`
+  folder: `VIRAT_S_000201_03_000640_000672.mp4` (item
+  `56f585f08d777f753209ca77`, 32,878,685 bytes / ~31.4 MiB), SHA-256
+  `1821ca07735092f13238418ef459759a8a2dcb962d6a59c4e74a3c2434564668`.
+  Its matching official annotation file from the `annotations` folder,
+  `VIRAT_S_000201_03_000640_000672.viratdata.objects.txt` (item
+  `56f57ea18d777f753209bf6c`), SHA-256
+  `61d29be09037d16bfba41be53ee84361c1882367cd2383204945470396d0bf38`,
+  contains real per-frame bounding boxes for two objects across the
+  clip's full 943 frames (one stationary car throughout, one person
+  appearing from frame ~600 onward). 19 frames were sampled at a fixed
+  stride (every 50th frame, 0 through 900) and decoded via `ffmpeg`; a
+  local `benchmark_manifest.jsonl`/`tracking_manifest.jsonl` pair was
+  built directly from the real annotation values (VIRAT's own
+  `left, top, width, height` box format converted to this harness's
+  `x1, y1, x2, y2`) -- no synthetic or invented ground truth.
+- **Ultralytics YOLO11n/YOLO11s**: official Ultralytics assets release
+  `v8.4.0` (confirmed via the installed `ultralytics==8.4.156` package's
+  own `get_github_assets()` call, not assumed), downloaded directly from
+  `https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt`
+  (5,613,764 bytes, SHA-256
+  `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`) and
+  `.../yolo11s.pt` (19,313,732 bytes, SHA-256
+  `85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5`).
+  The `ultralytics` package itself is AGPL-3.0, confirmed by reading
+  `https://raw.githubusercontent.com/ultralytics/ultralytics/main/LICENSE`
+  directly.
+- **ByteTrack**: no separate download -- the real, executed code path is
+  Ultralytics' own bundled `ultralytics.trackers.byte_tracker.BYTETracker`
+  (the same class `model.track(..., tracker='bytetrack.yaml')` uses
+  internally), governed by the same `ultralytics` package's AGPL-3.0
+  licence, not the separately-licensed upstream ifzhang/ByteTrack MIT
+  repository.
+- **UFPR-ALPR**: deferred/unavailable. UFPR-ALPR requires a formal
+  academic access-request process before any download; no evidence of
+  prior access exists on this machine, and per this task's own rule
+  ("do not attempt to bypass the academic-request process"), no file was
+  downloaded and no substitute dataset was used.
+- **Safe/Unsafe Behaviour**: deferred/unavailable. The frozen
+  `dataset-manifest.v1.json` entry's own `source_reference` is literally
+  `"pending_verification"` -- no source URL is pinned at all -- so no
+  source was invented or substituted.
+
+All source access and downloads in this Gate B record occurred on
+2026-09-20. Real host profile: Arch Linux, kernel 7.2.4-arch1-2, x86_64,
+Intel Core i5-13420H (12 logical CPUs), 15 GiB RAM, Python 3.12.13 (via
+`uv`); `nvidia-smi` present but reporting no driver -- confirmed no GPU
+backend was available, so every real result below genuinely ran on CPU.

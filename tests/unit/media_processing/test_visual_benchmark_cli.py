@@ -47,11 +47,32 @@ def test_validate_rejects_an_unknown_dataset_id(capsys: pytest.CaptureFixture[st
 def test_validate_reports_a_missing_dataset_directory_and_pending_licence(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = main(["validate", "--dataset-id", "virat_ground", "--candidate-id", "yolo11n"])
+    """`safe_unsafe_behaviour` remains genuinely `pending_verification` (no
+    pinned source in the frozen manifest) even after Gate B cleared
+    `virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` -- see
+    `docs/qa/known-limitations.md`.
+    """
+    exit_code = main(
+        ["validate", "--dataset-id", "safe_unsafe_behaviour", "--candidate-id", "yolo11n"]
+    )
     assert exit_code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["dataset_directory_exists"] is False
     assert payload["license_cleared_for_real_execution"] is False
+
+
+def test_validate_reports_the_already_license_cleared_virat_ground_pair(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The genuinely discovered, real-verified pair Gate B cleared today --
+    still `unavailable` overall in this isolated test only because no local
+    dataset directory exists under the test's own `tmp_path` root.
+    """
+    exit_code = main(["validate", "--dataset-id", "virat_ground", "--candidate-id", "yolo11n"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["license_cleared_for_real_execution"] is True
+    assert payload["dataset_directory_exists"] is False
+    assert exit_code == 1  # still unavailable overall -- no local directory exists
 
 
 def test_run_rejects_an_unsupported_dataset_candidate_pair(

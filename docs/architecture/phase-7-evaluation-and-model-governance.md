@@ -484,14 +484,20 @@ kind of unapproved new task/candidate this phase's rules forbid.
 outright whenever either the dataset's or the candidate's own
 `license_status` is not `verified_permissive`/`verified_restricted_
 noncommercial`/`internal_only`. Checked *before* any local artifact is
-even looked for. Today, every one of Gaurav's three datasets and four
-candidates carries `license_status: "pending_verification"` in the
-committed manifest/catalog — meaning **no combination in this table can
-produce a real `SUCCEEDED` benchmark result until Aditya's MacBook
-pre-flight resolves and records each one's actual licence status.** A
-blocked request still produces a truthful `BenchmarkRunStatus.UNAVAILABLE`
-result naming the gate — never a crash, and never a silently-substituted
-different dataset/candidate.
+even looked for. A blocked request still produces a truthful
+`BenchmarkRunStatus.UNAVAILABLE` result naming the gate — never a crash,
+and never a silently-substituted different dataset/candidate.
+
+**Resolved for `virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` by Gate B
+(2026-09-20)**: reading the actual VIRAT Video Dataset Usage Agreement and
+Ultralytics' actual AGPL-3.0 licence directly moved all four from
+`pending_verification` to `verified_restricted_noncommercial` — see "Gate
+B execution status" below for the full verification and the real
+benchmark results this unblocked. `safe_unsafe_behaviour` and
+`ufpr_alpr`/`paddleocr-lightweight-visual-text` remain
+`pending_verification`, legitimately deferred rather than silently
+skipped (no pinned source for the former; an academic access-request gate
+for the latter that this task did not attempt to bypass).
 
 ### Canonical observation/provenance compatibility
 
@@ -513,22 +519,26 @@ link through this seam, structurally, not only by convention.
 ### Why `ultralytics`/`paddleocr` are lazily imported, and the safety-test carve-out this required
 
 `pyproject.toml` gained `[project.optional-dependencies] video-benchmark`
-(`ultralytics`, `paddleocr`, `paddlepaddle`), resolved into `uv.lock` via
-`uv add --optional video-benchmark --no-sync` — never installed on this
-development machine, and never pulled in by `uv sync --all-groups`
+(`ultralytics`, `paddleocr`, `paddlepaddle`, `lap`), resolved into
+`uv.lock` via `uv add --optional video-benchmark --no-sync` — not
+installed by the standard `uv sync --all-groups` verification command
 (confirmed directly: `import ultralytics`/`import paddleocr` both still
-fail after a clean sync). Aditya's MacBook pre-flight installs the exact
-pinned versions via `uv sync --extra video-benchmark`, never an ad hoc
-`pip install`.
+fail after a clean sync). **Gate B (2026-09-20) installed it for real**
+via `uv sync --extra video-benchmark` and exercised `ultralytics` end to
+end against real YOLO11 weights and a real VIRAT clip — see "Gate B
+execution status" below. PaddleOCR was installed but not exercised
+against any real image (`ufpr_alpr` remains deferred).
 
 `visual_benchmark.py`'s `_build_real_detector_engine`/
 `_build_real_tracker_engine`/`_build_real_visual_text_engine` import
 `ultralytics`/`paddleocr` lazily, inside the function, wrapped in
 `try/except ImportError` degrading to a safe
-`BenchmarkArtifactUnavailableError` — this session cannot install or
-exercise either library, so their exact API is written from documented
-public shape only, and may need a small adjustment once Aditya's
-pre-flight confirms the installed version's real API.
+`BenchmarkArtifactUnavailableError`. The detector and tracker wiring is
+now verified against the real, installed `ultralytics==8.4.156` API (see
+below for the real API-drift bugs Gate B found and fixed); the
+visual-text (PaddleOCR) wiring remains best-effort, written from
+documented public shape only, since no real `ufpr_alpr` image was
+available to exercise it against.
 
 This tripped a genuine, pre-existing, whole-module static safety test
 (`tests/unit/media_processing/test_media_safety.py::
@@ -546,7 +556,7 @@ library` test proves every *other* forbidden library (databases, object
 storage, queues, `torch`/`tensorflow`/`sklearn`) remains forbidden in the
 benchmark harness too — not a blanket carve-out.
 
-### `_build_real_tracker_engine`: resolved via Ultralytics' own bundled ByteTrack
+### `_build_real_tracker_engine`: resolved via Ultralytics' own bundled ByteTrack, verified live
 
 Rather than a separate, pip-installable ByteTrack package, this wires
 Ultralytics' own bundled `BYTETracker` class
@@ -557,15 +567,35 @@ externally-supplied per-timestamp detections — the identical tracker
 no separate model weight or download is needed for tracking specifically:
 ByteTrack's association step (Kalman filter + Hungarian matching) has no
 learned weights and no GPU path, so `"cpu"` is reported as an observed
-fact about the algorithm, not an assumption. This session cannot install
-or exercise `ultralytics`, so the exact internal API called here
-(`BYTETracker.update()`'s expected input shape) is written from its
-documented/observed public shape and may need a small adjustment once
-Aditya's MacBook pre-flight confirms the actually-installed version's
-API — any mismatch degrades to a safe `BenchmarkArtifactUnavailableError`,
+fact about the algorithm, not an assumption. Its actual licence exposure
+is therefore `ultralytics`'s own AGPL-3.0, not the separately-licensed
+upstream ifzhang/ByteTrack MIT repository.
+
+**Gate B (2026-09-20) installed `ultralytics` for real and exercised this
+path end to end**, finding and fixing three real API-drift bugs a mock
+could not have caught (`ultralytics==8.4.156`, confirmed directly by
+reading its real source, not assumed from documentation):
+
+1. `ultralytics.utils.yaml_load` no longer exists — replaced by
+   `ultralytics.utils.YAML.load`.
+2. `BYTETracker.__init__` no longer accepts a `frame_rate` argument at
+   all (`def __init__(self, args):` only) — removed.
+3. `BYTETracker.update()`'s `results` argument must support numpy-style
+   fancy indexing (confirmed by reading `_split_detections`'s real
+   source) — a duck-typed `SimpleNamespace` does not support this. Fixed
+   by constructing a real `ultralytics.engine.results.Boxes` instance
+   (`(N, 6)` columns `[x1, y1, x2, y2, confidence, class]`, confirmed
+   from its own docstring) instead.
+
+A fourth, adjacent bug: `BYTETracker` needs the `lap` package internally,
+which was missing from the `video-benchmark` extra (Ultralytics attempted
+its own ad hoc auto-install at runtime instead of failing cleanly) — now
+declared explicitly. Any remaining mismatch on a different installed
+version still degrades to a safe `BenchmarkArtifactUnavailableError`,
 never a crash. The *tracking metric/aggregation logic itself*
-(`run_tracking_benchmark`) is fully implemented and tested against
-`FakeTrackerEngine`.
+(`run_tracking_benchmark`) was already fully implemented and tested
+against `FakeTrackerEngine`; it has now also produced a genuine real
+result — see "Gate B execution status" below.
 
 ### Known simplifications in the tracking metrics
 
@@ -590,13 +620,58 @@ function's own docstring and re-stated in `docs/qa/known-limitations.md`.
 `uv sync --all-groups`, `ruff format --check .`, `ruff check .`,
 `mypy app`, `pytest`, `git diff --check`, and `docker compose config -q`
 all ran on this development machine — see `docs/qa/test-results.md`'s
-dated Phase 7 Part 3 entry for exact counts. No real VIRAT Ground/UFPR-ALPR/
-Safe-Unsafe-Behaviour dataset, no Ultralytics/PaddleOCR installation, and
-no GPU/MacBook validation was performed or is claimed here — every one of
-those is Aditya's MacBook Gate B pre-flight's job (see
-`docs/runbooks/local-development.md`). No Part 3 candidate is selected;
-Gate C selects a winner only after Parts 2–4 all have comparable real
-results.
+dated Phase 7 Part 3 entry for exact counts. This entry covers only the
+initial build, against synthetic fixtures and fake engines; see "Gate B
+execution status" immediately below for the later real-dataset/
+real-model verification.
+
+### Gate B execution status (2026-09-20)
+
+Gate B ran directly on Shreshtha's laptop (no separate MacBook available)
+and genuinely downloaded real data, installed real dependencies, and
+produced real benchmark results for `virat_ground`. Exact source URLs,
+item IDs, artifact hashes, commands, host profile, and measured values
+are recorded in `docs/qa/test-data.md` and `docs/qa/test-results.md`'s
+dated Gate B sections — summarised here:
+
+- **`virat_ground` + `yolo11n`/`yolo11s`/`bytetrack`: real, succeeded.**
+  One small official VIRAT clip and its real annotations were downloaded
+  from the official Kitware Data mirror (access to the VIRAT Usage
+  Agreement was confirmed already granted by the project owner before any
+  download, per this task's "never accept an agreement on the agent's
+  behalf" rule), converted into this harness's own manifest format via a
+  real parser for VIRAT's actual `objects.txt` schema, and benchmarked
+  with real, officially-released YOLO11n/YOLO11s weights and Ultralytics'
+  own bundled ByteTrack. `license_status` moved from
+  `pending_verification` to `verified_restricted_noncommercial` for all
+  four entries after reading the real governing licences directly (VIRAT
+  Usage Agreement; Ultralytics AGPL-3.0) — both permit commercial use
+  despite the enum's "noncommercial" naming, documented explicitly in
+  each entry's own notes/known-limitations.
+- **`ufpr_alpr`/`safe_unsafe_behaviour`: legitimately deferred, not
+  fabricated.** UFPR-ALPR requires a formal academic access-request
+  process this task did not attempt to bypass; Safe/Unsafe Behaviour's
+  frozen manifest entry has no pinned source at all. Neither candidate
+  pairing was run against an empty placeholder to manufacture a
+  cosmetic `unavailable` result.
+- **Real API-drift bugs found and fixed** by actually installing and
+  running `ultralytics==8.4.156` for the first time — see "resolved via
+  Ultralytics' own bundled ByteTrack, verified live" above for the three
+  tracker-specific fixes, plus a missing `lap` dependency, a
+  `follow_imports = "skip"` mypy override this installation also
+  required, and a repository-wide `tests/__init__.py` fix (`ultralytics`
+  ships its own colliding top-level `tests` package). Full detail in
+  `docs/qa/test-results.md`'s dated Gate B entry.
+- **Focused verification re-run after all fixes**: `ruff format --check`,
+  `ruff check`, `mypy`, and `pytest` scoped to `app/modules/
+  media_processing`/`tests/unit/media_processing`, plus the Part 1
+  evaluation suite (`tests/unit/evaluation/`, 42 tests) and the real
+  integration smoke test against the downloaded VIRAT clip — all passing,
+  exact counts in `docs/qa/test-results.md`. The full repository suite
+  was not re-run here; Gate C owns final repository-wide verification.
+
+No Part 3 candidate is selected; Gate C selects a winner only after
+Parts 2–4 all have comparable real results.
 
 ## Verification (Part 1)
 

@@ -969,19 +969,22 @@ benchmarked in this environment, and no Part 2 candidate's
   reports safe aggregate results back -- or transparently records any
   unavailable asset as `blocked`, never a fabricated pass.
 
-## Phase 7 Part 3 — Gaurav visual benchmark foundation and local-model governance: In progress
+## Phase 7 Part 3 — Gaurav visual benchmark foundation and local-model governance: In progress (Gate B partially complete)
 
 Reproducible benchmark adapters, a safe CLI, and tests for the three
 datasets Part 1's frozen manifest assigns to Gaurav -- `virat_ground`
 (detection + within-video tracking), `safe_unsafe_behaviour` (additional
 detection stress-testing only), `ufpr_alpr` (plate-region detection +
-plate-text OCR, licence-gated) -- built and tested on Shreshtha's laptop
-against synthetic fixtures and fake engines only. This part produces
-valid, reproducible benchmark *capability*, not a selected winner: no
-real dataset/model artifact was downloaded or benchmarked in this
-environment, and every one of Gaurav's real datasets/candidates remains
-`license_status: pending_verification`, structurally blocking any
-`SUCCEEDED` result until Aditya's MacBook Gate B pre-flight resolves it.
+plate-text OCR, licence-gated). Gate B (2026-09-20, run directly on
+Shreshtha's laptop) genuinely downloaded real VIRAT data, installed real
+Ultralytics/PaddleOCR dependencies, and produced real `SUCCEEDED`
+detection/tracking benchmark results for `virat_ground` +
+`yolo11n`/`yolo11s`/`bytetrack` -- see `docs/qa/test-data.md`/
+`docs/qa/test-results.md`'s dated Gate B sections. `ufpr_alpr` and
+`safe_unsafe_behaviour` remain legitimately deferred (an academic
+access-request gate for the former; no pinned source at all for the
+latter) -- not silently skipped. No Part 3 candidate is selected; Gate C
+decides after Parts 2-4 all have comparable results.
 
 - [x] `app/modules/media_processing/{visual_benchmark_metrics,
   visual_benchmark_validation,visual_benchmark_adapters,visual_benchmark,
@@ -1001,15 +1004,18 @@ environment, and every one of Gaurav's real datasets/candidates remains
   `SUCCEEDED`.
 - [x] Detection/tracking/visual-text adapters: replaceable
   `DetectorEngine`/`TrackerEngine`/`VisualTextEngine` protocols, `Fake*`
-  engines for tests, and best-effort real-Ultralytics/real-PaddleOCR
-  wiring (dependency-injected, not imported at module load time) that
-  degrades safely to `UNAVAILABLE` rather than crash or fabricate a
-  result if the installed API doesn't match; real ByteTrack wiring is
-  explicitly deferred (always `UNAVAILABLE`) pending Aditya's pre-flight
-  resolving an actual installable package. Detection precision/recall/mAP
-  and tracking IDF1/MOTA/ID-switches are genuinely computed via IoU
-  matching against ground truth; HOTA is always `None` by documented
-  design, never an unstated approximation.
+  engines for tests, and real-Ultralytics wiring (dependency-injected,
+  not imported at module load time) now verified live against
+  `ultralytics==8.4.156` during Gate B -- three real API-drift bugs found
+  and fixed (`yaml_load` removed/replaced by `YAML.load`, `BYTETracker`
+  dropped its `frame_rate` parameter, `BYTETracker.update()` needs a real
+  `Boxes` instance, not a duck-typed stand-in), plus a missing `lap`
+  dependency. Real-PaddleOCR wiring remains best-effort/untested against
+  a real image (`ufpr_alpr` deferred). Detection precision/recall/mAP and
+  tracking IDF1/MOTA/ID-switches are genuinely computed via IoU matching
+  against ground truth, now confirmed with real measured values against a
+  real VIRAT clip; HOTA is always `None` by documented design, never an
+  unstated approximation.
 - [x] A pre-existing, whole-module static safety test forbidding
   `ultralytics`/`paddleocr` imports anywhere under `media_processing/`
   (a Phase 2 closeout production boundary) required a narrow, tested
@@ -1018,31 +1024,54 @@ environment, and every one of Gaurav's real datasets/candidates remains
   alone. Every other forbidden library remains forbidden in the benchmark
   harness too, verified by a new dedicated test.
 - [x] `pyproject.toml`'s `[project.optional-dependencies] video-benchmark`
-  (`ultralytics`, `paddleocr`, `paddlepaddle`), resolved into `uv.lock`
-  via `uv add --optional video-benchmark --no-sync` -- confirmed not
-  installed by `uv sync --all-groups` and not present anywhere on this
-  development machine. Aditya's MacBook pre-flight runs `uv sync --extra
-  video-benchmark` for a reproducible, exactly-pinned install, never an
-  ad hoc `pip install`.
-- [x] 79 new focused tests (14 metrics, 14 adapters, 37 safety, 6 CLI, 3
-  self-skipping integration smoke, plus 5 new parametrized instances of a
-  production-safety test proving the ML-import carve-out is narrow)
-  covering all 16 required proof points from the task brief; see
+  (`ultralytics`, `paddleocr`, `paddlepaddle`, `lap`), resolved into
+  `uv.lock` -- genuinely installed via `uv sync --extra video-benchmark`
+  during Gate B (not installed by the standard `uv sync --all-groups`).
+  A dedicated `[[tool.mypy.overrides]]` entry for `ultralytics.*`
+  (`follow_imports = "skip"`) keeps `mypy` behaving identically whether
+  or not the extra is installed, since `ultralytics` ships a `py.typed`
+  marker.
+- [x] Real Gate B results for `virat_ground` +
+  `yolo11n`/`yolo11s`/`bytetrack`: real `SUCCEEDED` detection and
+  tracking `BenchmarkRunV1` results against one real downloaded VIRAT
+  clip and its real annotations, converted into this harness's manifest
+  format via a real parser for VIRAT's actual `objects.txt` schema.
+  `license_status` moved from `pending_verification` to
+  `verified_restricted_noncommercial` for all four entries after reading
+  the real VIRAT Usage Agreement and Ultralytics' real AGPL-3.0 licence
+  directly. Access to the VIRAT agreement was confirmed already granted
+  by the project owner before any download.
+- [x] Focused test counts after Gate B (`tests/unit/media_processing/`):
+  14 metrics, 14 adapters, 43 safety (was 37 -- +2 real-tracker
+  regression tests that self-skip if `ultralytics` is absent, plus a
+  stale pending-verification assertion replaced with two tests reflecting
+  the real licence-status split), 7 CLI (was 6), 9 validation, 114
+  `test_media_safety.py` (unchanged), plus 3 integration smoke tests (2
+  now genuinely passing against the real VIRAT clip, 1 still self-skipping
+  for `ufpr_alpr`) -- covering all 16 required proof points from the
+  task brief plus this Gate B run's own real API-drift discoveries; see
   `docs/qa/test-matrix.md`'s "Phase 7 Part 3" section for the full
   ID-to-test mapping.
 - [x] `docs/architecture/{phase-7-evaluation-and-model-governance,
   media-processing-worker}.md`, `docs/qa/{test-matrix,test-data,
   known-limitations}.md`, `docs/runbooks/local-development.md` updated
-  additively, including a full MacBook Gate B validation handoff runbook
-  section for Aditya.
-- [ ] **No real dataset, model weight, or MacBook validation exists yet.**
-  No VIRAT Ground, UFPR-ALPR, or Safe/Unsafe Behaviour data was
-  downloaded on Shreshtha's laptop (per this task's own rule); no
-  Ultralytics/PaddleOCR installation was verified; real ByteTrack wiring
-  is not implemented at all; every test in this phase runs against
-  synthetic fixtures and fake engines only. This part is not complete
-  until Aditya pulls this exact branch on his Apple-Silicon MacBook,
-  resolves each artifact's licence/source status, runs the real benchmark
-  CLI against real local data, and reports safe aggregate results back --
-  or transparently records any unavailable asset as `blocked`, never a
-  fabricated pass.
+  with the real Gate B execution status and results.
+- [x] A repository-wide `tests/__init__.py` fix: `ultralytics` ships its
+  own colliding top-level `tests/__init__.py`, which shadowed this
+  project's own `tests` package the moment it was installed, breaking
+  every `from tests.fixtures... import ...` statement repository-wide
+  (confirmed: 90 collection errors across the full suite before the fix,
+  none specific to `media_processing`). Fixed with an empty
+  `tests/__init__.py`.
+- [ ] **`ufpr_alpr` and `safe_unsafe_behaviour` remain legitimately
+  deferred, not fabricated.** UFPR-ALPR requires a formal academic
+  access-request process this task did not attempt to bypass;
+  Safe/Unsafe Behaviour's frozen manifest entry has no pinned source at
+  all. Neither was downloaded, and `paddleocr-lightweight-visual-text`'s
+  real wiring remains unexercised against any real image. This part is
+  not complete until someone resolves and records `ufpr_alpr`'s and
+  `safe_unsafe_behaviour`'s actual licence/source status, runs the real
+  benchmark CLI against real local data for them, and reports safe
+  aggregate results back -- or transparently records either as `blocked`,
+  never a fabricated pass. Gate C's own repository-wide re-verification
+  of this branch is also still pending.

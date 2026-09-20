@@ -965,27 +965,34 @@ contains a raw video frame, plate text, face, or local filesystem path —
 only aggregate metrics, safe metadata, and a `failure_reason_safe` string
 when relevant.
 
-**Every one of Gaurav's real datasets and candidates is currently
-`license_status: pending_verification`** in the committed manifest/catalog
-— `run` will report `unavailable` for every real combination until
-Aditya's MacBook pre-flight resolves and records each one's actual
-licence status (step 3 below). This is expected, not a bug.
+**`virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` are now
+`license_status: verified_restricted_noncommercial`** after Gate B
+(2026-09-20) read the real governing licences directly — `run` produces
+genuine `succeeded` results for these, given a real local clip and
+weights (see "Gate B execution status" below). `safe_unsafe_behaviour`
+and `ufpr_alpr`/`paddleocr-lightweight-visual-text` remain
+`license_status: pending_verification` — `run` still reports
+`unavailable` for every combination involving them, legitimately (no
+pinned source for the former; an academic access-request gate for the
+latter).
 
-No Ultralytics/PaddleOCR installation, real dataset, or GPU exists on
-Shreshtha's laptop — every unit test for this part runs against `Fake*`
-engines and small synthetic detection/tracking/OCR fixtures (`uv run
-pytest tests/unit/media_processing/test_visual_benchmark_*.py -v`). The
-integration test that runs the real CLI as a subprocess
+The committed unit test suite for this part still runs entirely against
+`Fake*` engines and small synthetic detection/tracking/OCR fixtures
+(`uv run pytest tests/unit/media_processing/test_visual_benchmark_*.py
+-v`), independent of what is or isn't installed on any given machine.
+The integration test that runs the real CLI as a subprocess
 (`tests/integration/media_processing/test_visual_benchmark_smoke.py`)
-self-skips cleanly here, since `TRACEX_BENCHMARK_DATA_ROOT` is unset.
+self-skips cleanly when `TRACEX_BENCHMARK_DATA_ROOT` is unset, and ran
+for real (2 passed, 1 skipped) against Gate B's own downloaded VIRAT
+clip.
 
 ### Reproducible install: `uv sync --extra video-benchmark`
 
-`ultralytics`/`paddleocr`/`paddlepaddle` are declared in `pyproject.toml`'s
-`[project.optional-dependencies] video-benchmark` group and resolved into
-`uv.lock` — never installed by the standard `uv sync --all-groups`
-verification command, and not installed anywhere on this development
-machine. Aditya's Mac installs the exact pinned versions via:
+`ultralytics`/`paddleocr`/`paddlepaddle`/`lap` are declared in
+`pyproject.toml`'s `[project.optional-dependencies] video-benchmark`
+group and resolved into `uv.lock` — not installed by the standard `uv
+sync --all-groups` verification command. Install the exact pinned
+versions via:
 
 ```bash
 uv sync --extra video-benchmark
@@ -996,12 +1003,53 @@ would silently resolve whatever is newest on PyPI that day, a different,
 unpinned version than this branch's engine wiring was written against,
 making any resulting benchmark number impossible to reproduce later.
 
-### MacBook Gate B pre-flight (Aditya)
+**Two side effects this install has on the rest of the repository, both
+already fixed on this branch**: `ultralytics` ships a `py.typed` marker,
+so `mypy` behaves differently once it's genuinely installed (see
+`pyproject.toml`'s dedicated `[[tool.mypy.overrides]]` entry for
+`ultralytics.*`); and `ultralytics` ships its own colliding top-level
+`tests/__init__.py`, which shadows this project's own `tests` package
+once installed and breaks every `from tests.fixtures... import ...`
+statement repository-wide unless this project's own `tests/__init__.py`
+exists (it now does). Neither requires any action from you — just be
+aware if you ever see `tests.fixtures` import errors after installing a
+new optional extra elsewhere in this project.
 
-This benchmark capability is built and unit-tested, but **no real
-dataset, model, or benchmark result exists yet** — every number above
-came from synthetic fixtures and fake engines. Follow these steps in
-order:
+### Gate B execution status (2026-09-20)
+
+Gate B ran directly on Shreshtha's laptop. Real host profile: Arch Linux,
+kernel 7.2.4-arch1-2, x86_64, Intel Core i5-13420H (12 logical CPUs),
+15 GiB RAM, Python 3.12.13 (via `uv`); no GPU (confirmed via `nvidia-smi`
+reporting no driver). `virat_ground` + `yolo11n`/`yolo11s`/`bytetrack`
+produced real, `succeeded` results against one small, officially
+downloaded VIRAT clip and its real annotations, plus two real,
+officially-released YOLO11 weight files — all outside Git under
+`$HOME/tracex-gateb-artifacts/gaurav`. `ufpr_alpr` and
+`safe_unsafe_behaviour` remain legitimately deferred (see
+`docs/qa/known-limitations.md`). Exact source URLs, item IDs, hashes,
+commands, and measured metrics are in `docs/qa/test-data.md` and
+`docs/qa/test-results.md`'s dated Gate B sections — not repeated here.
+
+Access to the VIRAT Video Dataset Usage Agreement (a genuine click-through
+protection agreement) was confirmed already granted by the project owner
+before any download, per this task's own "never accept an agreement on
+the agent's behalf" rule. Anyone repeating this Gate B run on a different
+dataset owner's behalf must independently confirm the same before
+downloading anything from `data.kitware.com`.
+
+If you repeat this on a fresh checkout, follow the same steps as the
+"Original MacBook pre-flight checklist" below for `ufpr_alpr`/
+`safe_unsafe_behaviour` specifically (they still need real licence
+verification and a real local download); `virat_ground`'s licence is
+already resolved and recorded.
+
+### Original MacBook Gate B pre-flight checklist (historical, retained for `ufpr_alpr`/`safe_unsafe_behaviour`)
+
+This checklist was written before the 2026-09-20 Gate B execution above.
+`virat_ground`/`yolo11n`/`yolo11s`/`bytetrack` no longer need it — their
+licence/source status is already resolved and recorded. Retain it as the
+safe procedure for `ufpr_alpr`/`safe_unsafe_behaviour` specifically, or
+for a repeat run on a different machine. Follow these steps in order:
 
 1. **Check out the exact pushed `gaurav` commit.** `git status --short &&
    git branch --show-current && git log --oneline -5` — confirm you are
@@ -1018,13 +1066,11 @@ order:
    (`model.track(..., tracker='bytetrack.yaml')`'s underlying class) --
    no separate ByteTrack package is needed.
 3. **Resolve and record licence/source terms before downloading
-   anything**: VIRAT Ground, UFPR-ALPR, Safe/Unsafe Behaviour, and the two
-   Ultralytics YOLO11 releases (n-nano and s-small) plus the PaddleOCR
-   PP-OCRv5 mobile-lightweight release. Record each one's actual current
-   licence, official source, and release/version identifier — this
-   session could not verify any of these without downloading them, so
-   `dataset-manifest.v1.json`/`model-candidates.v1.json` still show
-   `license_status: "pending_verification"` for all of Gaurav's entries.
+   anything**: UFPR-ALPR and Safe/Unsafe Behaviour, plus the PaddleOCR
+   PP-OCRv5 mobile-lightweight release (needed only for `ufpr_alpr`'s
+   plate-OCR pairing). VIRAT Ground and both Ultralytics YOLO11 releases
+   are already resolved (`verified_restricted_noncommercial`, recorded
+   2026-09-20) — do not re-verify unless the terms may have changed.
 4. **Update only safe fields.** If verification succeeds, change the
    relevant `license_status` from `pending_verification` to `verified_
    permissive`/`verified_restricted_noncommercial` (or to a documented
