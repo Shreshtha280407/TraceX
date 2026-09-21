@@ -1027,3 +1027,43 @@ checks the frozen ID and canonical configuration hash before reading case data.
 Gate C makes no final relationship-scoring ML choice: Logistic Regression vs
 XGBoost/LightGBM evaluation, calibration, and final freeze remain Shreshtha
 Part 6.
+
+## Part 6 — final release decision and documentation closure (Shreshtha)
+
+See ADR-018 for the full reasoning. The decision:
+
+1. **The active release configuration remains the existing deterministic
+   rules baseline.** `tracex-release-v1-baseline` (`phase5-rules-baseline` at
+   `phase5_preliminary_rules_v1`) is unchanged from Gate C's freeze.
+2. **No trained ML model is selected and no model artifact is loaded.**
+   `final_relationship_ml_selected: false` in
+   `configs/benchmarks/release-freeze.v1.json`; every one of Logistic
+   Regression/XGBoost/LightGBM stays `status: "deferred"` in the candidate
+   catalogue, exactly as Gate C froze them.
+3. **ML comparison is deferred, not run.** ADR-016 Decision 5's comparison
+   policy assumed real, independently labelled case-level holdout data;
+   Phase 7 Part 1's synthetic case plan freezes evaluation *splits*, not a
+   labelled relationship-outcome ground truth, so it is not a sound basis for
+   training or scoring a supervised correlation model. The comparison is
+   deferred until after the initial deployed product and a future,
+   versioned evaluation cycle with a proper labelled dataset — never
+   fabricated against unsuitable data to have "some" number on record.
+4. **Any future ML scorer may only rank reviewable candidate links.** It
+   must never auto-merge identities, bypass the existing review workflow, or
+   present/imply a probability of guilt — see ADR-018's "Constraints on any
+   future ML relationship scorer."
+5. **Phase 8 tests and deploys the frozen rules configuration unchanged.**
+   LAN/multi-laptop validation (Phase 8) does not retrain, re-select, or
+   otherwise change the scoring algorithm this decision retains.
+6. **Phase 7 is complete for this release's scope with the deterministic
+   baseline.** ML relationship scoring is documented future work, not
+   claimed as evaluated or completed.
+
+No production code changed for this decision: `app/modules/evaluation/
+release_freeze.py`'s validators, `app/modules/graph/intelligence/pipeline.
+py`'s fail-closed `_require_frozen_relationship_configuration` gate, and
+`app/modules/graph/intelligence/scoring.py`'s deterministic rules scorer
+already enforced everything this decision states — this Part confirmed that
+by inspection and closed the documentation gap ADR-016/ADR-017 left open
+("Shreshtha Part 6" as a forward reference to a comparison that, per this
+decision, does not run this release).

@@ -965,3 +965,33 @@ code change.
   pagination remains later API work.
 - No Docker, LAN, new dataset/model acquisition, training, frontend, or full
   repository suite was run for Gate C, by scope.
+
+# Phase 7 Part 6 — final release decision and documentation closure (Shreshtha)
+
+- **No ML relationship-scoring comparison was run, by decision, not by
+  omission.** Logistic Regression, XGBoost, and LightGBM were not
+  implemented, trained, calibrated, installed, downloaded, benchmarked, or
+  selected. See ADR-018. The reason is structural, not a resource
+  shortfall: Phase 7 Part 1's synthetic case plan freezes evaluation
+  *splits*, not a real, independently labelled relationship-outcome ground
+  truth, so a comparison against it would not be trustworthy evidence.
+- **The active release configuration is unchanged from Gate C's freeze.**
+  `tracex-release-v1-baseline` (`phase5-rules-baseline`) remains the only
+  enabled relationship-scoring component; no model artifact is loaded;
+  `final_relationship_ml_selected` stays `false` in
+  `configs/benchmarks/release-freeze.v1.json`.
+- **No production code changed for this decision.** `release_freeze.py`'s
+  validators, `pipeline.py`'s fail-closed configuration gate, and
+  `scoring.py`'s deterministic rules scorer already enforced everything
+  this decision states; this Part confirmed that by inspection rather than
+  editing already-correct code.
+- **ML relationship scoring remains explicit future work**, to be revisited
+  only after the initial deployed product exists and a proper,
+  independently labelled relationship dataset is available for a new,
+  versioned evaluation cycle — never claimed as evaluated or completed for
+  this release.
+- **Phase 8 is unaffected by this decision.** It tests and deploys the
+  frozen rules configuration on a LAN/multi-laptop setup; it does not
+  change the scoring algorithm.
+- Phase 7 is complete for this release's scope with the deterministic
+  baseline, per this decision and Gate C's freeze.

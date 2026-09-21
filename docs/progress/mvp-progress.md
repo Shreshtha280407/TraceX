@@ -1239,6 +1239,45 @@ this task. No Part 4 candidate is selected; Gate C decides after Parts
   bounded correlation-outbox backoff/termination.
 - [x] Focused Gate C/security/graph/worker/health tests: 299 passed. Static
   results and exact final commands are recorded in `docs/qa/test-results.md`.
-- [ ] Shreshtha Part 6: run the separate relationship-scoring ML comparison,
-  calibration, and final selection/freeze. Deferred datasets remain deferred
-  until a new versioned evaluation cycle.
+- [x] Shreshtha Part 6: the separate relationship-scoring ML comparison is
+  decided, not run — see below. Deferred datasets remain deferred until a
+  new versioned evaluation cycle.
+
+## Phase 7 Part 6 — final release decision and documentation closure (Shreshtha): Complete
+
+- [x] **Decision recorded (ADR-018): ship the deterministic Phase 5 rules
+  baseline; defer ML relationship scoring entirely.** No Logistic
+  Regression, XGBoost, LightGBM, calibration, comparison, or selection was
+  implemented, trained, installed, downloaded, or benchmarked. The
+  comparison itself is deferred, not just its outcome, because Phase 7 Part
+  1's synthetic case plan freezes evaluation splits, not a real,
+  independently labelled relationship-outcome ground truth — a comparison
+  against it would not be trustworthy evidence.
+- [x] Confirmed by inspection, not by code change: `configs/benchmarks/
+  release-freeze.v1.json` already carries `final_relationship_ml_selected:
+  false` and the sole enabled configuration `tracex-release-v1-baseline`
+  loads no artifact; `app/modules/evaluation/release_freeze.py`'s
+  validators, `app/modules/graph/intelligence/pipeline.py`'s fail-closed
+  `_require_frozen_relationship_configuration` gate, and `app/modules/
+  graph/intelligence/scoring.py`'s deterministic rules scorer already
+  enforce this decision end to end. No production code was changed.
+- [x] Documented: any future ML relationship scorer may only rank
+  reviewable candidate links for investigator review — never auto-merge
+  identities, bypass review, or infer guilt — and requires its own new,
+  versioned evaluation cycle against a real labelled dataset once the
+  initial product is deployed.
+- [x] Documented: Phase 8 tests and deploys the frozen rules configuration
+  on a LAN/multi-laptop setup and does not change the scoring algorithm.
+- [x] `docs/decisions/ADR-018-phase-7-part-6-deferred-ml-scoring.md` (new),
+  `docs/architecture/phase-7-evaluation-and-model-governance.md` ("Part 6"
+  section, new), `docs/qa/known-limitations.md` ("Phase 7 Part 6" section,
+  new), `docs/qa/test-results.md` (dated verification entry, new) updated
+  additively. No existing Gate B/Gate C evidence or prior dated entry was
+  rewritten.
+- [x] **Phase 7 is complete for this release's scope with the deterministic
+  baseline.** ML relationship scoring is documented future work, not
+  falsely claimed as evaluated or completed.
+- [x] Full non-Docker verification suite re-run after these documentation
+  changes: see `docs/qa/test-results.md`'s dated Phase 7 Part 6 entry for
+  exact commands and results. No Docker, Compose, LAN, deployment, external
+  dataset, or model-download command was run, by scope.
