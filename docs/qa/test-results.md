@@ -4346,3 +4346,46 @@ matrix above.
 
 No Docker command, new dataset/model acquisition, full repository test suite,
 training, or final relationship-scoring comparison was run.
+
+## 2026-09-20 -- Phase 7 Part 6 final release decision and documentation closure (Shreshtha)
+
+Documentation-only change (ADR-018 plus additive updates to `docs/
+architecture/phase-7-evaluation-and-model-governance.md`, `docs/qa/
+known-limitations.md`, `docs/progress/mvp-progress.md`, this entry). No
+production code was changed: inspection confirmed `release_freeze.py`,
+`pipeline.py`'s fail-closed configuration gate, and `scoring.py`'s
+deterministic rules scorer already enforce the decision recorded in
+ADR-018. The full non-Docker verification suite was re-run after these
+documentation changes:
+
+```text
+uv sync --all-groups           -> Resolved 225 packages, Checked 104 packages
+uv run ruff format --check .   -> 530 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 221 source files
+uv run pytest -q               -> 2306 passed, 91 skipped, 1 warning, 0 failed, 233.21s
+git diff --check               -> exit 0, no output
+```
+
+The one warning is the pre-existing, unrelated `audioop`/Python 3.13
+deprecation notice in `app/modules/communication_processing/audio/
+local_pipeline.py`. All 91 skips are the existing, expected self-skips
+across the repository (Docker-dependent integration suites, benchmark
+smoke tests without a local dataset root, the NER-bootstrap skip) --
+none are new to this Part.
+
+An intermediate `uv run mypy app` run failed with `Cannot find
+implementation or library stub for module named "cv2"` -- not a code
+defect. A prior task's `uv sync --extra video-benchmark` had pulled in
+Ultralytics' `opencv-python` dependency, which shares the `cv2` import
+namespace with the project's actual dependency `opencv-python-headless`;
+the subsequent `uv sync --all-groups` (back to the base dependency set)
+uninstalled `opencv-python` but left `opencv-python-headless`'s own `cv2/`
+package directory deleted from the venv, orphaning its `.dist-info`. Fixed
+by reinstalling the one affected package into the existing venv --
+`uv sync --all-groups --reinstall-package opencv-python-headless` -- which
+restored `cv2` without any `pyproject.toml`/`uv.lock` change. No source
+file was edited for this fix.
+
+No Docker, Compose, LAN, deployment, external dataset, or model-download
+command was run, by this Part's explicit scope.
