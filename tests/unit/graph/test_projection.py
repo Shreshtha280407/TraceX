@@ -223,10 +223,13 @@ def test_same_entity_id_in_two_cases_carries_different_merge_identity() -> None:
     assert params_a["case_id"] != params_b["case_id"]
 
 
-# --- Requirement 10: no direct timeless entity-to-entity edge kind ---------
+# --- Requirement 10: no direct timeless *evidentiary* entity-to-entity edge kind ---
 
 
-def test_relationship_kind_enum_has_no_entity_to_entity_kind() -> None:
+def test_relationship_kind_enum_has_no_fabricated_or_undocumented_kind() -> None:
+    """Exhaustive by design: any new `GraphRelationshipKind` member must be
+    added to this set deliberately, with a real durable record backing it
+    (see each kind's own comment) -- never silently."""
     assert {kind.value for kind in GraphRelationshipKind} == {
         "HAS_EVIDENCE",
         "YIELDED_OBSERVATION",
@@ -243,6 +246,16 @@ def test_relationship_kind_enum_has_no_entity_to_entity_kind() -> None:
         # Phase 6 Part 5: a hypothesis referencing a reviewed candidate --
         # still never a direct Entity-to-Entity edge.
         "REFERENCES_CANDIDATE",
+        # Gap-Closure WP-3 (G10, ADR-021): POSSIBLY_SAME_AS/CONTRADICTED_BY
+        # are the one deliberate Entity-to-Entity exception -- identity-
+        # RESOLUTION review metadata (WP-2/ADR-020), never an evidentiary
+        # connection between the underlying identities, and never a merge
+        # by themselves. CANDIDATE_ASSOCIATION is Observation-to-Observation
+        # (Phase 5's correlation_candidate_links), not entity-to-entity at
+        # all, and is documented but not yet projected (see known-limitations.md).
+        "POSSIBLY_SAME_AS",
+        "CONTRADICTED_BY",
+        "CANDIDATE_ASSOCIATION",
     }
 
 

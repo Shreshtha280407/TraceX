@@ -143,6 +143,25 @@ class FakeEvidenceLifecycleRepository:
         self.evidence[evidence.evidence_id] = evidence
         self.jobs[job.job_id] = job
 
+    async def get_job_by_idempotency_key(
+        self, case_id: UUID, idempotency_key: str
+    ) -> WorkerJobRecord | None:
+        return next(
+            (
+                j
+                for j in self.jobs.values()
+                if j.case_id == case_id and j.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+
+    async def create_job(self, job: WorkerJobRecord) -> None:
+        if any(j.idempotency_key == job.idempotency_key for j in self.jobs.values()):
+            raise sqlalchemy.exc.IntegrityError(
+                "duplicate worker_jobs.idempotency_key", {}, Exception("unique violation")
+            )
+        self.jobs[job.job_id] = job
+
     async def get_evidence(self, case_id: UUID, evidence_id: UUID) -> EvidenceRecord | None:
         record = self.evidence.get(evidence_id)
         return record if record is not None and record.case_id == case_id else None

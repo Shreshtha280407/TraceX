@@ -61,12 +61,34 @@ def public_key_fingerprint(public_key: Ed25519PublicKey) -> str:
     return hashlib.sha256(raw).hexdigest()[:_FINGERPRINT_LENGTH]
 
 
+@dataclass(frozen=True)
+class PublicKeyMaterial:
+    """A key's public identity alone -- never the private key. Gap-Closure
+    WP-5 (G4): what `cli.py rotate-key` registers into `signing_keys_public`."""
+
+    key_id: str
+    algorithm: str
+    public_key_b64: str
+    public_key_fingerprint: str
+
+
 class LoadedSigningKey:
     """A private key held only in memory for the duration of one sign call."""
 
     def __init__(self, *, key_id: str, private_key: Ed25519PrivateKey) -> None:
         self._key_id = key_id
         self._private_key = private_key
+
+    def public_key_material(self) -> PublicKeyMaterial:
+        """Derive this key's public identity without signing anything."""
+        public_key = self._private_key.public_key()
+        raw_public = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+        return PublicKeyMaterial(
+            key_id=self._key_id,
+            algorithm=SIGNATURE_ALGORITHM,
+            public_key_b64=base64.b64encode(raw_public).decode("ascii"),
+            public_key_fingerprint=public_key_fingerprint(public_key),
+        )
 
     def sign(self, root_hash_hex: str) -> SignedRoot:
         signature = self._private_key.sign(bytes.fromhex(root_hash_hex))

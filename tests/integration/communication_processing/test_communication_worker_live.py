@@ -76,6 +76,7 @@ from app.modules.evidence_lifecycle.repository import (
     worker_observations_table,
     worker_results_table,
 )
+from tests.fixtures.access_control.factories import make_user_record
 from tests.fixtures.communication_processing.builders import (
     build_generic_json_export,
     build_wav_bytes,
@@ -260,14 +261,12 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
             )
         )
 
-    async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-        register = await ac.post(
-            "/api/v1/auth/register",
-            json={"email": email, "password": password, "display_name": "Comm Live Worker Test"},
-        )
-        assert register.status_code == 201, register.text
-        user_id = register.json()["user_id"]
+    # No public self-registration exists (G5) -- seed the user directly.
+    seeded_user = make_user_record(email_normalized=email)
+    await repository.create_user(seeded_user)
+    user_id = str(seeded_user.user_id)
 
+    async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
         login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200, login.text
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}

@@ -16,6 +16,7 @@ from typing import Annotated
 from uuid import UUID
 
 import redis.asyncio as redis
+import structlog
 from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import Settings, get_settings
@@ -35,6 +36,8 @@ from app.modules.evidence_lifecycle.service import EvidenceLifecycleService
 from app.modules.evidence_lifecycle.storage import MinioObjectStorage, ObjectStorage
 from app.modules.integrity.dependencies import get_integrity_service
 from app.modules.integrity.service import IntegrityService
+
+logger = structlog.get_logger(__name__)
 
 _settings = get_settings()
 _engine = create_engine(_settings)
@@ -180,8 +183,22 @@ async def require_worker_principal(
             headers=_WORKER_AUTH_HEADERS,
         )
 
+    await _touch_worker_last_seen_safely(repository, credential.worker_id, now)
     return WorkerPrincipal(
         worker_id=credential.worker_id,
         display_name=credential.display_name,
         allowed_processor_names=credential.allowed_processor_names,
     )
+
+
+async def _touch_worker_last_seen_safely(
+    repository: AccessControlRepository, worker_id: UUID, now: datetime
+) -> None:
+    """Gap-Closure WP-6 (G16): populates the worker heartbeat registry on
+    every successful authentication. Best-effort, mirrors `record_audit_
+    event_safely`'s contract exactly -- a failure here must never turn a
+    successful authentication into a denied one."""
+    try:
+        await repository.touch_worker_last_seen(worker_id, now)
+    except Exception:  # noqa: BLE001 - a side-effect failure must never propagate
+        logger.warning("worker.last_seen_touch_failed", worker_id=str(worker_id))

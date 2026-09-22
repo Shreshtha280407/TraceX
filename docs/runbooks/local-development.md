@@ -83,18 +83,35 @@ docker compose down          # stop containers, keep volumes (data persists)
 docker compose down -v       # stop containers and remove volumes (fresh state)
 ```
 
-### Optional continuous workers (Phase 2 closeout — `workers` Compose profile)
+### Optional continuous workers (`cpu-worker`/`gpu-worker` Compose profiles)
 
-`media-worker` and `graph-projector` (running `--loop`) are **not** started by a plain `docker compose up` — they live under the `workers` Compose profile, opt-in only:
+Gap-Closure WP-8 (G15) split the previous single `workers` profile in two, so an operator can start only the workers their hardware actually supports — no worker is started by a plain `docker compose up`, both remain opt-in:
 
 ```bash
-docker compose --profile workers run --rm media-model-bootstrap   # once, before starting media-worker
-docker compose --profile workers up -d media-worker graph-projector
-docker compose --profile workers logs -f media-worker graph-projector
-docker compose --profile workers down
+# CPU-only workers -- no GPU or model weights needed for any of these:
+docker compose --profile cpu-worker up -d graph-projector intelligence-worker structured-worker communication-worker
+docker compose --profile cpu-worker logs -f graph-projector intelligence-worker structured-worker communication-worker
+docker compose --profile cpu-worker down
+
+# GPU-capable worker (media/video/image detection) -- needs the bootstrapped model first:
+docker compose --profile gpu-worker run --rm media-model-bootstrap
+docker compose --profile gpu-worker up -d media-worker
+docker compose --profile gpu-worker logs -f media-worker
+docker compose --profile gpu-worker down
 ```
 
-Both wait for their real dependencies to be healthy (`api` — now with its own `/healthz`-based healthcheck — for `media-worker`; `postgres`/`neo4j` directly for `graph-projector`, which talks to them without going through the internal worker API, unchanged from before this phase) and `restart: unless-stopped`. `media-model-bootstrap` is a one-shot command (`docker compose run`, not `up` — nothing depends on it, so `up` never starts it on its own), writing the checksum-verified detector model into the shared `media-models-data` named volume `media-worker` mounts read-only. Neither service needs a `WORKER_TOKEN` provisioned specially — the existing `${WORKER_TOKEN:-}` passthrough (shared with `api`) is reused; provision a real credential via the trusted-operator CLI exactly as for a host-run worker (see "Media-processing worker CLI" below), and set `WORKER_TOKEN` in `.env` before starting these services.
+| Service | Profile | Mode | Depends on |
+|---|---|---|---|
+| `graph-projector` | `cpu-worker` | `--loop` (real poll loop) | `postgres`, `neo4j` directly (unchanged from before this phase) |
+| `intelligence-worker` | `cpu-worker` | `--replay-loop` (real poll loop) | `postgres`, `neo4j` directly |
+| `structured-worker` | `cpu-worker` | `--once` | `api` (internal worker API) |
+| `communication-worker` | `cpu-worker` | `--once` | `api` (internal worker API) |
+| `media-worker` | `gpu-worker` | `--loop` (real poll loop) | `api` (internal worker API) |
+| `media-model-bootstrap` | `gpu-worker` | one-shot (`run`, never `up`) | none |
+
+`structured-worker`/`communication-worker` run `--once`, not `--loop` — neither worker module has a real poll-loop mode in this phase (documented in each module's own CLI help text: "No daemon or polling mode exists"). `restart: unless-stopped` on a one-shot command is a deliberate, honestly-imperfect substitute for a real poll loop: each container restart is one more claim attempt (with Docker's own restart backoff between attempts), not a clean idle wait like `graph-projector`/`intelligence-worker`/`media-worker`'s real `--loop` modes. See `docs/qa/known-limitations.md`'s "WP-8" section.
+
+Every worker waits for its real dependencies to be healthy and uses `restart: unless-stopped`. `media-model-bootstrap` is a one-shot command (`docker compose run`, not `up` — nothing depends on it, so `up` never starts it on its own), writing the checksum-verified detector model into the shared `media-models-data` named volume `media-worker` mounts read-only. None of these services need a `WORKER_TOKEN` provisioned specially — the existing `${WORKER_TOKEN:-}` passthrough (shared with `api`) is reused; provision a real credential via the trusted-operator CLI exactly as for a host-run worker (see "Media-processing worker CLI" below), and set `WORKER_TOKEN` in `.env` before starting these services.
 
 ## Verifying the API is up
 

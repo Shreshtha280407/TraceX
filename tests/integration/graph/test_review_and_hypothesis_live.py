@@ -53,6 +53,7 @@ from app.modules.integrity.reconciliation import IntegrityReconciliationService
 from app.modules.integrity.repository import IntegrityRepository
 from app.modules.integrity.service import IntegrityService
 from app.modules.integrity.signing import generate_signing_key_b64
+from tests.fixtures.access_control.factories import make_user_record
 from tests.integration.graph.test_phase5_correlation_integration_live import (
     _cleanup,
     _insert_observation,
@@ -128,13 +129,12 @@ async def test_review_and_hypothesis_workflow_against_live_stack() -> None:  # n
     password = "correct-horse-battery-staple"  # noqa: S105
 
     try:
+        # No public self-registration exists (G5) -- seed users directly
+        # against the same live Postgres `ac_repository` already writes to.
+        for email in (investigator_email, reviewer_email, outsider_email):
+            await ac_repository.create_user(make_user_record(email_normalized=email))
+
         async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            for email in (investigator_email, reviewer_email, outsider_email):
-                register = await ac.post(
-                    "/api/v1/auth/register",
-                    json={"email": email, "password": password, "display_name": "Phase6 Test"},
-                )
-                assert register.status_code == 201, register.text
 
             async def _login(email: str) -> dict[str, str]:
                 response = await ac.post(

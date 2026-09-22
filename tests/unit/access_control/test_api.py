@@ -9,6 +9,8 @@ HTTP semantics without any live PostgreSQL/Redis.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -20,11 +22,17 @@ from app.modules.access_control.dependencies import (
     get_login_rate_limiter,
     get_refresh_rate_limiter,
 )
+from app.modules.access_control.models import (
+    SystemRole,
+    WorkerCredentialRecord,
+    WorkerCredentialStatus,
+)
 from app.modules.access_control.password import MIN_PASSWORD_LENGTH
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
+from tests.fixtures.access_control.factories import DEFAULT_PASSWORD, make_user_record
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 
-VALID_PASSWORD = "correct-horse-battery-staple"
+VALID_PASSWORD = DEFAULT_PASSWORD
 assert len(VALID_PASSWORD) >= MIN_PASSWORD_LENGTH
 
 
@@ -61,20 +69,53 @@ async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
-async def _register(client: AsyncClient, email: str) -> None:
-    response = await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": VALID_PASSWORD, "display_name": "Test User"},
+async def _register(
+    client: AsyncClient, email: str, fake_repository: FakeAccessControlRepository
+) -> None:
+    """Seeds an active user directly (no public self-registration exists -- G5)."""
+    await fake_repository.create_user(make_user_record(email_normalized=email))
+
+
+async def _provision_via_admin_route(
+    client: AsyncClient,
+    fake_repository: FakeAccessControlRepository,
+    *,
+    email: str,
+    system_role: SystemRole | None = None,
+) -> tuple[str, dict]:
+    """Seed an admin, log them in, then provision `email` through the real HTTP route."""
+    admin_email = f"admin-{uuid4().hex[:10]}@example.test"
+    admin = make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
+    await fake_repository.create_user(admin)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": admin_email, "password": VALID_PASSWORD}
     )
-    assert response.status_code == 201, response.text
+    assert login.status_code == 200, login.text
+    admin_token = login.json()["access_token"]
+    response = await client.post(
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": email,
+            "password": VALID_PASSWORD,
+            "display_name": "Provisioned User",
+            "system_role": system_role.value if system_role else None,
+        },
+    )
+    return admin_token, response.json() if response.status_code == 201 else {
+        "status": response.status_code,
+        "body": response.text,
+    }
 
 
 # --- End-to-end wiring smoke ------------------------------------------------
 
 
-async def test_full_register_login_refresh_logout_round_trip(client: AsyncClient) -> None:
+async def test_full_register_login_refresh_logout_round_trip(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
     email = "roundtrip@example.test"
-    await _register(client, email)
+    await _register(client, email, fake_repository)
 
     login = await client.post(
         "/api/v1/auth/login", json={"email": email, "password": VALID_PASSWORD}
@@ -115,12 +156,27 @@ async def test_full_register_login_refresh_logout_round_trip(client: AsyncClient
     assert logout_again.status_code == 204
 
 
-async def test_register_duplicate_email_is_conflict(client: AsyncClient) -> None:
-    await _register(client, "dup-http@example.test")
+async def test_public_register_route_no_longer_exists(client: AsyncClient) -> None:
+    """G5: no public self-registration surface -- never a 201, ever."""
     response = await client.post(
         "/api/v1/auth/register",
+        json={"email": "nobody@example.test", "password": VALID_PASSWORD, "display_name": "X"},
+    )
+    assert response.status_code == 404
+
+
+async def test_admin_provision_duplicate_email_is_conflict(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token, first = await _provision_via_admin_route(
+        client, fake_repository, email="dup-admin@example.test"
+    )
+    assert "user_id" in first, first
+    response = await client.post(
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
-            "email": "dup-http@example.test",
+            "email": "dup-admin@example.test",
             "password": VALID_PASSWORD,
             "display_name": "Again",
         },
@@ -128,8 +184,35 @@ async def test_register_duplicate_email_is_conflict(client: AsyncClient) -> None
     assert response.status_code == 409
 
 
-async def test_login_wrong_password_is_generic_401(client: AsyncClient) -> None:
-    await _register(client, "wrongpw@example.test")
+async def test_admin_provision_requires_authentication(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/v1/admin/users",
+        json={"email": "nobody@example.test", "password": VALID_PASSWORD, "display_name": "X"},
+    )
+    assert response.status_code == 401
+
+
+async def test_admin_provision_rejects_non_admin_caller(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "plain-user@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "plain-user@example.test", "password": VALID_PASSWORD}
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    response = await client.post(
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"email": "escalated@example.test", "password": VALID_PASSWORD, "display_name": "X"},
+    )
+    assert response.status_code == 403
+
+
+async def test_login_wrong_password_is_generic_401(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "wrongpw@example.test", fake_repository)
     response = await client.post(
         "/api/v1/auth/login", json={"email": "wrongpw@example.test", "password": "wrong-password"}
     )
@@ -152,8 +235,10 @@ async def test_me_with_garbage_bearer_token_is_401(client: AsyncClient) -> None:
 # --- Scenario 10: rate limiting returns safe 429 ----------------------------
 
 
-async def test_login_rate_limit_returns_429(client: AsyncClient) -> None:
-    await _register(client, "ratelimited@example.test")
+async def test_login_rate_limit_returns_429(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "ratelimited@example.test", fake_repository)
     body = {"email": "ratelimited@example.test", "password": "wrong-password"}
 
     from app.core.config import get_settings
@@ -187,7 +272,7 @@ async def test_refresh_rate_limit_returns_429(client: AsyncClient) -> None:
 
 
 async def test_refresh_rate_limit_returns_429_for_a_real_rotating_authenticated_client(
-    client: AsyncClient,
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
     """P5-REGRESSION-AUTH-001 regression test: a legitimate client presents
     its newest rotated refresh token on every call, exactly as a real
@@ -214,7 +299,7 @@ async def test_refresh_rate_limit_returns_429_for_a_real_rotating_authenticated_
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: fixed_clock_limiter
     limit = get_settings().auth_refresh_rate_limit
     email = "rotating-refresh@example.test"
-    await _register(client, email)
+    await _register(client, email, fake_repository)
     login = await client.post(
         "/api/v1/auth/login", json={"email": email, "password": VALID_PASSWORD}
     )
@@ -259,8 +344,10 @@ async def test_no_permissive_cors_header_is_ever_set(client: AsyncClient) -> Non
 # --- Scenario 19: Cache-Control: no-store on auth responses -----------------
 
 
-async def test_cache_control_no_store_on_successful_login(client: AsyncClient) -> None:
-    await _register(client, "cachecontrol@example.test")
+async def test_cache_control_no_store_on_successful_login(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "cachecontrol@example.test", fake_repository)
     response = await client.post(
         "/api/v1/auth/login",
         json={"email": "cachecontrol@example.test", "password": VALID_PASSWORD},
@@ -283,3 +370,71 @@ async def test_cache_control_no_store_on_me(client: AsyncClient) -> None:
 async def test_cache_control_not_forced_on_unrelated_endpoints(client: AsyncClient) -> None:
     response = await client.get("/healthz")
     assert response.headers.get("cache-control") != "no-store"
+
+
+# --- Gap-Closure WP-6 (G16): GET /api/v1/admin/workers -----------------------
+
+
+async def _login_as_admin(client: AsyncClient, fake_repository: FakeAccessControlRepository) -> str:
+    admin_email = f"admin-{uuid4().hex[:10]}@example.test"
+    await fake_repository.create_user(
+        make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
+    )
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": admin_email, "password": VALID_PASSWORD}
+    )
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
+
+
+async def test_list_workers_requires_admin(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "not-admin@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "not-admin@example.test", "password": VALID_PASSWORD},
+    )
+    token = login.json()["access_token"]
+
+    response = await client.get(
+        "/api/v1/admin/workers", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 403
+
+
+async def test_list_workers_unauthenticated_is_401(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/admin/workers")
+    assert response.status_code == 401
+
+
+async def test_list_workers_reports_liveness_and_never_the_credential_digest(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token = await _login_as_admin(client, fake_repository)
+    worker_id = uuid4()
+    await fake_repository.create_worker_credential(
+        WorkerCredentialRecord(
+            worker_id=worker_id,
+            display_name="cdr-worker-1",
+            status=WorkerCredentialStatus.ACTIVE,
+            allowed_processor_names=("cdr_generic_v1",),
+            credential_digest="super-secret-digest-must-never-appear-in-response",
+            created_at=datetime.now(UTC),
+            rotated_at=None,
+            revoked_at=None,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+
+    response = await client.get(
+        "/api/v1/admin/workers", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["worker_id"] == str(worker_id)
+    assert item["liveness"] == "active"
+    assert "credential_digest" not in response.text
+    assert "super-secret-digest" not in response.text

@@ -22,15 +22,19 @@ from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmi
 from app.modules.integrity.repository import (
     IntegrityRepository,
     IntegrityValidationError,
+    SigningKeyConflictError,
     checkpoint_signatures_table,
     integrity_events_table,
     merkle_checkpoints_table,
     modality_observation_provenance_table,
+    signing_keys_public_table,
     structured_observation_provenance_table,
 )
 from app.modules.integrity.service import IntegrityService
+from app.modules.integrity.signing import PublicKeyMaterial
 from app.modules.integrity.structured_provenance import build_structured_observation_provenance
 from tests.fixtures.factories import make_observation
+from tests.integration.integrity.conftest import _live_settings
 
 _NOW = datetime(2026, 9, 15, tzinfo=UTC)
 
@@ -120,6 +124,65 @@ async def test_checkpoint_build_is_idempotent_for_an_exact_range(
     assert first.checkpoint.root_hash == second.checkpoint.root_hash
 
 
+async def test_pending_checkpoint_range_covers_never_checkpointed_events(
+    repository: IntegrityRepository, case_id: UUID
+) -> None:
+    """Gap-Closure WP-5 (G4): a case with events but no checkpoint yet is
+    pending from sequence 1."""
+    await _seed_events(repository, case_id, 3)
+    pending = await repository.list_pending_checkpoint_ranges(limit=1000)
+    match = next(p for p in pending if p.case_id == case_id)
+    assert (match.start_sequence, match.end_sequence) == (1, 3)
+
+
+async def test_pending_checkpoint_range_starts_after_the_latest_checkpoint(
+    service: IntegrityService, case_id: UUID
+) -> None:
+    repository = service._repository  # noqa: SLF001 - test-only access
+    await _seed_events(repository, case_id, 5)
+    await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
+
+    pending = await repository.list_pending_checkpoint_ranges(limit=1000)
+    match = next(p for p in pending if p.case_id == case_id)
+    assert (match.start_sequence, match.end_sequence) == (4, 5)
+
+
+async def test_fully_checkpointed_case_has_no_pending_range(
+    service: IntegrityService, case_id: UUID
+) -> None:
+    repository = service._repository  # noqa: SLF001 - test-only access
+    await _seed_events(repository, case_id, 3)
+    await service.build_checkpoint(case_id=case_id, start_sequence=1, end_sequence=3)
+
+    pending = await repository.list_pending_checkpoint_ranges(limit=1000)
+    assert all(p.case_id != case_id for p in pending)
+
+
+async def test_build_pending_checkpoints_seals_every_case_with_pending_events(
+    service: IntegrityService, case_id: UUID
+) -> None:
+    """Gap-Closure WP-5 (G4): the scheduled-checkpointing sweep's core call."""
+    repository = service._repository  # noqa: SLF001 - test-only access
+    other_case_id = uuid4()
+    await _seed_events(repository, case_id, 2)
+    await _seed_events(repository, other_case_id, 2)
+
+    receipts = await service.build_pending_checkpoints(limit=1000)
+    sealed_case_ids = {r.checkpoint.case_id for r in receipts}
+    assert case_id in sealed_case_ids
+    assert other_case_id in sealed_case_ids
+
+    result = await service.verify_checkpoint(
+        next(r.checkpoint.checkpoint_id for r in receipts if r.checkpoint.case_id == case_id),
+        case_id=case_id,
+    )
+    assert result.ok is True
+
+    # A second sweep finds nothing left pending for either case.
+    second_pass = await service.build_pending_checkpoints(limit=1000)
+    assert all(r.checkpoint.case_id not in (case_id, other_case_id) for r in second_pass)
+
+
 async def test_overlapping_checkpoint_range_is_rejected(
     service: IntegrityService, case_id: UUID
 ) -> None:
@@ -203,6 +266,85 @@ async def test_database_rejects_checkpoint_and_signature_mutation(
         .values(key_id="changed"),
         sa.delete(checkpoint_signatures_table).where(
             checkpoint_signatures_table.c.checkpoint_id == receipt.checkpoint.checkpoint_id
+        ),
+    )
+    for statement in statements:
+        with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
+                await conn.execute(statement)
+
+
+async def test_register_signing_key_is_idempotent_for_the_same_key(
+    repository: IntegrityRepository,
+) -> None:
+    """Gap-Closure WP-5 (G4)."""
+    material = PublicKeyMaterial(
+        key_id=f"test-key-{uuid4().hex}",
+        algorithm="ed25519",
+        public_key_b64="a" * 44,
+        public_key_fingerprint="f" * 16,
+    )
+    first, first_is_new = await repository.register_signing_key(material, now=_NOW)
+    second, second_is_new = await repository.register_signing_key(material, now=_NOW)
+    assert (first_is_new, second_is_new) == (True, False)
+    assert first == second
+
+
+async def test_register_signing_key_conflict_raises_on_reused_key_id(
+    repository: IntegrityRepository,
+) -> None:
+    """A `key_id` must never silently start meaning a different key."""
+    key_id = f"test-key-{uuid4().hex}"
+    original = PublicKeyMaterial(
+        key_id=key_id, algorithm="ed25519", public_key_b64="a" * 44, public_key_fingerprint="f" * 16
+    )
+    await repository.register_signing_key(original, now=_NOW)
+
+    different = PublicKeyMaterial(
+        key_id=key_id, algorithm="ed25519", public_key_b64="b" * 44, public_key_fingerprint="e" * 16
+    )
+    with pytest.raises(SigningKeyConflictError):
+        await repository.register_signing_key(different, now=_NOW)
+
+
+async def test_list_signing_keys_orders_oldest_first(repository: IntegrityRepository) -> None:
+    earlier = PublicKeyMaterial(
+        key_id=f"test-key-{uuid4().hex}",
+        algorithm="ed25519",
+        public_key_b64="a" * 44,
+        public_key_fingerprint="f" * 16,
+    )
+    later = PublicKeyMaterial(
+        key_id=f"test-key-{uuid4().hex}",
+        algorithm="ed25519",
+        public_key_b64="b" * 44,
+        public_key_fingerprint="e" * 16,
+    )
+    await repository.register_signing_key(earlier, now=_NOW)
+    await repository.register_signing_key(later, now=_NOW + timedelta(seconds=1))
+
+    keys = await repository.list_signing_keys()
+    key_ids = [k.key_id for k in keys]
+    assert key_ids.index(earlier.key_id) < key_ids.index(later.key_id)
+
+
+async def test_database_rejects_signing_keys_public_mutation(
+    repository: IntegrityRepository,
+) -> None:
+    material = PublicKeyMaterial(
+        key_id=f"test-key-{uuid4().hex}",
+        algorithm="ed25519",
+        public_key_b64="a" * 44,
+        public_key_fingerprint="f" * 16,
+    )
+    await repository.register_signing_key(material, now=_NOW)
+
+    statements = (
+        sa.update(signing_keys_public_table)
+        .where(signing_keys_public_table.c.key_id == material.key_id)
+        .values(public_key_fingerprint="changed"),
+        sa.delete(signing_keys_public_table).where(
+            signing_keys_public_table.c.key_id == material.key_id
         ),
     )
     for statement in statements:
@@ -304,6 +446,27 @@ async def test_modality_provenance_is_case_scoped_idempotent_and_append_only(
         with pytest.raises(sa.exc.DBAPIError, match="append-only"):
             async with repository._engine.begin() as conn:  # noqa: SLF001 - direct SQL boundary proof
                 await conn.execute(statement)
+
+
+async def test_register_current_signing_key_round_trips_through_the_service(
+    repository: IntegrityRepository,
+) -> None:
+    """Gap-Closure WP-5 (G4): `rotate-key`'s underlying service call, exercised
+    against a real Postgres row -- a unique `key_id` avoids colliding with
+    other tests sharing this session's database."""
+    settings = _live_settings(integrity_signing_key_id=f"rotate-key-{uuid4().hex}")
+    service = IntegrityService(repository, settings)
+
+    registered, is_new = await service.register_current_signing_key()
+    assert is_new is True
+    assert registered.key_id == settings.integrity_signing_key_id
+
+    replayed, replayed_is_new = await service.register_current_signing_key()
+    assert replayed_is_new is False
+    assert replayed.public_key_fingerprint == registered.public_key_fingerprint
+
+    keys = await service.list_signing_keys()
+    assert any(k.key_id == settings.integrity_signing_key_id for k in keys)
 
 
 async def test_full_build_verify_export_round_trip_succeeds(

@@ -1,8 +1,17 @@
-"""The Phase 5 intelligence worker: two independent, explicit CLI actions.
+"""The Phase 5 intelligence worker: several independent, explicit CLI actions.
 
     uv run python -m app.modules.graph.intelligence_worker --replay-once
     uv run python -m app.modules.graph.intelligence_worker --replay-loop
     uv run python -m app.modules.graph.intelligence_worker --generate --case-id <uuid>
+    uv run python -m app.modules.graph.intelligence_worker --evaluate --case-id <uuid>
+
+`--evaluate` (Gap-Closure WP-7B, G1) scores one case's entity-resolution
+candidates against `TRACEX_SYNTHETIC_DATA_ROOT` truth data -- see
+`intelligence/evaluation.py`/`intelligence/truth_loader.py`. Prints a
+`deferred: true` report and exits 0 (never an error) if that environment
+variable is unset; this CLI is the only sanctioned way to run offline
+evaluation -- never a live request path (see `truth_loader.py`'s own
+import-boundary docstring and its static test).
 
 This is the minimal composition/registration wiring the Phase 5A
 reconciliation audit found missing: `intelligence/projection.py`'s semantic
@@ -42,12 +51,31 @@ from uuid import UUID
 import structlog
 
 from app.core.config import Settings, get_settings
+from app.modules.graph.entity_repository import EntityRepository
+from app.modules.graph.entity_repository import create_engine as create_entity_engine
+from app.modules.graph.hypothesis_repository import HypothesisRepository
+from app.modules.graph.hypothesis_repository import create_engine as create_hypothesis_engine
 from app.modules.graph.integration_projector import GraphUpdateRunSummary, replay_graph_updates
 from app.modules.graph.integration_repository import GraphCorrelationIntegrationRepository
 from app.modules.graph.integration_repository import create_engine as create_postgres_engine
+from app.modules.graph.intelligence.evaluation import (
+    OfflineEvaluationReport,
+    run_offline_evaluation,
+)
 from app.modules.graph.intelligence.pipeline import run_case_correlation_pass
 from app.modules.graph.intelligence.projection import make_correlation_projection_handler
+from app.modules.graph.intelligence.scoring import RULES_CONFIG_HASH
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+from app.modules.graph.review_projection_outbox import ReviewProjectionOutboxRepository
+from app.modules.graph.review_projection_outbox import (
+    create_engine as create_review_projection_outbox_engine,
+)
+from app.modules.graph.review_projection_replay import (
+    ReviewProjectionReplaySummary,
+    replay_review_hypothesis_projections,
+)
+from app.modules.graph.review_repository import CandidateReviewRepository
+from app.modules.graph.review_repository import create_engine as create_review_engine
 from app.modules.integrity.repository import IntegrityRepository
 from app.modules.integrity.repository import create_engine as create_integrity_engine
 from app.modules.integrity.service import IntegrityService
@@ -89,6 +117,43 @@ async def replay_once(settings: Settings) -> GraphUpdateRunSummary:
         )
     finally:
         await repository.close()
+        await graph.close()
+
+
+async def replay_review_once(settings: Settings) -> ReviewProjectionReplaySummary:
+    """Claim and attempt one bounded batch of `review_hypothesis_projection_events`
+    (Gap-Closure WP-4, G13), then close every connection this opened.
+
+    Single-batch only, mirroring `replay_once`'s simpler shape -- no
+    `--replay-review-loop` daemon mode exists yet (a documented, honestly
+    scoped simplification; see `docs/qa/known-limitations.md`'s "WP-4"
+    section). An operator runs this repeatedly (cron, or a wrapping shell
+    loop) until `claimed == 0`.
+    """
+    postgres_engine = create_postgres_engine(settings)
+    integration_repository = GraphCorrelationIntegrationRepository(postgres_engine)
+    review_repository = CandidateReviewRepository(create_review_engine(settings))
+    hypothesis_repository = HypothesisRepository(create_hypothesis_engine(settings))
+    outbox = ReviewProjectionOutboxRepository(create_review_projection_outbox_engine(settings))
+    neo4j_driver = create_driver(settings)
+    graph = Neo4jGraphRepository(neo4j_driver)
+    try:
+        return await replay_review_hypothesis_projections(
+            outbox,
+            review_repository=review_repository,
+            hypothesis_repository=hypothesis_repository,
+            integration_repository=integration_repository,
+            graph_repository=graph,
+            postgres_engine=postgres_engine,
+            lease_seconds=_DEFAULT_LEASE_SECONDS,
+            batch_size=_DEFAULT_BATCH_SIZE,
+            now=datetime.now(UTC),
+        )
+    finally:
+        await integration_repository.close()
+        await review_repository.close()
+        await hypothesis_repository.close()
+        await outbox.close()
         await graph.close()
 
 
@@ -262,6 +327,28 @@ async def generate_once(settings: Settings, case_id: UUID) -> bool:
     return True
 
 
+async def evaluate_once(settings: Settings, case_id: UUID) -> OfflineEvaluationReport:
+    """Gap-Closure WP-7B (G1): score one case's entity-resolution candidates
+    against `TRACEX_SYNTHETIC_DATA_ROOT` truth data, if configured.
+
+    Returns a `deferred=True` report (never raises) when no truth root is
+    configured -- see `evaluation.run_offline_evaluation`'s own docstring.
+    """
+    repository = EntityRepository(create_entity_engine(settings))
+    try:
+        report = await run_offline_evaluation(
+            repository, case_id, rules_config_hash=RULES_CONFIG_HASH
+        )
+    finally:
+        await repository.close()
+    logger.info(
+        "graph.intelligence_worker.evaluate_completed",
+        case_id=str(case_id),
+        deferred=report.deferred,
+    )
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.modules.graph.intelligence_worker",
@@ -282,13 +369,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Run one retrieval/scoring/correlation pass for --case-id, then exit.",
     )
+    mode.add_argument(
+        "--replay-review-once",
+        action="store_true",
+        help="Replay one bounded batch of review/hypothesis projection events, then exit.",
+    )
+    mode.add_argument(
+        "--evaluate",
+        action="store_true",
+        help=(
+            "Score --case-id's entity-resolution candidates against "
+            "TRACEX_SYNTHETIC_DATA_ROOT truth data, then exit."
+        ),
+    )
     parser.add_argument(
-        "--case-id", type=str, default=None, help="Required with --generate: the case to process."
+        "--case-id",
+        type=str,
+        default=None,
+        help="Required with --generate/--evaluate: the case to process.",
     )
     args = parser.parse_args(argv)
 
     if args.generate and not args.case_id:
         parser.error("--generate requires --case-id")
+    if args.evaluate and not args.case_id:
+        parser.error("--evaluate requires --case-id")
 
     _configure_logging()
     settings = get_settings()
@@ -307,6 +412,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             failed=summary.failed,
         )
         return 1 if summary.failed > 0 else 0
+
+    if args.replay_review_once:
+        try:
+            review_summary = asyncio.run(replay_review_once(settings))
+        except Exception as exc:  # a startup/connection failure, not a per-event outcome
+            logger.error(
+                "graph.intelligence_worker.replay_review_run_failed", exc_type=type(exc).__name__
+            )
+            return 1
+        logger.info(
+            "graph.intelligence_worker.replay_review_run_completed",
+            claimed=review_summary.claimed,
+            succeeded=review_summary.succeeded,
+            failed=review_summary.failed,
+        )
+        return 1 if review_summary.failed > 0 else 0
 
     if args.replay_loop:
         try:
@@ -332,6 +453,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError:
         parser.error("--case-id must be a valid UUID")
         return 2  # pragma: no cover - argparse.error already exits
+
+    if args.evaluate:
+        try:
+            report = asyncio.run(evaluate_once(settings, case_id))
+        except Exception as exc:  # a startup/connection/truth-load failure
+            logger.error(
+                "graph.intelligence_worker.evaluate_run_failed", exc_type=type(exc).__name__
+            )
+            return 1
+        print(report.model_dump_json(indent=2))
+        return 0
 
     try:
         asyncio.run(generate_once(settings, case_id))

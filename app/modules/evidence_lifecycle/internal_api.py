@@ -44,7 +44,12 @@ from app.core.config import Settings, get_settings
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import record_audit_event, record_audit_event_safely
 from app.modules.access_control.dependencies import get_access_control_repository
-from app.modules.access_control.models import AuditOutcome
+from app.modules.access_control.models import (
+    AuditOutcome,
+    WorkerLivenessListResponse,
+    WorkerLivenessView,
+    worker_liveness_status,
+)
 from app.modules.access_control.repository import AccessControlRepository
 from app.modules.evidence_lifecycle.dependencies import (
     WorkerPrincipal,
@@ -737,3 +742,48 @@ def _safe_content_disposition(filename: str) -> str:
     ascii_fallback = sanitized.encode("ascii", errors="replace").decode("ascii")
     encoded = quote(sanitized, safe="")
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
+# --- Gap-Closure WP-6 (G16, re-close): GET /api/v1/internal/workers ---------
+#
+# Separate router (`/api/v1/internal`, not `/api/v1/internal/worker-jobs`) --
+# a fleet-wide worker listing is a different resource than one job's
+# lifecycle, but stays in this same file because it shares this module's
+# worker-authentication boundary: `require_worker_principal`, the same
+# shared, revocable per-worker credential every other route above already
+# requires. The plan asks for this route to be worker-credential-scoped
+# (an authenticated worker/ops sidecar can see fleet health), not
+# admin-only; `GET /api/v1/admin/workers` (Gap-Closure WP-6) already exists
+# as a stricter, additional admin-gated view of the same data -- this
+# route doesn't replace that, it adds the spec-required surface.
+
+worker_fleet_router = APIRouter(prefix="/api/v1/internal", tags=["worker-internal"])
+
+
+@worker_fleet_router.get("/workers", response_model=WorkerLivenessListResponse)
+async def list_worker_fleet(
+    principal: Annotated[WorkerPrincipal, Depends(require_worker_principal)],
+    ac_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> WorkerLivenessListResponse:
+    """The same heartbeat-registry view `GET /api/v1/admin/workers` exposes
+    to a system admin, here reachable with any valid worker credential --
+    never the credential digest, structurally (`WorkerLivenessView` has no
+    such field)."""
+    credentials = await ac_repository.list_worker_credentials()
+    now = datetime.now(UTC)
+    return WorkerLivenessListResponse(
+        items=tuple(
+            WorkerLivenessView(
+                worker_id=c.worker_id,
+                display_name=c.display_name,
+                status=c.status,
+                allowed_processor_names=c.allowed_processor_names,
+                last_seen_at=c.last_seen_at,
+                liveness=worker_liveness_status(
+                    c, now=now, stale_seconds=settings.worker_heartbeat_stale_seconds
+                ),
+            )
+            for c in credentials
+        )
+    )

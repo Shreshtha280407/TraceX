@@ -1281,3 +1281,185 @@ this task. No Part 4 candidate is selected; Gate C decides after Parts
   changes: see `docs/qa/test-results.md`'s dated Phase 7 Part 6 entry for
   exact commands and results. No Docker, Compose, LAN, deployment, external
   dataset, or model-download command was run, by scope.
+
+# Phase 7 Closure — WP-1: auth hardening + case management API (Shreshtha)
+
+- [x] G5 CLOSED: `POST /api/v1/auth/register` removed (404); admin-only
+  `POST /api/v1/admin/users` plus a `create-admin` bootstrap CLI added.
+- [x] G6 CLOSED: `POST /api/v1/cases`, `GET /api/v1/cases/{id}`,
+  `GET /api/v1/cases/{id}/status`, `POST /api/v1/cases/{id}/members` added;
+  per-evidence classification wired into `policy.py`'s existing
+  `resource_classification` hook.
+- [x] New additive migration `1a2b3c4d5e6f` (`users.system_role`); exactly
+  one alembic head.
+- [x] New tests: `tests/unit/access_control/{test_cases_api,test_cli}.py`,
+  plus targeted additions to `test_api.py`/`test_service.py` and a new
+  evidence-classification test in `test_evidence_api.py`. ~19 existing
+  test files updated to seed users directly instead of calling the now-
+  removed `/register` route (no assertion weakened).
+- [x] `docs/decisions/ADR-019-admin-provisioning-and-case-management.md`
+  (new), `docs/qa/known-limitations.md` ("WP-1" section, new).
+- [x] Focused tests green (see `docs/qa/test-results.md`'s dated WP-1
+  entry); `git status --short`/`git diff --cached --stat` remain empty
+  throughout (nothing staged).
+
+# Phase 7 Closure — WP-2: entity layer + resolution review (Shreshtha)
+
+- [x] G2 CLOSED: `EntityV1` instantiated for the first time
+  (`app/modules/graph/entity_service.py`); new `entities`,
+  `entity_resolution_candidates`, `entity_review_decisions` tables
+  (migration `2b3c4d5e6f7a`); routes `GET /api/v1/entities/{id}`,
+  `GET /api/v1/cases/{id}/entity-candidates`,
+  `POST /api/v1/entities/{id}/resolution-review`.
+- [x] Candidate generation reuses the existing observation-retrieval
+  cascade (`sourcing.descriptors_from_observation` +
+  `retrieval.retrieve_candidates`) unchanged; no new matching/scoring
+  logic; `scoring.py` (frozen, Gate C-bound) untouched.
+- [x] No automatic merge, verified: an exact-identifier match between two
+  observations produces a reviewable candidate, never a merged entity.
+  Review decisions are reversible (`verified_same` -> `split`), append-only.
+- [x] New tests: `tests/unit/graph/{test_entity_service,test_entity_api}.py`
+  (14 tests) plus `tests/fixtures/graph/fake_entity_repository.py`.
+- [x] `docs/decisions/ADR-020-entity-layer-and-resolution-review.md` (new),
+  `docs/qa/known-limitations.md` ("WP-2" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-3: graph taxonomy alignment (Shreshtha)
+
+- [x] G10 CLOSED (relationship-kind enforcement): new
+  `app/modules/graph/taxonomy.py` validator; three new, evidence-backed
+  `GraphRelationshipKind` values (`POSSIBLY_SAME_AS`,
+  `CANDIDATE_ASSOCIATION`, `CONTRADICTED_BY`); `entity_type`/`event_type`
+  remain advisory-only, consistent with `EntityV1`'s frozen-contract intent.
+- [x] New, additive `app/modules/graph/entity_projection.py` projects
+  `POSSIBLY_SAME_AS`/`CONTRADICTED_BY` from WP-2's own
+  `entity_resolution_candidates` — `MATCH`-only on both entities (never
+  creates a node as a side effect), defers (never fabricates) if either
+  entity isn't projected yet.
+- [x] G11, G12 documented as open, unchanged by design (see ADR-021).
+  `PART_OF_THREAD` deliberately not added (no durable record backs it);
+  `CANDIDATE_ASSOCIATION` documented but not yet wired into Phase 5's
+  existing projector (out of scope, flagged as a follow-up).
+- [x] New tests: `tests/unit/graph/{test_taxonomy,test_entity_projection}.py`
+  (27 tests).
+- [x] `docs/decisions/ADR-021-graph-taxonomy-alignment.md` (new),
+  `docs/qa/known-limitations.md` ("WP-3" section, new).
+- [x] Existing projection/graph tests unchanged and green; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-4: review memory, evidence audit, projection replay (Shreshtha)
+
+- [x] G13 CLOSED: new, separate `review_hypothesis_projection_events`
+  durable outbox (migration `3c4d5e6f7a8b`) plus `review_projection_
+  replay.py`; `intelligence_worker.py --replay-review-once` drains it.
+  `submit_candidate_review_decision`/`create_hypothesis`/`submit_
+  hypothesis_review_decision` now enqueue-then-attempt-then-mark.
+- [x] G3 CLOSED: append-only `case_notes` (migration `4d5e6f7a8b9c`),
+  role-gated read-all via `CaseAction.CASE_NOTE_READ_ALL`;
+  `graph/handoff_service.py::build_handoff_summary` (computed, no new
+  table) exposed at `GET /api/v1/cases/{id}/handoff`.
+- [x] G7 (partial) CLOSED: `include_rejected` filter on
+  `list_candidates_for_review`/`list_hypotheses`; new
+  `GET/POST .../evidence/{id}/integrity`/`reprocess` routes; new
+  `GET /api/v1/cases/{id}/audit` route.
+- [ ] Deferred: hypothesis "contradicting" evidence fields — documented,
+  not implemented (see ADR-022, `known-limitations.md` "WP-4").
+- [x] New tests: `test_review_projection_replay.py`, `test_handoff_
+  service.py`, `test_notes_service.py`, plus 8 new evidence-API tests
+  (22 total in `test_evidence_api.py`).
+- [x] `docs/decisions/ADR-022-review-memory-and-evidence-audit.md` (new),
+  `docs/qa/known-limitations.md` ("WP-4" section, new).
+- [x] Exactly one alembic head after both new migrations; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-5: integrity hardening (Shreshtha)
+
+- [x] G4 CLOSED: reconciliation coverage extended to entity-resolution
+  decisions and case notes (new `ENTITY_RESOLUTION_DECISION`/
+  `CASE_NOTE_ADDED` event kinds, best-effort write-time recording, and
+  reconciliation scan branches for both -- previously zero coverage).
+- [x] G4 CLOSED: `signing_keys_public` append-only registry (migration
+  `5e6f7a8b9c0d`) + `rotate-key`/`list-keys` CLI commands.
+- [x] G4 CLOSED: `ManifestSink` protocol (`manifest_sink.py`) --
+  `FilesystemManifestSink`/`MinioManifestSink` + `archive` CLI command.
+- [x] G4 CLOSED: scheduled checkpointing -- `checkpoint-once`/
+  `checkpoint-loop` CLI commands, discovery via the pre-existing
+  `integrity_sequence_counters` table (no new table).
+- [x] Genuine pre-existing gap found and fixed: `test_migration_head.py`
+  hardcoded a stale alembic head, broken since WP-1 -- updated.
+- [x] New tests: `test_manifest_sink.py` (3), 2 new `test_signing.py`
+  cases, `test_entity_models.py` (3), `test_notes_models.py` (4), 3 new
+  `test_cases_api.py` cases (first-ever HTTP coverage for the WP-4 notes/
+  audit routes), 9 new + 2 new live-integration tests (self-skip: no
+  live Postgres in this environment, honestly reported as
+  live-unverified, not verified).
+- [x] `docs/decisions/ADR-023-integrity-hardening.md` (new),
+  `docs/qa/known-limitations.md` ("WP-5" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-7B: offline evaluation harness (Shreshtha)
+
+- [x] G1 CLOSED (code only): real `run_offline_evaluation` scoring
+  entity-resolution candidates against a truth spec; `intelligence_
+  worker.py --evaluate` CLI entry point; grep-enforced import boundary
+  (never reachable from a route).
+- [ ] Truth data itself NOT authored (WP-7A, sibling `TraceX-Synthetic-
+  Data` repository, out of this codebase's scope by explicit user
+  instruction) -- exact JSON schema documented in ADR-025.
+- [x] New tests: 12 in `test_intelligence_evaluation.py`, 2 in
+  `test_intelligence_worker_loop.py`.
+- [x] `docs/decisions/ADR-025-offline-evaluation-harness.md` (new),
+  `docs/qa/known-limitations.md` ("WP-7B" section, new).
+- [x] No migration this WP; `git status --short`/`git diff --cached
+  --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-8: CI, compose profiles, runbooks, cleanup (Shreshtha)
+
+- [x] G14 CLOSED: live `postgres`/`neo4j`/`redis` CI service containers
+  (+ manual MinIO container start); `gitleaks` secret scan (allowlist
+  verified against 2 real, confirmed-harmless false positives); nightly
+  `schedule:` cron rerunning the same live-infra job.
+- [x] G15 CLOSED: `cpu-worker`/`gpu-worker` compose profiles replace the
+  single `workers` profile; two brand-new services (`structured-worker`,
+  `communication-worker`) that previously had none.
+- [x] G18 CLOSED: `docs/runbooks/{backup-restore,integrity-verification}.md`
+  (both new, documentation only).
+- [ ] G19 CLOSED (partial): `:memory:.ses` deleted + gitignored; root
+  cause traced to a commit but not confirmed to a specific library
+  (heavy ML extras not installed in this environment to test further).
+- [x] `docs/decisions/ADR-026-ci-compose-profiles-and-cleanup.md` (new),
+  `docs/qa/known-limitations.md` ("WP-8" section, new).
+- [x] `docker compose config` passes; bare `docker compose up` services
+  list verified unchanged; `git status --short`/`git diff --cached
+  --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-6: read APIs, event catalog, worker liveness, pagination (Shreshtha)
+
+- [x] G7 (rest) CLOSED: `GET /cases/{id}/graph`, `POST .../graph/path`,
+  `GET .../analytics`, `GET .../motifs` -- scoped to `Entity`/`Event`
+  nodes per this module's existing no-raw-Neo4j-detail rule.
+- [x] G16 CLOSED: `worker_credentials.last_seen_at` heartbeat registry
+  (migration `6f7a8b9c0d1e`), populated on every successful worker auth;
+  `GET /api/v1/admin/workers` (admin-gated).
+- [x] G17 CLOSED: `/readyz`'s `worker_process_liveness` is real
+  (heartbeat-derived counts) when it can be, honestly `not_observed`
+  when it cannot.
+- [x] G8 CLOSED: `AuditEventType` catalog (29 verified values) +
+  drift-prevention test; `record_audit_event`'s signature intentionally
+  unchanged (risk-scoped, see ADR-024). "21-name" figure from the
+  original prompt unverifiable (source document unavailable).
+- [x] G7 pagination (partial) CLOSED: `offset` added to `list_hypotheses`/
+  `list_notes`; Phase 5's `list_candidates` deliberately untouched
+  (Gate-C-adjacent risk).
+- [x] Genuine pre-existing gap found and fixed (third recurrence):
+  `test_migration_head.py`'s hardcoded head, stale again.
+- [x] New tests: 12 in `test_graph_api.py`, 5 across health/worker-
+  identity tests, 3 in `test_api.py`, 3 in `test_audit_event_catalog.py`,
+  1 in `test_cases_api.py` (24 new tests total).
+- [x] `docs/decisions/ADR-024-read-apis-event-catalog-worker-liveness.md`
+  (new), `docs/architecture/audit-event-catalog.md` (new),
+  `docs/qa/known-limitations.md` ("WP-6" section, new).
+- [x] Exactly one alembic head after the new migration; `git status
+  --short`/`git diff --cached --stat` remain empty (nothing staged).

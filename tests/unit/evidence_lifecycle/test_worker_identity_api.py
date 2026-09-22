@@ -47,7 +47,11 @@ from app.modules.evidence_lifecycle.dependencies import (
 from app.modules.evidence_lifecycle.jobs import FakeJobProducer
 from app.modules.evidence_lifecycle.models import WorkerJobRecord
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
-from tests.fixtures.access_control.factories import make_case_record, make_membership_record
+from tests.fixtures.access_control.factories import (
+    make_case_record,
+    make_membership_record,
+    make_user_record,
+)
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 from tests.fixtures.evidence_lifecycle.fake_repository import FakeEvidenceLifecycleRepository
 
@@ -168,6 +172,60 @@ async def test_valid_worker_credential_authenticates_and_claims(
     body = response.json()
     assert body["job"]["job_id"] == str(job.job_id)
     assert evidence_repository.jobs[job.job_id].claimed_by_worker_id == worker_id
+
+
+async def test_successful_authentication_populates_the_heartbeat_registry(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
+) -> None:
+    """Gap-Closure WP-6 (G16): `require_worker_principal` touches `last_seen_at`
+    on every successful auth -- no separate heartbeat endpoint is needed to
+    populate the registry `GET /api/v1/admin/workers` reads from."""
+    worker_id, token = await _provision_worker(ac_repository)
+    assert ac_repository.worker_credentials[worker_id].last_seen_at is None
+    job = _seed_queued_job(evidence_repository)
+
+    response = await client.post(
+        "/api/v1/internal/worker-jobs/claim",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"processor_name": job.processor_name, "processor_version": job.processor_version},
+    )
+
+    assert response.status_code == 200, response.text
+    assert ac_repository.worker_credentials[worker_id].last_seen_at is not None
+
+
+# --- Gap-Closure WP-6 (G16, re-close): GET /api/v1/internal/workers ---------
+
+
+async def test_worker_fleet_route_is_reachable_with_any_valid_worker_credential(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    """The plan requires this route to be worker-credential-scoped, not
+    admin-only -- any authenticated worker can see fleet health."""
+    _worker_id, token = await _provision_worker(ac_repository)
+
+    response = await client.get(
+        "/api/v1/internal/workers", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) == 1
+
+
+async def test_worker_fleet_route_requires_worker_authentication(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/internal/workers")
+    assert response.status_code == 401
+
+
+async def test_worker_fleet_route_never_exposes_a_credential_digest(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    _worker_id, token = await _provision_worker(ac_repository)
+    response = await client.get(
+        "/api/v1/internal/workers", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert "credential_digest" not in response.text
 
 
 # --- Scenario 4: missing/malformed/blank/invalid/revoked credentials fail closed ---
@@ -458,15 +516,12 @@ async def test_job_view_never_exposes_worker_identity_internals(
 ) -> None:
     email = f"agent-{uuid4().hex[:10]}@example.test"
     password = "correct-horse-battery-staple"  # noqa: S105
-    register = await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": password, "display_name": "Agent"},
-    )
-    assert register.status_code == 201, register.text
+    user = make_user_record(email_normalized=email)
+    await ac_repository.create_user(user)
     login = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert login.status_code == 200
     user_token = login.json()["access_token"]
-    user_id = register.json()["user_id"]
+    user_id = user.user_id
 
     case = make_case_record(classification=ClearanceLevel.CONFIDENTIAL)
     await ac_repository.create_case(case)

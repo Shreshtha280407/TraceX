@@ -167,6 +167,11 @@ class HypothesisActionRecord(GraphModel):
 
 class HypothesisListResponse(GraphModel):
     items: tuple[HypothesisRecord, ...]
+    #: Gap-Closure re-close (G17): an opaque, case-bound, tamper-evident
+    #: cursor (see `core.pagination`) a caller passes back as `?cursor=...`
+    #: to fetch the next page. `None` when this page was empty -- there is
+    #: nothing to resume from.
+    next_cursor: str | None = None
 
 
 class HypothesisValidationError(ValueError):

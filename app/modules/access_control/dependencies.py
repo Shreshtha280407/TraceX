@@ -35,7 +35,10 @@ from app.modules.access_control.models import (
     AuthenticatedPrincipal,
     AuthorizedCasePrincipal,
     CaseAction,
+    SystemRole,
 )
+from app.modules.access_control.notes_repository import CaseNoteRepository
+from app.modules.access_control.notes_repository import create_engine as create_notes_engine
 from app.modules.access_control.policy import authorize_case_action
 from app.modules.access_control.rate_limit import RateLimiter, RedisRateLimiter
 from app.modules.access_control.repository import AccessControlRepository, create_engine
@@ -45,6 +48,7 @@ from app.modules.access_control.tokens import decode_access_token
 _settings = get_settings()
 _engine = create_engine(_settings)
 _repository = AccessControlRepository(_engine)
+_notes_repository = CaseNoteRepository(create_notes_engine(_settings))
 _redis_client: redis.Redis = redis.from_url(str(_settings.redis_url))
 _login_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _refresh_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
@@ -57,6 +61,10 @@ _INVALID_TOKEN_DETAIL = "invalid or expired access token"
 
 def get_access_control_repository() -> AccessControlRepository:
     return _repository
+
+
+def get_case_note_repository() -> CaseNoteRepository:
+    return _notes_repository
 
 
 def get_login_rate_limiter() -> RateLimiter:
@@ -231,6 +239,44 @@ def require_case_action(
     return _dependency
 
 
+async def require_system_admin(
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> AuthenticatedPrincipal:
+    """Gate `POST /api/v1/admin/users`: the caller must be an active admin.
+
+    Deliberately a separate check from `require_case_action` -- admin
+    provisioning is deployment-wide, not case-scoped, so it has no
+    `case_id` to authorize against. Same default-deny shape: a missing
+    user row, an inactive user, or a non-admin `system_role` all deny with
+    the same generic 403, never revealing which condition failed.
+    """
+    try:
+        user = await repository.get_user_by_id(principal.user_id)
+    except sa.exc.SQLAlchemyError as exc:
+        logger.warning(
+            "authorization.admin_dependency_unavailable",
+            request_id=get_request_id() or None,
+            principal_ref=str(principal.user_id),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="authorization service temporarily unavailable",
+        ) from exc
+    if user is None or not user.is_active or user.system_role != SystemRole.ADMIN:
+        await record_audit_event_safely(
+            repository,
+            event_type="admin.access_denied",
+            outcome=AuditOutcome.DENIED,
+            now=datetime.now(UTC),
+            request_id=get_request_id() or None,
+            user_id=principal.user_id,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
+    return principal
+
+
 require_case_read = require_case_action(CaseAction.CASE_READ)
 require_evidence_read = require_case_action(CaseAction.EVIDENCE_READ)
 require_graph_read = require_case_action(CaseAction.GRAPH_READ)
@@ -239,3 +285,6 @@ require_integrity_verify = require_case_action(CaseAction.INTEGRITY_VERIFY)
 require_integrity_export = require_case_action(CaseAction.INTEGRITY_EXPORT)
 require_review_decision = require_case_action(CaseAction.REVIEW_DECIDE)
 require_hypothesis_propose = require_case_action(CaseAction.HYPOTHESIS_PROPOSE)
+require_member_manage = require_case_action(CaseAction.MEMBER_MANAGE)
+require_case_note_write = require_case_action(CaseAction.CASE_NOTE_WRITE)
+require_case_note_read_all = require_case_action(CaseAction.CASE_NOTE_READ_ALL)

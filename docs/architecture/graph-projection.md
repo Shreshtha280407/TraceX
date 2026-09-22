@@ -156,7 +156,7 @@ Three new, narrowly-scoped settings (`app/core/config.py`, `.env.example`, `comp
 | `GRAPH_PROJECTOR_MAX_BACKOFF_SECONDS` | 60 | `--loop` only: exponential-backoff ceiling on repeated failure |
 | `GRAPH_PROJECTOR_MAX_CONSECUTIVE_FAILURES` | 5 | `--loop` only: consecutive failures before the loop stops itself |
 
-An optional `graph-projector` Compose service (Phase 2 closeout, `profiles: ["workers"]` — not started by a plain `docker compose up`) runs `--loop` continuously; see `docs/runbooks/local-development.md`. No new exposed port, no credential ever handed to an external worker — this module remains the one backend-owned exception to "workers never hold direct PostgreSQL/Neo4j credentials" (see `worker.py`'s module docstring), unchanged by adding `--loop`.
+An optional `graph-projector` Compose service (Phase 2 closeout, `profiles: ["cpu-worker"]` since Gap-Closure WP-8 — not started by a plain `docker compose up`) runs `--loop` continuously; see `docs/runbooks/local-development.md`. No new exposed port, no credential ever handed to an external worker — this module remains the one backend-owned exception to "workers never hold direct PostgreSQL/Neo4j credentials" (see `worker.py`'s module docstring), unchanged by adding `--loop`.
 
 ## Testing
 

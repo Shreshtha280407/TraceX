@@ -40,13 +40,23 @@ class GraphNodeKind(StrEnum):
 class GraphRelationshipKind(StrEnum):
     """Relationship types written by `projection.py`. Matches `graph-taxonomy-v1.md`.
 
-    There is deliberately no entity-to-entity kind in this enum: TraceX never
-    models a call/meeting/transaction/sighting/message as a direct, timeless
-    edge between two `Entity` nodes -- every such connection is mediated by a
-    time-bounded `Event` via `HAS_PARTICIPANT`. There is likewise no
-    `EntityMention`-to-`EntityMention` or `EntityMention`-to-`Entity` kind:
-    a mention is evidence-local only (see `EntityMentionNode`) -- resolving
-    it into a real `Entity` is later-phase entity-resolution work.
+    There is deliberately no *evidentiary* entity-to-entity kind in this
+    enum: TraceX never models a call/meeting/transaction/sighting/message
+    as a direct, timeless edge between two `Entity` nodes -- every such
+    connection is mediated by a time-bounded `Event` via `HAS_PARTICIPANT`.
+    There is likewise no `EntityMention`-to-`EntityMention` or
+    `EntityMention`-to-`Entity` kind: a mention is evidence-local only (see
+    `EntityMentionNode`) -- resolving it into a real `Entity` is later-phase
+    entity-resolution work.
+
+    `POSSIBLY_SAME_AS`/`CONTRADICTED_BY` (Gap-Closure WP-3, G10) are the
+    one deliberate exception, and are not evidentiary edges at all: they
+    are identity-*resolution* review metadata (WP-2, ADR-020) -- "these two
+    `Entity` nodes might be the same identity, pending human review", never
+    an assertion that the underlying identities interacted. They still
+    never assert or imply a merge; only an explicit `EntityReviewDecisionRecord`
+    (never this edge's mere existence) can do that. See
+    `docs/decisions/ADR-021-graph-taxonomy-alignment.md`.
     """
 
     HAS_EVIDENCE = "HAS_EVIDENCE"
@@ -62,6 +72,12 @@ class GraphRelationshipKind(StrEnum):
     HAS_CLAIM_PARTICIPANT = "HAS_CLAIM_PARTICIPANT"
     SUPPORTED_BY_OBSERVATION = "SUPPORTED_BY_OBSERVATION"
     REFERENCES_CANDIDATE = "REFERENCES_CANDIDATE"
+    #: Gap-Closure WP-3 (G10) additions -- see `docs/decisions/
+    #: ADR-021-graph-taxonomy-alignment.md`. Each is written only where a
+    #: real durable record backs it; none is a fabricated edge.
+    POSSIBLY_SAME_AS = "POSSIBLY_SAME_AS"
+    CANDIDATE_ASSOCIATION = "CANDIDATE_ASSOCIATION"
+    CONTRADICTED_BY = "CONTRADICTED_BY"
 
 
 class AssertionKind(StrEnum):

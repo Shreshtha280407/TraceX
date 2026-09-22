@@ -40,11 +40,18 @@ from app.modules.access_control.dependencies import (
     require_case_action,
     require_evidence_read,
 )
-from app.modules.access_control.models import AuditOutcome, AuthorizedCasePrincipal, CaseAction
+from app.modules.access_control.models import (
+    AuditOutcome,
+    AuthorizedCasePrincipal,
+    CaseAction,
+    ClearanceLevel,
+    clearance_satisfies,
+)
 from app.modules.access_control.repository import AccessControlRepository
 from app.modules.evidence_lifecycle.dependencies import get_evidence_lifecycle_service
 from app.modules.evidence_lifecycle.errors import (
     EmptyUploadError,
+    EvidenceIntegrityUnavailableError,
     EvidenceNotFoundError,
     IdempotencyConflictError,
     JobNotFoundError,
@@ -59,6 +66,7 @@ from app.modules.evidence_lifecycle.models import (
     WorkerResultRecord,
 )
 from app.modules.evidence_lifecycle.schemas import (
+    EvidenceIntegrityCheck,
     EvidenceListResponse,
     EvidenceUploadResponse,
     EvidenceView,
@@ -67,6 +75,27 @@ from app.modules.evidence_lifecycle.schemas import (
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
 
 router = APIRouter(prefix="/api/v1/cases", tags=["evidence"])
+
+#: Maps a per-evidence sensitivity label onto the case-membership clearance
+#: ranks `policy.clearance_satisfies` already understands. `UNCLASSIFIED`
+#: maps to `None` (no additional requirement beyond ordinary case-level
+#: `EVIDENCE_READ`) -- `EvidenceClassification` has one more level than
+#: `ClearanceLevel` and this frozen `app/contracts/evidence.py` enum is
+#: never modified to add a matching one (G6's "per-evidence ABAC hook").
+_CLASSIFICATION_TO_CLEARANCE: dict[EvidenceClassification, ClearanceLevel | None] = {
+    EvidenceClassification.UNCLASSIFIED: None,
+    EvidenceClassification.RESTRICTED: ClearanceLevel.RESTRICTED,
+    EvidenceClassification.CONFIDENTIAL: ClearanceLevel.CONFIDENTIAL,
+    EvidenceClassification.SECRET: ClearanceLevel.SECRET,
+}
+
+
+def _evidence_visible_to(
+    principal: AuthorizedCasePrincipal, classification: EvidenceClassification
+) -> bool:
+    required = _CLASSIFICATION_TO_CLEARANCE[classification]
+    return required is None or clearance_satisfies(principal.membership.clearance, required)
+
 
 require_evidence_write = require_case_action(CaseAction.EVIDENCE_WRITE)
 
@@ -204,8 +233,15 @@ async def list_evidence(
     principal: Annotated[AuthorizedCasePrincipal, Depends(require_evidence_read)],
     service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
 ) -> EvidenceListResponse:
+    """Per-evidence classification is enforced here too (G6): an item above the
+    caller's clearance is silently omitted, never listed and then 403'd --
+    a list must not leak the existence of evidence a caller cannot see.
+    """
     records = await service.list_evidence(case_id)
-    return EvidenceListResponse(items=tuple(_evidence_view(record) for record in records))
+    visible = [
+        record for record in records if _evidence_visible_to(principal, record.classification)
+    ]
+    return EvidenceListResponse(items=tuple(_evidence_view(record) for record in visible))
 
 
 @router.get("/{case_id}/evidence/{evidence_id}", response_model=EvidenceView)
@@ -221,7 +257,90 @@ async def get_evidence(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="evidence not found"
         ) from exc
+    if not _evidence_visible_to(principal, record.classification):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
     return _evidence_view(record)
+
+
+@router.get("/{case_id}/evidence/{evidence_id}/integrity", response_model=EvidenceIntegrityCheck)
+async def get_evidence_integrity(
+    case_id: UUID,
+    evidence_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_evidence_read)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+) -> EvidenceIntegrityCheck:
+    """Gap-Closure WP-4 (G7): re-hash the stored object and compare against
+    the ingestion-time hash -- never trusts the stored value alone."""
+    try:
+        record = await service.get_evidence(case_id, evidence_id)
+    except EvidenceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="evidence not found"
+        ) from exc
+    if not _evidence_visible_to(principal, record.classification):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
+    try:
+        return await service.verify_evidence_integrity(case_id, evidence_id)
+    except EvidenceIntegrityUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/{case_id}/evidence/{evidence_id}/reprocess",
+    response_model=EvidenceUploadResponse,
+)
+async def reprocess_evidence(
+    case_id: UUID,
+    evidence_id: UUID,
+    response: Response,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_evidence_write)],
+    service: Annotated[EvidenceLifecycleService, Depends(get_evidence_lifecycle_service)],
+    audit_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> EvidenceUploadResponse:
+    """Gap-Closure WP-4 (G7): queue a new job for already-registered evidence.
+
+    `Idempotency-Key` is required (unlike upload's optional one): a
+    reprocess request has no file content to detect a replay from, so the
+    caller's own key is the only signal distinguishing "retry my last
+    reprocess request" from "queue a genuinely new attempt."
+    """
+    if len(idempotency_key) > _MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Idempotency-Key header is too long",
+        )
+    try:
+        record = await service.get_evidence(case_id, evidence_id)
+    except EvidenceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="evidence not found"
+        ) from exc
+    if not _evidence_visible_to(principal, record.classification):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
+
+    try:
+        job, is_new = await service.reprocess_evidence(
+            case_id, evidence_id, idempotency_key=idempotency_key, now=datetime.now(UTC)
+        )
+    except UnsupportedSourceTypeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
+    await record_audit_event(
+        audit_repository,
+        event_type="evidence.reprocess",
+        outcome=AuditOutcome.SUCCESS,
+        now=datetime.now(UTC),
+        request_id=get_request_id(),
+        user_id=principal.principal.user_id,
+        case_id=case_id,
+        metadata={"evidence_id": str(evidence_id), "job_id": str(job.job_id), "is_new": is_new},
+    )
+    return EvidenceUploadResponse(evidence=_evidence_view(record), job=_job_view(job))
 
 
 @router.get("/{case_id}/jobs/{job_id}", response_model=JobView)

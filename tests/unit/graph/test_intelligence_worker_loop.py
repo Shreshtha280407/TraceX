@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.core.config import get_settings
 from app.modules.graph import intelligence_worker
 from app.modules.graph.integration_projector import GraphUpdateRunSummary
+from app.modules.graph.intelligence.evaluation import deferred_evaluation_report
 
 
 async def test_replay_loop_stops_before_work_when_shutdown_is_already_set(
@@ -92,3 +94,32 @@ async def test_replay_loop_exhausts_driver_failures_without_logging_error_text(
     assert len(events) == 2
     assert all(event["exc_type"] == "ConnectionError" for event in events)
     assert "unsafe-value" not in repr(events)
+
+
+# --- Gap-Closure WP-7B (G1): --evaluate CLI mode -----------------------------
+
+
+def test_evaluate_requires_case_id(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        intelligence_worker.main(["--evaluate"])
+    assert "--evaluate requires --case-id" in capsys.readouterr().err
+
+
+def test_evaluate_mode_prints_the_report_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen_case_id: UUID | None = None
+
+    async def _fake_evaluate_once(_settings: object, case_id: UUID) -> object:
+        nonlocal seen_case_id
+        seen_case_id = case_id
+        return deferred_evaluation_report(rules_config_hash="synthetic-hash")
+
+    monkeypatch.setattr(intelligence_worker, "evaluate_once", _fake_evaluate_once)
+    case_id = uuid4()
+
+    exit_code = intelligence_worker.main(["--evaluate", "--case-id", str(case_id)])
+
+    assert exit_code == 0
+    assert seen_case_id == case_id
+    assert '"deferred": true' in capsys.readouterr().out

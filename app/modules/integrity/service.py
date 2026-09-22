@@ -12,19 +12,27 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
+
 from app.core.config import Settings
 from app.modules.integrity.hashing import build_merkle_root, leaf_hash
+from app.modules.integrity.manifest_sink import ManifestSink
 from app.modules.integrity.modality_provenance import ModalityObservationIntegrityProvenanceV1
 from app.modules.integrity.models import (
     MERKLE_TREE_FORMAT_VERSION,
     CheckpointBuildReceipt,
     IntegrityEventRecord,
     IntegrityEventSubmission,
+    SigningKeyPublicRecord,
     VerificationBundle,
     VerificationLeaf,
     VerificationResult,
 )
-from app.modules.integrity.repository import IntegrityRepository, IntegrityValidationError
+from app.modules.integrity.repository import (
+    IntegrityRepository,
+    IntegrityValidationError,
+    SigningKeyConflictError,
+)
 from app.modules.integrity.signing import load_signing_key
 from app.modules.integrity.signing import verify as verify_signature
 from app.modules.integrity.structured_provenance import (
@@ -34,7 +42,10 @@ from app.modules.integrity.structured_provenance import (
 __all__ = [
     "IntegrityService",
     "IntegrityValidationError",
+    "SigningKeyConflictError",
 ]
+
+logger = structlog.get_logger(__name__)
 
 
 class IntegrityService:
@@ -110,7 +121,7 @@ class IntegrityService:
         root_hash = build_merkle_root([leaf_hash(event) for event in events])
         signing_key = load_signing_key(self._settings)
         signed_root = signing_key.sign(root_hash)
-        return await self._repository.create_checkpoint(
+        receipt = await self._repository.create_checkpoint(
             case_id=case_id,
             start_sequence=start_sequence,
             end_sequence=end_sequence,
@@ -120,6 +131,41 @@ class IntegrityService:
             signed=signed_root,
             now=now or datetime.now(UTC),
         )
+        if not receipt.replayed:
+            # Gap-Closure WP-6/re-close (G8): the real emission point behind
+            # the event catalog's `checkpoint.sealed`/`checkpoint.signed`
+            # names -- a checkpoint and its signature are always created
+            # together (one repository call writes both rows), so one log
+            # line represents both catalog names. Never logged on an
+            # idempotent replay of an already-sealed range.
+            logger.info(
+                "checkpoint.sealed",
+                case_id=str(case_id),
+                checkpoint_id=str(receipt.checkpoint.checkpoint_id),
+                leaf_count=receipt.checkpoint.leaf_count,
+                key_id=receipt.signature.key_id,
+            )
+        return receipt
+
+    async def build_pending_checkpoints(
+        self, *, limit: int = 100, now: datetime | None = None
+    ) -> list[CheckpointBuildReceipt]:
+        """Gap-Closure WP-5 (G4): seal every case with pending events, one
+        checkpoint per case, up to `limit` cases. A single case's build
+        failure (e.g. a signing-key problem) is not caught here -- it
+        propagates and stops the sweep, exactly like `build_checkpoint`
+        already does for one explicit call; the caller (`cli.py
+        checkpoint-once`/`checkpoint-loop`) decides how to handle it."""
+        pending = await self._repository.list_pending_checkpoint_ranges(limit=limit)
+        return [
+            await self.build_checkpoint(
+                case_id=item.case_id,
+                start_sequence=item.start_sequence,
+                end_sequence=item.end_sequence,
+                now=now,
+            )
+            for item in pending
+        ]
 
     async def verify_checkpoint(self, checkpoint_id: UUID, *, case_id: UUID) -> VerificationResult:
         """Independently recompute and check a checkpoint's root and signature.
@@ -175,6 +221,20 @@ class IntegrityService:
             reason=reason,
         )
 
+    async def register_current_signing_key(self) -> tuple[SigningKeyPublicRecord, bool]:
+        """Gap-Closure WP-5 (G4): register the currently configured key's
+        public identity into the durable `signing_keys_public` registry.
+        Idempotent for a repeat of the same key; raises
+        `SigningKeyConflictError` (never overwrites) if `INTEGRITY_SIGNING_
+        KEY_ID` was reused for a genuinely different key -- the operator
+        must pick a new `key_id` for every real rotation."""
+        signing_key = load_signing_key(self._settings)
+        material = signing_key.public_key_material()
+        return await self._repository.register_signing_key(material)
+
+    async def list_signing_keys(self) -> list[SigningKeyPublicRecord]:
+        return await self._repository.list_signing_keys()
+
     async def export_verification_bundle(
         self, checkpoint_id: UUID, *, case_id: UUID
     ) -> VerificationBundle:
@@ -206,4 +266,19 @@ class IntegrityService:
         )
         return VerificationBundle(
             case_id=case_id, checkpoint=checkpoint, signature=signature, leaves=leaves
+        )
+
+    async def archive_verification_bundle(
+        self, checkpoint_id: UUID, *, case_id: UUID, sink: ManifestSink
+    ) -> str:
+        """Gap-Closure WP-5 (G4): export, then durably write through `sink`.
+
+        Returns the sink's opaque locator. Raises `ManifestAlreadyExistsError`
+        (via the sink) if this checkpoint was already archived there --
+        never silently overwrites.
+        """
+        bundle = await self.export_verification_bundle(checkpoint_id, case_id=case_id)
+        payload = bundle.model_dump_json().encode("utf-8")
+        return await sink.write_manifest(
+            case_id=case_id, checkpoint_id=checkpoint_id, payload=payload
         )

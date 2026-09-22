@@ -25,13 +25,16 @@ from app.core.errors import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
-from app.modules.access_control.api import SecurityHeadersMiddleware
+from app.modules.access_control.api import SecurityHeadersMiddleware, admin_router
 from app.modules.access_control.api import router as auth_router
+from app.modules.access_control.cases_api import router as cases_router
 from app.modules.evidence_lifecycle.api import router as evidence_router
 from app.modules.evidence_lifecycle.dependencies import get_object_storage
 from app.modules.evidence_lifecycle.internal_api import router as worker_jobs_router
+from app.modules.evidence_lifecycle.internal_api import worker_fleet_router
 from app.modules.evidence_lifecycle.worker_security import WorkerControlPlaneGuardMiddleware
 from app.modules.graph.api import router as graph_router
+from app.modules.graph.entity_api import router as entity_router
 from app.modules.integrity.api import router as integrity_router
 
 logger = structlog.get_logger(__name__)
@@ -83,9 +86,13 @@ def create_app() -> FastAPI:
     application.add_exception_handler(Exception, unhandled_exception_handler)
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(admin_router)
+    application.include_router(cases_router)
     application.include_router(evidence_router)
     application.include_router(worker_jobs_router)
+    application.include_router(worker_fleet_router)
     application.include_router(graph_router)
+    application.include_router(entity_router)
     application.include_router(integrity_router)
     return application
 

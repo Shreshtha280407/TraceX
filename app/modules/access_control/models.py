@@ -56,6 +56,19 @@ def normalize_email(raw_email: str) -> str:
     return candidate
 
 
+class SystemRole(StrEnum):
+    """A user's deployment-wide (not case-scoped) capability.
+
+    `None` on `UserRecord.system_role` is the overwhelmingly common case
+    (an ordinary user with no capability beyond their per-case
+    memberships). The only defined value today is `ADMIN`, which gates
+    `POST /api/v1/admin/users` (see `dependencies.require_system_admin`) --
+    it is deliberately not a case role and never appears in `ROLE_ACTIONS`.
+    """
+
+    ADMIN = "admin"
+
+
 class CaseRole(StrEnum):
     """A user's role within one specific case membership."""
 
@@ -94,6 +107,7 @@ class CaseAction(StrEnum):
 
     CASE_READ = "case_read"
     CASE_MANAGE = "case_manage"
+    MEMBER_MANAGE = "member_manage"
     EVIDENCE_READ = "evidence_read"
     EVIDENCE_WRITE = "evidence_write"
     GRAPH_READ = "graph_read"
@@ -103,6 +117,12 @@ class CaseAction(StrEnum):
     REVIEW_DECIDE = "review_decide"
     HYPOTHESIS_PROPOSE = "hypothesis_propose"
     EXPORT_CASE_DATA = "export_case_data"
+    #: Gap-Closure WP-4 (G3) additions.
+    CASE_NOTE_WRITE = "case_note_write"
+    #: Read every note, not only one's own -- see `notes_service.py`'s
+    #: "author can always read their own note" override, checked in the
+    #: service layer, not this role matrix.
+    CASE_NOTE_READ_ALL = "case_note_read_all"
 
 
 #: The role -> action matrix. Default deny: an action not listed for a role
@@ -114,6 +134,7 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
         {
             CaseAction.CASE_READ,
             CaseAction.CASE_MANAGE,
+            CaseAction.MEMBER_MANAGE,
             CaseAction.EVIDENCE_READ,
             CaseAction.EVIDENCE_WRITE,
             CaseAction.GRAPH_READ,
@@ -123,6 +144,8 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.REVIEW_DECIDE,
             CaseAction.HYPOTHESIS_PROPOSE,
             CaseAction.EXPORT_CASE_DATA,
+            CaseAction.CASE_NOTE_WRITE,
+            CaseAction.CASE_NOTE_READ_ALL,
         }
     ),
     CaseRole.INVESTIGATOR: frozenset(
@@ -134,6 +157,7 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.INTEGRITY_READ,
             CaseAction.INTEGRITY_VERIFY,
             CaseAction.HYPOTHESIS_PROPOSE,
+            CaseAction.CASE_NOTE_WRITE,
         }
     ),
     CaseRole.ANALYST: frozenset(
@@ -153,6 +177,8 @@ ROLE_ACTIONS: dict[CaseRole, frozenset[CaseAction]] = {
             CaseAction.INTEGRITY_READ,
             CaseAction.INTEGRITY_VERIFY,
             CaseAction.REVIEW_DECIDE,
+            CaseAction.CASE_NOTE_WRITE,
+            CaseAction.CASE_NOTE_READ_ALL,
         }
     ),
     CaseRole.VIEWER: frozenset(
@@ -199,6 +225,7 @@ class UserRecord(AccessControlModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    system_role: SystemRole | None = None
 
 
 class CaseRecord(AccessControlModel):
@@ -265,6 +292,44 @@ class WorkerCredentialRecord(AccessControlModel):
     created_at: datetime
     rotated_at: datetime | None
     revoked_at: datetime | None
+    last_seen_at: datetime | None = None
+
+
+class WorkerLivenessStatus(StrEnum):
+    """Gap-Closure WP-6 (G16): a worker credential's *observed* liveness,
+    derived from `last_seen_at` -- never a claim about whether the worker
+    process itself is currently running, only "when this credential was
+    last used to successfully authenticate a request"."""
+
+    ACTIVE = "active"
+    STALE = "stale"
+    NEVER_SEEN = "never_seen"
+
+
+def worker_liveness_status(
+    credential: WorkerCredentialRecord, *, now: datetime, stale_seconds: int
+) -> WorkerLivenessStatus:
+    if credential.last_seen_at is None:
+        return WorkerLivenessStatus.NEVER_SEEN
+    age_seconds = (now - credential.last_seen_at).total_seconds()
+    return (
+        WorkerLivenessStatus.ACTIVE if age_seconds <= stale_seconds else WorkerLivenessStatus.STALE
+    )
+
+
+class WorkerLivenessView(AccessControlModel):
+    """Safe, admin-only read shape: never the credential digest."""
+
+    worker_id: UUID
+    display_name: str
+    status: WorkerCredentialStatus
+    allowed_processor_names: tuple[str, ...]
+    last_seen_at: datetime | None
+    liveness: WorkerLivenessStatus
+
+
+class WorkerLivenessListResponse(AccessControlModel):
+    items: tuple[WorkerLivenessView, ...]
 
 
 class SecurityAuditEventRecord(AccessControlModel):
@@ -297,6 +362,7 @@ class PublicUser(AccessControlModel):
     display_name: str
     is_active: bool
     created_at: datetime
+    system_role: SystemRole | None = None
 
 
 class CaseMembershipView(AccessControlModel):
@@ -308,23 +374,72 @@ class CaseMembershipView(AccessControlModel):
     is_active: bool
 
 
-class RegisterRequest(AccessControlModel):
-    """`password` bounds enforce the real MVP policy (see `password.py`).
+class AdminProvisionUserRequest(AccessControlModel):
+    """Admin-only user provisioning. No public self-registration exists (G5).
 
-    A request-validation failure on any field of this model -- including
-    this one -- is rendered by `app.core.errors.request_validation_exception_handler`,
+    `password` bounds enforce the real MVP policy (see `password.py`). A
+    request-validation failure on any field of this model -- including this
+    one -- is rendered by `app.core.errors.request_validation_exception_handler`,
     which never echoes the submitted value, so enforcing the policy here
     (rather than only deeper in `service.py`) cannot leak the password.
+    `system_role` defaults to `None` (an ordinary user); only an existing
+    admin can set it to `ADMIN`, minting another admin.
     """
 
     email: str
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     display_name: str = Field(min_length=1, max_length=200)
+    system_role: SystemRole | None = None
 
     @field_validator("email")
     @classmethod
     def _normalize_email(cls, value: str) -> str:
         return normalize_email(value)
+
+
+class CaseCreateRequest(AccessControlModel):
+    """`POST /api/v1/cases` body. The creator becomes the case's `CASE_OWNER`."""
+
+    case_reference: str = Field(min_length=1, max_length=200)
+    classification: ClearanceLevel
+
+
+class CaseView(AccessControlModel):
+    """A safe, API-facing case shape -- never the raw `CaseRecord` row directly."""
+
+    case_id: UUID
+    case_reference: str
+    classification: ClearanceLevel
+    status: CaseStatus
+    created_at: datetime
+
+
+class CaseStatusView(AccessControlModel):
+    case_id: UUID
+    status: CaseStatus
+
+
+class CaseMemberAddRequest(AccessControlModel):
+    """`POST /api/v1/cases/{case_id}/members` body."""
+
+    user_id: UUID
+    role: CaseRole
+    clearance: ClearanceLevel
+
+
+class CaseMemberView(AccessControlModel):
+    user_id: UUID
+    role: CaseRole
+    clearance: ClearanceLevel
+    is_active: bool
+
+
+class CaseAuditEventListResponse(AccessControlModel):
+    """Gap-Closure WP-4 (G7): `GET /cases/{id}/audit`'s response shape.
+    Wraps `SecurityAuditEventRecord` directly -- already safe by that
+    model's own contract (never a password/token/evidence value)."""
+
+    items: tuple[SecurityAuditEventRecord, ...]
 
 
 class LoginRequest(AccessControlModel):

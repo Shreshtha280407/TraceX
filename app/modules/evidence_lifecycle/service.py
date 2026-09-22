@@ -39,6 +39,7 @@ from app.contracts.worker import WorkerError, WorkerResultV1, WorkerStatus
 from app.core.canonical import canonical_sha256
 from app.modules.evidence_lifecycle.errors import (
     EmptyUploadError,
+    EvidenceIntegrityUnavailableError,
     EvidenceNotFoundError,
     IdempotencyConflictError,
     InvalidClaimTokenError,
@@ -51,6 +52,7 @@ from app.modules.evidence_lifecycle.errors import (
     PayloadTooLargeError,
     ResultConflictError,
     ResultValidationError,
+    StorageError,
     UnsupportedContentTypeError,
     UnsupportedSourceTypeError,
 )
@@ -75,6 +77,7 @@ from app.modules.evidence_lifecycle.models import (
 )
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
 from app.modules.evidence_lifecycle.routing import accepted_content_types, route_for
+from app.modules.evidence_lifecycle.schemas import EvidenceIntegrityCheck
 from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
 from app.modules.integrity.modality_provenance import (
     build_communication_observation_provenance,
@@ -720,6 +723,76 @@ class EvidenceLifecycleService:
 
     async def list_evidence(self, case_id: UUID) -> list[EvidenceRecord]:
         return await self._repository.list_evidence(case_id)
+
+    async def reprocess_evidence(
+        self, case_id: UUID, evidence_id: UUID, *, idempotency_key: str, now: datetime
+    ) -> tuple[WorkerJobRecord, bool]:
+        """Gap-Closure WP-4 (G7): queue a new job for already-registered evidence.
+
+        Returns `(job, is_new)`. `idempotency_key` (the caller's own
+        `Idempotency-Key`, required) forms the job's real `worker_jobs.
+        idempotency_key` together with the evidence/processor identity,
+        exactly like `upload_evidence`'s own job -- a replayed reprocess
+        request (same key) returns the same job, never a duplicate;
+        a fresh key always queues a genuinely new attempt.
+        """
+        evidence = await self.get_evidence(case_id, evidence_id)
+        route = route_for(evidence.source_type)
+        if route is None:
+            raise UnsupportedSourceTypeError(
+                f"source_type '{evidence.source_type.value}' has no registered processor"
+            )
+        job_idempotency_key = (
+            f"{case_id}:{evidence_id}:{route.processor_name}:"
+            f"{route.processor_version}:reprocess:{idempotency_key}"
+        )
+        job = _build_job(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            source_type=evidence.source_type,
+            processor_name=route.processor_name,
+            processor_version=route.processor_version,
+            input_object_uri=evidence.object_uri,
+            now=now,
+            max_attempts=self._worker_job_max_attempts,
+        )
+        job = job.model_copy(update={"idempotency_key": job_idempotency_key})
+        try:
+            await self._repository.create_job(job)
+        except sqlalchemy.exc.IntegrityError:
+            existing = await self._repository.get_job_by_idempotency_key(
+                case_id, job_idempotency_key
+            )
+            if existing is not None:
+                return existing, False
+            raise
+        return job, True
+
+    async def verify_evidence_integrity(
+        self, case_id: UUID, evidence_id: UUID
+    ) -> EvidenceIntegrityCheck:
+        """Gap-Closure WP-4 (G7): re-hash the stored object and compare
+        against the ingestion-time `sha256` -- never trusts the stored
+        value alone. Streams the object in bounded chunks (never loads the
+        whole file into memory), mirroring every other object-storage read
+        in this module."""
+        evidence = await self.get_evidence(case_id, evidence_id)
+        digest = hashlib.sha256()
+        try:
+            stream = await self._storage.open_stream(evidence.object_uri)
+            async for chunk in stream.chunks:
+                digest.update(chunk)
+        except StorageError as exc:
+            raise EvidenceIntegrityUnavailableError(
+                "could not read the stored evidence object to verify its integrity"
+            ) from exc
+        recomputed_sha256 = digest.hexdigest()
+        return EvidenceIntegrityCheck(
+            evidence_id=evidence_id,
+            stored_sha256=evidence.sha256,
+            recomputed_sha256=recomputed_sha256,
+            matches=recomputed_sha256 == evidence.sha256,
+        )
 
     async def get_job(self, case_id: UUID, job_id: UUID) -> WorkerJobRecord:
         record = await self._repository.get_job(case_id, job_id)

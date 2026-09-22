@@ -22,26 +22,39 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.core.config import Settings, get_settings
+from app.core.pagination import (
+    CursorError,
+    CursorPosition,
+    decode_cursor,
+    derive_cursor_signing_key,
+    encode_cursor,
+)
 from app.modules.access_control.dependencies import (
+    get_case_note_repository,
     require_graph_read,
     require_hypothesis_propose,
     require_review_decision,
 )
 from app.modules.access_control.models import AuthorizedCasePrincipal
+from app.modules.access_control.notes_repository import CaseNoteRepository
 from app.modules.graph.dependencies import (
     get_candidate_review_repository,
     get_graph_correlation_integration_repository,
     get_graph_repository,
     get_hypothesis_repository,
     get_postgres_engine,
+    get_review_projection_outbox_repository,
 )
 from app.modules.graph.errors import GraphConnectionError, GraphValidationError
+from app.modules.graph.handoff_service import HandoffSummary, build_handoff_summary
 from app.modules.graph.hypothesis_models import (
     HypothesisConflictError,
     HypothesisCreateSubmission,
     HypothesisListResponse,
     HypothesisRecord,
     HypothesisReviewSubmission,
+    HypothesisStatus,
     HypothesisValidationError,
 )
 from app.modules.graph.hypothesis_repository import HypothesisRepository
@@ -53,15 +66,31 @@ from app.modules.graph.integration_models import (
     HypothesisIntegrationView,
 )
 from app.modules.graph.integration_repository import GraphCorrelationIntegrationRepository
-from app.modules.graph.queries import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, list_case_observations
+from app.modules.graph.queries import (
+    DEFAULT_MOTIF_LIMIT,
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_SNAPSHOT_NODE_LIMIT,
+    DEFAULT_SNAPSHOT_RELATIONSHIP_LIMIT,
+    MAX_MOTIF_LIMIT,
+    MAX_PAGE_SIZE,
+    MAX_SNAPSHOT_NODE_LIMIT,
+    MAX_SNAPSHOT_RELATIONSHIP_LIMIT,
+    find_case_graph_path,
+    get_case_graph_analytics,
+    get_case_graph_motifs,
+    get_case_graph_snapshot,
+    list_case_observations,
+)
 from app.modules.graph.repository import Neo4jGraphRepository
 from app.modules.graph.review_models import (
     CandidateReviewDecisionSubmission,
     CandidateReviewListResponse,
+    CandidateReviewOutcome,
     CandidateReviewView,
     ReviewConflictError,
     candidate_review_view,
 )
+from app.modules.graph.review_projection_outbox import ReviewProjectionOutboxRepository
 from app.modules.graph.review_repository import CandidateReviewRepository
 from app.modules.graph.review_service import (
     CandidateNotFoundError,
@@ -71,6 +100,11 @@ from app.modules.graph.review_service import (
 )
 from app.modules.graph.schemas import (
     CaseGraphObservationsResponse,
+    GraphAnalyticsResponse,
+    GraphMotifsResponse,
+    GraphPathRequest,
+    GraphPathResponse,
+    GraphSnapshotResponse,
     case_graph_observations_response,
 )
 from app.modules.integrity.dependencies import get_integrity_service
@@ -126,6 +160,85 @@ async def list_graph_observations(
             detail="graph service temporarily unavailable",
         ) from exc
     return case_graph_observations_response(page)
+
+
+@router.get("/{case_id}/graph", response_model=GraphSnapshotResponse)
+async def get_case_graph(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+    node_limit: Annotated[
+        int, Query(ge=1, le=MAX_SNAPSHOT_NODE_LIMIT)
+    ] = DEFAULT_SNAPSHOT_NODE_LIMIT,
+    relationship_limit: Annotated[
+        int, Query(ge=1, le=MAX_SNAPSHOT_RELATIONSHIP_LIMIT)
+    ] = DEFAULT_SNAPSHOT_RELATIONSHIP_LIMIT,
+) -> GraphSnapshotResponse:
+    """Gap-Closure WP-6 (G7): a bounded `Entity`/`Event` graph snapshot."""
+    try:
+        return await get_case_graph_snapshot(
+            repository, case_id, node_limit=node_limit, relationship_limit=relationship_limit
+        )
+    except GraphValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except GraphConnectionError as exc:
+        raise _integration_unavailable() from exc
+
+
+@router.post("/{case_id}/graph/path", response_model=GraphPathResponse)
+async def get_case_graph_path(
+    case_id: UUID,
+    body: GraphPathRequest,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+) -> GraphPathResponse:
+    """Gap-Closure WP-6 (G7): shortest path between two case-scoped `Entity`/`Event` nodes."""
+    try:
+        return await find_case_graph_path(repository, case_id, body)
+    except GraphValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except GraphConnectionError as exc:
+        raise _integration_unavailable() from exc
+
+
+@router.get("/{case_id}/analytics", response_model=GraphAnalyticsResponse)
+async def get_case_analytics(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+) -> GraphAnalyticsResponse:
+    """Gap-Closure WP-6 (G7): node/relationship counts only, never a property value."""
+    try:
+        return await get_case_graph_analytics(repository, case_id)
+    except GraphValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except GraphConnectionError as exc:
+        raise _integration_unavailable() from exc
+
+
+@router.get("/{case_id}/motifs", response_model=GraphMotifsResponse)
+async def get_case_motifs(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+    limit: Annotated[int, Query(ge=1, le=MAX_MOTIF_LIMIT)] = DEFAULT_MOTIF_LIMIT,
+) -> GraphMotifsResponse:
+    """Gap-Closure WP-6 (G7): generic co-participation motifs (see
+    `GraphCoParticipationMotif`'s docstring for scope)."""
+    try:
+        return await get_case_graph_motifs(repository, case_id, limit=limit)
+    except GraphValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except GraphConnectionError as exc:
+        raise _integration_unavailable() from exc
 
 
 @router.get("/{case_id}/graph/correlations", response_model=CorrelationListResponse)
@@ -258,6 +371,17 @@ async def list_candidates_for_review(
         CandidateReviewRepository, Depends(get_candidate_review_repository)
     ],
     limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
+    include_rejected: Annotated[
+        bool,
+        Query(
+            description=(
+                "A rejected candidate is excluded from the default listing "
+                "(G3/G7): it stays fully visible in review-decision history "
+                "and audit, never deleted, only opted back into this view "
+                "on request."
+            )
+        ),
+    ] = False,
 ) -> CandidateReviewListResponse:
     try:
         candidates = await repository.list_candidates(case_id, limit=limit)
@@ -268,9 +392,14 @@ async def list_candidates_for_review(
                 case_id, candidate_link_ids=candidate_ids, limit=limit
             )
         }
-        items = tuple(
+        views = (
             candidate_review_view(candidate, decisions.get(candidate.candidate_link_id))
             for candidate in candidates
+        )
+        items = tuple(
+            view
+            for view in views
+            if include_rejected or view.review_status != CandidateReviewOutcome.REJECTED_BY_REVIEWER
         )
     except sa.exc.SQLAlchemyError as exc:
         raise _integration_unavailable() from exc
@@ -316,6 +445,9 @@ async def review_candidate(
     ],
     graph_repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
     integrity_service: Annotated[IntegrityService, Depends(get_integrity_service)],
+    review_projection_outbox: Annotated[
+        ReviewProjectionOutboxRepository, Depends(get_review_projection_outbox_repository)
+    ],
 ) -> CandidateReviewView:
     """Record one authorized human review decision. Idempotent on exact retry;
     a conflicting retry never overwrites an existing decision (safe `409`)."""
@@ -329,6 +461,7 @@ async def review_candidate(
             review_repository=review_repository,
             graph_repository=graph_repository,
             integrity_service=integrity_service,
+            review_projection_outbox=review_projection_outbox,
         )
     except CandidateNotFoundError as exc:
         raise HTTPException(
@@ -354,12 +487,59 @@ async def list_hypotheses(
     case_id: UUID,
     principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
     repository: Annotated[HypothesisRepository, Depends(get_hypothesis_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=MAX_INTEGRATION_LIMIT)] = DEFAULT_INTEGRATION_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    cursor: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Gap-Closure re-close (G17): an opaque, case-bound, "
+                "tamper-evident cursor from a previous response's "
+                "`next_cursor`. Takes precedence over `offset` when given."
+            )
+        ),
+    ] = None,
+    include_rejected: Annotated[
+        bool,
+        Query(
+            description=(
+                "A rejected hypothesis is excluded from the default listing "
+                "(G3/G7): it stays fully visible in its own action/audit "
+                "history, never deleted, only opted back into this view on "
+                "request."
+            )
+        ),
+    ] = False,
 ) -> HypothesisListResponse:
+    signing_key = derive_cursor_signing_key(settings.auth_jwt_secret.get_secret_value())
+    after = None
+    if cursor is not None:
+        try:
+            after = decode_cursor(signing_key, cursor, expected_case_id=case_id)
+        except CursorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
     try:
-        return HypothesisListResponse(
-            items=tuple(await repository.list_hypotheses(case_id, limit=limit))
+        hypotheses = await repository.list_hypotheses(
+            case_id, limit=limit, offset=offset, after=after
         )
+        items = tuple(
+            h
+            for h in hypotheses
+            if include_rejected or h.status != HypothesisStatus.REJECTED_BY_REVIEWER
+        )
+        next_cursor = None
+        if hypotheses:
+            last = hypotheses[-1]
+            next_cursor = encode_cursor(
+                signing_key,
+                CursorPosition(
+                    case_id=case_id, created_at=last.created_at, row_id=last.hypothesis_id
+                ),
+            )
+        return HypothesisListResponse(items=items, next_cursor=next_cursor)
     except sa.exc.SQLAlchemyError as exc:
         raise _integration_unavailable() from exc
 
@@ -393,6 +573,9 @@ async def propose_hypothesis(
     postgres_engine: Annotated[AsyncEngine, Depends(get_postgres_engine)],
     graph_repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
     integrity_service: Annotated[IntegrityService, Depends(get_integrity_service)],
+    review_projection_outbox: Annotated[
+        ReviewProjectionOutboxRepository, Depends(get_review_projection_outbox_repository)
+    ],
 ) -> HypothesisRecord:
     """Create one human-authored, evidence-backed hypothesis.
 
@@ -410,6 +593,7 @@ async def propose_hypothesis(
             postgres_engine=postgres_engine,
             graph_repository=graph_repository,
             integrity_service=integrity_service,
+            review_projection_outbox=review_projection_outbox,
         )
     except HypothesisValidationError as exc:
         raise HTTPException(
@@ -428,6 +612,9 @@ async def review_hypothesis(
     repository: Annotated[HypothesisRepository, Depends(get_hypothesis_repository)],
     graph_repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
     integrity_service: Annotated[IntegrityService, Depends(get_integrity_service)],
+    review_projection_outbox: Annotated[
+        ReviewProjectionOutboxRepository, Depends(get_review_projection_outbox_repository)
+    ],
 ) -> HypothesisRecord:
     """Record one authorized human review decision on a hypothesis. Idempotent
     on exact retry; a conflicting retry never overwrites an existing decision."""
@@ -440,6 +627,7 @@ async def review_hypothesis(
             hypothesis_repository=repository,
             graph_repository=graph_repository,
             integrity_service=integrity_service,
+            review_projection_outbox=review_projection_outbox,
         )
     except HypothesisConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -448,3 +636,31 @@ async def review_hypothesis(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="hypothesis not found")
     return result
+
+
+@router.get("/{case_id}/handoff", response_model=HandoffSummary)
+async def get_case_handoff(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    integration_repository: Annotated[
+        GraphCorrelationIntegrationRepository,
+        Depends(get_graph_correlation_integration_repository),
+    ],
+    review_repository: Annotated[
+        CandidateReviewRepository, Depends(get_candidate_review_repository)
+    ],
+    hypothesis_repository: Annotated[HypothesisRepository, Depends(get_hypothesis_repository)],
+    note_repository: Annotated[CaseNoteRepository, Depends(get_case_note_repository)],
+) -> HandoffSummary:
+    """Gap-Closure WP-4 (G3): open candidates/hypotheses, verified/rejected
+    counts, and recent notes -- computed at read time, no new durable table."""
+    try:
+        return await build_handoff_summary(
+            case_id,
+            integration_repository=integration_repository,
+            review_repository=review_repository,
+            hypothesis_repository=hypothesis_repository,
+            note_repository=note_repository,
+        )
+    except sa.exc.SQLAlchemyError as exc:
+        raise _integration_unavailable() from exc

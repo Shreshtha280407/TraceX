@@ -105,3 +105,7 @@ class MediaManifestValidationError(EvidenceLifecycleError):
 
 class MediaPublicationConflictError(EvidenceLifecycleError):
     """A completed media chunk was submitted again with different durable content."""
+
+
+class EvidenceIntegrityUnavailableError(EvidenceLifecycleError):
+    """The stored evidence object could not be read to re-verify its hash (Gap-Closure WP-4, G7)."""

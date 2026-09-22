@@ -47,6 +47,10 @@ from app.modules.graph.review_projection import (
     project_hypothesis_candidate_reference,
     project_hypothesis_review_decision,
 )
+from app.modules.graph.review_projection_outbox import (
+    ReviewProjectionOutboxRepository,
+    ReviewProjectionSubjectType,
+)
 from app.modules.graph.review_repository import CandidateReviewRepository
 from app.modules.integrity.models import IntegrityEventSubmission
 from app.modules.integrity.service import IntegrityService
@@ -75,7 +79,26 @@ async def _record_integrity_event_safely(
         )
 
 
-async def _resolve_evidence_paths(
+async def _enqueue_for_durable_replay(
+    outbox: ReviewProjectionOutboxRepository,
+    *,
+    case_id: UUID,
+    subject_type: ReviewProjectionSubjectType,
+    subject_id: UUID,
+    now: datetime,
+) -> UUID:
+    """Always durable-first (G13): enqueue before attempting the immediate,
+    best-effort projection. If the immediate attempt fails or the process
+    crashes mid-attempt, this row stays `queued`/`running` and
+    `intelligence_worker.py`'s review/hypothesis replay action retries it
+    later -- a Neo4j outage no longer silently drops the projection."""
+    event = await outbox.enqueue(
+        case_id=case_id, subject_type=subject_type, subject_id=subject_id, now=now
+    )
+    return event.event_id
+
+
+async def resolve_evidence_paths(
     engine: AsyncEngine, *, case_id: UUID, observation_ids: tuple[UUID, ...]
 ) -> tuple[tuple[UUID, UUID], ...]:
     """`(evidence_id, observation_id)` for every requested ID, re-read from the
@@ -107,6 +130,7 @@ async def submit_candidate_review_decision(
     review_repository: CandidateReviewRepository,
     graph_repository: Neo4jGraphRepository,
     integrity_service: IntegrityService,
+    review_projection_outbox: ReviewProjectionOutboxRepository,
     now: datetime | None = None,
 ) -> CandidateReviewView:
     """Record one candidate review decision.
@@ -135,6 +159,13 @@ async def submit_candidate_review_decision(
             case_id, candidate.correlation_id
         )
         if event is not None:
+            outbox_event_id = await _enqueue_for_durable_replay(
+                review_projection_outbox,
+                case_id=case_id,
+                subject_type=ReviewProjectionSubjectType.CANDIDATE_REVIEW_DECISION,
+                subject_id=candidate_link_id,
+                now=decision.created_at,
+            )
             try:
                 await project_candidate_review_decision(
                     graph_repository,
@@ -142,12 +173,19 @@ async def submit_candidate_review_decision(
                     projection_key=event.projection_key,
                     decision=decision,
                 )
+                await review_projection_outbox.mark_succeeded(outbox_event_id, decision.created_at)
             except GraphConnectionError as exc:
                 logger.warning(
                     "graph.review_projection_failed",
                     case_id=str(case_id),
                     candidate_link_id=str(candidate_link_id),
                     exc_type=type(exc).__name__,
+                )
+                await review_projection_outbox.mark_retryable_failure(
+                    outbox_event_id,
+                    now=decision.created_at,
+                    error_code="graph_connection_error",
+                    error_message=type(exc).__name__,
                 )
     return candidate_review_view(candidate, decision)
 
@@ -158,9 +196,17 @@ async def _best_effort_project_hypothesis(
     integration_repository: GraphCorrelationIntegrationRepository,
     postgres_engine: AsyncEngine,
     graph_repository: Neo4jGraphRepository,
+    review_projection_outbox: ReviewProjectionOutboxRepository,
 ) -> None:
+    outbox_event_id = await _enqueue_for_durable_replay(
+        review_projection_outbox,
+        case_id=hypothesis.case_id,
+        subject_type=ReviewProjectionSubjectType.HYPOTHESIS_CREATED,
+        subject_id=hypothesis.hypothesis_id,
+        now=hypothesis.created_at,
+    )
     try:
-        evidence_paths = await _resolve_evidence_paths(
+        evidence_paths = await resolve_evidence_paths(
             postgres_engine,
             case_id=hypothesis.case_id,
             observation_ids=hypothesis.supporting_observation_ids,
@@ -186,12 +232,19 @@ async def _best_effort_project_hypothesis(
                     hypothesis_id=hypothesis.hypothesis_id,
                     projection_key=event.projection_key,
                 )
+        await review_projection_outbox.mark_succeeded(outbox_event_id, hypothesis.created_at)
     except GraphConnectionError as exc:
         logger.warning(
             "graph.hypothesis_projection_failed",
             case_id=str(hypothesis.case_id),
             hypothesis_id=str(hypothesis.hypothesis_id),
             exc_type=type(exc).__name__,
+        )
+        await review_projection_outbox.mark_retryable_failure(
+            outbox_event_id,
+            now=hypothesis.created_at,
+            error_code="graph_connection_error",
+            error_message=type(exc).__name__,
         )
 
 
@@ -205,6 +258,7 @@ async def create_hypothesis(
     postgres_engine: AsyncEngine,
     graph_repository: Neo4jGraphRepository,
     integrity_service: IntegrityService,
+    review_projection_outbox: ReviewProjectionOutboxRepository,
     now: datetime | None = None,
 ) -> HypothesisRecord:
     """Create one hypothesis. Lets `HypothesisValidationError` propagate
@@ -227,6 +281,7 @@ async def create_hypothesis(
             integration_repository=integration_repository,
             postgres_engine=postgres_engine,
             graph_repository=graph_repository,
+            review_projection_outbox=review_projection_outbox,
         )
     return hypothesis
 
@@ -240,6 +295,7 @@ async def submit_hypothesis_review_decision(
     hypothesis_repository: HypothesisRepository,
     graph_repository: Neo4jGraphRepository,
     integrity_service: IntegrityService,
+    review_projection_outbox: ReviewProjectionOutboxRepository,
     now: datetime | None = None,
 ) -> HypothesisRecord | None:
     """Record one hypothesis review decision. Returns `None` for a missing/
@@ -272,6 +328,13 @@ async def submit_hypothesis_review_decision(
                 hypothesis_id=str(hypothesis_id),
             )
             return hypothesis
+        outbox_event_id = await _enqueue_for_durable_replay(
+            review_projection_outbox,
+            case_id=case_id,
+            subject_type=ReviewProjectionSubjectType.HYPOTHESIS_REVIEW_DECISION,
+            subject_id=hypothesis_id,
+            now=decided_at,
+        )
         try:
             await project_hypothesis_review_decision(
                 graph_repository,
@@ -282,6 +345,7 @@ async def submit_hypothesis_review_decision(
                 decided_by=decided_by,
                 rationale_commitment_sha256=action.rationale_commitment_sha256,
             )
+            await review_projection_outbox.mark_succeeded(outbox_event_id, decided_at)
         except GraphConnectionError as exc:
             logger.warning(
                 "graph.hypothesis_review_projection_failed",
@@ -289,12 +353,19 @@ async def submit_hypothesis_review_decision(
                 hypothesis_id=str(hypothesis_id),
                 exc_type=type(exc).__name__,
             )
+            await review_projection_outbox.mark_retryable_failure(
+                outbox_event_id,
+                now=decided_at,
+                error_code="graph_connection_error",
+                error_message=type(exc).__name__,
+            )
     return hypothesis
 
 
 __all__ = [
     "CandidateNotFoundError",
     "create_hypothesis",
+    "resolve_evidence_paths",
     "submit_candidate_review_decision",
     "submit_hypothesis_review_decision",
 ]
