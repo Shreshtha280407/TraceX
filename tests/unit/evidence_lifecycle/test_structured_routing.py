@@ -35,7 +35,11 @@ from app.modules.evidence_lifecycle.errors import UnsupportedContentTypeError
 from app.modules.evidence_lifecycle.jobs import FakeJobProducer
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
-from tests.fixtures.access_control.factories import make_case_record, make_membership_record
+from tests.fixtures.access_control.factories import (
+    make_case_record,
+    make_membership_record,
+    make_user_record,
+)
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 from tests.fixtures.evidence_lifecycle.factories import make_upload_file
 from tests.fixtures.evidence_lifecycle.fake_repository import FakeEvidenceLifecycleRepository
@@ -291,18 +295,15 @@ async def _authenticated_member(
     client: AsyncClient, ac_repository: FakeAccessControlRepository
 ) -> tuple[str, object]:
     email = f"agent-{uuid4().hex[:10]}@example.test"
-    register = await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": "correct-horse-battery-staple", "display_name": "Agent"},
-    )
-    assert register.status_code == 201, register.text
+    user = make_user_record(email_normalized=email)
+    await ac_repository.create_user(user)
     login = await client.post(
         "/api/v1/auth/login",
         json={"email": email, "password": "correct-horse-battery-staple"},
     )
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
-    user_id = register.json()["user_id"]
+    user_id = user.user_id
 
     case = make_case_record(classification=ClearanceLevel.CONFIDENTIAL)
     await ac_repository.create_case(case)

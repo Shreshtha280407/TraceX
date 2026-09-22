@@ -495,6 +495,39 @@ class EvidenceLifecycleRepository:
             await conn.execute(sa.insert(evidence_records_table).values(**evidence_values))
             await conn.execute(sa.insert(worker_jobs_table).values(**job_values))
 
+    async def get_job_by_idempotency_key(
+        self, case_id: UUID, idempotency_key: str
+    ) -> WorkerJobRecord | None:
+        """Gap-Closure WP-4 (G7): the lookup half of `create_job`'s idempotent
+        insert -- mirrors `get_evidence_by_idempotency_key`'s exact shape."""
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(worker_jobs_table).where(
+                            worker_jobs_table.c.case_id == case_id,
+                            worker_jobs_table.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _job_from_row(row) if row is not None else None
+
+    async def create_job(self, job: WorkerJobRecord) -> None:
+        """Gap-Closure WP-4 (G7): insert one standalone job row for
+        already-existing evidence (`POST .../evidence/{id}/reprocess`) --
+        unlike `create_evidence_with_job`, no evidence row is written.
+        Raises `sqlalchemy.exc.IntegrityError` on a duplicate
+        `idempotency_key`; the caller (`service.reprocess_evidence`)
+        resolves that via `get_job_by_idempotency_key`, exactly like
+        `upload_evidence`'s own replay-or-conflict handling.
+        """
+        job_values = _dump_for_insert(job, ("source_type", "status"))
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.insert(worker_jobs_table).values(**job_values))
+
     # --- evidence (read) ---------------------------------------------------
 
     async def get_evidence(self, case_id: UUID, evidence_id: UUID) -> EvidenceRecord | None:

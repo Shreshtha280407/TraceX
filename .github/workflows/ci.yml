@@ -4,12 +4,81 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Gap-Closure WP-8 (G14): a nightly run against the same live service
+    # containers as every push/PR, so environmental drift (a new
+    # postgres/neo4j/minio image tag regressing something) is caught
+    # even on a day with no PR open. 03:17 UTC -- an off-peak, deliberately
+    # non-round-number time, avoiding the top-of-hour thundering herd many
+    # scheduled workflows pile onto.
+    - cron: "17 3 * * *"
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    # Gap-Closure WP-8 (G14): live service containers matching compose.yaml's
+    # images, so integration tests (self-skipping without them) actually run
+    # in CI instead of silently skipping on every single run. Credentials
+    # match .env.example's placeholders exactly -- the existing "cp
+    # .env.example .env" step below is what integration test conftest.py
+    # files read via dotenv_values(), so no test code changes are needed for
+    # any of this to work. MinIO is started separately (see the "Start
+    # MinIO" step below): GitHub Actions' `services:` block has no way to
+    # pass MinIO's required `server /data ...` command argument.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: tracex
+          POSTGRES_PASSWORD: change-me-dev-only
+          POSTGRES_DB: tracex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tracex -d tracex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      neo4j:
+        image: neo4j:5.25-community
+        env:
+          NEO4J_AUTH: neo4j/change-me-dev-only
+        ports:
+          - 7687:7687
+          - 7474:7474
+        options: >-
+          --health-cmd "wget -O /dev/null -q http://localhost:7474 || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Secret scan
+        # Gap-Closure WP-8 (G14): catches an accidentally-committed secret
+        # or credential before it ever reaches main -- run before any
+        # dependency install/build step, so a scan failure is fast and
+        # never depends on a later step's success. The `gitleaks` CLI
+        # itself (not the `gitleaks-action` Marketplace wrapper, which
+        # gates some features behind an organization license) is
+        # unrestricted open source -- installed directly from its pinned
+        # GitHub release, scanning the full repository history for the
+        # default ruleset's secret patterns.
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -32,8 +101,32 @@ jobs:
       - name: Copy env placeholders for tests
         run: cp .env.example .env
 
+      - name: Start MinIO
+        # Gap-Closure WP-8 (G14): GitHub Actions `services:` containers have
+        # no way to supply MinIO's required command (`server /data
+        # --console-address ":9001"`), so it's started as a plain container
+        # instead, then polled the same way compose.yaml's own healthcheck
+        # does (`mc ready`) before any test runs.
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=tracex-minio \
+            -e MINIO_ROOT_PASSWORD=change-me-dev-only \
+            quay.io/minio/minio:latest server /data --console-address ":9001"
+          for _ in $(seq 1 20); do
+            docker exec minio mc ready local && break
+            sleep 3
+          done
+
+      - name: Run Alembic migrations
+        run: uv run alembic upgrade head
+
       - name: pytest
         run: uv run pytest
 
       - name: Validate Docker Compose config
         run: docker compose config --quiet
+
+      - name: Stop MinIO
+        if: always()
+        run: docker rm -f minio || true

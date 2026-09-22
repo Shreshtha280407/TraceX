@@ -14,11 +14,12 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
+    AdminProvisionUserRequest,
     CaseRole,
     LoginRequest,
     LogoutRequest,
     RefreshRequest,
-    RegisterRequest,
+    SystemRole,
 )
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
 from app.modules.access_control.service import AuthService, RequestContext
@@ -62,16 +63,16 @@ def _make_service(
 
 def test_register_request_rejects_short_password() -> None:
     with pytest.raises(Exception):  # noqa: B017 - pydantic.ValidationError, not this module's
-        RegisterRequest(email="a@b.com", password="short", display_name="A")
+        AdminProvisionUserRequest(email="a@b.com", password="short", display_name="A")
 
 
 def test_register_request_rejects_malformed_email() -> None:
     with pytest.raises(Exception):  # noqa: B017
-        RegisterRequest(email="not-an-email", password=DEFAULT_PASSWORD, display_name="A")
+        AdminProvisionUserRequest(email="not-an-email", password=DEFAULT_PASSWORD, display_name="A")
 
 
 def test_register_request_normalizes_email() -> None:
-    request = RegisterRequest(
+    request = AdminProvisionUserRequest(
         email="  Someone@Example.COM  ", password=DEFAULT_PASSWORD, display_name="A"
     )
     assert request.email == "someone@example.com"
@@ -79,10 +80,10 @@ def test_register_request_normalizes_email() -> None:
 
 async def test_register_creates_a_user_and_never_returns_the_password_hash() -> None:
     service, repo = _make_service()
-    request = RegisterRequest(
+    request = AdminProvisionUserRequest(
         email="new@example.test", password=DEFAULT_PASSWORD, display_name="New"
     )
-    public_user = await service.register(request, CTX)
+    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
 
     assert public_user.email_normalized == "new@example.test"
     assert not hasattr(public_user, "password_hash")
@@ -93,23 +94,39 @@ async def test_register_creates_a_user_and_never_returns_the_password_hash() -> 
 
 async def test_register_rejects_duplicate_email() -> None:
     service, repo = _make_service()
-    request = RegisterRequest(email="dup@example.test", password=DEFAULT_PASSWORD, display_name="A")
-    await service.register(request, CTX)
+    request = AdminProvisionUserRequest(
+        email="dup@example.test", password=DEFAULT_PASSWORD, display_name="A"
+    )
+    await service.provision_user(request, CTX, provisioned_by=uuid4())
     with pytest.raises(ValidationError):
-        await service.register(request, CTX)
+        await service.provision_user(request, CTX, provisioned_by=uuid4())
 
 
 async def test_registered_user_is_never_automatically_privileged() -> None:
-    # There is no "role"/"is_admin" field on PublicUser or UserRecord at
-    # all -- registration cannot grant case-level privilege, since that
-    # only ever comes from an explicit `case_memberships` row.
+    # `system_role` defaults to `None` unless the (already-admin-gated,
+    # per `dependencies.require_system_admin`) caller explicitly requests
+    # one -- provisioning cannot grant case-level privilege either, since
+    # that only ever comes from an explicit `case_memberships` row.
     service, repo = _make_service()
-    request = RegisterRequest(
+    request = AdminProvisionUserRequest(
         email="plain@example.test", password=DEFAULT_PASSWORD, display_name="A"
     )
-    public_user = await service.register(request, CTX)
-    assert "role" not in public_user.model_dump()
+    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
+    assert public_user.system_role is None
     assert repo.memberships == {}
+
+
+async def test_provision_user_can_mint_another_admin_when_requested() -> None:
+    service, repo = _make_service()
+    request = AdminProvisionUserRequest(
+        email="newadmin@example.test",
+        password=DEFAULT_PASSWORD,
+        display_name="A",
+        system_role=SystemRole.ADMIN,
+    )
+    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
+    assert public_user.system_role is SystemRole.ADMIN
+    assert repo.users[public_user.user_id].system_role is SystemRole.ADMIN
 
 
 # --- Scenario 3: login success creates valid access and refresh tokens -----

@@ -45,7 +45,13 @@ def _live_settings(**overrides: Any) -> Settings:
     kwargs.update(overrides)
     # A real, freshly generated dev-only key -- never the operator's own
     # `.env` key, so these tests never depend on (or risk logging) it.
-    kwargs.setdefault("integrity_signing_key", generate_signing_key_b64())
+    # `.env.example` ships `INTEGRITY_SIGNING_KEY=` (present, empty) rather
+    # than omitting the line, so a blank value must be treated the same as
+    # an absent one here -- `setdefault` alone would never fire against a
+    # fresh `cp .env.example .env` (see `Settings._normalize_blank_worker_
+    # secret_to_none`'s docstring for the same empty-vs-absent distinction).
+    if not str(kwargs.get("integrity_signing_key") or "").strip():
+        kwargs["integrity_signing_key"] = generate_signing_key_b64()
     return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import get_settings
+from app.modules.graph.entity_repository import EntityRepository
+from app.modules.graph.entity_repository import create_engine as create_entity_engine
 from app.modules.graph.hypothesis_repository import HypothesisRepository
 from app.modules.graph.hypothesis_repository import create_engine as create_hypothesis_engine
 from app.modules.graph.integration_repository import (
@@ -21,6 +23,10 @@ from app.modules.graph.integration_repository import (
     create_engine as create_integration_engine,
 )
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+from app.modules.graph.review_projection_outbox import ReviewProjectionOutboxRepository
+from app.modules.graph.review_projection_outbox import (
+    create_engine as create_review_projection_outbox_engine,
+)
 from app.modules.graph.review_repository import CandidateReviewRepository
 from app.modules.graph.review_repository import create_engine as create_review_engine
 
@@ -32,6 +38,10 @@ _integration_repository = GraphCorrelationIntegrationRepository(
 )
 _review_repository = CandidateReviewRepository(create_review_engine(_settings))
 _hypothesis_repository = HypothesisRepository(create_hypothesis_engine(_settings))
+_entity_repository = EntityRepository(create_entity_engine(_settings))
+_review_projection_outbox_repository = ReviewProjectionOutboxRepository(
+    create_review_projection_outbox_engine(_settings)
+)
 _postgres_engine = create_integration_engine(_settings)
 
 
@@ -50,6 +60,14 @@ def get_candidate_review_repository() -> CandidateReviewRepository:
 
 def get_hypothesis_repository() -> HypothesisRepository:
     return _hypothesis_repository
+
+
+def get_entity_repository() -> EntityRepository:
+    return _entity_repository
+
+
+def get_review_projection_outbox_repository() -> ReviewProjectionOutboxRepository:
+    return _review_projection_outbox_repository
 
 
 def get_postgres_engine() -> AsyncEngine:

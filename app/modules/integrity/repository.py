@@ -44,9 +44,11 @@ from app.modules.integrity.models import (
     IntegrityEventSubmission,
     MerkleCheckpointRecord,
     ModalityObservationProvenanceRecord,
+    PendingCheckpointRange,
+    SigningKeyPublicRecord,
     StructuredObservationProvenanceRecord,
 )
-from app.modules.integrity.signing import SignedRoot
+from app.modules.integrity.signing import PublicKeyMaterial, SignedRoot
 from app.modules.integrity.structured_provenance import (
     StructuredObservationIntegrityProvenanceV1,
 )
@@ -127,6 +129,16 @@ structured_observation_provenance_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+signing_keys_public_table = sa.Table(
+    "signing_keys_public",
+    metadata,
+    sa.Column("key_id", sa.Text(), primary_key=True),
+    sa.Column("algorithm", sa.Text(), nullable=False),
+    sa.Column("public_key_b64", sa.Text(), nullable=False),
+    sa.Column("public_key_fingerprint", sa.Text(), nullable=False),
+    sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 modality_observation_provenance_table = sa.Table(
     "modality_observation_integrity_provenance",
     metadata,
@@ -147,6 +159,12 @@ modality_observation_provenance_table = sa.Table(
 
 class IntegrityValidationError(ValueError):
     """Raised when a submission or checkpoint range is rejected as unsafe/inconsistent."""
+
+
+class SigningKeyConflictError(ValueError):
+    """Raised when a `key_id` is already registered with a *different* public
+    key -- a real integrity anomaly, never silently overwritten. The table
+    itself is append-only at the database level (see the migration)."""
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -171,6 +189,10 @@ def _structured_provenance_from_row(row: sa.RowMapping) -> StructuredObservation
 
 def _modality_provenance_from_row(row: sa.RowMapping) -> ModalityObservationProvenanceRecord:
     return ModalityObservationProvenanceRecord.model_validate(dict(row))
+
+
+def _signing_key_from_row(row: sa.RowMapping) -> SigningKeyPublicRecord:
+    return SigningKeyPublicRecord.model_validate(dict(row))
 
 
 def _event_fingerprint(
@@ -699,3 +721,114 @@ class IntegrityRepository:
                 .first()
             )
             return _signature_from_row(row) if row else None
+
+    async def register_signing_key(
+        self, material: PublicKeyMaterial, *, now: datetime | None = None
+    ) -> tuple[SigningKeyPublicRecord, bool]:
+        """Idempotent: re-registering the same `key_id` with the same public
+        key is a no-op (`is_new=False`). Raises `SigningKeyConflictError` if
+        `key_id` is already registered with a *different* public key --
+        that can only mean a `key_id` was reused for a genuinely different
+        key, which this registry exists to catch, not paper over."""
+        existing = await self.get_signing_key(material.key_id)
+        if existing is not None:
+            if existing.public_key_b64 != material.public_key_b64:
+                raise SigningKeyConflictError(
+                    f"key_id '{material.key_id}' is already registered with a different public key"
+                )
+            return existing, False
+        record = SigningKeyPublicRecord(
+            key_id=material.key_id,
+            algorithm=material.algorithm,
+            public_key_b64=material.public_key_b64,
+            public_key_fingerprint=material.public_key_fingerprint,
+            registered_at=now or datetime.now(UTC),
+        )
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.insert(signing_keys_public_table).values(
+                    key_id=record.key_id,
+                    algorithm=record.algorithm,
+                    public_key_b64=record.public_key_b64,
+                    public_key_fingerprint=record.public_key_fingerprint,
+                    registered_at=record.registered_at,
+                )
+            )
+        return record, True
+
+    async def get_signing_key(self, key_id: str) -> SigningKeyPublicRecord | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(signing_keys_public_table).where(
+                            signing_keys_public_table.c.key_id == key_id
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _signing_key_from_row(row) if row else None
+
+    async def list_signing_keys(self) -> list[SigningKeyPublicRecord]:
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(signing_keys_public_table).order_by(
+                            signing_keys_public_table.c.registered_at.asc()
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_signing_key_from_row(row) for row in rows]
+
+    async def list_pending_checkpoint_ranges(
+        self, *, limit: int = 100
+    ) -> list[PendingCheckpointRange]:
+        """Gap-Closure WP-5 (G4): every case with events beyond its latest
+        sealed checkpoint (or never checkpointed at all), bounded to
+        `limit` cases per call -- what the scheduled checkpointing loop
+        seals next. `integrity_sequence_counters.last_sequence` is the same
+        durable per-case counter `record_event` already maintains; no new
+        column or table is needed to answer "how far has this case gotten."
+        """
+        latest_end = (
+            sa.select(
+                merkle_checkpoints_table.c.case_id,
+                sa.func.max(merkle_checkpoints_table.c.end_sequence).label("max_end_sequence"),
+            )
+            .group_by(merkle_checkpoints_table.c.case_id)
+            .subquery()
+        )
+        statement = (
+            sa.select(
+                integrity_sequence_counters_table.c.case_id,
+                sa.func.coalesce(latest_end.c.max_end_sequence, 0).label("start_from"),
+                integrity_sequence_counters_table.c.last_sequence,
+            )
+            .select_from(
+                integrity_sequence_counters_table.outerjoin(
+                    latest_end,
+                    latest_end.c.case_id == integrity_sequence_counters_table.c.case_id,
+                )
+            )
+            .where(
+                integrity_sequence_counters_table.c.last_sequence
+                > sa.func.coalesce(latest_end.c.max_end_sequence, 0)
+            )
+            .limit(limit)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).all()
+        return [
+            PendingCheckpointRange(
+                case_id=row.case_id,
+                start_sequence=row.start_from + 1,
+                end_sequence=row.last_sequence,
+            )
+            for row in rows
+        ]

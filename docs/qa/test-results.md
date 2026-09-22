@@ -4389,3 +4389,381 @@ file was edited for this fix.
 
 No Docker, Compose, LAN, deployment, external dataset, or model-download
 command was run, by this Part's explicit scope.
+
+## 2026-09-21 -- Gap-Closure WP-1: auth hardening + case management API (Shreshtha)
+
+No Docker/live infra in this environment; all tests below ran against
+in-memory fakes. Focused suite (auth/case-management/evidence-classification
+blast radius):
+
+```text
+uv run pytest -q tests/unit/access_control/ \
+  tests/unit/evidence_lifecycle/test_evidence_api.py \
+  tests/unit/evidence_lifecycle/test_communication_routing.py \
+  tests/unit/evidence_lifecycle/test_media_routing.py \
+  tests/unit/evidence_lifecycle/test_structured_routing.py \
+  tests/unit/evidence_lifecycle/test_worker_identity_api.py \
+  tests/unit/graph/test_graph_api.py \
+  tests/unit/integrity/test_integrity_api.py \
+  tests/security/access_control/ \
+  tests/unit/test_app_startup.py
+-> 288 passed, 0 failed, 128.62s
+
+uv run ruff format --check .   -> 534 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 224 source files
+uv run alembic heads           -> 1a2b3c4d5e6f (head) -- exactly one head
+git diff --check               -> exit 0, no output
+```
+
+A genuine pre-existing test-fixture gap was found and fixed while writing
+this WP's own tests: `FakeAccessControlRepository.create_case` did not
+enforce the real `cases.uq_cases_case_reference` UNIQUE constraint, so a
+duplicate-case-reference conflict test initially passed against the fake
+for the wrong reason. Fixed by making the fake raise `sa.exc.IntegrityError`
+on a duplicate reference, matching real PostgreSQL behavior -- see
+`docs/qa/known-limitations.md`'s "WP-1" section for the full account,
+including the ~19-file blast radius from removing the public `/register`
+route.
+
+## 2026-09-21 -- Gap-Closure WP-2: entity layer + resolution review (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/graph/ tests/contract/test_entity.py
+-> 263 passed, 0 failed, 26.75s
+
+uv run ruff format --check .   -> all files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 228 source files
+uv run alembic heads           -> 2b3c4d5e6f7a (head) -- exactly one head
+uv run python -c "from app.main import app; print(len(app.routes))" -> 13 routers wired, app imports cleanly
+git diff --check               -> exit 0, no output
+```
+
+New tests (`tests/unit/graph/{test_entity_service,test_entity_api}.py`,
+14 tests) exercise: entity creation from real observation fixtures,
+idempotent entity/candidate creation, exact-identifier match produces a
+candidate never a merge, unrelated observations produce no candidate,
+cross-case entity is never visible, name-similarity alone never verifies,
+reviewer can verify then split (unmerge) with the latest decision winning
+while the full history is retained, investigator denied `REVIEW_DECIDE`.
+
+## 2026-09-22 -- Gap-Closure WP-3: graph taxonomy alignment (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/graph/
+-> 286 passed, 0 failed, 27.66s
+
+uv run ruff format --check .   -> all files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 230 source files
+uv run alembic heads           -> 2b3c4d5e6f7a (head) -- unchanged, no new migration this WP
+git diff --check               -> exit 0, no output
+```
+
+A genuine pre-existing regression test conflicted with this WP's new
+`POSSIBLY_SAME_AS`/`CONTRADICTED_BY` relationship kinds:
+`test_relationship_kind_enum_has_no_entity_to_entity_kind` exhaustively
+asserted zero entity-to-entity `GraphRelationshipKind` members, encoding a
+real Phase 5A decision that predates entity resolution existing at all.
+Fixed by narrowing (not weakening) both the enum's docstring and the test
+to state the real invariant precisely -- no *evidentiary* entity-to-entity
+edge, but identity-resolution review metadata is a different, legitimate
+concept; the test remains exhaustive (renamed to
+`test_relationship_kind_enum_has_no_fabricated_or_undocumented_kind`) and
+still fails on any undocumented new member. See
+`docs/qa/known-limitations.md`'s "WP-3" section and ADR-021.
+
+New tests (`tests/unit/graph/{test_taxonomy,test_entity_projection}.py`,
+27 tests): every documented relationship node-kind combination is valid,
+swapped/wrong node kinds are rejected, `entity_type`/`event_type`
+recommendations are advisory only, `POSSIBLY_SAME_AS` projection applies
+when both entities exist and defers safely when either is missing,
+`CONTRADICTED_BY` projects only when contradiction reasons are present,
+queries are parameterized (never interpolated).
+
+## 2026-09-22 -- Gap-Closure WP-4: review memory, evidence audit, projection replay (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/graph/ tests/unit/access_control/ tests/unit/evidence_lifecycle/test_evidence_api.py
+-> 482 passed, 0 failed, 116.38s
+
+uv run ruff format --check .   -> 563 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 236 source files
+uv run alembic heads           -> 4d5e6f7a8b9c (head) -- exactly one head
+uv run python -c "from app.main import app; print(len(app.routes))" -> 13 routers wired, app imports cleanly
+git diff --check               -> exit 0, no output
+```
+
+A real gap found via re-reading the gap register mid-WP: `list_candidates_
+for_review`/`list_hypotheses` returned rejected items unconditionally,
+contradicting the documented "a rejected candidate disappears from default
+analytical reads" contract. Fixed with an `include_rejected=false`-default
+query parameter rather than a silent behavior change, so existing callers
+that genuinely need the full history still can.
+
+Adding a required `review_projection_outbox` parameter to `submit_
+candidate_review_decision`/`create_hypothesis`/`submit_hypothesis_review_
+decision` broke 10 existing tests in `test_review_service.py`; fixed with a
+`_FakeReviewProjectionOutbox` fixture, not by relaxing the new
+requirement. The fake evidence-lifecycle repository (`tests/fixtures/
+evidence_lifecycle/fake_repository.py`) was initially missing `create_job`/
+`get_job_by_idempotency_key` (only used by the new reprocess path,
+never exercised before this WP) -- the first run of the new reprocess
+tests failed with a real `AttributeError`, not a mocked pass; fixed by
+adding both methods to the fake with the same uniqueness-constraint
+semantics as the real repository, then re-run to green.
+
+New tests: `tests/unit/graph/{test_review_projection_replay,
+test_handoff_service}.py` (9 tests), `tests/unit/access_control/
+test_notes_service.py` (4 tests), 8 new cases appended to
+`tests/unit/evidence_lifecycle/test_evidence_api.py` covering: integrity
+match/tamper/unreadable-object/above-clearance, reprocess distinct-job-id/
+idempotent-replay/role-and-case-scoped-denial/unknown-evidence-404. See
+`docs/qa/known-limitations.md`'s "WP-4" section and ADR-022.
+
+## 2026-09-22 -- Gap-Closure WP-5: integrity hardening (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/integrity/ tests/unit/graph/test_entity_models.py \
+    tests/unit/graph/test_entity_api.py tests/unit/access_control/test_notes_models.py \
+    tests/unit/access_control/test_cases_api.py
+-> 78 passed, 0 failed, 27.67s
+
+uv run pytest -q tests/unit/graph/ tests/unit/access_control/ tests/unit/integrity/ \
+    tests/unit/evidence_lifecycle/test_evidence_api.py
+-> 542 passed, 0 failed, 125.29s
+
+uv run pytest -q tests/integration/integrity/test_repository_live.py \
+    tests/integration/integrity/test_manifest_sink_live.py
+-> 23 skipped (PostgreSQL unreachable in this environment; MinIO and Neo4j
+   were up. Honestly reported as implemented, live-unverified -- not
+   claimed as verified.)
+
+uv run ruff format --check .   -> 570 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 237 source files
+uv run alembic heads           -> 5e6f7a8b9c0d (head) -- exactly one head
+git diff --check               -> exit 0, no output
+```
+
+Running the full `tests/unit/integrity/` sweep for the first time this
+session (previous WPs' "required tests only" runs never happened to
+include it) surfaced a genuine pre-existing failure unrelated to this
+WP's own changes: `test_migration_head.py::test_phase_6_migration_is_the_
+current_head` hardcoded alembic head `a3b4c5d6e7f8`, stale since WP-1's
+first new migration. Fixed by updating the assertion to the real current
+head and renaming the test to not claim a specific phase; `test_exactly_
+one_alembic_head` (the invariant that actually matters) was passing
+throughout and required no change.
+
+Adding `get_integrity_service`/`IntegrityService` as a required dependency
+to `entity_api.py`'s resolution-review route and `notes_service.create_
+note` did not break any existing test, because every existing caller of
+those two code paths already runs without a live PostgreSQL in the unit
+suite -- the established `_record_integrity_event_safely` pattern fails
+closed (logs and continues) on a connection error exactly as it does in
+`review_service.py`'s and `evidence_lifecycle/service.py`'s existing,
+already-tested call sites, so no test-side override was needed.
+
+The WP-4 case-notes/audit HTTP routes (`POST/GET /cases/{id}/notes`,
+`GET /cases/{id}/audit`) had **zero** direct HTTP-level test coverage
+before this WP -- only `notes_service.list_visible_notes` was tested at
+the service layer. Closed with 3 new tests in `test_cases_api.py`
+(round-trip write+read, role-denial, audit-event read), backed by a new
+`FakeCaseNoteRepository` fixture (`tests/fixtures/access_control/
+fake_case_note_repository.py`) since none existed.
+
+New tests: `tests/unit/integrity/test_manifest_sink.py` (3 tests,
+`FilesystemManifestSink` write-once/scoping), 2 new cases in `test_
+signing.py` (`LoadedSigningKey.public_key_material`), `tests/unit/graph/
+test_entity_models.py` (3 tests, entity-decision integrity-submission
+safety + idempotency-key scoping), `tests/unit/access_control/test_notes_
+models.py` (4 tests, case-note integrity-submission safety), 9 new live
+tests in `test_repository_live.py` (signing-key registry idempotency/
+conflict/append-only, pending-checkpoint discovery, `build_pending_
+checkpoints` sweep), 2 new live tests in `test_manifest_sink_live.py`
+(MinIO round-trip + write-once refusal) -- the last 11 self-skip per
+above. See `docs/qa/known-limitations.md`'s "WP-5" section and ADR-023.
+
+## 2026-09-22 -- Gap-Closure WP-6: read APIs, event catalog, worker liveness, pagination (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/
+-> 2145 passed, 3 skipped, 238.63s
+
+uv run ruff format --check .   -> 576 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 238 source files
+uv run alembic heads           -> 6f7a8b9c0d1e (head) -- exactly one head
+uv run python -c "from app.main import app; print(len(app.routes))" -> 13 routers wired, app imports cleanly
+```
+
+Running the full unbounded `tests/unit/` sweep (not just this WP's
+touched directories) for the first time in this gap-closure effort
+surfaced one pre-existing, unrelated failure before any fix: `test_
+migration_head.py`'s hardcoded head assertion, stale again after this
+WP's new migration -- the third time this exact pattern has needed a
+one-line fix in this effort (WP-1 implicitly, WP-5, now WP-6). Fixed to
+the real current head; flagged in ADR-024 as a recurring maintenance
+cost rather than silently re-fixed WP after WP without comment.
+
+A `POST /cases/{id}/graph/path` `max_hops` bound cannot be passed as a
+Cypher parameter inside a variable-length relationship pattern (a real
+Cypher limitation, not a choice) -- `queries.py`'s own absolute rule
+against interpolating any value into query text meant the fix had to be
+"always search a fixed, hardcoded ceiling, then filter the result by the
+caller's requested bound afterward," not "embed the caller's number into
+the query." Verified by `test_graph_path_beyond_requested_max_hops_is_
+reported_not_found`: a real path Neo4j finds (length 4) that exceeds a
+caller's smaller requested `max_hops=2` is reported `found: false`, never
+truncated or returned anyway.
+
+`list_worker_credentials`'s prior "never exposed through a public API"
+docstring was a real, deliberate invariant from an earlier phase --
+narrowed (not removed) to admin-gated exposure for `GET /api/v1/admin/
+workers`; `test_list_workers_reports_liveness_and_never_the_credential_
+digest` asserts the credential digest is structurally absent from the
+response, not merely omitted by convention.
+
+New tests: 12 in `test_graph_api.py` (snapshot/path/analytics/motifs,
+including the fixed-ceiling-vs-requested-bound case above, and a
+non-member-denied sweep across all four new routes), `test_api_health.py`
+gained a real worker-liveness-counting test (previously the response
+shape was a hardcoded string, now real seeded data), `test_worker_
+identity_api.py` gained a heartbeat-touch-on-auth test, `test_api.py`
+gained 3 tests for `GET /api/v1/admin/workers` (admin-only, 401
+unauthenticated, liveness + digest-never-leaked), `test_audit_event_
+catalog.py` (3 tests, new file) statically verifies the 29-entry
+`AuditEventType` catalog never drifts from real `event_type=` call
+sites in either direction, `test_cases_api.py` gained an `offset`
+pagination test for case notes. See `docs/qa/known-limitations.md`'s
+"WP-6" section and ADR-024.
+
+## 2026-09-22 -- Gap-Closure WP-7B: offline evaluation harness (Shreshtha)
+
+```text
+uv run pytest -q tests/unit/graph/test_intelligence_evaluation.py tests/unit/graph/test_intelligence_worker_loop.py
+-> 17 passed, 0 failed, 0.09s
+
+uv run pytest -q tests/unit/graph/
+-> 321 passed, 0 failed, 35.71s
+
+uv run ruff format --check .   -> 579 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 239 source files
+uv run alembic heads           -> 6f7a8b9c0d1e (head) -- unchanged, no migration this WP
+```
+
+No truth data exists to run `--evaluate` against a real synthetic case
+end-to-end -- this is explicit, user-directed scope (WP-7A, the sibling
+`TraceX-Synthetic-Data` repository, is out of this codebase's
+responsibility). All 12 `test_intelligence_evaluation.py` tests instead
+construct small, explicitly-labeled synthetic truth fixtures inline
+(never claiming to be the real WP-7A data) to verify the scoring logic
+itself: a perfect-match case (precision/recall/false-link-rate all
+correct), a false-merge case (system verified a pair truth says are
+different), and a missing-candidate case (a truth-labeled SAME pair the
+system never generated a candidate for correctly counts as a recall
+miss, not a silent no-op). `temporal_boundary_correctness` is asserted
+to always be `None` -- a deliberate scope boundary, verified by test
+rather than left to trust.
+
+The import-boundary test
+(`test_no_api_route_ever_imports_the_evaluator_or_truth_loader`) greps
+every `app/api/*.py`, `*_api.py`, and `app/main.py` file for an import of
+either new module and fails if any exists -- real enforcement that
+offline evaluation stays unreachable from a live request path, not a
+docstring claim. See `docs/qa/known-limitations.md`'s "WP-7B" section
+and ADR-025 (which also documents the exact truth-data JSON schema for
+whoever builds the WP-7A sibling-repository content next).
+
+## 2026-09-22 -- Gap-Closure WP-8: CI, compose profiles, runbooks, cleanup (Shreshtha)
+
+```text
+uv run ruff format --check .   -> 581 files already formatted
+uv run ruff check .            -> All checks passed!
+uv run mypy app                -> Success: no issues found in 239 source files
+uv run alembic heads           -> 6f7a8b9c0d1e (head) -- unchanged, no migration this WP
+docker compose config --quiet  -> exit 0, no output (valid)
+docker compose config --services                                    -> minio neo4j postgres redis api
+docker compose --profile cpu-worker --profile gpu-worker config --services
+  -> minio neo4j postgres redis api communication-worker
+     intelligence-worker media-worker graph-projector
+     media-model-bootstrap structured-worker
+```
+
+No Python source changed in this WP (CI/compose/gitignore/docs only), so
+the full `pytest` suite was not re-run here -- it was already confirmed
+green (2145 passed, 3 skipped) at the end of WP-6, and nothing in WP-7B
+or WP-8 touched application code that suite exercises. The final WP-9
+full gate suite re-confirms this from a clean state regardless.
+
+`gitleaks` was downloaded and run locally (pinned v8.21.2, matching what
+CI now installs) against this repository's full commit history before
+wiring it into CI, specifically to avoid shipping a secret-scan gate that
+would immediately fail the next push: found 2 matches, both confirmed
+false positives (`idempotency_key` superficially matching the
+`generic-api-key` rule -- neither is a real secret). `.gitleaks.toml`'s
+allowlist was iterated until `gitleaks detect --config .gitleaks.toml`
+reported zero leaks; the exact command CI runs was verified locally, not
+only written and assumed correct.
+
+`docker compose config --services` was run both before and after the
+profile-split change (git-stashed comparison) to confirm the bare
+default (`docker compose up`, no `--profile` flag) still yields exactly
+`minio neo4j postgres redis api` -- unchanged, no accidental scope
+expansion of the default startup set.
+
+The CI workflow YAML's schedule/services/steps structure was validated
+with `python -c "import yaml; yaml.safe_load(...)"` (syntactic validity)
+-- the workflow's actual execution on a GitHub Actions runner (service
+container startup, gitleaks step, live-infra pytest run) was not
+observed in this session, since that requires a real push/PR to trigger;
+honestly reported as implemented and locally verified piece-by-piece
+(gitleaks command, compose config, YAML syntax), not as "confirmed
+passing in CI."
+
+## 2026-09-22 -- Gap-Closure re-close: G16/G8/G17/G9 correction, G4 object-lock, live-infra full run (Shreshtha)
+
+Closes G16 (metrics + `/internal/workers`), corrects the scope of G8 and
+G17, resolves G9 per-table, and completes G4's MinIO object-lock. Full
+detail in `docs/qa/known-limitations.md`'s "Phase 7 Closure — Gap-Closure
+re-close" section and its "G4 completion, live-infra escalation, and two
+pre-existing bugs found" subsection.
+
+```
+uv run ruff format --check .    -> 587 files already formatted
+uv run ruff check .             -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 241 source files
+```
+
+`docker compose up -d postgres redis` was run this pass (Neo4j and MinIO
+were already up from earlier work), giving all four infra services live
+simultaneously for the first time in this whole gap-closure effort. Full
+suite run twice against that live infra (second run with `-rs` to confirm
+every skip reason):
+
+```
+2571 passed, 35 skipped, 1 warning in ~294s (0:04:54)
+```
+
+35 skips, none masking a failure: 23 need the `api` container itself
+running (`docker compose up --build -d`, distinct from the four infra
+services), 9 need `TRACEX_BENCHMARK_DATA_ROOT` (Gate B benchmark
+datasets), 2 need the optional `ultralytics` dependency, 1 needs a
+bootstrapped NER model asset.
+
+Running against fully live infra for the first time surfaced two genuine,
+pre-existing bugs (not introduced by this or any prior gap-closure WP):
+a fabricated `provisioned_by=uuid4()` violating a real, pre-existing
+foreign key in `test_auth_lifecycle_live.py`, and 5 test call sites in
+`test_outbox_repository_live.py` assuming a single fixed-size `claim_
+batch` call would always contain a freshly-inserted row in a global,
+accumulating, oldest-first work queue. Both fixed (see known-limitations
+.md for the fix detail); both affected test files pass individually and
+as part of the full suite above.
+
+`git status --short` / `git diff --cached --stat` remain empty (nothing
+staged) throughout this pass.

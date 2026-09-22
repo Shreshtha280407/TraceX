@@ -995,3 +995,572 @@ code change.
   change the scoring algorithm.
 - Phase 7 is complete for this release's scope with the deterministic
   baseline, per this decision and Gate C's freeze.
+
+# Phase 7 Closure — WP-1 (Shreshtha)
+
+Closes gap register G5 (open self-registration) and G6 (no HTTP case
+management; unused per-evidence ABAC hook). See ADR-019.
+
+- **`POST /api/v1/auth/register` no longer exists (404), replaced by
+  admin-gated `POST /api/v1/admin/users`.** A `create-admin` CLI
+  (`app/modules/access_control/cli.py`) bootstraps the first admin;
+  idempotent, refuses a second admin unless `--force` is passed.
+- **New `users.system_role` column** (nullable, `CHECK` constrained to
+  `NULL`/`'admin'`) — the smallest additive model for deployment-wide
+  admin capability; case-level permissions are unaffected.
+- **New case-management routes**: `POST /api/v1/cases`,
+  `GET /api/v1/cases/{id}`, `GET /api/v1/cases/{id}/status`,
+  `POST /api/v1/cases/{id}/members`. Case creation is authenticated-only
+  (not case-scoped — the case doesn't exist yet); member addition is
+  gated by a new `CaseAction.MEMBER_MANAGE`, granted only to
+  `CASE_OWNER`/`CASE_MANAGER`.
+- **Membership update/removal routes do not exist yet** — out of this
+  WP's scope; adding a member is the only mutation exposed. A
+  mis-provisioned membership currently has no HTTP-reachable fix.
+- **Per-evidence classification is now enforced** on evidence reads: a
+  caller whose case clearance is below one specific evidence item's
+  `classification` gets `403` on direct read and the item is silently
+  omitted from `GET .../evidence` listings.
+- **A genuine pre-existing test gap was found and fixed while writing
+  this WP's own tests**: `FakeAccessControlRepository.create_case` didn't
+  enforce the real `cases.uq_cases_case_reference` UNIQUE constraint the
+  live PostgreSQL schema has, so a duplicate-case-reference test passed
+  against the fake for the wrong reason (never hit the conflict path at
+  all). Fixed by making the fake raise `sa.exc.IntegrityError` on a
+  duplicate reference, matching real Postgres behavior.
+- **Removing the public `/register` route had a wide test-suite blast
+  radius**: ~19 test files across `access_control`, `evidence_lifecycle`,
+  `graph`, `integrity`, `structured_processing`, `communication_processing`,
+  `media_processing`, and `security` unit/integration suites called it as
+  pure test setup. All were updated to seed users directly via
+  `AccessControlRepository.create_user`/`tests.fixtures.access_control.
+  factories.make_user_record` instead, then continue through the real
+  `/login` flow — no test assertion was weakened to accommodate this.
+
+# Phase 7 Closure — WP-2 (Shreshtha)
+
+Closes gap register G2 (`EntityV1` never instantiated; no entity layer).
+See ADR-020.
+
+- **Entity creation is scoped to one entity per observation, not per
+  role/descriptor.** A two-party CDR/finance record's caller and callee
+  are merged into one entity's identifiers rather than split into two.
+  This is a documented simplification, not the final design — splitting
+  by role needs `retrieval.RetrievedCandidate` to carry a descriptor-level
+  identifier (it currently only carries `observation_id`), which is a
+  real, larger change to the retrieval cascade's own return shape,
+  deferred rather than attempted lossily here.
+- **No scoring/ranking exists for entity-resolution candidates** —
+  candidates carry the retrieval cascade's own reasons/identifier types/
+  vector score/contradictions, but there is no "how confident" number
+  beyond that, matching the register's own scope (G2 asks for candidate
+  generation and reviewable decisions, not a second scoring model).
+- **Entity review decisions are reversible** (`verified_same` then later
+  `split`) — deliberately different from `candidate_review_decisions`,
+  which allows exactly one immutable decision. Every decision is retained,
+  append-only; the effective state is always the most recent one.
+- **No update/remove route for an entity's own fields exists** (label,
+  aliases, attributes) — only creation (via candidate generation) and
+  resolution-review decisions are exposed over HTTP.
+- **`POST /api/v1/entities/{id}/resolution-review` takes `candidate_id` as
+  a query parameter**, not a second path segment — the plan's own route
+  shape names only `{id}` in the path; `candidate_id` disambiguates which
+  of that entity's several possible candidates the decision is about.
+
+# Phase 7 Closure — WP-3 (Shreshtha)
+
+Documents gap register G10 (typed labels/relationships), G11 (pgvector),
+and G12 (hot window). See ADR-021.
+
+- **G10 CLOSED for relationship-kind enforcement; entity/event-type
+  enforcement is deliberately advisory, not strict.** `EntityV1`'s own
+  frozen-contract docstring states the taxonomy is later-phase, open-string
+  work by design — a strict enum would break that contract. Relationship
+  node-kind *combinations* are strictly validated instead
+  (`taxonomy.validate_relationship_combination`).
+- **`CANDIDATE_ASSOCIATION` (Observation<->Observation) is documented but
+  not yet projected.** It is reserved for Phase 5's existing
+  `correlation_candidate_links`, a real durable record — but wiring it into
+  `integration_projector.py` was judged too large/risky a change for this
+  WP's scope (Phase 5's projection path is Gate C-adjacent). `POSSIBLY_
+  SAME_AS`/`CONTRADICTED_BY` (Entity<->Entity, backed by WP-2's own
+  `entity_resolution_candidates`) ARE projected, via the new, additive
+  `entity_projection.py`.
+- **`PART_OF_THREAD` was not added at all.** No durable "thread" concept
+  exists in any contract or model in this codebase today; adding the
+  relationship kind without a record to back it would be exactly the
+  fabricated edge this pack's own rules forbid.
+- **Review overlays are edge properties, not separate relationship
+  kinds.** `POSSIBLY_SAME_AS`'s `effective_status` property carries
+  `needs_review`/`verified_same`/`rejected`/`split` — a separate
+  relationship type per outcome would conflict with WP-2's append-only,
+  reversible-decision design.
+- **G11 (open, unchanged): `graph.intelligence.vector_store` stores
+  deterministic hashed-token vectors, not a real semantic embedding
+  model's output.** Replacing it is a materially larger change (new
+  dependency, new Gate B benchmark cycle) than this WP's scope.
+- **G12 (open, unchanged): `HOT_WINDOW_SECONDS = 900` remains a fixed
+  module constant**, not Redis-backed or case-configurable — an
+  operational-tuning change, not a taxonomy one.
+- **A genuine pre-existing regression test conflicted with this WP and was
+  updated, not weakened**:
+  `test_projection.py::test_relationship_kind_enum_has_no_entity_to_entity_kind`
+  exhaustively asserted `GraphRelationshipKind` had zero entity-to-entity
+  members at all, encoding a real Phase 5A design decision ("every
+  evidentiary connection is mediated by a time-bounded Event"). WP-2/WP-3's
+  `POSSIBLY_SAME_AS`/`CONTRADICTED_BY` are entity-to-entity but are
+  identity-*resolution* review metadata, not an evidentiary connection --
+  a categorically different concept the original test's reasoning didn't
+  anticipate because entity resolution didn't exist yet when it was
+  written. Both `models.py`'s docstring and the test were updated to state
+  the narrower, still-exhaustive invariant precisely (see ADR-021); no
+  assertion was deleted or loosened, only extended with the same rigor.
+
+# Phase 7 Closure — WP-4 (Shreshtha)
+
+Documents gap register G3 (case notes/handoff), G13 (durable review/
+hypothesis projection replay), and part of G7 (rejected-item read
+filtering, evidence integrity re-check, evidence reprocess, case audit
+read). See ADR-022.
+
+- **G13 CLOSED**: a third, separate, minimal durable outbox
+  (`review_hypothesis_projection_events`, migration `3c4d5e6f7a8b`) rather
+  than genericizing either existing outbox — deliberate, to avoid risk to
+  Gate-C-adjacent Phase 5 projection code. `intelligence_worker.py
+  --replay-review-once` drains it.
+- **G3 CLOSED**: append-only `case_notes` (migration `4d5e6f7a8b9c`, same
+  trigger precedent as `entity_review_decisions`); role-based visibility
+  (`CaseAction.CASE_NOTE_READ_ALL`) enforced in `notes_service.py`, not the
+  database. `graph/handoff_service.py`'s `build_handoff_summary()` is
+  computed at read time from existing tables — no new table, no second
+  source of truth for review state.
+- **G7 (partial) CLOSED**: `include_rejected=false` (default) on
+  `list_candidates_for_review`/`list_hypotheses` now actually excludes
+  `REJECTED_BY_REVIEWER` items, closing a real, previously-untested
+  contradiction between documented and actual behavior. New
+  `GET .../evidence/{id}/integrity` (streams + re-hashes via `ObjectStorage.
+  open_stream`, never buffers a whole file; `503` — not `200` with
+  `matches: false` — on an unreadable object, since "tampered" and
+  "unreadable" are different failure modes). New
+  `POST .../evidence/{id}/reprocess` (required `Idempotency-Key`, distinct
+  job key from the original upload job, so replay can never collide with
+  it). New `GET .../cases/{id}/audit` (bounded, case-scoped, safe fields
+  only).
+- **Deferred: hypothesis "contradicting" evidence.**
+  `HypothesisCreateSubmission`/`HypothesisRecord` still carry only
+  `supporting_observation_ids`/`supporting_candidate_ids` — no symmetric
+  "contradicting" field. Phase 5's separate `CorrelationSubmission`
+  already has `contradictory_observation_ids`, but a hypothesis is a
+  distinct, later-phase concept built over reviewed candidates; adding a
+  matching field would need a new migration column plus a real validation
+  decision (can a hypothesis exist with only contradicting evidence?) and
+  its own tests — judged out of WP-4's scope. Not implemented, not
+  simulated as done.
+- **New tests**:
+  `tests/unit/graph/{test_review_projection_replay,test_handoff_service}.py`
+  (9 tests), `tests/unit/access_control/test_notes_service.py` (4 tests),
+  8 new cases appended to `tests/unit/evidence_lifecycle/test_evidence_
+  api.py` for the integrity/reprocess routes (22 tests total in that file,
+  up from 14).
+- `docs/decisions/ADR-022-review-memory-and-evidence-audit.md` (new).
+- Exactly one alembic head after both new WP-4 migrations
+  (`3c4d5e6f7a8b` -> `4d5e6f7a8b9c`); `git status --short`/`git diff
+  --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-5 (Shreshtha)
+
+Documents gap register G4 (integrity hardening). See ADR-023.
+
+- **CLOSED: reconciliation coverage gap for entity-resolution decisions
+  and case notes.** Both had zero integrity coverage before this WP --
+  fixed with `to_integrity_submission()` on `EntityReviewDecisionRecord`/
+  `CaseNoteRecord` (new `ENTITY_RESOLUTION_DECISION`/`CASE_NOTE_ADDED`
+  event kinds), best-effort write-time wiring, and reconciliation scan
+  branches for both new source tables (no schema change needed --
+  `entity_review_decisions`/`case_notes` already existed from WP-2/WP-4).
+- **CLOSED: `signing_keys_public` append-only key registry** (migration
+  `5e6f7a8b9c0d`) + `rotate-key`/`list-keys` CLI commands. Deliberately
+  register-only, no revocation field -- see ADR-023 for why.
+- **CLOSED: `ManifestSink` protocol** (`manifest_sink.py`) with
+  `FilesystemManifestSink`/`MinioManifestSink` implementations + `archive`
+  CLI command. Write-once is an application-level guarantee only (refuses
+  to overwrite an existing key/path) -- real object-lock/retention is an
+  infra-level MinIO bucket setting, out of scope here.
+- **CLOSED: scheduled checkpointing** (`checkpoint-once`/`checkpoint-loop`
+  CLI commands). Discovers pending work from the pre-existing
+  `integrity_sequence_counters` table against `merkle_checkpoints` -- no
+  new table needed for discovery.
+- **Live-unverified, not verified**: `MinioManifestSink`'s live round-trip
+  test and the new `list_pending_checkpoint_ranges`/`build_pending_
+  checkpoints` live tests all self-skip in this environment -- PostgreSQL
+  was not reachable when this WP ran (MinIO and Neo4j were), and every
+  test in `tests/integration/integrity/` shares one Postgres-gated
+  `_migrated_database` autouse fixture, matching the existing precedent
+  (`evidence_lifecycle/conftest.py`'s MinIO-only `minio_storage` fixture
+  is gated the same way). All new logic is covered by real unit tests
+  (`FilesystemManifestSink`, `LoadedSigningKey.public_key_material`) and
+  passes `ruff`/`mypy` cleanly; the repository/service-level SQL and the
+  real MinIO round-trip are implemented but not run against live infra.
+- **Genuine pre-existing gap found and fixed while running the full
+  `tests/unit/integrity/` sweep for the first time this session**:
+  `test_migration_head.py::test_phase_6_migration_is_the_current_head`
+  hardcoded a stale head revision (`a3b4c5d6e7f8`) that predates every
+  migration WP-1 through WP-5 added -- it had been silently broken since
+  WP-1 (`1a2b3c4d5e6f`) because no prior WP's "required tests only" run
+  happened to include this file. Fixed by updating the assertion to the
+  real current head (`5e6f7a8b9c0d`) and renaming the test; `test_
+  exactly_one_alembic_head` (the assertion that actually matters) was
+  passing correctly throughout.
+- **New tests**: `tests/unit/integrity/test_manifest_sink.py` (3 tests),
+  2 new tests in `test_signing.py` (`public_key_material`),
+  `tests/unit/graph/test_entity_models.py` (3 tests), `tests/unit/access_
+  control/test_notes_models.py` (4 tests), 3 new tests in `tests/unit/
+  access_control/test_cases_api.py` (notes/audit HTTP routes --
+  previously zero HTTP-level coverage for those WP-4 routes; a real
+  `FakeCaseNoteRepository` fixture was added to make this possible), 9 new
+  live-integration tests in `test_repository_live.py` (signing-key
+  registry + pending-checkpoint discovery), 2 new live-integration tests
+  in `test_manifest_sink_live.py` (all currently self-skipping per above).
+- `docs/decisions/ADR-023-integrity-hardening.md` (new).
+- Exactly one alembic head after the new migration
+  (`4d5e6f7a8b9c` -> `5e6f7a8b9c0d`); `git status --short`/`git diff
+  --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-6 (Shreshtha)
+
+Documents gap register G7 (rest: graph snapshot/path/analytics/motifs,
+pagination), G8 (event catalog), G16 (worker heartbeat registry), G17
+(readyz observed liveness). See ADR-024.
+
+- **CLOSED: `GET /cases/{id}/graph`, `POST /cases/{id}/graph/path`,
+  `GET /cases/{id}/analytics`, `GET /cases/{id}/motifs`.** Snapshot/path
+  are scoped to `Entity`/`Event` nodes only (the existing `schemas.py`
+  module-level rule against exposing raw Neo4j labels/implementation
+  detail forbids a generic dump of every node kind) -- see ADR-024 for
+  the full reasoning, including how `max_hops` is enforced without ever
+  interpolating a value into Cypher text (this module's own absolute
+  rule).
+- **CLOSED: `GET /api/v1/admin/workers` + worker heartbeat registry.**
+  New `worker_credentials.last_seen_at` column (migration `6f7a8b9c0d1e`),
+  populated by `require_worker_principal` on every successful auth --
+  no separate heartbeat endpoint needed. Narrows (does not remove) `list_
+  worker_credentials`'s prior "never exposed through a public API"
+  docstring to "never exposed without `system_role=admin`."
+- **CLOSED: `/readyz`'s `worker_process_liveness`** is now real (counts
+  by `active`/`stale`/`never_seen` from the heartbeat registry) when
+  Postgres is reachable; still honestly reports `not_observed` with a
+  `reason` when it genuinely cannot ask, never a fabricated status.
+- **CLOSED: `AuditEventType` catalog** (`audit_catalog.py`, 29 verified
+  values) + a static drift-prevention test
+  (`test_audit_event_catalog.py`) that fails on any uncatalogued or dead
+  entry. `record_audit_event`'s signature is deliberately unchanged
+  (still plain `str`) -- see ADR-024 for why a full ~29-call-site
+  migration to the enum type was judged out of this WP's risk budget.
+  **The "21-name event catalog" figure from the original gap-closure
+  prompt could not be verified** -- that document was not available when
+  this catalog was built. The catalog instead reflects the real, current,
+  grep-verified call-site count (29), which is what the drift test locks
+  in going forward.
+- **CLOSED (partial): pagination.** `HypothesisRepository.list_
+  hypotheses`/`CaseNoteRepository.list_notes` gained `offset`; `GET
+  /cases/{id}/notes` gained its first-ever `limit` (previously
+  unbounded). **Deliberately not touched**: `GraphCorrelationIntegration
+  Repository.list_candidates` (Phase 5, Gate-C-adjacent, shared by
+  multiple routes) remains `limit`-only -- same risk-avoidance reasoning
+  as ADR-021/ADR-022's treatment of Phase 5 code.
+- **Live-unverified, not verified**: `list_hypotheses`'s new `offset`
+  parameter has no dedicated live-integration test (mirrors already-
+  integration-tested `list_case_observations` logic exactly; covered by
+  the unit suite and mypy, not a live DB test in this WP).
+- **A genuine pre-existing gap found and fixed while running the full
+  unit suite for the first time this session** (2144/2145 passed before
+  this fix): `test_migration_head.py`'s hardcoded-head assertion needed
+  updating again (third time this gap-closure effort: WP-1 implicitly,
+  WP-5, now WP-6) -- every new migration breaks it by design. Fixed to
+  the real current head (`6f7a8b9c0d1e`); not redesigned to avoid this
+  recurring cost, since that would be scope creep beyond gap closure --
+  flagged in ADR-024 as a maintenance note for whoever owns that test.
+- **New tests**: 12 new tests in `test_graph_api.py` (snapshot/path/
+  analytics/motifs, including a fixed-vs-requested-hop-bound case), 5 new
+  tests across `test_api_health.py` (real worker-liveness counts) and
+  `test_worker_identity_api.py` (heartbeat-touch-on-auth), 3 new tests in
+  `test_api.py` (`GET /api/v1/admin/workers`), 3 new tests in
+  `test_audit_event_catalog.py`, 1 new test in `test_cases_api.py`
+  (notes offset pagination).
+- `docs/decisions/ADR-024-read-apis-event-catalog-worker-liveness.md`
+  (new), `docs/architecture/audit-event-catalog.md` (new).
+- Exactly one alembic head after the new migration
+  (`5e6f7a8b9c0d` -> `6f7a8b9c0d1e`); `git status --short`/`git diff
+  --cached --stat` remain empty (nothing staged).
+
+# Phase 7 Closure — WP-7B (Shreshtha)
+
+Documents gap register G1 (offline evaluation harness, code only). See
+ADR-025. No database migration in this WP (PostgreSQL-only, reuses
+`EntityRepository` unchanged; no Neo4j reads either).
+
+- **CLOSED: real offline evaluator** (`graph/intelligence/evaluation.
+  py::run_offline_evaluation`, `graph/intelligence/truth_loader.py`).
+  Scores entity-resolution candidate precision/recall/false-link-rate/
+  false-merge-rate/precision-recall@k against a human-authored truth
+  spec of entity pairs. `temporal_boundary_correctness` is always `None`
+  -- no event/temporal truth schema exists yet; see ADR-025.
+- **CLOSED: `intelligence_worker.py --evaluate --case-id <uuid>`** CLI
+  entry point. Skips cleanly (prints a `deferred: true` report, exits 0)
+  when `TRACEX_SYNTHETIC_DATA_ROOT` is unset.
+- **CLOSED: static import-boundary test** (`test_no_api_route_ever_
+  imports_the_evaluator_or_truth_loader`) -- grep-enforced, not just a
+  docstring claim, that no `app/api/*.py`/`*_api.py`/`main.py` file ever
+  imports the evaluator or truth loader.
+- **NOT IN SCOPE, by explicit user instruction: authoring real truth
+  data.** The truth-data JSON schema this evaluator expects
+  (`<TRACEX_SYNTHETIC_DATA_ROOT>/<case_id>/entity_resolution_truth.json`)
+  is fully documented in ADR-025's "Truth data schema" section -- this is
+  exactly what needs to be built in the sibling `TraceX-Synthetic-Data`
+  repository. Nothing in this codebase reads or depends on that repo
+  existing; the evaluator has never been run against real truth data and
+  cannot be honestly claimed as "verified" against one -- only "verified"
+  against synthetic unit-test fixtures constructed in this codebase's own
+  test suite.
+- **New tests**: `tests/unit/graph/test_intelligence_evaluation.py`
+  (12 tests: root resolution, truth-file loading/validation, perfect-
+  system/false-merge/missing-candidate scoring scenarios, the import-
+  boundary static check), 2 new tests in `test_intelligence_worker_
+  loop.py` (`--evaluate` CLI wiring).
+- `docs/decisions/ADR-025-offline-evaluation-harness.md` (new).
+- `git status --short`/`git diff --cached --stat` remain empty (nothing
+  staged).
+
+# Phase 7 Closure — WP-8 (Shreshtha)
+
+Documents gap register G14 (CI live infra/secret-scan/nightly), G15
+(compose worker profiles), G18 (backup-restore/integrity-verification
+runbooks), G19 (tracked stray artifact cleanup). See ADR-026.
+
+- **CLOSED: CI live service containers.** `postgres`/`neo4j`/`redis`
+  added as GitHub Actions `services:`; MinIO started via a manual
+  `docker run` step (GitHub Actions `services:` cannot pass MinIO's
+  required command argument). Credentials match `.env.example` exactly
+  -- zero test code changes needed for the integration suite to actually
+  run in CI instead of self-skipping every time.
+- **CLOSED: secret scanning.** `gitleaks` CLI (not the `gitleaks-action`
+  Marketplace wrapper, to avoid its organization-license gate) installed
+  from a pinned release. Found and allowlisted (`.gitleaks.toml`) two
+  real, verified-harmless false positives (`idempotency_key` superficially
+  matching the `generic-api-key` rule) -- confirmed zero leaks with the
+  allowlist applied, two without it, both before wiring this into CI.
+- **CLOSED: nightly CI.** A `schedule:` cron trigger (`17 3 * * *`) reruns
+  the exact same live-infra job, catching environmental drift on days
+  with no open PR.
+- **CLOSED: `cpu-worker`/`gpu-worker` compose profiles**, replacing the
+  single coarse `workers` profile. Two brand-new Compose services
+  (`structured-worker`, `communication-worker`) that previously had none
+  at all. Verified: bare `docker compose up` (no `--profile`) is
+  unchanged (still API + infra only).
+- **Live-unverified, not verified: `structured-worker`/`communication-
+  worker` running under `restart: unless-stopped` with `--once`.**
+  Neither worker module has a real poll-loop mode (a pre-existing,
+  documented Phase 7 Part 2/4 scope boundary, not touched by this WP) --
+  each container restart is one more claim attempt, not a clean poll
+  loop like the other three workers' real `--loop` modes. Documented
+  honestly in the runbook, not silently presented as equivalent.
+- **CLOSED: `docs/runbooks/{backup-restore,integrity-verification}.md`**
+  (both new). Pure documentation of existing capability -- no new backup
+  tooling or CLI commands were added.
+- **CLOSED (partial): `:memory:.ses` cleanup.** Deleted from the working
+  tree, `.gitignore`d. Traced to commit `6af8ac6` ("Completed gaurav/
+  phase-4 (#35)"). **Root cause not definitively confirmed**: verified it
+  is *not* produced by this repo's core media deps (`opencv-python-
+  headless`, `onnxruntime`) via a clean import test; the optional heavy
+  ML extras from that same commit (`paddleocr`/`paddlepaddle`/
+  `ultralytics`/`torch`) were not installed in this environment to test
+  further -- reproducing the exact write would need one of those extras
+  installed and file-creation traced during real model instantiation,
+  outside this WP's time budget. Honestly reported as a partial
+  investigation, not a confirmed root cause.
+- `docs/decisions/ADR-026-ci-compose-profiles-and-cleanup.md` (new).
+- No database migration this WP; `git status --short`/`git diff --cached
+  --stat` remain empty (nothing staged) except the working-tree changes
+  described above (all uncommitted, per this whole effort's "no commit/
+  push/stage" constraint).
+
+# Phase 7 Closure — Gap-Closure re-close (Shreshtha)
+
+After the first closure pass and its final report, the original gap-
+closure prompt document (`/home/nipun/Downloads/TraceX_Phase1-7_Gap_
+Closure_Prompt.md`) became available again for re-reading in full. That
+re-read found three real gaps the first pass had mis-scoped from an
+incomplete/compacted memory of the prompt, plus resolved G9's status. All
+fixed in this pass; documented here rather than silently folded into the
+earlier WP sections, since the earlier sections' text was written before
+this correction and should not be quietly rewritten as if the mistake
+never happened.
+
+- **G16 was incomplete.** The first pass closed the worker-heartbeat-
+  registry half of G16 (`/readyz` observed liveness, `GET /api/v1/admin/
+  workers`) but never built `GET /metrics` at all, and built `GET /api/
+  v1/admin/workers` (admin-gated) instead of the plan's explicitly
+  worker-credential-scoped `GET /api/v1/internal/workers`. **CLOSED now**:
+  `GET /metrics` (`app/api/health.py`) -- hand-rolled Prometheus text
+  format (no new `prometheus_client` dependency; the format is a handful
+  of fixed-shape lines for a small, bounded metric set), covering process/
+  dependency/worker-fleet aggregates only, never a case-scoped value.
+  `GET /api/v1/internal/workers` (`app/modules/evidence_lifecycle/
+  internal_api.py`, new `worker_fleet_router`) -- worker-credential-
+  scoped via the existing `require_worker_principal` boundary, additive
+  alongside (not replacing) the admin route.
+- **G8 was mis-scoped.** The first pass built a catalog of `SecurityAudit
+  EventRecord.event_type` values (29, real, still useful, kept as `docs/
+  architecture/audit-event-catalog.md`) believing that was the "21-name
+  event catalog" G8 asked for. Re-reading the prompt in full: G8's "21
+  plan §20.2 names" is a different, broader catalog of TraceX's internal
+  *domain* events (`graph.updated`, `checkpoint.sealed`, `worker.
+  heartbeat`, `entity.*`, etc.), not security-audit telemetry. **CLOSED
+  now**: `app/core/event_catalog.py` (`EventCatalogName`, 21 names, built
+  bottom-up from this codebase's real emission points since §20.2's exact
+  text was still unavailable), with `tests/unit/test_event_catalog.py`
+  enforcing that every `IntegrityEventKind`/`AuditEventType` member and
+  every one of the 21 catalog names is accounted for. See `docs/
+  architecture/event-catalog.md`.
+- **G17 was mis-scoped.** The first pass added `limit`+`offset` to two
+  endpoints and called that G17 closed. Re-reading the prompt: G17
+  explicitly asks for "cursor metadata (opaque, case-bound, tamper-
+  evident)" with a test asserting "cursor from Case A rejected for Case
+  B" -- offset pagination cannot satisfy either property (an offset is
+  neither opaque nor case-bound). **CLOSED now (partial coverage)**:
+  `app/core/pagination.py` -- a real, tested, HMAC-signed keyset-cursor
+  primitive (`encode_cursor`/`decode_cursor`, `CursorPosition`), applied
+  to `GET /cases/{id}/hypotheses` and `GET /cases/{id}/notes` (both
+  gained `?cursor=`, `next_cursor` in their response, real round-trip and
+  cross-case-rejection tests). `offset` is kept alongside `cursor` on
+  both routes for a caller that hasn't adopted cursors yet -- cursor
+  takes precedence when both are given. **Not extended to every
+  collection endpoint** -- `GraphCorrelationIntegrationRepository.list_
+  candidates`/`list_correlations` (Phase 5, Gate-C-adjacent, shared by
+  multiple routes including `review_candidate`) and `queries.list_case_
+  observations` (already offset-paginated, Phase 3/5) remain untouched,
+  consistent with every prior WP's risk-avoidance stance on Phase 5
+  projection-adjacent code (see ADR-021/022/024). A future WP extending
+  cursor pagination further can reuse `core.pagination` directly -- the
+  primitive itself is complete and generic, only its application is
+  partial.
+- **G9 resolved (was previously reported "status unknown").** Re-reading
+  the prompt recovered G9's real text: "Plan tables absent (`roles/system
+  role`, `evidence_artifacts`, `job_attempts`, `entity_resolution_
+  candidates`, `hypothesis_evidence`, `case_notes`, `handoff_summaries`,
+  `signing_keys_public`, `model_registry`, `benchmark_runs`) — add only
+  what a delivered feature needs; document the rest as deliberate
+  deviations." Per-table verdict:
+  - `roles/system role` — **CLOSED** (WP-1: `users.system_role`).
+  - `evidence_artifacts` — **NOT-A-GAP**: already implemented under
+    different names (`media_derived_artifacts` table, Phase 4;
+    `worker_results.derived_artifacts` JSONB column, Phase 2) — the
+    capability exists, the plan's exact table name doesn't.
+  - `job_attempts` — **DEFERRED, genuinely open**: `worker_jobs.attempt`/
+    `max_attempts` are counters only (`last_error_*` columns hold only
+    the *latest* failure) — no per-attempt history table exists, so "what
+    happened on attempt 1 vs attempt 2" cannot be reconstructed after a
+    retry. No feature delivered in this gap-closure effort needed that
+    history, so per G9's own "add only what a delivered feature needs"
+    instruction, it was not speculatively built.
+  - `entity_resolution_candidates` — **CLOSED** (WP-2).
+  - `hypothesis_evidence` — **DEFERRED, genuinely open** (already flagged
+    in WP-4/ADR-022): `HypothesisRecord` stores only `supporting_
+    observation_ids`/`supporting_candidate_ids` — no "against"/
+    contradicting evidence field or table exists for hypotheses (Phase
+    5's separate `CorrelationRecord.contradictory_observation_ids` is a
+    different concept, not reused here).
+  - `case_notes` — **CLOSED** (WP-4).
+  - `handoff_summaries` — **NOT-A-GAP by design**: computed at read time
+    (`handoff_service.py::build_handoff_summary`), deliberately no table
+    — see ADR-022.
+  - `signing_keys_public` — **CLOSED** (WP-5).
+  - `model_registry` — **NOT-A-GAP**: implemented as a file-based typed
+    registry (`configs/benchmarks/*.v1.json` + `ModelCandidateCatalogV1`/
+    `ModelCandidateV1`, Phase 7), not a database table — a pre-existing,
+    deliberate architectural choice (versioned, git-diffable, Gate-C-
+    frozen artifacts benefit from files over mutable rows), not something
+    this gap-closure effort should second-guess.
+  - `benchmark_runs` — **NOT-A-GAP**: same file-based reasoning
+    (`BenchmarkRunV1`/`BenchmarkRunStatus`, `benchmark-results.v1.json`).
+- **New tests**: `test_api_health.py` gained 3 `/metrics` tests,
+  `test_worker_identity_api.py` gained 3 `/internal/workers` tests,
+  `test_event_catalog.py` (new file, 13 tests), `test_pagination.py`
+  (new file, 8 tests), `test_graph_api.py` gained 4 hypothesis-cursor
+  tests, `test_cases_api.py` gained 2 case-note-cursor tests (23 new
+  tests total).
+- No database migration this re-close pass; `git status --short`/`git
+  diff --cached --stat` remain empty (nothing staged).
+
+## G4 completion, live-infra escalation, and two pre-existing bugs found
+
+The original WP-5 section above states real object-lock/retention was
+"an infra-level MinIO bucket setting, out of scope here" and that
+`MinioManifestSink`'s live round-trip was "live-unverified" (PostgreSQL
+unreachable that session). Both are now closed.
+
+- **CLOSED: `MinioManifestSink` real object-lock (COMPLIANCE mode).**
+  `Settings.integrity_manifest_retention_years` (default 10). `ensure_
+  bucket()` now creates its bucket with `object_lock=True` and calls
+  `set_object_lock_config(..., ObjectLockConfig(COMPLIANCE, years,
+  YEARS))` -- but only when it creates the bucket itself, since object-
+  lock cannot be retrofitted onto an already-existing bucket (a real S3/
+  MinIO API limitation, not a design choice); an already-existing bucket
+  is left exactly as it is. `COMPLIANCE` mode (not `GOVERNANCE`) means no
+  principal, not even a MinIO admin with root credentials, can
+  delete/overwrite a manifest before its retention expires.
+- **Verified against real, live MinIO** (not just unit-mocked): two new
+  tests in `tests/integration/integrity/test_manifest_sink_live.py`
+  (`test_ensure_bucket_enables_compliance_mode_object_lock`, `test_
+  object_lock_rejects_deleting_the_specific_locked_version`) both pass.
+  The second test targets the exact version id `write_manifest` created
+  with a version-specific `remove_object` call and asserts MinIO itself
+  rejects it (`S3Error: code=InvalidRequest, message="Object is WORM
+  protected and cannot be overwritten"`) -- the real proof of write-once,
+  independent of this module's own application-level `ManifestAlready
+  ExistsError` check. (An unversioned `remove_object` only adds a delete
+  marker under S3 versioning semantics and was confirmed, by hand against
+  live MinIO, to leave the original locked version untouched either way
+  -- not a bug, correct S3 behavior, and not what these tests rely on.)
+- **Live-infra escalation.** `docker compose up -d postgres redis` was
+  run this pass (Neo4j and MinIO were already up) specifically to
+  eliminate self-skips and get the full suite running against every
+  piece of real infra at once for the first time in this whole gap-
+  closure effort. This surfaced two genuine, pre-existing bugs -- neither
+  introduced by any WP in this effort -- that had never been exercised
+  because no prior session's test run happened to have every infra
+  dependency live simultaneously:
+  - `tests/integration/access_control/test_auth_lifecycle_live.py` called
+    `service.provision_user(..., provisioned_by=uuid4())` with a
+    fabricated, never-persisted UUID at 4 call sites. This violates a
+    real, pre-existing foreign key (`security_audit_events.user_id_
+    nullable_fkey -> users.user_id`, present since the very first
+    migration `7e8499f34f29`) once FK constraints are actually enforced
+    against live PostgreSQL. **Fixed**: a `_seed_provisioner()` helper now
+    creates a real user via `repository.create_user(...)` and passes its
+    real `user_id` as `provisioned_by`.
+  - `tests/integration/graph/test_outbox_repository_live.py` had 5 call
+    sites that claim a fixed `batch_size=10` batch and then assume the
+    just-inserted row is in it (`(job,) = [j for j in claimed if ...]`).
+    `GraphProjectionOutboxRepository.claim_batch` is a genuinely global,
+    unscoped, oldest-first work queue by design (mirrors the real
+    production consumer in `graph/intelligence_worker.py::replay_loop`)
+    -- against a live database accumulating rows across a 2500+-test full
+    suite run, a single small batch can legitimately miss a freshly-
+    inserted row that sorts behind older queued/deferred rows, causing a
+    `ValueError: not enough values to unpack`. **Fixed**: a new `_claim_
+    until_found()` helper loops `claim_batch` (mirroring how the real
+    `replay_loop` consumes this same queue) until the target row is found
+    or the queue is exhausted; all 5 call sites now use it.
+- **Final full-suite result, against fully live infra (postgres, redis,
+  neo4j, minio all healthy)**: `2571 passed, 35 skipped, 0 failed` in
+  ~4m51s (verified twice, with `-rs` the second time to confirm every
+  skip reason). All 35 skips are for reasons outside this pass's scope,
+  none masking a real failure: 23 need the `api` container itself running
+  (`docker compose up --build -d`, separate from the four infra
+  services), 9 need `TRACEX_BENCHMARK_DATA_ROOT` (Gate B MacBook
+  pre-flight benchmark datasets), 2 need the optional `ultralytics`
+  dependency, and 1 needs a bootstrapped NER model asset.
+- `ruff format --check .`, `ruff check .`, and `mypy app` all pass clean
+  after this pass. No database migration; `git status --short`/`git diff
+  --cached --stat` remain empty (nothing staged).

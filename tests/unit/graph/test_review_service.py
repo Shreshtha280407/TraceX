@@ -77,6 +77,31 @@ class _FakeIntegrationRepository:
         return self._event
 
 
+class _FakeReviewProjectionOutbox:
+    """Duck-typed stand-in for `ReviewProjectionOutboxRepository` -- records
+    every call so tests can assert the durable-replay contract if needed."""
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple] = []
+        self.succeeded: list = []
+        self.retried: list = []
+
+    async def enqueue(self, *, case_id, subject_type, subject_id, now, max_attempts=5):
+        self.enqueued.append((case_id, subject_type, subject_id))
+
+        class _Event:
+            def __init__(self) -> None:
+                self.event_id = uuid4()
+
+        return _Event()
+
+    async def mark_succeeded(self, event_id, now):
+        self.succeeded.append(event_id)
+
+    async def mark_retryable_failure(self, event_id, *, now, error_code, error_message):
+        self.retried.append(event_id)
+
+
 class _FakeReviewRepository:
     def __init__(self, *, result=None, raise_error: Exception | None = None) -> None:
         self._result = result
@@ -133,6 +158,7 @@ async def test_candidate_not_found_raises_before_any_write() -> None:
             review_repository=_FakeReviewRepository(),
             graph_repository=_FakeGraph(),
             integrity_service=_FakeIntegrityService(),
+            review_projection_outbox=_FakeReviewProjectionOutbox(),
         )
 
 
@@ -159,6 +185,7 @@ async def test_conflict_error_propagates_unchanged() -> None:
             ),
             graph_repository=_FakeGraph(),
             integrity_service=_FakeIntegrityService(),
+            review_projection_outbox=_FakeReviewProjectionOutbox(),
         )
 
 
@@ -177,6 +204,7 @@ async def test_new_decision_fires_integrity_and_projection_exactly_once() -> Non
         review_repository=_FakeReviewRepository(result=(decision, True)),
         graph_repository=graph,
         integrity_service=integrity,
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert view.decision is decision
     assert len(integrity.recorded) == 1
@@ -198,6 +226,7 @@ async def test_replayed_decision_never_re_fires_side_effects() -> None:
         review_repository=_FakeReviewRepository(result=(decision, False)),
         graph_repository=graph,
         integrity_service=integrity,
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert integrity.recorded == []
     assert graph.calls == 0
@@ -216,6 +245,7 @@ async def test_integrity_failure_never_blocks_an_already_committed_decision() ->
         review_repository=_FakeReviewRepository(result=(decision, True)),
         graph_repository=_FakeGraph(),
         integrity_service=_FakeIntegrityService(raise_error=True),
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert view.decision is decision
 
@@ -233,6 +263,7 @@ async def test_graph_outage_never_blocks_an_already_committed_decision() -> None
         review_repository=_FakeReviewRepository(result=(decision, True)),
         graph_repository=_FakeGraph(raise_error=True),
         integrity_service=_FakeIntegrityService(),
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert view.decision is decision
 
@@ -307,6 +338,7 @@ async def test_new_hypothesis_fires_integrity_event_and_skips_projection_without
         postgres_engine=object(),
         graph_repository=graph,
         integrity_service=integrity,
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert result is hypothesis
     assert len(integrity.recorded) == 1
@@ -332,6 +364,7 @@ async def test_replayed_hypothesis_creation_never_re_fires_integrity() -> None:
         postgres_engine=object(),
         graph_repository=_FakeGraph(),
         integrity_service=integrity,
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert integrity.recorded == []
 
@@ -345,6 +378,7 @@ async def test_missing_hypothesis_returns_none_for_review() -> None:
         hypothesis_repository=_FakeHypothesisRepository(review_result=None),
         graph_repository=_FakeGraph(),
         integrity_service=_FakeIntegrityService(),
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert result is None
 
@@ -379,6 +413,7 @@ async def test_hypothesis_review_decision_fires_integrity_once_for_a_new_decisio
         hypothesis_repository=_FakeHypothesisRepository(review_result=(hypothesis, action, True)),
         graph_repository=graph,
         integrity_service=integrity,
+        review_projection_outbox=_FakeReviewProjectionOutbox(),
     )
     assert result is hypothesis
     assert len(integrity.recorded) == 1

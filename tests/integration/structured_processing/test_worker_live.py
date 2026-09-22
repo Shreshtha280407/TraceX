@@ -78,6 +78,7 @@ from app.modules.structured_processing.client import WorkerApiClient
 from app.modules.structured_processing.errors import WorkerAuthenticationError
 from app.modules.structured_processing.input_resolver import LiveInputResolver
 from app.modules.structured_processing.worker import SUPPORTED_PROCESSORS, run_once
+from tests.fixtures.access_control.factories import make_user_record
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -298,14 +299,12 @@ async def test_full_claim_stream_parse_submit_live_pipeline(
             )
         )
 
-    async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-        register = await ac.post(
-            "/api/v1/auth/register",
-            json={"email": email, "password": password, "display_name": "Live Worker Test"},
-        )
-        assert register.status_code == 201, register.text
-        user_id = register.json()["user_id"]
+    # No public self-registration exists (G5) -- seed the user directly.
+    seeded_user = make_user_record(email_normalized=email)
+    await repository.create_user(seeded_user)
+    user_id = str(seeded_user.user_id)
 
+    async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
         login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200, login.text
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}

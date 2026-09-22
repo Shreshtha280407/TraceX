@@ -67,6 +67,41 @@ async def _cleanup(outbox: GraphProjectionOutboxRepository, projection_ids: list
         )
 
 
+async def _claim_until_found(
+    outbox: GraphProjectionOutboxRepository,
+    projection_id: UUID,
+    *,
+    lease_seconds: int = 120,
+    batch_size: int = 10,
+    max_batches: int = 200,
+):
+    """Repeatedly `claim_batch` until `projection_id` is claimed or the
+    queue is exhausted.
+
+    `claim_batch` is a genuinely global, unscoped work queue (see its own
+    docstring) -- a single `batch_size`-sized claim can legitimately miss
+    a freshly-inserted row if other queued/deferred rows already exist
+    ahead of it (oldest-first ordering) in this shared, accumulating live
+    database. A real projector worker already consumes this queue via
+    repeated `claim_batch` calls until empty (see `graph/intelligence_
+    worker.py::replay_loop`) -- looping here mirrors that real caller
+    behavior instead of assuming a single small batch always suffices,
+    which is a real, confirmed-live flakiness this file's tests had
+    before this fix (see docs/qa/known-limitations.md's "Gap-Closure
+    re-close" section).
+    """
+    for _ in range(max_batches):
+        claimed = await outbox.claim_batch(
+            now=_NOW, lease_seconds=lease_seconds, batch_size=batch_size
+        )
+        match = next((j for j in claimed if j.projection_id == projection_id), None)
+        if match is not None:
+            return match
+        if not claimed:
+            return None
+    return None
+
+
 async def test_claim_batch_is_concurrency_safe_across_two_concurrent_callers(
     outbox_repository: GraphProjectionOutboxRepository,
 ) -> None:
@@ -92,8 +127,8 @@ async def test_claim_sets_running_status_lease_and_increments_attempt(
 ) -> None:
     projection_id, case_id, evidence_id, observation_id = await _insert_job(outbox_repository)
     try:
-        claimed = await outbox_repository.claim_batch(now=_NOW, lease_seconds=120, batch_size=10)
-        (job,) = [j for j in claimed if j.projection_id == projection_id]
+        job = await _claim_until_found(outbox_repository, projection_id)
+        assert job is not None
         assert job.status is GraphProjectionJobStatus.RUNNING
         assert job.attempt == 1
         assert job.lease_expires_at is not None
@@ -115,8 +150,8 @@ async def test_expired_lease_is_reclaimed_with_attempt_incremented(
         outbox_repository, status="running", attempt=1, lease_expires_at=expired_lease
     )
     try:
-        claimed = await outbox_repository.claim_batch(now=_NOW, lease_seconds=120, batch_size=10)
-        (job,) = [j for j in claimed if j.projection_id == projection_id]
+        job = await _claim_until_found(outbox_repository, projection_id)
+        assert job is not None
         assert job.attempt == 2  # incremented on reclaim
         assert job.lease_expires_at is not None
         assert job.lease_expires_at > _NOW
@@ -144,8 +179,8 @@ async def test_retry_exhaustion_leaves_the_job_failed_and_inspectable(
     """Once attempts are exhausted, a retryable failure becomes durably `failed`, not requeued."""
     projection_id, *_ = await _insert_job(outbox_repository, max_attempts=1)
     try:
-        claimed = await outbox_repository.claim_batch(now=_NOW, lease_seconds=120, batch_size=10)
-        (job,) = [j for j in claimed if j.projection_id == projection_id]
+        job = await _claim_until_found(outbox_repository, projection_id)
+        assert job is not None
         assert job.attempt == 1 == job.max_attempts
 
         await outbox_repository.mark_retryable_failure(
@@ -174,8 +209,8 @@ async def test_retryable_failure_with_attempts_remaining_requeues_not_fails(
 ) -> None:
     projection_id, *_ = await _insert_job(outbox_repository, max_attempts=5)
     try:
-        claimed = await outbox_repository.claim_batch(now=_NOW, lease_seconds=120, batch_size=10)
-        (job,) = [j for j in claimed if j.projection_id == projection_id]
+        job = await _claim_until_found(outbox_repository, projection_id)
+        assert job is not None
         assert job.attempt == 1
 
         await outbox_repository.mark_retryable_failure(
@@ -192,8 +227,8 @@ async def test_retryable_failure_with_attempts_remaining_requeues_not_fails(
         assert stored.completed_at is None
 
         # Requeued -- claimable again, and this time attempt becomes 2.
-        reclaimed = await outbox_repository.claim_batch(now=_NOW, lease_seconds=120, batch_size=10)
-        (job2,) = [j for j in reclaimed if j.projection_id == projection_id]
+        job2 = await _claim_until_found(outbox_repository, projection_id)
+        assert job2 is not None
         assert job2.attempt == 2
     finally:
         await _cleanup(outbox_repository, [projection_id])

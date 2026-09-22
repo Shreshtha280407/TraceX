@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import Settings
 from app.core.ids import deterministic_uuid
+from app.core.pagination import CursorPosition
 from app.modules.evidence_lifecycle.repository import worker_observations_table
 from app.modules.graph.hypothesis_models import (
     HypothesisActionKind,
@@ -383,15 +384,42 @@ class HypothesisRepository:
         return _hypothesis(row) if row else None
 
     async def list_hypotheses(
-        self, case_id: UUID, *, limit: int | None = None
+        self,
+        case_id: UUID,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        after: CursorPosition | None = None,
     ) -> list[HypothesisRecord]:
+        """Gap-Closure WP-6/re-close (G7/G17 pagination): `after` (an opaque,
+        case-bound, tamper-evident cursor -- see `core.pagination`) is real
+        keyset pagination and takes precedence over `offset` when given;
+        `offset` remains for a caller that hasn't adopted cursors yet. Rows
+        are ordered `(created_at DESC, hypothesis_id DESC)` -- a composite,
+        fully deterministic order, required for keyset pagination to never
+        skip or repeat a row even when several share the same `created_at`.
+        """
         if limit is not None and not 1 <= limit <= 200:
             raise ValueError("hypothesis query limit must be between 1 and 200")
+        if offset < 0:
+            raise ValueError("hypothesis query offset must be >= 0")
         statement = (
             sa.select(hypotheses_table)
             .where(hypotheses_table.c.case_id == case_id)
-            .order_by(hypotheses_table.c.created_at.desc())
+            .order_by(hypotheses_table.c.created_at.desc(), hypotheses_table.c.hypothesis_id.desc())
         )
+        if after is not None:
+            statement = statement.where(
+                sa.or_(
+                    hypotheses_table.c.created_at < after.created_at,
+                    sa.and_(
+                        hypotheses_table.c.created_at == after.created_at,
+                        hypotheses_table.c.hypothesis_id < after.row_id,
+                    ),
+                )
+            )
+        else:
+            statement = statement.offset(offset)
         if limit is not None:
             statement = statement.limit(limit)
         async with self._engine.connect() as conn:

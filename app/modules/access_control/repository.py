@@ -62,6 +62,7 @@ users_table = sa.Table(
     sa.Column("is_active", sa.Boolean(), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("system_role", sa.Text(), nullable=True),
 )
 
 cases_table = sa.Table(
@@ -112,6 +113,7 @@ worker_credentials_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("rotated_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 security_audit_events_table = sa.Table(
@@ -202,6 +204,16 @@ class AccessControlRepository:
                 .first()
             )
         return _user_from_row(row) if row is not None else None
+
+    async def count_users_with_system_role(self, system_role: str) -> int:
+        """Bootstrap-CLI idempotency check: how many active admins already exist."""
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                sa.select(sa.func.count())
+                .select_from(users_table)
+                .where(users_table.c.system_role == system_role, users_table.c.is_active.is_(True))
+            )
+            return int(result.scalar_one())
 
     # --- cases / memberships (minimal access-control anchor; no case CRUD API) --
 
@@ -365,7 +377,7 @@ class AccessControlRepository:
             await conn.execute(sa.insert(security_audit_events_table).values(**values))
 
     async def get_audit_event_by_id(self, event_id: UUID) -> SecurityAuditEventRecord | None:
-        """Test/inspection helper -- no API endpoint exposes audit events in this phase."""
+        """Test/inspection helper."""
         async with self._engine.connect() as conn:
             row = (
                 (
@@ -379,6 +391,28 @@ class AccessControlRepository:
                 .first()
             )
         return _audit_event_from_row(row) if row is not None else None
+
+    async def list_audit_events_for_case(
+        self, case_id: UUID, *, limit: int | None = None
+    ) -> list[SecurityAuditEventRecord]:
+        """Gap-Closure WP-4 (G7): the durable boundary behind `GET /cases/{id}/audit`.
+
+        Bounded, case-scoped, newest-first -- `metadata_safe_json` is
+        already write-time-scrubbed by `audit.record_audit_event`'s own
+        contract, so nothing here needs to filter it again.
+        """
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("audit event query limit must be between 1 and 200")
+        statement = (
+            sa.select(security_audit_events_table)
+            .where(security_audit_events_table.c.case_id_nullable == case_id)
+            .order_by(security_audit_events_table.c.occurred_at.desc())
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [_audit_event_from_row(row) for row in rows]
 
     # --- worker credentials --------------------------------------------------
 
@@ -427,8 +461,23 @@ class AccessControlRepository:
             )
         return _worker_credential_from_row(row) if row is not None else None
 
+    async def touch_worker_last_seen(self, worker_id: UUID, seen_at: datetime) -> None:
+        """Gap-Closure WP-6 (G16): called best-effort by `require_worker_
+        principal` on every successful authentication -- a heartbeat
+        registry with no separate heartbeat endpoint to forget to call.
+        Never raises past a caller expecting best-effort semantics is the
+        caller's job (mirrors `record_audit_event_safely`'s contract)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(worker_credentials_table)
+                .where(worker_credentials_table.c.worker_id == worker_id)
+                .values(last_seen_at=seen_at)
+            )
+
     async def list_worker_credentials(self) -> list[WorkerCredentialRecord]:
-        """Trusted-operator inspection only -- never exposed through a public API."""
+        """Trusted-operator inspection: CLI (`cli.py`) or the admin-gated
+        `GET /api/v1/admin/workers` route (Gap-Closure WP-6, G16) -- never an
+        unauthenticated or non-admin-gated public surface."""
         async with self._engine.connect() as conn:
             rows = (
                 (

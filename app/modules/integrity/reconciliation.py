@@ -15,7 +15,11 @@ from uuid import UUID
 
 import sqlalchemy as sa
 
+from app.modules.access_control.notes_models import CaseNoteRecord
+from app.modules.access_control.notes_repository import case_notes_table
 from app.modules.evidence_lifecycle.repository import evidence_records_table
+from app.modules.graph.entity_models import EntityReviewDecisionRecord
+from app.modules.graph.entity_repository import entity_review_decisions_table
 from app.modules.graph.hypothesis_models import HypothesisActionRecord, HypothesisRecord
 from app.modules.graph.hypothesis_repository import hypotheses_table, hypothesis_actions_table
 from app.modules.graph.integration_repository import correlation_records_table
@@ -52,11 +56,14 @@ class ReconciliationReceipt:
 class IntegrityReconciliationService:
     """A deliberately bounded, case-scoped repair seam for durable evidence writes.
 
-    Later modality/review producers can add source adapters here. This Part 2
-    implementation handles evidence/correlation producers plus persisted
-    structured and modality projections.  It never reconstructs a
-    projection from a raw observation payload: only the immutable safe
-    projection itself is replayed.
+    Covers evidence/correlation producers, persisted structured and modality
+    projections, candidate-review decisions, hypothesis actions,
+    entity-resolution decisions (Gap-Closure WP-5), and case notes
+    (Gap-Closure WP-5). It never reconstructs a projection from a raw
+    observation payload, and never replays a note's raw text -- only the
+    immutable safe projection or record itself is replayed, and
+    `to_integrity_submission()` on each record type is the sole place a
+    protected field (rationale, note text) is reduced to a commitment hash.
     """
 
     def __init__(
@@ -195,6 +202,36 @@ class IntegrityReconciliationService:
                         .all()
                     )
                     hypothesis_rows_by_id = {row["hypothesis_id"]: row for row in hypothesis_rows}
+            remaining -= len(hypothesis_action_rows)
+            entity_decision_rows: Sequence[sa.RowMapping] = ()
+            if remaining:
+                entity_decision_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(entity_review_decisions_table)
+                            .where(entity_review_decisions_table.c.case_id == case_id)
+                            .order_by(entity_review_decisions_table.c.created_at.asc())
+                            .limit(remaining)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            remaining -= len(entity_decision_rows)
+            case_note_rows: Sequence[sa.RowMapping] = ()
+            if remaining:
+                case_note_rows = (
+                    (
+                        await conn.execute(
+                            sa.select(case_notes_table)
+                            .where(case_notes_table.c.case_id == case_id)
+                            .order_by(case_notes_table.c.created_at.asc())
+                            .limit(remaining)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
         evidence_submissions = [
             IntegrityEventSubmission(
                 case_id=case_id,
@@ -256,6 +293,14 @@ class IntegrityReconciliationService:
             for row in hypothesis_action_rows
             if (submission := _hypothesis_action_submission(row, hypothesis_rows_by_id)) is not None
         ]
+        entity_decision_submissions = [
+            EntityReviewDecisionRecord.model_validate(dict(row)).to_integrity_submission()
+            for row in entity_decision_rows
+        ]
+        case_note_submissions = [
+            CaseNoteRecord.model_validate(dict(row)).to_integrity_submission()
+            for row in case_note_rows
+        ]
         return (
             evidence_submissions
             + correlation_submissions
@@ -263,6 +308,8 @@ class IntegrityReconciliationService:
             + modality_submissions
             + review_decision_submissions
             + hypothesis_action_submissions
+            + entity_decision_submissions
+            + case_note_submissions
         )
 
 

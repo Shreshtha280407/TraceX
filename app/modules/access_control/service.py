@@ -21,6 +21,7 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
+    AdminProvisionUserRequest,
     AuditOutcome,
     CaseMembershipView,
     LoginRequest,
@@ -28,7 +29,6 @@ from app.modules.access_control.models import (
     MeResponse,
     PublicUser,
     RefreshRequest,
-    RegisterRequest,
     TokenPairResponse,
     UserRecord,
 )
@@ -68,6 +68,7 @@ def _public_user(user: UserRecord) -> PublicUser:
         display_name=user.display_name,
         is_active=user.is_active,
         created_at=user.created_at,
+        system_role=user.system_role,
     )
 
 
@@ -113,8 +114,22 @@ class AuthService:
             now=now,
         )
 
-    async def register(self, request: RegisterRequest, ctx: RequestContext) -> PublicUser:
-        """Register a new user. Never grants elevated privileges automatically."""
+    async def provision_user(
+        self,
+        request: AdminProvisionUserRequest,
+        ctx: RequestContext,
+        *,
+        provisioned_by: UUID,
+    ) -> PublicUser:
+        """Admin-only user provisioning (G5). No public self-registration exists.
+
+        `provisioned_by` is the acting admin's `user_id` -- recorded on the
+        audit event so every account creation is traceable to the admin who
+        made it, never anonymous. Setting `request.system_role` mints
+        another admin; the HTTP layer already required the caller to be one
+        (see `dependencies.require_system_admin`), so this never escalates
+        an unprivileged caller.
+        """
         existing = await self._repository.get_user_by_email(request.email)
         if existing is not None:
             raise ValidationError("email already registered")
@@ -127,16 +142,21 @@ class AuthService:
             is_active=True,
             created_at=ctx.now,
             updated_at=ctx.now,
+            system_role=request.system_role,
         )
         await self._repository.create_user(user)
         await record_audit_event(
             self._repository,
-            event_type="auth.register",
+            event_type="admin.provision_user",
             outcome=AuditOutcome.SUCCESS,
             now=ctx.now,
             request_id=ctx.request_id,
-            user_id=user.user_id,
+            user_id=provisioned_by,
             ip_marker=ctx.ip_marker,
+            metadata={
+                "provisioned_user_id": str(user.user_id),
+                "system_role": request.system_role.value if request.system_role else None,
+            },
         )
         return _public_user(user)
 

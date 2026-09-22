@@ -88,6 +88,7 @@ from app.modules.media_processing.worker import (
     _build_analysis_components,
     run_once,
 )
+from tests.fixtures.access_control.factories import make_user_record
 from tests.fixtures.media_processing.synthetic import (
     ffmpeg_available,
     find_test_font,
@@ -330,18 +331,12 @@ async def test_full_upload_claim_stream_verify_process_submit_project_live_pipel
                 )
             )
 
-        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            register = await ac.post(
-                "/api/v1/auth/register",
-                json={
-                    "email": email,
-                    "password": password,
-                    "display_name": "Media Live Worker Test",
-                },
-            )
-            assert register.status_code == 201, register.text
-            user_id = register.json()["user_id"]
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await repository.create_user(seeded_user)
+        user_id = str(seeded_user.user_id)
 
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
             assert login.status_code == 200, login.text
             headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -623,18 +618,12 @@ async def test_ocr_batch_submission_end_to_end_image_live() -> None:
                 )
             )
 
-        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            register = await ac.post(
-                "/api/v1/auth/register",
-                json={
-                    "email": email,
-                    "password": password,
-                    "display_name": "OCR Batch Live Test",
-                },
-            )
-            assert register.status_code == 201, register.text
-            user_id = register.json()["user_id"]
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await repository.create_user(seeded_user)
+        user_id = str(seeded_user.user_id)
 
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
             assert login.status_code == 200, login.text
             headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -905,18 +894,12 @@ async def test_video_frame_ocr_batch_submission_end_to_end_live() -> None:
                 )
             )
 
-        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            register = await ac.post(
-                "/api/v1/auth/register",
-                json={
-                    "email": email,
-                    "password": password,
-                    "display_name": "OCR Video Live Test",
-                },
-            )
-            assert register.status_code == 201, register.text
-            user_id = register.json()["user_id"]
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await repository.create_user(seeded_user)
+        user_id = str(seeded_user.user_id)
 
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
             assert login.status_code == 200, login.text
             headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -1160,14 +1143,12 @@ async def test_ocr_batch_replay_is_idempotent_live() -> None:
                 )
             )
 
-        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            register = await ac.post(
-                "/api/v1/auth/register",
-                json={"email": email, "password": password, "display_name": "OCR Replay Test"},
-            )
-            assert register.status_code == 201, register.text
-            user_id = register.json()["user_id"]
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await repository.create_user(seeded_user)
+        user_id = str(seeded_user.user_id)
 
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
             assert login.status_code == 200, login.text
             headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -1341,14 +1322,12 @@ async def test_ocr_batch_response_has_no_leaked_secrets_live() -> None:
                 )
             )
 
-        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
-            register = await ac.post(
-                "/api/v1/auth/register",
-                json={"email": email, "password": password, "display_name": "No Secrets Test"},
-            )
-            assert register.status_code == 201, register.text
-            user_id = register.json()["user_id"]
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await repository.create_user(seeded_user)
+        user_id = str(seeded_user.user_id)
 
+        async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
             assert login.status_code == 200, login.text
             user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}

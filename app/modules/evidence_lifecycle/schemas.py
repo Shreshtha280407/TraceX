@@ -66,6 +66,15 @@ class JobView(_ResponseModel):
     latest_progress: ObservationBatchProgressV1 | None = None
 
 
+class EvidenceIntegrityCheck(_ResponseModel):
+    """Gap-Closure WP-4 (G7): a re-hash of the stored object vs. the ingestion-time hash."""
+
+    evidence_id: UUID
+    stored_sha256: str
+    recomputed_sha256: str
+    matches: bool
+
+
 class EvidenceUploadResponse(_ResponseModel):
     evidence: EvidenceView
     job: JobView

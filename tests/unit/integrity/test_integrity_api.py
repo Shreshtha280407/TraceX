@@ -27,7 +27,11 @@ from app.modules.integrity.models import (
     VerificationLeaf,
     VerificationResult,
 )
-from tests.fixtures.access_control.factories import make_case_record, make_membership_record
+from tests.fixtures.access_control.factories import (
+    make_case_record,
+    make_membership_record,
+    make_user_record,
+)
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 
 _NOW = datetime(2026, 9, 15, tzinfo=UTC)
@@ -157,24 +161,19 @@ async def _member(
     repository: FakeAccessControlRepository,
     role: CaseRole = CaseRole.INVESTIGATOR,
 ) -> tuple[str, UUID]:
-    registered = await client.post(
-        "/api/v1/auth/register",
-        json={
-            "email": f"integrity-{uuid4().hex[:8]}@example.test",
-            "password": _PASSWORD,
-            "display_name": "I",
-        },
-    )
+    email = f"integrity-{uuid4().hex[:8]}@example.test"
+    user = make_user_record(email_normalized=email)
+    await repository.create_user(user)
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": registered.json()["email_normalized"], "password": _PASSWORD},
+        json={"email": email, "password": _PASSWORD},
     )
     case = make_case_record(classification=ClearanceLevel.CONFIDENTIAL)
     await repository.create_case(case)
     await repository.create_membership(
         make_membership_record(
             case_id=case.case_id,
-            user_id=UUID(registered.json()["user_id"]),
+            user_id=user.user_id,
             role=role,
             clearance=ClearanceLevel.CONFIDENTIAL,
         )

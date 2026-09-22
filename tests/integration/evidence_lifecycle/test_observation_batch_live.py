@@ -63,6 +63,7 @@ from app.modules.graph.outbox_repository import create_engine as create_pg_engin
 from app.modules.graph.projector import run_batch
 from app.modules.graph.queries import list_case_observations
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+from tests.fixtures.access_control.factories import make_user_record
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -219,12 +220,10 @@ class _LiveFixture:
 
         email = f"live-observation-batch-{uuid4().hex[:8]}@example.test"
         password = "correct-horse-battery-staple"  # noqa: S105
-        register = await ac.post(
-            "/api/v1/auth/register",
-            json={"email": email, "password": password, "display_name": "Live Batch Test"},
-        )
-        assert register.status_code == 201, register.text
-        self.user_id = UUID(register.json()["user_id"])
+        # No public self-registration exists (G5) -- seed the user directly.
+        seeded_user = make_user_record(email_normalized=email)
+        await self.ac_repository.create_user(seeded_user)
+        self.user_id = seeded_user.user_id
         login = await ac.post("/api/v1/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200, login.text
         self.user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}

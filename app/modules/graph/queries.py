@@ -31,16 +31,47 @@ from app.modules.graph.models import (
     EventWithParticipants,
     EvidenceNode,
     EvidenceProvenance,
+    GraphRelationshipKind,
     ObservationNode,
     ObservationProvenance,
     ObservationWithMentions,
     SourceLocatorRef,
 )
 from app.modules.graph.repository import Neo4jGraphRepository
+from app.modules.graph.schemas import (
+    GraphAnalyticsResponse,
+    GraphCoParticipationMotif,
+    GraphMotifsResponse,
+    GraphPathNodeView,
+    GraphPathRequest,
+    GraphPathResponse,
+    GraphSnapshotEntityView,
+    GraphSnapshotEventView,
+    GraphSnapshotRelationshipView,
+    GraphSnapshotResponse,
+)
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 MAX_COLLECTION_LIMIT = 500
+
+#: Gap-Closure WP-6 (G7 rest): default/max bounds for the new snapshot/
+#: analytics/motifs endpoints -- same bounded-result-set rule as every
+#: other query in this module.
+DEFAULT_SNAPSHOT_NODE_LIMIT = 500
+MAX_SNAPSHOT_NODE_LIMIT = 2000
+DEFAULT_SNAPSHOT_RELATIONSHIP_LIMIT = 1000
+MAX_SNAPSHOT_RELATIONSHIP_LIMIT = 4000
+DEFAULT_MOTIF_LIMIT = 100
+MAX_MOTIF_LIMIT = 500
+#: A fixed, hardcoded upper bound baked into the shortest-path Cypher text
+#: itself (never a parameter -- see this module's own "no value is ever
+#: interpolated into a query string" rule). `GraphPathRequest.max_hops`
+#: (validated `le=15`) is enforced by filtering the result afterward: a
+#: path Neo4j finds within this fixed ceiling that is longer than the
+#: caller's requested `max_hops` is reported as not found, never truncated
+#: or silently returned anyway.
+_PATH_SEARCH_CEILING_HOPS = 15
 
 
 def _ensure_case_id(case_id: UUID | None) -> UUID:
@@ -396,4 +427,227 @@ async def list_case_observations(
     )
     return CaseObservationsPage(
         case_id=case_id, items=items, limit=limit, offset=offset, has_more=has_more
+    )
+
+
+# --- Gap-Closure WP-6 (G7 rest): case graph snapshot/path/analytics/motifs -----
+
+
+def _ensure_bounded(value: int, *, maximum: int, name: str) -> int:
+    if value <= 0 or value > maximum:
+        raise GraphValidationError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+async def get_case_graph_snapshot(
+    repository: Neo4jGraphRepository,
+    case_id: UUID,
+    *,
+    node_limit: int = DEFAULT_SNAPSHOT_NODE_LIMIT,
+    relationship_limit: int = DEFAULT_SNAPSHOT_RELATIONSHIP_LIMIT,
+) -> GraphSnapshotResponse:
+    """A bounded `Entity`/`Event` snapshot plus their connecting relationships.
+
+    Scoped to the two node kinds an analyst's graph view needs (see
+    `schemas.py`'s module-level comment for why the other node kinds are
+    excluded). Each of the three relationship kinds is fetched with its
+    own independent `relationship_limit` -- a case with many
+    `HAS_PARTICIPANT` edges never starves the smaller, equally important
+    `POSSIBLY_SAME_AS`/`CONTRADICTED_BY` result sets.
+    """
+    case_id = _ensure_case_id(case_id)
+    node_limit = _ensure_bounded(node_limit, maximum=MAX_SNAPSHOT_NODE_LIMIT, name="node_limit")
+    relationship_limit = _ensure_bounded(
+        relationship_limit, maximum=MAX_SNAPSHOT_RELATIONSHIP_LIMIT, name="relationship_limit"
+    )
+    params = {"case_id": str(case_id)}
+
+    entity_rows = await repository.read(
+        "MATCH (e:Entity {case_id: $case_id}) "
+        "RETURN e.entity_id AS entity_id, e.entity_type AS entity_type, "
+        "e.canonical_label AS canonical_label, e.aliases AS aliases, "
+        "e.review_status AS review_status "
+        "LIMIT $limit",
+        {**params, "limit": node_limit},
+    )
+    event_rows = await repository.read(
+        "MATCH (v:Event {case_id: $case_id}) "
+        "RETURN v.event_id AS event_id, v.event_type AS event_type, "
+        "v.review_status AS review_status, v.confidence AS confidence, "
+        "v.event_time AS event_time "
+        "LIMIT $limit",
+        {**params, "limit": node_limit},
+    )
+    relationships: list[GraphSnapshotRelationshipView] = []
+    for kind, query in (
+        (
+            GraphRelationshipKind.HAS_PARTICIPANT,
+            "MATCH (v:Event {case_id: $case_id})"
+            "-[:HAS_PARTICIPANT]->(e:Entity {case_id: $case_id}) "
+            "RETURN v.event_id AS from_id, e.entity_id AS to_id LIMIT $limit",
+        ),
+        (
+            GraphRelationshipKind.POSSIBLY_SAME_AS,
+            "MATCH (a:Entity {case_id: $case_id})"
+            "-[:POSSIBLY_SAME_AS]->(b:Entity {case_id: $case_id}) "
+            "RETURN a.entity_id AS from_id, b.entity_id AS to_id LIMIT $limit",
+        ),
+        (
+            GraphRelationshipKind.CONTRADICTED_BY,
+            "MATCH (a:Entity {case_id: $case_id})"
+            "-[:CONTRADICTED_BY]->(b:Entity {case_id: $case_id}) "
+            "RETURN a.entity_id AS from_id, b.entity_id AS to_id LIMIT $limit",
+        ),
+    ):
+        rows = await repository.read(query, {**params, "limit": relationship_limit})
+        relationships.extend(
+            GraphSnapshotRelationshipView(kind=kind, from_id=row["from_id"], to_id=row["to_id"])
+            for row in rows
+        )
+
+    return GraphSnapshotResponse(
+        case_id=case_id,
+        entities=tuple(
+            GraphSnapshotEntityView(
+                entity_id=row["entity_id"],
+                entity_type=row["entity_type"],
+                canonical_label=row["canonical_label"],
+                aliases=tuple(row["aliases"] or ()),
+                review_status=row["review_status"],
+            )
+            for row in entity_rows
+        ),
+        events=tuple(
+            GraphSnapshotEventView(
+                event_id=row["event_id"],
+                event_type=row["event_type"],
+                review_status=row["review_status"],
+                confidence=row["confidence"],
+                event_time=_to_datetime(row.get("event_time")),
+            )
+            for row in event_rows
+        ),
+        relationships=tuple(relationships),
+        node_limit=node_limit,
+        relationship_limit=relationship_limit,
+    )
+
+
+def _path_endpoint_clause(
+    variable: str, *, entity_id: UUID | None, event_id: UUID | None
+) -> tuple[str, dict[str, str]]:
+    if entity_id is not None:
+        return (
+            f"({variable}:Entity {{case_id: $case_id, entity_id: ${variable}_id}})",
+            {f"{variable}_id": str(entity_id)},
+        )
+    if event_id is None:  # pragma: no cover - GraphPathRequest's own validator prevents this
+        raise GraphValidationError(f"{variable}: exactly one of entity_id/event_id is required")
+    return (
+        f"({variable}:Event {{case_id: $case_id, event_id: ${variable}_id}})",
+        {f"{variable}_id": str(event_id)},
+    )
+
+
+async def find_case_graph_path(
+    repository: Neo4jGraphRepository, case_id: UUID, request: GraphPathRequest
+) -> GraphPathResponse:
+    """Shortest path between one `Entity`/`Event` and another, both case-scoped.
+
+    Always searches up to a fixed `_PATH_SEARCH_CEILING_HOPS` (a literal in
+    the query text, never a parameter); `request.max_hops` is enforced by
+    filtering the result afterward, never by interpolating a value into
+    the query -- see this module's own rule against that.
+    """
+    case_id = _ensure_case_id(case_id)
+    from_clause, from_params = _path_endpoint_clause(
+        "from_node", entity_id=request.from_entity_id, event_id=request.from_event_id
+    )
+    to_clause, to_params = _path_endpoint_clause(
+        "to_node", entity_id=request.to_entity_id, event_id=request.to_event_id
+    )
+    query = (
+        f"MATCH {from_clause} "
+        f"MATCH {to_clause} "
+        f"MATCH p = shortestPath((from_node)-[*..{_PATH_SEARCH_CEILING_HOPS}]-(to_node)) "
+        "RETURN [n IN nodes(p) | {labels: labels(n), "
+        "id: coalesce(n.entity_id, n.event_id)}] AS path_nodes, "
+        "[r IN relationships(p) | {kind: type(r), "
+        "from_id: coalesce(startNode(r).entity_id, startNode(r).event_id), "
+        "to_id: coalesce(endNode(r).entity_id, endNode(r).event_id)}] AS path_relationships, "
+        "length(p) AS path_length"
+    )
+    rows = await repository.read(query, {"case_id": str(case_id), **from_params, **to_params})
+    if not rows or rows[0]["path_length"] > request.max_hops:
+        return GraphPathResponse(case_id=case_id, found=False, nodes=(), relationships=())
+
+    row = rows[0]
+    return GraphPathResponse(
+        case_id=case_id,
+        found=True,
+        nodes=tuple(
+            GraphPathNodeView(kind=node["labels"][0], node_id=node["id"])
+            for node in row["path_nodes"]
+        ),
+        relationships=tuple(
+            GraphSnapshotRelationshipView(
+                kind=GraphRelationshipKind(rel["kind"]), from_id=rel["from_id"], to_id=rel["to_id"]
+            )
+            for rel in row["path_relationships"]
+        ),
+    )
+
+
+async def get_case_graph_analytics(
+    repository: Neo4jGraphRepository, case_id: UUID
+) -> GraphAnalyticsResponse:
+    """Aggregate node/relationship counts only -- no property values, so
+    every node/relationship kind is safe to include here regardless of
+    what the snapshot endpoint scopes down to."""
+    case_id = _ensure_case_id(case_id)
+    params = {"case_id": str(case_id)}
+    node_rows = await repository.read(
+        "MATCH (n {case_id: $case_id}) RETURN labels(n)[0] AS label, count(n) AS node_count",
+        params,
+    )
+    relationship_rows = await repository.read(
+        "MATCH (a {case_id: $case_id})-[r]->(b {case_id: $case_id}) "
+        "RETURN type(r) AS kind, count(r) AS relationship_count",
+        params,
+    )
+    return GraphAnalyticsResponse(
+        case_id=case_id,
+        node_counts={row["label"]: row["node_count"] for row in node_rows if row["label"]},
+        relationship_counts={row["kind"]: row["relationship_count"] for row in relationship_rows},
+    )
+
+
+async def get_case_graph_motifs(
+    repository: Neo4jGraphRepository, case_id: UUID, *, limit: int = DEFAULT_MOTIF_LIMIT
+) -> GraphMotifsResponse:
+    """Generic co-participation motifs: pairs of `Event`s sharing a common
+    `Entity` participant. See `GraphCoParticipationMotif`'s docstring for
+    why this is deliberately generic, not a scenario-specific pattern."""
+    case_id = _ensure_case_id(case_id)
+    limit = _ensure_bounded(limit, maximum=MAX_MOTIF_LIMIT, name="limit")
+    rows = await repository.read(
+        "MATCH (e1:Event {case_id: $case_id})-[:HAS_PARTICIPANT]->"
+        "(entity:Entity {case_id: $case_id})<-[:HAS_PARTICIPANT]-(e2:Event {case_id: $case_id}) "
+        "WHERE e1.event_id < e2.event_id "
+        "RETURN entity.entity_id AS shared_entity_id, e1.event_id AS event_a_id, "
+        "e2.event_id AS event_b_id "
+        "LIMIT $limit",
+        {"case_id": str(case_id), "limit": limit},
+    )
+    return GraphMotifsResponse(
+        case_id=case_id,
+        co_participation=tuple(
+            GraphCoParticipationMotif(
+                shared_entity_id=row["shared_entity_id"],
+                event_a_id=row["event_a_id"],
+                event_b_id=row["event_b_id"],
+            )
+            for row in rows
+        ),
+        limit=limit,
     )

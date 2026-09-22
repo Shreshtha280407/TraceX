@@ -17,7 +17,10 @@ from app.modules.access_control.dependencies import (
     get_login_rate_limiter,
     get_refresh_rate_limiter,
 )
+from app.modules.access_control.models import SystemRole
+from app.modules.access_control.password import hash_password
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
+from tests.fixtures.access_control.factories import make_user_record
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
 
 SECRET_PASSWORD = "super-secret-password-value-123"  # noqa: S105 - test fixture, not a real credential
@@ -53,12 +56,29 @@ async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
-async def test_register_response_and_logs_never_contain_the_password(
-    client: AsyncClient, caplog: pytest.LogCaptureFixture
+async def test_admin_provision_response_and_logs_never_contain_the_password(
+    client: AsyncClient,
+    fake_repository: FakeAccessControlRepository,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """No public self-registration exists (G5) -- this now exercises the
+    only user-provisioning path, `POST /api/v1/admin/users`.
+    """
     caplog.set_level(logging.DEBUG)
+    admin_email = "admin-secrettest@example.test"
+    await fake_repository.create_user(
+        make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
+    )
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": admin_email, "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    admin_token = login.json()["access_token"]
+
     response = await client.post(
-        "/api/v1/auth/register",
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "secrettest@example.test",
             "password": SECRET_PASSWORD,
@@ -79,9 +99,8 @@ async def test_login_success_never_leaks_password_hash_or_the_other_token(
 ) -> None:
     caplog.set_level(logging.DEBUG)
     email = "loginsecret@example.test"
-    await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": SECRET_PASSWORD, "display_name": "X"},
+    await fake_repository.create_user(
+        make_user_record(email_normalized=email, password_hash=hash_password(SECRET_PASSWORD))
     )
     response = await client.post(
         "/api/v1/auth/login", json={"email": email, "password": SECRET_PASSWORD}
@@ -136,9 +155,8 @@ async def test_refresh_and_logout_never_leak_the_refresh_token_value(
 ) -> None:
     caplog.set_level(logging.DEBUG)
     email = "refreshsecret@example.test"
-    await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": SECRET_PASSWORD, "display_name": "X"},
+    await fake_repository.create_user(
+        make_user_record(email_normalized=email, password_hash=hash_password(SECRET_PASSWORD))
     )
     login = await client.post(
         "/api/v1/auth/login", json={"email": email, "password": SECRET_PASSWORD}

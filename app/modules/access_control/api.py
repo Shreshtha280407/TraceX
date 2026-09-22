@@ -14,9 +14,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.config import Settings, get_settings
 from app.core.errors import get_request_id
 from app.modules.access_control.audit import hash_ip
-from app.modules.access_control.dependencies import get_auth_service, require_authenticated_user
+from app.modules.access_control.dependencies import (
+    get_access_control_repository,
+    get_auth_service,
+    require_authenticated_user,
+    require_system_admin,
+)
 from app.modules.access_control.errors import (
     AuthenticationError,
     RateLimitExceededError,
@@ -25,18 +31,23 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
+    AdminProvisionUserRequest,
     AuthenticatedPrincipal,
     LoginRequest,
     LogoutRequest,
     MeResponse,
     PublicUser,
     RefreshRequest,
-    RegisterRequest,
     TokenPairResponse,
+    WorkerLivenessListResponse,
+    WorkerLivenessView,
+    worker_liveness_status,
 )
+from app.modules.access_control.repository import AccessControlRepository
 from app.modules.access_control.service import AuthService, RequestContext
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+admin_router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 _RATE_LIMIT_DETAIL = "too many attempts, try again later"
 _LOGIN_DENIED_DETAIL = "invalid email or password"
@@ -96,18 +107,6 @@ def _build_context(request: Request) -> RequestContext:
     )
 
 
-@router.post("/register", response_model=PublicUser, status_code=status.HTTP_201_CREATED)
-async def register(
-    body: RegisterRequest,
-    request: Request,
-    auth_service: Annotated[AuthService, Depends(get_auth_service)],
-) -> PublicUser:
-    try:
-        return await auth_service.register(body, _build_context(request))
-    except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-
 @router.post("/login", response_model=TokenPairResponse)
 async def login(
     body: LoginRequest,
@@ -165,3 +164,51 @@ async def me(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required"
         ) from exc
+
+
+@admin_router.post("/users", response_model=PublicUser, status_code=status.HTTP_201_CREATED)
+async def provision_user(
+    body: AdminProvisionUserRequest,
+    request: Request,
+    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> PublicUser:
+    """The only user-provisioning path (G5): admin-only, no public self-signup."""
+    try:
+        return await auth_service.provision_user(
+            body, _build_context(request), provisioned_by=admin.user_id
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@admin_router.get("/workers", response_model=WorkerLivenessListResponse)
+async def list_workers(
+    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> WorkerLivenessListResponse:
+    """Gap-Closure WP-6 (G16): the worker heartbeat registry, admin-gated.
+
+    Never the credential digest. `list_worker_credentials` was previously
+    CLI-only by design ("never exposed through a public API") -- this route
+    narrows that to "never exposed without `system_role=admin`", not a
+    removal of the original protection.
+    """
+    credentials = await repository.list_worker_credentials()
+    now = datetime.now(UTC)
+    return WorkerLivenessListResponse(
+        items=tuple(
+            WorkerLivenessView(
+                worker_id=c.worker_id,
+                display_name=c.display_name,
+                status=c.status,
+                allowed_processor_names=c.allowed_processor_names,
+                last_seen_at=c.last_seen_at,
+                liveness=worker_liveness_status(
+                    c, now=now, stale_seconds=settings.worker_heartbeat_stale_seconds
+                ),
+            )
+            for c in credentials
+        )
+    )

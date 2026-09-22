@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+import sqlalchemy as sa
+
 from app.modules.access_control.models import (
     CaseMembershipRecord,
     CaseRecord,
@@ -47,9 +49,21 @@ class FakeAccessControlRepository:
     async def get_user_by_id(self, user_id: UUID) -> UserRecord | None:
         return self.users.get(user_id)
 
+    async def count_users_with_system_role(self, system_role: str) -> int:
+        return sum(
+            1
+            for u in self.users.values()
+            if u.is_active and u.system_role is not None and u.system_role.value == system_role
+        )
+
     # --- cases / memberships ---------------------------------------------
 
     async def create_case(self, case: CaseRecord) -> None:
+        """Mirrors the real `cases.uq_cases_case_reference` UNIQUE constraint."""
+        if any(c.case_reference == case.case_reference for c in self.cases.values()):
+            raise sa.exc.IntegrityError(
+                "INSERT INTO cases (...)", {}, Exception("duplicate case_reference")
+            )
         self.cases[case.case_id] = case
 
     async def get_case(self, case_id: UUID) -> CaseRecord | None:
@@ -125,6 +139,16 @@ class FakeAccessControlRepository:
     async def get_audit_event_by_id(self, event_id: UUID) -> SecurityAuditEventRecord | None:
         return next((e for e in self.audit_events if e.event_id == event_id), None)
 
+    async def list_audit_events_for_case(
+        self, case_id: UUID, *, limit: int | None = None
+    ) -> list[SecurityAuditEventRecord]:
+        events = sorted(
+            (e for e in self.audit_events if e.case_id_nullable == case_id),
+            key=lambda e: e.occurred_at,
+            reverse=True,
+        )
+        return events[:limit] if limit is not None else events
+
     # --- worker credentials --------------------------------------------------
 
     async def create_worker_credential(self, credential: WorkerCredentialRecord) -> None:
@@ -144,6 +168,13 @@ class FakeAccessControlRepository:
             ),
             None,
         )
+
+    async def touch_worker_last_seen(self, worker_id: UUID, seen_at: datetime) -> None:
+        credential = self.worker_credentials.get(worker_id)
+        if credential is not None:
+            self.worker_credentials[worker_id] = credential.model_copy(
+                update={"last_seen_at": seen_at}
+            )
 
     async def list_worker_credentials(self) -> list[WorkerCredentialRecord]:
         return sorted(self.worker_credentials.values(), key=lambda c: c.created_at)

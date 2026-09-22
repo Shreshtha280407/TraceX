@@ -12,9 +12,11 @@ chat, or OCR text in this module: the content never reaches storage in the
 first place. The forbidden-token scan on submission is defence in depth
 against a producer accidentally passing raw content as "metadata".
 
-`REVIEW_DECISION` and `HYPOTHESIS_ACTION` are forward-compatible event kinds
-only -- Shreshtha's later phase builds the workflow that emits them. No
-review/hypothesis logic exists here.
+`REVIEW_DECISION`, `HYPOTHESIS_ACTION`, `ENTITY_RESOLUTION_DECISION`, and
+`CASE_NOTE_ADDED` are producer-emitted event kinds only -- the review,
+hypothesis, entity-resolution, and case-notes workflows that emit them
+live in `app.modules.graph`/`app.modules.access_control`. No such logic
+exists in this module.
 """
 
 from __future__ import annotations
@@ -80,6 +82,8 @@ class IntegrityEventKind(StrEnum):
     CORRELATION_COMPLETED = "correlation_completed"
     REVIEW_DECISION = "review_decision"
     HYPOTHESIS_ACTION = "hypothesis_action"
+    ENTITY_RESOLUTION_DECISION = "entity_resolution_decision"
+    CASE_NOTE_ADDED = "case_note_added"
 
 
 class IntegrityEventSubmission(IntegrityModel):
@@ -141,6 +145,34 @@ class CheckpointSignatureRecord(IntegrityModel):
     public_key_fingerprint: str
     signed_root_hash: str
     signed_at: datetime
+
+
+class SigningKeyPublicRecord(IntegrityModel):
+    """A durable `signing_keys_public` row: one key's public identity, never
+    its private material. Gap-Closure WP-5 (G4): lets an operator/auditor
+    answer "was key_id X ever really ours, and since when" without trusting
+    the currently configured `.env` alone. Append-only -- a `key_id` is
+    registered once; a rotation registers a new `key_id`, it never mutates
+    an existing row (see the `rotate-key` CLI command and its docstring)."""
+
+    key_id: str
+    algorithm: str
+    public_key_b64: str
+    public_key_fingerprint: str
+    registered_at: datetime
+
+
+class PendingCheckpointRange(IntegrityModel):
+    """Gap-Closure WP-5 (G4): one case's un-sealed event range, as discovered
+    by `IntegrityRepository.list_pending_checkpoint_ranges` -- what the
+    scheduled checkpointing loop (`cli.py checkpoint-once`/`checkpoint-loop`)
+    seals next. Derived from `integrity_sequence_counters.last_sequence`
+    against the latest `merkle_checkpoints.end_sequence` for the case (0 if
+    the case has never been checkpointed) -- never a fabricated range."""
+
+    case_id: UUID
+    start_sequence: int
+    end_sequence: int
 
 
 class CheckpointBuildReceipt(IntegrityModel):

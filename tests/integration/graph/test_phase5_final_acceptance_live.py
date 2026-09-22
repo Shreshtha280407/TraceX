@@ -99,6 +99,7 @@ from app.modules.graph.outbox_repository import GraphProjectionOutboxRepository
 from app.modules.graph.outbox_repository import create_engine as create_pg_engine_for_graph
 from app.modules.graph.projector import run_batch
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
+from tests.fixtures.access_control.factories import make_user_record
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -296,15 +297,13 @@ async def test_phase5_full_acceptance_flow_against_live_stack() -> None:  # noqa
     outbox = GraphProjectionOutboxRepository(pg_engine)
     correlation_repository = GraphCorrelationIntegrationRepository(pg_engine)
     try:
+        # No public self-registration exists (G5) -- seed users directly
+        # against the same live Postgres `ac_repository` already writes to.
+        for email in (owner_email, outsider_email):
+            await ac_repository.create_user(make_user_record(email_normalized=email))
+
         async with httpx.AsyncClient(base_url=settings.worker_api_base_url, timeout=30.0) as ac:
             # --- case and evidence context ---
-            for email in (owner_email, outsider_email):
-                register = await ac.post(
-                    "/api/v1/auth/register",
-                    json={"email": email, "password": password, "display_name": "Phase5 Test"},
-                )
-                assert register.status_code == 201, register.text
-
             owner_login = await ac.post(
                 "/api/v1/auth/login", json={"email": owner_email, "password": password}
             )

@@ -143,7 +143,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -189,24 +189,98 @@ services:
       retries: 20
       start_period: 10s
 
-  # Optional continuous workers -- both under the "workers" Compose profile
-  # (`docker compose --profile workers up -d`), so a plain `docker compose
-  # up` (the documented default in docs/runbooks/local-development.md)
-  # keeps behaving exactly as before this phase: API + infra only, no
-  # worker running until an operator explicitly asks for one. Both use the
-  # existing internal-worker-API / WORKER_TOKEN security boundary
-  # unchanged -- no direct MinIO/PostgreSQL/Neo4j credentials for
-  # `media-worker` (`graph-projector` is the one backend-owned exception
-  # that already talks to PostgreSQL/Neo4j directly, matching how it
-  # behaves outside Docker -- see app/modules/graph/worker.py's module
-  # docstring).
+  # Optional continuous/one-shot workers, split across two Compose profiles
+  # (Gap-Closure WP-8, G15) so an operator can start only the workers their
+  # hardware supports -- `docker compose --profile cpu-worker up -d` needs
+  # no GPU/model weights at all; `docker compose --profile gpu-worker up -d`
+  # is the one profile that does. A plain `docker compose up` (the
+  # documented default in docs/runbooks/local-development.md) keeps
+  # behaving exactly as before: API + infra only, no worker running until
+  # an operator explicitly asks for one via `--profile`. Every worker here
+  # uses the existing internal-worker-API / WORKER_TOKEN security boundary
+  # -- no direct MinIO/PostgreSQL/Neo4j credentials for any of them except
+  # `graph-projector`/`intelligence-worker` (the two backend-owned
+  # exceptions that already talk to PostgreSQL/Neo4j directly outside
+  # Docker too -- see their own module docstrings).
+  #
+  # Prior to this WP, `structured-worker`/`communication-worker` had no
+  # Compose service at all (a real gap), and both workers still document
+  # "no daemon or polling mode exists in this phase" (`--once`, not
+  # `--loop`) -- `restart: unless-stopped` on a one-shot `--once` command
+  # is a deliberate, honestly-documented substitute for a real poll loop:
+  # each container restart is one more claim attempt, not a clean idle
+  # wait. See docs/qa/known-limitations.md's "WP-8" section.
+
+  graph-projector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["cpu-worker"]
+    command: ["python", "-m", "app.modules.graph.worker", "--loop"]
+    environment:
+      <<: *tracex-app-env
+    networks:
+      - tracex-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  intelligence-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["cpu-worker"]
+    command: ["python", "-m", "app.modules.graph.intelligence_worker", "--replay-loop"]
+    environment:
+      <<: *tracex-app-env
+    networks:
+      - tracex-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  structured-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["cpu-worker"]
+    command: ["python", "-m", "app.modules.structured_processing.worker", "--once"]
+    environment:
+      <<: *tracex-app-env
+    networks:
+      - tracex-internal
+    depends_on:
+      api:
+        condition: service_healthy
+
+  communication-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["cpu-worker"]
+    command: ["python", "-m", "app.modules.communication_processing.worker", "--once"]
+    environment:
+      <<: *tracex-app-env
+    networks:
+      - tracex-internal
+    depends_on:
+      api:
+        condition: service_healthy
 
   media-worker:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    profiles: ["workers"]
+    profiles: ["gpu-worker"]
     command: ["python", "-m", "app.modules.media_processing.worker", "--loop"]
     environment:
       <<: *tracex-app-env
@@ -220,23 +294,6 @@ services:
       api:
         condition: service_healthy
 
-  graph-projector:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    profiles: ["workers"]
-    command: ["python", "-m", "app.modules.graph.worker", "--loop"]
-    environment:
-      <<: *tracex-app-env
-    networks:
-      - tracex-internal
-    depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-
   # One-shot, not a long-running service: `docker compose run --rm
   # media-model-bootstrap` downloads and checksum-verifies the pinned
   # detector model into the shared `media-models-data` volume before
@@ -248,7 +305,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    profiles: ["workers"]
+    profiles: ["gpu-worker"]
     command: ["python", "-m", "app.modules.media_processing.bootstrap_models"]
     environment:
       <<: *tracex-app-env

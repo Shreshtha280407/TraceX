@@ -92,6 +92,33 @@ def test_signed_root_never_carries_private_key_material() -> None:
     assert len(base64.b64decode(signed.public_key_b64)) == 32
 
 
+def test_public_key_material_matches_a_signature_from_the_same_key() -> None:
+    """Gap-Closure WP-5 (G4): `rotate-key` registers exactly the public
+    material `verify()` would accept for that key's signatures."""
+    key = _loaded_key(key_id="rotation-key-1")
+    signed = key.sign(_ROOT_HASH)
+    material = key.public_key_material()
+    assert material.key_id == "rotation-key-1"
+    assert material.public_key_b64 == signed.public_key_b64
+    assert material.public_key_fingerprint == signed.public_key_fingerprint
+    assert verify(
+        root_hash_hex=_ROOT_HASH,
+        signature_b64=signed.signature_b64,
+        public_key_b64=material.public_key_b64,
+    )
+
+
+def test_public_key_material_never_exposes_private_bytes() -> None:
+    material = _loaded_key().public_key_material()
+    assert set(vars(material)) == {
+        "key_id",
+        "algorithm",
+        "public_key_b64",
+        "public_key_fingerprint",
+    }
+    assert len(base64.b64decode(material.public_key_b64)) == 32
+
+
 def test_fingerprint_is_stable_and_shorter_than_the_key() -> None:
     private_key = Ed25519PrivateKey.generate()
     fingerprint_a = public_key_fingerprint(private_key.public_key())

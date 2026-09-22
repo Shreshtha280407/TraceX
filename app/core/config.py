@@ -327,6 +327,23 @@ class Settings(BaseSettings):
     # Free-text label stored alongside every signature so a verifier can
     # tell which configured key produced it; not itself secret.
     integrity_signing_key_id: str = Field(default="dev-local-ed25519-1")
+    # Gap-Closure WP-5 (G4): a separate MinIO bucket (never `minio_bucket`,
+    # which holds raw evidence) for durable, write-once verification-bundle
+    # archives. Reuses the same MinIO credentials/endpoint above.
+    integrity_manifest_bucket: str = Field(default="tracex-integrity-manifests")
+    # Local filesystem root for `FilesystemManifestSink` -- an operator-
+    # mounted archive volume in production, a repo-local scratch dir in dev.
+    integrity_manifest_filesystem_root: Path = Field(default=Path("./data/integrity-manifests"))
+    # Gap-Closure WP-5 (G4) re-close: `MinioManifestSink.ensure_bucket`
+    # creates `integrity_manifest_bucket` with MinIO object-lock enabled
+    # (only possible at bucket creation -- cannot be retrofitted) and a
+    # default COMPLIANCE-mode retention of this many years -- COMPLIANCE,
+    # not GOVERNANCE, because no principal (not even a MinIO admin) may
+    # delete or overwrite an archived checkpoint manifest before its
+    # retention expires. This is a real, hard-to-reverse operational
+    # choice -- see docs/runbooks/integrity-verification.md and
+    # ADR-023 before changing it in a live deployment.
+    integrity_manifest_retention_years: int = Field(default=10, ge=1, le=100)
 
     @field_validator("worker_token", "worker_credential_pepper", "integrity_signing_key")
     @classmethod
