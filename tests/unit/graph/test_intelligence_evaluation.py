@@ -218,6 +218,51 @@ def test_offline_evaluation_report_is_json_serializable() -> None:
     assert report.model_dump_json()
 
 
+async def test_report_names_hardware_and_git_commit_additive_to_existing_fields(
+    tmp_path,
+) -> None:
+    """Master plan §23.3: "Performance and accuracy reports name dataset
+    hash, source profile, model/config, hardware and commit." Both new
+    fields must populate on a REAL report generation (not a stub), and
+    every pre-existing field (`dataset_hash`/`truth_hash`/
+    `rules_config_hash`) must still be present unchanged -- additive, not
+    a replacement."""
+    case_id = uuid4()
+    left, right = uuid4(), uuid4()
+    root = _truth_file(
+        tmp_path,
+        case_id,
+        [{"left_entity_id": str(left), "right_entity_id": str(right), "label": "same"}],
+    )
+    candidate = _candidate(case_id, left, right, vector_score=0.9)
+    decisions = {
+        candidate.entity_resolution_candidate_id: [_decision(EntityReviewOutcome.VERIFIED_SAME)]
+    }
+    repository = _FakeEntityRepository([candidate], decisions)
+
+    report = await run_offline_evaluation(
+        repository, case_id, rules_config_hash=_RULES_HASH, synthetic_data_root=root
+    )
+
+    # New fields: real values, this repo's own actual commit/hostname --
+    # never a crash, never silently blank.
+    assert report.git_commit != "unknown"
+    assert len(report.git_commit) == 40
+    assert report.hardware != "unknown"
+    assert report.hardware.strip() != ""
+    # Pre-existing fields: still present, unchanged shape.
+    assert report.dataset_hash
+    assert report.truth_hash
+    assert report.rules_config_hash == _RULES_HASH
+    assert report.deferred is False
+
+    # The deferred (no-truth-configured) path names them too -- not only
+    # the real-evaluation path.
+    deferred = deferred_evaluation_report(rules_config_hash=_RULES_HASH)
+    assert deferred.git_commit != "unknown"
+    assert deferred.hardware != "unknown"
+
+
 # --- Import boundary: never reachable from a live request path --------------
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+from app.core.build_info import resolve_git_commit, resolve_hardware_label
 from app.core.canonical import canonical_sha256
 from app.modules.graph.entity_models import EntityReviewOutcome
 from app.modules.graph.entity_repository import EntityRepository
@@ -44,6 +45,15 @@ class OfflineEvaluationReport(GraphModel):
     dataset_hash: str
     truth_hash: str | None = None
     rules_config_hash: str
+    #: Master plan §23.3: "Performance and accuracy reports name dataset
+    #: hash, source profile, model/config, hardware and commit" -- additive
+    #: to the existing hash/config-version fields above, never a
+    #: replacement. Always populated (see `app.core.build_info`'s own
+    #: "never raise, degrade to 'unknown'" contract) -- never `None`, so a
+    #: reader can always tell "resolution was attempted and came up empty"
+    #: apart from "this field was never added yet".
+    git_commit: str
+    hardware: str
     command: str
     metrics: dict[str, float | int | None]
     deferred: bool = True
@@ -53,6 +63,8 @@ def deferred_evaluation_report(*, rules_config_hash: str) -> OfflineEvaluationRe
     return OfflineEvaluationReport(
         dataset_hash="unavailable",
         rules_config_hash=rules_config_hash,
+        git_commit=resolve_git_commit(),
+        hardware=resolve_hardware_label(),
         command="phase5-offline-evaluation",
         metrics={
             "candidate_precision": None,
@@ -197,6 +209,8 @@ async def run_offline_evaluation(
         dataset_hash=canonical_sha256({"case_id": str(case_id), "root": str(root)}),
         truth_hash=canonical_sha256(truth.model_dump(mode="json")),
         rules_config_hash=rules_config_hash,
+        git_commit=resolve_git_commit(),
+        hardware=resolve_hardware_label(),
         command="phase5-offline-evaluation",
         metrics=metrics,
         deferred=False,

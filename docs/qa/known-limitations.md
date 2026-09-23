@@ -1337,6 +1337,18 @@ See ADR-020.
   audit (this session's Part E investigation) of Nightfall's actual
   metadata. A real, separate authoring gap from anything this session
   touched -- not fixed here, reported per instruction.
+- **Phase 8 Part 1 (Release-Candidate Setup): re-confirmed and formally
+  logged for acceptance-testing purposes.** Operation Nightfall's evidence
+  content does not currently contain the two-community/P99-bridge scenario
+  described in the master plan §17.2. The entity-resolution pipeline
+  (Tiers 1-3) is confirmed working correctly on real data (see ADR-032);
+  this is a content-authoring gap in the corpus itself, not a pipeline
+  defect. Acceptance testing against Nightfall in Phase 8 should account
+  for this until the corpus is separately authored to include this
+  scenario. Pinned to `TraceX-Synthetic-Data`'s Phase 8 release-candidate
+  commit `7a609b0096a3578cba1fafc21ee14656a8503ece` (tag `phase8-rc1`) --
+  future acceptance runs against Operation Nightfall should reference this
+  exact commit until the corpus is re-authored and re-pinned.
 - **The hypothesis-assembly engine (Phase 6 Part 5) has never been
   invoked against real WP-2 entity-resolution candidate data -- and,
   live-confirmed, structurally cannot be, as currently wired.**
