@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.contracts.entity import EntityV1
 from app.core.config import Settings
+from app.core.pagination import CursorPosition
 from app.modules.graph.entity_models import (
     EntityResolutionCandidateRecord,
     EntityReviewDecisionRecord,
@@ -220,6 +221,39 @@ class EntityRepository:
                 .all()
             )
         return {row["source_observation_id"]: _entity(row) for row in rows}
+
+    async def list_entities(
+        self, case_id: UUID, *, limit: int | None = None, after: CursorPosition | None = None
+    ) -> list[EntityV1]:
+        """Case-scoped entity listing, real keyset pagination (mirrors
+        `HypothesisRepository.list_hypotheses`'s pattern exactly -- see
+        `app.core.pagination`). Rows are ordered `(created_at DESC,
+        entity_id DESC)`, a composite, fully deterministic order required
+        for keyset pagination to never skip or repeat a row even when
+        several entities share the same `created_at`.
+        """
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("entity query limit must be between 1 and 200")
+        statement = (
+            sa.select(entities_table)
+            .where(entities_table.c.case_id == case_id)
+            .order_by(entities_table.c.created_at.desc(), entities_table.c.entity_id.desc())
+        )
+        if after is not None:
+            statement = statement.where(
+                sa.or_(
+                    entities_table.c.created_at < after.created_at,
+                    sa.and_(
+                        entities_table.c.created_at == after.created_at,
+                        entities_table.c.entity_id < after.row_id,
+                    ),
+                )
+            )
+        if limit is not None:
+            statement = statement.limit(limit)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [_entity(row) for row in rows]
 
     # --- resolution candidates ----------------------------------------------
 

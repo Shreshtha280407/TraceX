@@ -33,7 +33,60 @@ from app.modules.integrity.models import IntegrityEventKind, IntegrityEventSubmi
 
 ENTITY_RESOLUTION_REVIEW_SCHEMA_VERSION = "entity_resolution_review.v1"
 ENTITY_RESOLUTION_DECISION_SCHEMA_VERSION = "entity_resolution_decision.v1"
-ENTITY_CANDIDATE_CONFIG_VERSION = "entity_resolution_cascade_v1"
+#: v2 (Gap-Closure follow-up, superseded by v3 below): `identifier_star_
+#: edges` collapsed a widely-repeated identifier's `C(N,2)` pairwise
+#: candidate explosion down to `N-1` star edges -- still `N-1` pairwise
+#: candidate rows *within* one identifier's group, found insufficient on a
+#: real case with many distinct identifier groups (Nightfall: 381
+#: descriptors, 370+ star-edged pairs, still over `MAX_CANDIDATES=200`).
+#: See ADR-027 (superseded) and ADR-029.
+#:
+#: v3 (ADR-029): true Tier-1 "exact blocking" per the master implementation
+#: plan's Section 15.2. `entity_service.generate_entity_resolution_
+#: candidates` now calls `intelligence.retrieval.retrieve_candidates` with
+#: `exact_identifier_blocks` set -- descriptors sharing an exact identifier
+#: collapse to one canonical representative *before* any pairwise
+#: comparison, so they are never compared against each other at all (zero
+#: within-block candidates, not `N-1`). Tiers 2-4 (alias/transliteration/
+#: vector) run unchanged, only over this reduced, cross-block-only set.
+#: Bumped again so a v2-era candidate row is never silently conflated with
+#: a v3 one -- `upsert_candidate`'s own idempotency key includes
+#: `config_version`. Phase 5's *correlation* pipeline (`pipeline.
+#: build_case_correlation_submission`, release-freeze-gated) is
+#: unaffected: it calls `retrieve_candidates` without
+#: `exact_identifier_blocks`, so its output is unchanged.
+#:
+#: v4 (ADR-030): true Tier-2 "normalized lexical blocking" and true Tier-3
+#: "case-scoped pgvector retrieval" per the same Section 15.2 spec --
+#: closes the audit finding that v3 only fixed Tier 1, leaving Tier 2
+#: (alias/handle/transliteration) and Tier 3 (vector) as raw, unbounded
+#: all-pairs scans in the same loop, live-confirmed to reproduce the
+#: identical combinatorial-explosion pattern Tier 1 had (Nightfall: 10
+#: alias values repeated 6x each, 150 pairs). `entity_service.generate_
+#: entity_resolution_candidates` now also passes `lexical_blocks` (Tier 2)
+#: and, when a `vector_store` is supplied, retires the inline vector scan
+#: (`include_inline_vector=False`) in favor of `vector_store.
+#: vector_linked_candidates` (Tier 3, a genuine bounded nearest-neighbor
+#: query, not a scan), merged back in via `retrieval.merge_candidates`.
+#: Bumped again for the same idempotency-key reason as v2->v3. Phase 5's
+#: correlation pipeline is unaffected -- it passes none of `lexical_
+#: blocks`/`vector_store`/`include_inline_vector`, so its output stays
+#: byte-for-byte unchanged.
+#:
+#: v5 (ADR-032): true Tier-3 *signal*, not just true Tier-3 *retrieval*
+#: shape. v4 wired in `PgvectorCandidateStore` as a genuine bounded
+#: nearest-neighbor query, but every vector it stored/queried was still
+#: `retrieval.hashed_token_vector` -- a single-token deterministic hash
+#: into `VECTOR_DIMENSIONS` buckets, live-confirmed too coarse to
+#: discriminate Nightfall's structurally similar short synthetic names
+#: (10 names, 43/45-edge clique). `vector_store.vector_linked_candidates`
+#: now persists/queries `case_tfidf_vectors`' real, case-scoped character
+#: n-gram TF-IDF + `TruncatedSVD` signal instead, under its own provider
+#: identity (`TFIDF_VECTOR_PROVIDER`) -- `hashed_token_vector` itself is
+#: completely unchanged and still used by every other caller (Tiers 1-2's
+#: own inline fallback, Phase 5's frozen correlation pipeline). Bumped
+#: again for the same idempotency-key reason as every prior version.
+ENTITY_CANDIDATE_CONFIG_VERSION = "entity_resolution_cascade_v5"
 MAX_RATIONALE_LENGTH = 4_000
 
 
@@ -164,11 +217,25 @@ class EntityView(GraphModel):
     entity: EntityV1
 
 
+class EntityListResponse(GraphModel):
+    """Case-scoped, paginated entity listing (closes a gap surfaced by an
+    external caller -- TraceX-Synthetic-Data's truth-generation script --
+    that had no way to discover which entities exist for a case without
+    already knowing their UUIDs; every other entity route requires one).
+    Mirrors `HypothesisListResponse`'s shape exactly: bare records, not
+    wrapped in `EntityView`.
+    """
+
+    items: tuple[EntityV1, ...]
+    next_cursor: str | None = None
+
+
 __all__ = [
     "ENTITY_CANDIDATE_CONFIG_VERSION",
     "ENTITY_RESOLUTION_DECISION_SCHEMA_VERSION",
     "ENTITY_RESOLUTION_REVIEW_SCHEMA_VERSION",
     "EFFECTIVE_STATUS_NEEDS_REVIEW",
+    "EntityListResponse",
     "EntityResolutionCandidateListResponse",
     "EntityResolutionCandidateRecord",
     "EntityResolutionReviewView",

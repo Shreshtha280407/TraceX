@@ -30,7 +30,17 @@ MODULE_ROOT = Path(__file__).resolve().parents[3] / "app" / "modules" / "graph"
 _FORBIDDEN_LIBRARY_ROOTS = {"minio", "boto3", "botocore"}
 _FORBIDDEN_DOTTED_MODULES = {"app.modules.access_control.worker_credentials"}
 
-#: OCR/media/vector/ML libraries -- graph projection is not content analysis.
+#: OCR/media/vector/ML libraries -- graph projection is not content
+#: analysis. `sklearn` is deliberately NOT in this set (ADR-032): `intelligence/
+#: vector_store.py`'s whole job is already candidate-similarity computation
+#: (cosine math over `hashed_token_vector`, in this same file, predating
+#: ADR-032) -- `case_tfidf_vectors`'s character n-gram TF-IDF + `TruncatedSVD`
+#: is the same retrieval-similarity work this module already did, not the
+#: OCR/ASR/vision *content extraction* (reading an image, transcribing
+#: audio) this boundary exists to keep out of `graph/`. `numpy`/`scipy`/
+#: `torch`/`tensorflow`/`faiss`/`chromadb`/`pinecone` stay forbidden --
+#: `case_tfidf_vectors` never imports any of them directly, and nothing in
+#: `graph/` needs GPU/deep-learning-scale numerical stacks.
 _FORBIDDEN_ML_LIBRARY_ROOTS = {
     "pytesseract",
     "cv2",
@@ -43,7 +53,6 @@ _FORBIDDEN_ML_LIBRARY_ROOTS = {
     "scipy",
     "torch",
     "tensorflow",
-    "sklearn",
     "faiss",
     "chromadb",
     "pinecone",

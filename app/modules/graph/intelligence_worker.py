@@ -3,6 +3,7 @@
     uv run python -m app.modules.graph.intelligence_worker --replay-once
     uv run python -m app.modules.graph.intelligence_worker --replay-loop
     uv run python -m app.modules.graph.intelligence_worker --generate --case-id <uuid>
+    uv run python -m app.modules.graph.intelligence_worker --resolve-entities --case-id <uuid>
     uv run python -m app.modules.graph.intelligence_worker --evaluate --case-id <uuid>
 
 `--evaluate` (Gap-Closure WP-7B, G1) scores one case's entity-resolution
@@ -12,6 +13,23 @@ candidates against `TRACEX_SYNTHETIC_DATA_ROOT` truth data -- see
 variable is unset; this CLI is the only sanctioned way to run offline
 evaluation -- never a live request path (see `truth_loader.py`'s own
 import-boundary docstring and its static test).
+
+`--resolve-entities` (Gap-Closure follow-up) closes a gap `--evaluate`'s
+own scope silently assumed was already handled: WP-2's `entity_service.
+create_entities_for_case`/`generate_entity_resolution_candidates` were
+fully implemented and unit-tested (ADR-020) but had no live caller
+anywhere in this repository -- the exact "built and tested in isolation,
+nothing ever calls it for real" situation this codebase already has two
+other documented instances of (`docs/qa/known-limitations.md`'s graph-
+projection and `CommunicationLinkCandidate` notes). Found via live
+multi-service testing (real evidence ingested successfully, zero entities
+ever appeared), not by this repo's own test suite, which only ever calls
+these functions directly. This mode calls them verbatim -- no change to
+their internal logic -- mirroring `--generate`'s exact "operator names one
+case explicitly" shape rather than wiring an automatic trigger: ADR-020
+never specified when entity resolution should run relative to ingestion,
+and this repository's own precedent for this situation (graph projection,
+`CommunicationLinkCandidate`) is manual/deferred, not auto-wired.
 
 This is the minimal composition/registration wiring the Phase 5A
 reconciliation audit found missing: `intelligence/projection.py`'s semantic
@@ -51,8 +69,12 @@ from uuid import UUID
 import structlog
 
 from app.core.config import Settings, get_settings
+from app.core.pagination import CursorPosition
 from app.modules.graph.entity_repository import EntityRepository
 from app.modules.graph.entity_repository import create_engine as create_entity_engine
+from app.modules.graph.entity_service import (
+    generate_entity_resolution_candidates,
+)
 from app.modules.graph.hypothesis_repository import HypothesisRepository
 from app.modules.graph.hypothesis_repository import create_engine as create_hypothesis_engine
 from app.modules.graph.integration_projector import GraphUpdateRunSummary, replay_graph_updates
@@ -65,6 +87,8 @@ from app.modules.graph.intelligence.evaluation import (
 from app.modules.graph.intelligence.pipeline import run_case_correlation_pass
 from app.modules.graph.intelligence.projection import make_correlation_projection_handler
 from app.modules.graph.intelligence.scoring import RULES_CONFIG_HASH
+from app.modules.graph.intelligence.sourcing import fetch_case_observations
+from app.modules.graph.intelligence.vector_store import PgvectorCandidateStore
 from app.modules.graph.repository import Neo4jGraphRepository, create_driver
 from app.modules.graph.review_projection_outbox import ReviewProjectionOutboxRepository
 from app.modules.graph.review_projection_outbox import (
@@ -327,6 +351,59 @@ async def generate_once(settings: Settings, case_id: UUID) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class ResolveEntitiesSummary:
+    """Real counts from one `--resolve-entities` pass -- never estimated."""
+
+    entity_count: int
+    candidate_count: int
+
+
+async def resolve_entities_once(settings: Settings, case_id: UUID) -> ResolveEntitiesSummary:
+    """Run one entity-creation + entity-resolution-candidate-generation pass
+    for one case.
+
+    Calls `entity_service.generate_entity_resolution_candidates` verbatim --
+    no change to its internal logic. That function already calls
+    `create_entities_for_case` as its own first step (ADR-020 Decision 2),
+    so this composes exactly one call, not two redundant ones. Idempotent:
+    re-running against the same case's unchanged observations recreates the
+    same entities (deterministic IDs) and upserts the same candidates,
+    matching both functions' own documented idempotency.
+    """
+    postgres_engine = create_postgres_engine(settings)
+    entity_engine = create_entity_engine(settings)
+    entity_repository = EntityRepository(entity_engine)
+    vector_store = PgvectorCandidateStore(postgres_engine)
+    try:
+        observations = await fetch_case_observations(postgres_engine, case_id)
+        candidates = await generate_entity_resolution_candidates(
+            entity_repository, case_id, observations, vector_store=vector_store
+        )
+        entities = await entity_repository.list_entities(case_id, limit=200)
+        entity_count = len(entities)
+        while len(entities) == 200:
+            last = entities[-1]
+            entities = await entity_repository.list_entities(
+                case_id,
+                limit=200,
+                after=CursorPosition(
+                    case_id=case_id, created_at=last.created_at, row_id=last.entity_id
+                ),
+            )
+            entity_count += len(entities)
+    finally:
+        await entity_repository.close()
+        await postgres_engine.dispose()
+    logger.info(
+        "graph.intelligence_worker.resolve_entities_completed",
+        case_id=str(case_id),
+        entity_count=entity_count,
+        candidate_count=len(candidates),
+    )
+    return ResolveEntitiesSummary(entity_count=entity_count, candidate_count=len(candidates))
+
+
 async def evaluate_once(settings: Settings, case_id: UUID) -> OfflineEvaluationReport:
     """Gap-Closure WP-7B (G1): score one case's entity-resolution candidates
     against `TRACEX_SYNTHETIC_DATA_ROOT` truth data, if configured.
@@ -370,6 +447,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Run one retrieval/scoring/correlation pass for --case-id, then exit.",
     )
     mode.add_argument(
+        "--resolve-entities",
+        action="store_true",
+        help=(
+            "Run one entity-creation + entity-resolution-candidate-generation "
+            "pass for --case-id, then exit."
+        ),
+    )
+    mode.add_argument(
         "--replay-review-once",
         action="store_true",
         help="Replay one bounded batch of review/hypothesis projection events, then exit.",
@@ -392,6 +477,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.generate and not args.case_id:
         parser.error("--generate requires --case-id")
+    if args.resolve_entities and not args.case_id:
+        parser.error("--resolve-entities requires --case-id")
     if args.evaluate and not args.case_id:
         parser.error("--evaluate requires --case-id")
 
@@ -453,6 +540,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError:
         parser.error("--case-id must be a valid UUID")
         return 2  # pragma: no cover - argparse.error already exits
+
+    if args.resolve_entities:
+        try:
+            resolve_summary = asyncio.run(resolve_entities_once(settings, case_id))
+        except Exception as exc:  # a startup/connection/validation failure
+            logger.error(
+                "graph.intelligence_worker.resolve_entities_run_failed",
+                exc_type=type(exc).__name__,
+            )
+            return 1
+        print(
+            f"entities: {resolve_summary.entity_count}  "
+            f"candidates: {resolve_summary.candidate_count}"
+        )
+        return 0
 
     if args.evaluate:
         try:

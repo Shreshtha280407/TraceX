@@ -176,6 +176,131 @@ def test_cdr_call_record_maps_only_the_caller_number_not_the_callee() -> None:
     assert "+919999999999" not in descriptor.identifiers.values()
 
 
+def test_cdr_call_record_also_maps_vehicle_context_to_vehicle_registration() -> None:
+    """Gap-Closure follow-up: a structural vehicle_context field is trusted
+    the same way an OCR'd document vehicle_registration mention already
+    is -- widening which modality supplies the existing identifier kind."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "vehicle_context": "SYN-VEH-FULD-A01",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {
+        "phone": "+919876543210",
+        "vehicle_registration": "SYN-VEH-FULD-A01",
+    }
+
+
+def test_financial_transaction_record_also_maps_vehicle_context_to_vehicle_registration() -> None:
+    observation = _observation(
+        observation_type="financial_transaction_record",
+        attributes={
+            "sender_account": "SENDER-1",
+            "receiver_account": "RECEIVER-1",
+            "vehicle_context": "SYN-VEH-FULD-B02",
+            "timestamp": "2026-01-01T10:20:00+00:00",
+        },
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {
+        "account": "SENDER-1",
+        "vehicle_registration": "SYN-VEH-FULD-B02",
+    }
+
+
+def test_cdr_record_missing_vehicle_context_maps_no_vehicle_registration() -> None:
+    """Absence stays absence -- no fabricated identifier when the field
+    genuinely isn't present, matching every other field's own gating."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={"caller_number": "+919876543210", "timestamp": "2026-01-01T10:00:00+00:00"},
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert "vehicle_registration" not in descriptor.identifiers
+
+
+def test_json_scalar_value_vehicle_id_maps_to_vehicle_registration() -> None:
+    """Gap-Closure follow-up: `generic_json_v1`'s one-observation-per-scalar-
+    leaf shape (e.g. Fulcrum's structured/sightings.json) -- the field name
+    is recoverable only from `source_locator.json_path`'s trailing segment."""
+    observation = _observation(
+        observation_type="json_scalar_value",
+        attributes={"value": "SYN-VEH-FULD-A01"},
+        locator=SourceLocator(json_path="$.records[3].vehicle_id"),
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {"vehicle_registration": "SYN-VEH-FULD-A01"}
+
+
+def test_json_scalar_value_vehicle_context_field_name_also_maps() -> None:
+    observation = _observation(
+        observation_type="json_scalar_value",
+        attributes={"value": "SYN-VEH-FULD-B01"},
+        locator=SourceLocator(json_path="$.rows[0].vehicle_context"),
+    )
+    descriptor = descriptor_from_observation(observation)
+    assert descriptor is not None
+    assert descriptor.identifiers == {"vehicle_registration": "SYN-VEH-FULD-B01"}
+
+
+def test_json_scalar_value_person_id_and_location_id_stay_unmapped() -> None:
+    """Confirms the documented, deliberate exclusion: no `person`/`location`
+    identifier kind exists, however the field arrives -- this change touches
+    only the vehicle_registration pathway."""
+    for field_name in ("person_id", "location_id"):
+        observation = _observation(
+            observation_type="json_scalar_value",
+            attributes={"value": "SYN-PER-FULD-A01"},
+            locator=SourceLocator(json_path=f"$.records[0].{field_name}"),
+        )
+        assert descriptor_from_observation(observation) is None
+
+
+def test_json_scalar_value_field_name_match_is_exact_trailing_segment_not_substring() -> None:
+    """A field merely containing "vehicle_id" as a substring of a longer,
+    different name must never match -- exact trailing-segment equality
+    only, matching this codebase's "never guess ambiguous input" rule."""
+    observation = _observation(
+        observation_type="json_scalar_value",
+        attributes={"value": "some-note"},
+        locator=SourceLocator(json_path="$.records[0].vehicle_id_note"),
+    )
+    assert descriptor_from_observation(observation) is None
+
+
+def test_two_party_cdr_expansion_merges_vehicle_registration_into_both_roles() -> None:
+    """The record's vehicle_context is shared by both parties (not role-
+    scoped itself) -- both the caller and callee descriptors carry it."""
+    observation = _observation(
+        observation_type="cdr_call_record",
+        attributes={
+            "caller_number": "+919876543210",
+            "callee_number": "+919999999999",
+            "vehicle_context": "SYN-VEH-FULD-A01",
+            "timestamp": "2026-01-01T10:00:00+00:00",
+        },
+    )
+    descriptors = descriptors_from_observation(observation)
+    by_role = {d.participant_role: d for d in descriptors}
+    assert by_role["caller"].identifiers == {
+        "phone": "+919876543210",
+        "vehicle_registration": "SYN-VEH-FULD-A01",
+    }
+    assert by_role["callee"].identifiers == {
+        "phone": "+919999999999",
+        "vehicle_registration": "SYN-VEH-FULD-A01",
+    }
+
+
 # --- Scenario 4: weak alias/transliteration candidates stay candidate-only --
 
 

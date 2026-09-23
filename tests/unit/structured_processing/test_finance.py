@@ -125,6 +125,17 @@ def test_finance_timestamp_uses_the_configured_default_timezone_when_none_is_giv
     assert record.attributes["timestamp_source_timezone"] == "Asia/Kolkata"
 
 
+def test_finance_timestamp_accepts_trailing_z_iso8601() -> None:
+    """Gap-Closure follow-up: mirrors the CDR regression test -- a trailing
+    `Z` ISO 8601 timestamp is self-describing UTC and wins outright over
+    the configured default timezone."""
+    data = b"sender_account,receiver_account,amount,currency,timestamp\nSENDER,RECEIVER,500,INR,2032-01-01T00:10:00Z\n"
+    mentions = normalize_financial_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "financial_transaction_record")
+    assert record.attributes["timestamp"] == "2032-01-01T00:10:00+00:00"
+    assert record.attributes["timestamp_source_timezone"] == "UTC"
+
+
 def test_finance_rejects_unparseable_timestamp() -> None:
     data = b"sender_account,receiver_account,amount,currency,timestamp\nSENDER,RECEIVER,500,INR,not-a-real-date\n"
     with pytest.raises(ProcessingError) as exc_info:

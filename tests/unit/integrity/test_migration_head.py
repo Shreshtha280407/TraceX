@@ -37,8 +37,8 @@ def test_latest_gap_closure_migration_is_the_current_head() -> None:
         timeout=60,
         check=True,
     )
-    # Updated for Gap-Closure WP-6's additive worker_credentials.last_seen_at
-    # migration, which now sits on top of WP-5's `5e6f7a8b9c0d` -- see
-    # `alembic history` for the unbroken chain back through Phase 6 Part 5's
-    # `a3b4c5d6e7f8`.
-    assert "6f7a8b9c0d1e" in result.stdout
+    # Updated for ADR-031's additive hypotheses.supporting_entity_
+    # resolution_candidate_ids migration, which now sits on top of Gap-
+    # Closure WP-6's `6f7a8b9c0d1e` -- see `alembic history` for the
+    # unbroken chain back through Phase 6 Part 5's `a3b4c5d6e7f8`.
+    assert "7a8b9c0d1e2f" in result.stdout

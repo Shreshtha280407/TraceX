@@ -255,6 +255,7 @@ async def test_hypothesis_review_decision_replays_when_decided() -> None:
         decided_by=uuid4(),
         supporting_observation_ids=(uuid4(),),
         supporting_candidate_ids=(),
+        supporting_entity_resolution_candidate_ids=(),
         statement="synthetic statement",
         statement_commitment_sha256="a" * 64,
         rationale=None,

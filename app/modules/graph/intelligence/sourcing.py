@@ -33,8 +33,28 @@ never guessed at:
   (caller number only -- see `descriptor_from_observation`'s docstring for
   why the callee number isn't independently blockable from this shape),
   `financial_transaction_record` (sender account only, same reasoning).
+  Both also contribute their record's own `vehicle_context` field (Gap-
+  Closure follow-up) as a `vehicle_registration` identifier -- widening
+  which modality supplies that *existing* identifier kind (already
+  trusted from FIR/document OCR above), not a new one.
+- `json_scalar_value` (Gap-Closure follow-up; `generic_json_v1`'s one-
+  observation-per-scalar-leaf fallback, e.g. Fulcrum's `structured/
+  sightings.json`): a `vehicle_id`/`vehicle_context`-named leaf (matched
+  on `source_locator.json_path`'s exact trailing segment, never a
+  substring) is mapped the same way, as `vehicle_registration`. Every
+  other leaf name (`person_id`, `location_id`, `event_id`, `timestamp`,
+  ...) stays unmapped -- see "Deliberately NOT mapped" below.
 
 Deliberately NOT mapped, with reasons:
+
+- `person_id`/`location_id`-shaped fields, however they arrive (structured
+  field or OCR'd text) -- categorically different from a vehicle
+  registration plate: no external registry makes a person's or a
+  location's identity a directly-labeled, independently-verifiable field
+  in real evidence. That's exactly what entity resolution exists to
+  *infer* from contact-method/vehicle signals, never to accept as given;
+  accepting it directly would be circular for real (non-synthetic) data.
+  `_IDENTIFIER_TYPES` has no `person`/`location` kind at all, deliberately.
 
 - `diarization_speaker_turn` (`speaker_label`) -- a source-local label,
   meaningless outside the one evidence file it came from; treating it as an
@@ -217,6 +237,9 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
         caller = attributes.get("caller_number")
         if isinstance(caller, str) and caller.strip():
             identifiers["phone"] = caller
+        vehicle_context = attributes.get("vehicle_context")
+        if isinstance(vehicle_context, str) and vehicle_context.strip():
+            identifiers["vehicle_registration"] = vehicle_context
     elif observation_type == "financial_transaction_record":
         # Same reasoning as `cdr_call_record` above: this single-descriptor
         # function returns only the sender side; `descriptors_from_
@@ -224,6 +247,23 @@ def descriptor_from_observation(observation: ObservationV1) -> ObservationDescri
         sender = attributes.get("sender_account")
         if isinstance(sender, str) and sender.strip():
             identifiers["account"] = sender
+        vehicle_context = attributes.get("vehicle_context")
+        if isinstance(vehicle_context, str) and vehicle_context.strip():
+            identifiers["vehicle_registration"] = vehicle_context
+    elif observation_type == "json_scalar_value":
+        # Gap-Closure follow-up: `generic_json_v1` (structured/sightings-
+        # shaped JSON with no CDR/financial record-array match) produces
+        # one observation per scalar leaf, with the field name recoverable
+        # only from `source_locator.json_path`'s trailing segment (e.g.
+        # `$.records[3].vehicle_id` -> `vehicle_id`) -- `attributes` itself
+        # is just `{"value": ...}`. Exact trailing-segment match only,
+        # never a substring/contains check, matching this codebase's
+        # "never guess ambiguous input" rule applied everywhere else.
+        field_name = (observation.source_locator.json_path or "").rsplit(".", 1)[-1]
+        if field_name in {"vehicle_id", "vehicle_context"}:
+            value = attributes.get("value")
+            if isinstance(value, str) and value.strip():
+                identifiers["vehicle_registration"] = value
     elif observation_type in _ALIAS_BEARING_TYPES:
         sender = attributes.get("sender")
         if isinstance(sender, str) and sender.strip():
@@ -292,6 +332,7 @@ def _party_descriptor(
     raw_value: str,
     event_start: datetime | None,
     event_end: datetime | None,
+    vehicle_registration: str | None = None,
 ) -> ObservationDescriptor:
     """One evidence-local, role-scoped descriptor for a two-party structured record.
 
@@ -301,8 +342,20 @@ def _party_descriptor(
     in `retrieval.py` despite sharing one `observation_id` -- deterministic
     from `(case_id, observation_id, role, normalized value)`, per this
     module's own `_party_key` precedent for the motif adapter.
+
+    `vehicle_registration` (Gap-Closure follow-up) is the record's own
+    `vehicle_context` field, structurally present on the same CDR/finance
+    record both parties came from -- merged into both parties' identifiers
+    (not a role-scoped field itself), since both were, by the record's own
+    authored semantics, associated with that vehicle. `_IDENTIFIER_TYPES`
+    already trusts a vehicle-plate-shaped value regardless of whether it
+    arrived via OCR'd document text or a structured field -- widening which
+    modality supplies that existing identifier kind, not a new one.
     """
     normalized = normalise_identifier(identifier_kind, raw_value) or raw_value
+    identifiers = {identifier_kind: raw_value}
+    if vehicle_registration is not None:
+        identifiers["vehicle_registration"] = vehicle_registration
     return ObservationDescriptor(
         case_id=observation.case_id,
         observation_id=observation.observation_id,
@@ -316,7 +369,7 @@ def _party_descriptor(
         evidence_id=observation.evidence_id,
         source_locator_reference=_locator_reference(observation),
         participant_role=role,
-        identifiers={identifier_kind: raw_value},
+        identifiers=identifiers,
         event_start=event_start,
         event_end=event_end,
     )
@@ -361,6 +414,14 @@ def descriptors_from_observation(observation: ObservationV1) -> tuple[Observatio
     if _is_structured_validation_rejected(observation):
         return ()
 
+    # Gap-Closure follow-up: the record's own `vehicle_context` field,
+    # shared by both parties (not role-scoped itself) -- merged into each
+    # party descriptor below, not returned as a third, separate descriptor.
+    vehicle_context = observation.attributes.get("vehicle_context")
+    vehicle_registration = (
+        vehicle_context if isinstance(vehicle_context, str) and vehicle_context.strip() else None
+    )
+
     event_start, event_end = _event_time_of(observation)
     descriptors: list[ObservationDescriptor] = []
     for _observation_type, attribute_key, identifier_kind, role in two_party_fields:
@@ -374,6 +435,7 @@ def descriptors_from_observation(observation: ObservationV1) -> tuple[Observatio
                     raw_value=raw_value,
                     event_start=event_start,
                     event_end=event_end,
+                    vehicle_registration=vehicle_registration,
                 )
             )
     return tuple(descriptors)

@@ -2,7 +2,7 @@
 
 A hypothesis is never automatically generated: it exists only because an
 authorized case member wrote a bounded statement and cited at least one
-case-scoped observation or reviewed candidate. It is always an explicitly
+case-scoped observation or candidate. It is always an explicitly
 reviewable inference -- `HypothesisStatus` never contains a "confirmed" or
 "true" value, only `needs_review` / `accepted_by_reviewer` /
 `rejected_by_reviewer` -- and it never creates a timeless entity-to-entity
@@ -15,6 +15,22 @@ narrative. They are persisted raw only in the protected, case-scoped
 module's protected API). Every other surface -- the `hypothesis_action`
 integrity event, the Neo4j projection, structured logs, and reconciliation
 -- carries only `*_commitment_sha256`, via `HypothesisRecord.safe_metadata`.
+
+`supporting_candidate_ids` and `supporting_entity_resolution_candidate_ids`
+(ADR-031, Gap-Closure follow-up) are two deliberately separate citation
+paths, not two names for the same thing: the former cites a Phase 5
+*correlation* candidate (`integration_repository.candidate_links_table`,
+an observation-to-observation "these may describe a related event" claim);
+the latter cites a WP-2 *entity-resolution* candidate
+(`entity_repository.entity_resolution_candidates_table`, an entity-to-
+entity "these may be the same identity" claim). Both tables are built from
+the same underlying `retrieval.retrieve_candidates` cascade but were kept
+architecturally separate on purpose (ADR-020 Decision 2) -- this module
+does not merge them; it simply lets a hypothesis honestly cite either kind
+of candidate, or both, each clearly labeled by which field holds it. See
+ADR-031 for the full timing-accident root cause (ADR-015, 2026-09-15,
+predates ADR-020's entity-resolution work, so the original citation field
+only ever knew about the one candidate table that existed at the time).
 """
 
 from __future__ import annotations
@@ -68,10 +84,18 @@ class HypothesisCreateSubmission(GraphModel):
     rationale: str | None = Field(default=None, max_length=MAX_RATIONALE_LENGTH)
     supporting_observation_ids: tuple[UUID, ...] = ()
     supporting_candidate_ids: tuple[UUID, ...] = ()
+    #: ADR-031: cites a WP-2 entity-resolution candidate (identity claim),
+    #: never conflated with `supporting_candidate_ids` (Phase 5 correlation
+    #: candidate, an event/relationship claim) -- see module docstring.
+    supporting_entity_resolution_candidate_ids: tuple[UUID, ...] = ()
 
     @model_validator(mode="after")
     def _require_at_least_one_reference(self) -> HypothesisCreateSubmission:
-        if not self.supporting_observation_ids and not self.supporting_candidate_ids:
+        if (
+            not self.supporting_observation_ids
+            and not self.supporting_candidate_ids
+            and not self.supporting_entity_resolution_candidate_ids
+        ):
             raise ValueError(
                 "a hypothesis must cite at least one case-scoped observation or candidate"
             )
@@ -79,6 +103,10 @@ class HypothesisCreateSubmission(GraphModel):
             raise ValueError("supporting observation references must be unique")
         if len(set(self.supporting_candidate_ids)) != len(self.supporting_candidate_ids):
             raise ValueError("supporting candidate references must be unique")
+        if len(set(self.supporting_entity_resolution_candidate_ids)) != len(
+            self.supporting_entity_resolution_candidate_ids
+        ):
+            raise ValueError("supporting entity-resolution candidate references must be unique")
         return self
 
 
@@ -102,6 +130,7 @@ class HypothesisRecord(GraphModel):
     decided_by: UUID | None
     supporting_observation_ids: tuple[UUID, ...]
     supporting_candidate_ids: tuple[UUID, ...]
+    supporting_entity_resolution_candidate_ids: tuple[UUID, ...]
     statement: str
     statement_commitment_sha256: str
     rationale: str | None
@@ -125,6 +154,9 @@ class HypothesisRecord(GraphModel):
             "created_by": str(self.created_by),
             "supporting_observation_ids": [str(v) for v in self.supporting_observation_ids],
             "supporting_candidate_ids": [str(v) for v in self.supporting_candidate_ids],
+            "supporting_entity_resolution_candidate_ids": [
+                str(v) for v in self.supporting_entity_resolution_candidate_ids
+            ],
             "statement_commitment_sha256": self.statement_commitment_sha256,
             "rationale_commitment_sha256": self.rationale_commitment_sha256,
         }

@@ -5,8 +5,15 @@ are not case-scoped in their URL (no `case_id` path parameter) -- the case
 is looked up from the entity itself, then authorized exactly like every
 other case-scoped route (`policy.authorize_case_action`, same default-deny
 semantics `require_case_action` uses). `GET /api/v1/cases/{id}/entity-
-candidates` is ordinarily case-scoped and reuses `require_graph_read`
-directly.
+candidates` and `GET /api/v1/cases/{id}/entities` are ordinarily case-scoped
+and reuse `require_graph_read` directly.
+
+`GET /api/v1/cases/{id}/entities` (added post-WP-2, Gap-Closure follow-up)
+closes a real gap in the three routes above: none of them lets a caller
+discover which entities exist for a case without already knowing their
+UUIDs. Surfaced by an external caller -- TraceX-Synthetic-Data's truth-
+generation script -- that had no way to read back what the entity layer
+produced.
 """
 
 from __future__ import annotations
@@ -16,10 +23,18 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.contracts.entity import EntityV1
+from app.core.config import Settings, get_settings
 from app.core.errors import get_request_id
+from app.core.pagination import (
+    CursorError,
+    CursorPosition,
+    decode_cursor,
+    derive_cursor_signing_key,
+    encode_cursor,
+)
 from app.modules.access_control.audit import record_audit_event_safely
 from app.modules.access_control.dependencies import (
     get_access_control_repository,
@@ -36,6 +51,7 @@ from app.modules.access_control.policy import authorize_case_action
 from app.modules.access_control.repository import AccessControlRepository
 from app.modules.graph.dependencies import get_entity_repository
 from app.modules.graph.entity_models import (
+    EntityListResponse,
     EntityResolutionCandidateListResponse,
     EntityReviewDecisionRecord,
     EntityReviewDecisionSubmission,
@@ -48,6 +64,9 @@ from app.modules.integrity.service import IntegrityService
 
 router = APIRouter(prefix="/api/v1", tags=["entities"])
 logger = structlog.get_logger(__name__)
+
+DEFAULT_ENTITY_LIST_LIMIT = 50
+MAX_ENTITY_LIST_LIMIT = 200
 
 
 async def _record_integrity_event_safely(
@@ -124,6 +143,51 @@ async def _find_entity_by_id(
     all", never to bypass authorization -- the caller must still pass
     `_authorize_entity_action` before any entity content is returned."""
     return await entity_repository.get_entity_by_id_any_case(entity_id)
+
+
+@router.get("/cases/{case_id}/entities", response_model=EntityListResponse)
+async def list_entities(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_graph_read)],
+    entity_repository: Annotated[EntityRepository, Depends(get_entity_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    limit: Annotated[int, Query(ge=1, le=MAX_ENTITY_LIST_LIMIT)] = DEFAULT_ENTITY_LIST_LIMIT,
+    cursor: Annotated[
+        str | None,
+        Query(
+            description=(
+                "An opaque, case-bound, tamper-evident cursor (see "
+                "`app.core.pagination`) from a previous response's "
+                "`next_cursor`."
+            )
+        ),
+    ] = None,
+) -> EntityListResponse:
+    """Case-scoped entity listing -- the read surface `entity-candidates`
+    and `entities/{id}` alone can't provide: discovering which entities
+    exist for a case without already knowing their UUIDs. Closes a gap
+    surfaced by an external caller (TraceX-Synthetic-Data's truth-
+    generation script) during Gap-Closure follow-up.
+    """
+    signing_key = derive_cursor_signing_key(settings.auth_jwt_secret.get_secret_value())
+    after = None
+    if cursor is not None:
+        try:
+            after = decode_cursor(signing_key, cursor, expected_case_id=case_id)
+        except CursorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+
+    entities = await entity_repository.list_entities(case_id, limit=limit, after=after)
+    next_cursor = None
+    if entities:
+        last = entities[-1]
+        next_cursor = encode_cursor(
+            signing_key,
+            CursorPosition(case_id=case_id, created_at=last.created_at, row_id=last.entity_id),
+        )
+    return EntityListResponse(items=tuple(entities), next_cursor=next_cursor)
 
 
 @router.get(

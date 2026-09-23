@@ -61,6 +61,19 @@ def test_cdr_timestamp_respects_an_explicit_source_timezone() -> None:
     assert record.attributes["timestamp_source_timezone"] == "UTC"
 
 
+def test_cdr_timestamp_accepts_trailing_z_iso8601() -> None:
+    """Gap-Closure follow-up: a trailing-`Z` ISO 8601 timestamp
+    (`2032-01-01T00:10:00Z`) is self-describing UTC and must win outright
+    over the configured default timezone (Asia/Kolkata) -- never
+    reinterpreted as if it were a naive local time."""
+    data = b"caller_number,callee_number,timestamp\n9876543210,9123456789,2032-01-01T00:10:00Z\n"
+    mentions = normalize_cdr_records(parse_csv(data))
+    record = next(m for m in mentions if m.observation_type == "cdr_call_record")
+    assert record.attributes["timestamp"] == "2032-01-01T00:10:00+00:00"
+    assert record.attributes["timestamp_source_timezone"] == "UTC"
+    assert record.attributes["timestamp_source_utc_offset"] == "+0000"
+
+
 def test_cdr_timestamp_respects_an_explicit_fixed_offset() -> None:
     data = b"caller_number,callee_number,timestamp,source_timezone\n9876543210,9123456789,2026-01-01 10:00:00,+02:00\n"
     mentions = normalize_cdr_records(parse_csv(data))

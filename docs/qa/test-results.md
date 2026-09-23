@@ -4767,3 +4767,136 @@ as part of the full suite above.
 
 `git status --short` / `git diff --cached --stat` remain empty (nothing
 staged) throughout this pass.
+
+## 2026-09-22 -- Gap-Closure follow-up: case-scoped entity listing (Shreshtha)
+
+Adds `GET /api/v1/cases/{case_id}/entities`, closing a gap surfaced by an
+external caller (TraceX-Synthetic-Data's truth-generation script): none of
+the three existing entity routes (`GET /entities/{id}`, `POST /entities/
+{id}/resolution-review`, `GET /cases/{id}/entity-candidates`) let a caller
+discover which entities exist for a case without already knowing their
+UUIDs. Read-only; no write path added. Reuses `require_graph_read`
+(`CaseAction.GRAPH_READ`, same as `entity-candidates`) and the existing
+keyset-cursor pagination primitive (`app.core.pagination`, G17) exactly as
+`HypothesisRepository.list_hypotheses` does — no new `CaseAction`, no
+second pagination scheme, `EntityV1` (frozen contract) untouched. Full
+detail in `docs/qa/known-limitations.md`'s "Phase 7 Closure — WP-2"
+section.
+
+Files changed: `app/modules/graph/entity_api.py` (new route),
+`entity_models.py` (`EntityListResponse`), `entity_repository.py`
+(`list_entities`, keyset query mirroring `list_hypotheses`),
+`tests/fixtures/graph/fake_entity_repository.py` (matching in-memory
+`list_entities`), `tests/unit/graph/test_entity_api.py` (+6 tests: member
+can list, non-member 403, cross-case leak check, empty case, cursor
+round-trip, cursor-from-case-A rejected for case-B).
+
+```
+uv run ruff format --check .    -> 587 files already formatted
+uv run ruff check .             -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 241 source files
+docker compose config --quiet   -> OK, no errors
+alembic heads                   -> 6f7a8b9c0d1e (one head, unchanged --
+                                    no migration needed for this WP)
+```
+
+```
+2600 passed, 12 skipped, 1 warning in 316.92s (0:05:16)
+```
+
+Compared against the prior pass's `2571 passed, 35 skipped` baseline and
+this session's own intermediate `2594 passed, 12 skipped` (after live
+infra came up but before this WP): +6 passed here, all newly added, 0
+regressions, 12 skips unchanged (same live-infra-adjacent/optional-
+dependency reasons as before).
+
+`git status --short` shows only the files listed above modified; nothing
+staged or committed, per this session's git rules.
+
+## 2026-09-22 -- Gap-Closure follow-up: worker-credential scoping + CDR/financial Z-suffix timestamps (Shreshtha)
+
+Two independent fixes, both surfaced by live testing (bringing up the full
+Docker Compose stack, including the `cpu-worker` profile's worker
+containers, and running TraceX-Synthetic-Data's real evidence upload
+against it) rather than by this repo's own test suite.
+
+**Worker-credential scoping**: `structured-worker`/`communication-worker`/
+`media-worker` all shared one `WORKER_TOKEN`, but each has its own
+`worker_credentials` row with a distinct `allowed_processor_names` scope
+-- a shared token's digest can only match one row, so the other worker
+containers 403'd (`worker_processor_scope_denied`) on every claim. Fixed
+by having `compose.yaml` override `WORKER_TOKEN` per worker service from
+three new env vars (`STRUCTURED_WORKER_TOKEN`/`COMMUNICATION_WORKER_TOKEN`/
+`MEDIA_WORKER_TOKEN`), each bound to a freshly-provisioned, correctly-
+scoped credential. `WORKER_TOKEN` itself is retained in `.env` as a bare
+value too -- host-run `pytest` live-test suites
+(`test_worker_live.py`/`test_communication_worker_live.py`/
+`test_media_worker_live.py`) gate on that exact var name independent of
+Docker Compose, and removing it regressed 12 tests from pass to skip
+(caught by a full suite re-run before this was reported as done -- see
+"skip-count regression" below). No change to the credential-scoping model
+itself. Verified live: both the positive case (each worker's own claims
+now `200 OK`, previously `403`) and the negative case (a worker's token
+claiming a processor outside its scope still correctly gets `403`
+`worker_processor_scope_denied`, with the denial audit event recorded).
+See `docs/architecture/worker-identity-and-security.md` and
+`docs/qa/known-limitations.md`.
+
+**Skip-count regression, caught and fixed before reporting**: the first
+`.env` edit (moving to per-role tokens) dropped the bare `WORKER_TOKEN`
+line entirely, which regressed the suite from `2600 passed / 12 skipped`
+to `2590 passed / 24 skipped` -- 12 tests newly skipped, all
+`WORKER_TOKEN is not configured in the live .env`. Diagnosed via `pytest
+-rs` skip-reason output, fixed by restoring `WORKER_TOKEN` as a standalone
+value alongside the three new role-scoped vars, then re-verified clean.
+
+**Also**: a `STRUCTURED_WORKER_TOKEN` value was briefly grepped into
+visible tool output while locating it for this fix. Treated as
+compromised and rotated immediately (`worker_credentials rotate`) rather
+than left in place; the rotated token was re-verified live before
+continuing.
+
+**CDR/financial trailing-`Z` ISO 8601 timestamps**: `_TIMESTAMP_FORMATS`
+(`structured/cdr.py`) had no format matching `2032-01-01T00:10:00Z` --
+found via a real synthetic CDR/financial CSV using exactly this format.
+Added `"%Y-%m-%dT%H:%M:%S%z"` (Python's `%z` has parsed a literal `Z` as
+UTC since 3.7); the six pre-existing formats are unaffected (verified a
+Z-suffixed string still fails to match the plain `%Y-%m-%dT%H:%M:%S`
+format before falling through to the new one, so match order never
+changes for anything already accepted). Also fixed `_parse_timestamp`/
+`parse_record_timestamp` so a self-describing offset (`Z` or an explicit
+`+HH:MM`) wins outright over `source_timezone`/the configured default,
+rather than being silently reinterpreted against a zone the raw string
+never actually carried -- confirmed via manual testing this was the
+correctness gap, not just a format-list gap. Two new regression tests
+(`test_cdr_timestamp_accepts_trailing_z_iso8601`,
+`test_finance_timestamp_accepts_trailing_z_iso8601`); all 26 CDR/finance
+tests pass. `docs/qa/known-limitations.md`'s existing "fixed format list"
+note updated to "partially resolved" -- still a fixed list, just longer.
+
+```
+uv run ruff format --check .    -> 587 files already formatted
+uv run ruff check .             -> All checks passed!
+uv run mypy app                 -> Success: no issues found in 241 source files
+docker compose config --quiet   -> OK, no errors
+alembic heads                   -> 6f7a8b9c0d1e (one head, unchanged)
+```
+
+```
+2602 passed, 12 skipped, 1 warning in 316.46s (0:05:16)
+```
+
+Compared against the prior pass's `2600 passed / 12 skipped`: +2 passed
+(the two new timestamp regression tests), 0 regressions, 12 skips
+unchanged (after the skip-count regression above was found and fixed).
+
+`git status --short` shows only: `.env.example`, `app/modules/graph/
+entity_api.py`, `entity_models.py`, `entity_repository.py` (from the prior
+entry), `app/modules/structured_processing/structured/cdr.py`,
+`compose.yaml`, `docs/architecture/worker-identity-and-security.md`,
+`docs/qa/known-limitations.md`, `docs/qa/test-results.md`, `docs/runbooks/
+local-development.md`, `tests/fixtures/graph/fake_entity_repository.py`,
+`tests/unit/graph/test_entity_api.py`, `tests/unit/structured_processing/
+test_cdr.py`, `tests/unit/structured_processing/test_finance.py` modified;
+nothing staged or committed. `.env` (untracked, git-ignored) also updated
+with the new/rotated worker tokens -- never appears in `git status`.

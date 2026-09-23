@@ -8,7 +8,7 @@ overridden with an in-memory fake, `get_entity_repository` overridden with
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -311,3 +311,158 @@ async def test_investigator_cannot_submit_a_review_decision(
         json={"decision": "verified_same"},
     )
     assert response.status_code == 403
+
+
+# --- GET /cases/{case_id}/entities (case-scoped listing) ---------------------
+
+
+async def _seed_entity(
+    entity_repository: FakeEntityRepository,
+    case_id,
+    *,
+    created_at: datetime,
+) -> None:
+    await entity_repository.get_or_create_entity_for_observation(
+        entity_id=uuid4(),
+        case_id=case_id,
+        source_observation_id=uuid4(),
+        entity_type="phone",
+        canonical_label=f"label-{uuid4().hex[:6]}",
+        aliases=(),
+        stable_identifiers={},
+        created_at=created_at,
+    )
+
+
+async def test_member_can_list_their_own_case_entities(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    token, case_id = await _member(client, ac_repository)
+    await _seed_entity(entity_repository, case_id, created_at=datetime.now(UTC))
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/entities", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["case_id"] == str(case_id)
+
+
+async def test_non_member_cannot_list_case_entities(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    """Same default-deny 403 every other case-scoped GET returns -- `require_graph_read`
+    (`CaseAction.GRAPH_READ`), not a new authorization path."""
+    _owner_token, case_a = await _member(client, ac_repository)
+    outsider_token, _case_b = await _member(client, ac_repository)
+    await _seed_entity(entity_repository, case_a, created_at=datetime.now(UTC))
+
+    response = await client.get(
+        f"/api/v1/cases/{case_a}/entities",
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+    assert response.status_code == 403
+
+
+async def test_case_b_listing_never_includes_case_a_entities(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    """Cross-case leak check distinct from the 403 test above: even when a
+    caller is authorized on their own case, that case's listing must never
+    surface another case's rows -- same predicate discipline as every other
+    route in this repo (`entities_table.c.case_id == case_id`)."""
+    _token_a, case_a = await _member(client, ac_repository)
+    token_b, case_b = await _member(client, ac_repository)
+    await _seed_entity(entity_repository, case_a, created_at=datetime.now(UTC))
+    await _seed_entity(entity_repository, case_b, created_at=datetime.now(UTC))
+
+    response = await client.get(
+        f"/api/v1/cases/{case_b}/entities", headers={"Authorization": f"Bearer {token_b}"}
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["case_id"] == str(case_b)
+    assert all(item["case_id"] != str(case_a) for item in items)
+
+
+async def test_empty_case_returns_empty_list_not_an_error(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    token, case_id = await _member(client, ac_repository)
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/entities", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == []
+    assert body["next_cursor"] is None
+
+
+async def test_entity_listing_cursor_pagination_round_trips_across_pages(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    token, case_id = await _member(client, ac_repository)
+    base = datetime(2026, 9, 15, tzinfo=UTC)
+    for i in range(3):
+        await _seed_entity(entity_repository, case_id, created_at=base + timedelta(seconds=i))
+
+    first_page = await client.get(
+        f"/api/v1/cases/{case_id}/entities",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"limit": 2},
+    )
+    assert first_page.status_code == 200, first_page.text
+    first_body = first_page.json()
+    assert len(first_body["items"]) == 2
+    assert first_body["next_cursor"] is not None
+
+    second_page = await client.get(
+        f"/api/v1/cases/{case_id}/entities",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"limit": 2, "cursor": first_body["next_cursor"]},
+    )
+    assert second_page.status_code == 200, second_page.text
+    second_body = second_page.json()
+    assert len(second_body["items"]) == 1
+
+    first_ids = {item["entity_id"] for item in first_body["items"]}
+    second_ids = {item["entity_id"] for item in second_body["items"]}
+    assert first_ids.isdisjoint(second_ids)
+
+
+async def test_entity_listing_cursor_from_case_a_is_rejected_for_case_b(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    """A cursor issued while paging Case A is never honored against Case B,
+    even for the same authenticated caller -- matches `pagination.py`'s own
+    case-binding contract and the equivalent hypotheses-listing test."""
+    token_a, case_a = await _member(client, ac_repository)
+    token_b, case_b = await _member(client, ac_repository)
+    await _seed_entity(entity_repository, case_a, created_at=datetime.now(UTC))
+    await _seed_entity(entity_repository, case_b, created_at=datetime.now(UTC))
+
+    page_a = await client.get(
+        f"/api/v1/cases/{case_a}/entities", headers={"Authorization": f"Bearer {token_a}"}
+    )
+    cursor_from_a = page_a.json()["next_cursor"]
+    assert cursor_from_a is not None
+
+    rejected = await client.get(
+        f"/api/v1/cases/{case_b}/entities",
+        headers={"Authorization": f"Bearer {token_b}"},
+        params={"cursor": cursor_from_a},
+    )
+    assert rejected.status_code == 422

@@ -38,7 +38,7 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 - **No NER/NLP/LLM-based extraction.** `document/fir_report.py` is fixed regex patterns only (explicit labels or structurally-distinctive formats); it will miss anything not matching those patterns (an unlabelled FIR number, a name written in free prose, a non-Indian phone/vehicle format). No source extractor for video/image/audio/social-chat exists either.
 - **`document/fir_report.py`'s patterns are intentionally narrow.** Indian mobile numbers only (`[6-9]\d{9}`, no landline/international formats); Indian vehicle-plate format only; a curated, fixed list of common UPI handles (not exhaustive); `date_time_mention` captures raw matched text only and never resolves DD/MM vs MM/DD ambiguity into an actual parsed date.
 - **DOCX extraction is deterministic but not layout-faithful.** `document/docx.py` concatenates paragraphs, then tables, in that order — a table embedded mid-document appears at the end of the extracted text stream, not inline where it visually sits. See ADR-002.
-- **CDR/financial timestamp parsing accepts only a fixed, documented format list.** A CDR/financial export using a timestamp format outside `cdr._TIMESTAMP_FORMATS` fails the whole record as `required_field_missing` rather than being guessed at — this is the intended "never silently coerce an ambiguous format" behavior, but it does mean some real-world exports will need a documented-format update before they process cleanly.
+- **CDR/financial timestamp parsing accepts only a fixed, documented format list.** A CDR/financial export using a timestamp format outside `cdr._TIMESTAMP_FORMATS` fails the whole record as `required_field_missing` (CDR) or `invalid_source_signal` (financial) rather than being guessed at — this is the intended "never silently coerce an ambiguous format" behavior, but it does mean some real-world exports will need a documented-format update before they process cleanly. **Partially resolved (Gap-Closure follow-up)**: trailing-`Z` ISO 8601 (`2032-01-01T00:10:00Z`) and explicit fixed-offset ISO 8601 (`2032-01-01T00:10:00+05:30`) are now accepted, self-describing UTC/offset winning outright over `source_timezone`/the configured default — found via live testing against real synthetic CDR data using this exact format, which none of the six pre-existing formats matched. Still a fixed, documented list, just a longer one — a timestamp using a format outside all seven still fails the same way as before, nothing about the "never guess" behavior changed.
 - **No object-storage-backed `SourceResolver`.** `app/modules/structured_processing/models.SourceResolver` is a protocol; only `StaticBytesResolver` (in-memory) and a small local-file resolver (in `tests/integration/structured_processing/`) exist. A real MinIO-backed resolver is later-phase evidence-lifecycle integration work.
 - **Every source-processing worker now has one real caller: a one-shot CLI, not a daemon.** `uv run python -m app.modules.{structured_processing,communication_processing,media_processing}.worker --once` and `uv run python -m app.modules.graph.worker --once` each claim/attempt one unit of work through their respective internal APIs and submit their result/outcome, then exit. There is still no daemon, consumer loop, scheduler, or container service running any of them continuously anywhere in this repository — someone (or something external to this repo) has to invoke `--once` themselves, every time.
 - **Resolved (Phase 2 — Sarthak): `communication_processing.worker.process_job` now also has one real caller.** `uv run python -m app.modules.communication_processing.worker --once` (see `docs/architecture/communication-processing-worker.md`) claims one compatible job through the same internal worker API, resolves its evidence through the same claim-token-bound, SHA-256-verified input stream, and submits its result — the identical one-shot-CLI-not-a-daemon pattern `structured_processing` established, a second independent implementation of it. Still no daemon/consumer loop/scheduler; `linking.deterministic`'s `CommunicationLinkCandidate` functions remain uncalled by anything in this repository (see below).
@@ -94,6 +94,7 @@ These are intentional, scoped-out gaps, not oversights. Each belongs to a later 
 - **No automatic redrive of undispatched jobs, or of `deferred`/`cancelled` jobs.** A `worker_jobs` row with `dispatched_at IS NULL` means the Redis publish was attempted and failed (or the process crashed between commit and publish) — the row itself is durable and queryable, but nothing in this repository automatically retries the publish. Separately, once a job reaches `deferred` or `cancelled` (a valid terminal submission, per `docs/architecture/worker-job-lifecycle.md`), nothing automatically requeues it either. A later phase must decide whether either is a scheduled sweep or built into the eventual consumer's own startup.
 - **Resolved (Phase 3 — Aditya): max-attempt cutoff on job claiming.** `worker_jobs.max_attempts` (default `5`, configurable via `WORKER_JOB_MAX_ATTEMPTS`) now bounds reclaiming. A job whose lease keeps expiring is reclaimed up to that limit; once exhausted, `claim_job` sweeps it to a durable terminal `failed` state (via the existing `submit_result` path, with a safe `retry_exhausted` error code) rather than leaving it reclaimable forever. See `docs/architecture/worker-job-lifecycle.md`'s "Lease and retry policy, stated plainly".
 - **Resolved (Phase 2.4): per-worker credentials replace the shared-secret boundary.** `require_worker_principal` now authenticates against a real `WorkerCredentialRecord` (digest-only storage, pepper, revocable, per-worker `allowed_processor_names`) provisioned by the trusted-operator `app.modules.access_control.worker_credentials` CLI — `Settings.worker_shared_secret` no longer exists, and there is no fallback path that accepts a bare shared secret. `/claim` enforces per-worker processor scoping; `/result`/`/input` require the caller to *be* the worker identity bound to that job. See `docs/architecture/worker-identity-and-security.md`.
+- **Resolved (Gap-Closure follow-up): one credential per worker role, never one shared `WORKER_TOKEN` across simultaneous worker containers.** `Settings.worker_token` is one field, read identically by every worker module — correct for one worker process on the host at a time, but `docker compose --profile cpu-worker up` runs `structured-worker`/`communication-worker` together, each needing its own `worker_credentials` row's scope. A shared token's digest can only match one row, so every other worker container 403'd (`worker_processor_scope_denied`) on every claim. **Found via live multi-worker testing, not by this repo's own test suite**: each live integration test (`test_worker_live.py`/`test_communication_worker_live.py`/`test_media_worker_live.py`) self-provisions its own scoped credential and runs in isolation within one `pytest` process — none of them exercises several worker *containers* running simultaneously against one shared `.env`, the actual Docker Compose deployment topology. Fixed by having `compose.yaml` override `WORKER_TOKEN` per worker service from its own env var (`STRUCTURED_WORKER_TOKEN`/`COMMUNICATION_WORKER_TOKEN`/`MEDIA_WORKER_TOKEN`), each bound to a distinct, correctly-scoped credential — `api` is unaffected (it never reads `settings.worker_token`). No change to the credential-scoping model itself (`allowed_processor_names`, digest lookup, `require_worker_principal`) — a provisioning/wiring gap, not a design gap. See `docs/architecture/worker-identity-and-security.md` and `docs/runbooks/local-development.md`.
 - **Resolved (Phase 2 closeout, Nipun) for `media_processing`: lease renewal now exists.** `POST /api/v1/internal/worker-jobs/{job_id}/renew` extends a currently-`running`, unexpired-lease job's lease (same claim-token + worker-identity authorization as `/result`/`/input`; a lease can never be extended past its own expiry, so a legitimate reclaim by another worker after a real expiry always wins). `media_processing.worker`'s `_lease_heartbeat` calls it automatically on a background thread during real analysis. `structured_processing.worker`/`communication_processing.worker` do not use this endpoint (no `--loop` mode exists for either yet — see above), though nothing prevents them from adopting it identically in a future phase. **Extended (Phase 3 — Aditya):** renewal is now capped at an absolute maximum lease lifetime (`WORKER_LEASE_MAX_SECONDS`, default `3600`, measured from the original claim time) computed atomically inside the same `UPDATE ... RETURNING` statement via `LEAST(...)` — no repeated renewal can extend a lease indefinitely. See `docs/architecture/worker-job-lifecycle.md`.
 - **Resolved (Phase 2.4): denied worker actions are now audit-logged.** `worker_authentication_denied`, `worker_processor_scope_denied`, and `worker_job_access_denied` are recorded via the existing `access_control.audit` service (safe fields only — never a bearer/claim token, object URI, or request body) for every rejected claim, scope mismatch, or claim-token/identity check on `/api/v1/internal/worker-jobs/*`. See `docs/architecture/worker-identity-and-security.md`'s "Audit event policy and safe fields".
 - **`EvidenceRecordV1.processing_status` still doesn't reflect job completion (Phase 2.1).** Even after a worker result is submitted and the job reaches a terminal state, `evidence_records.processing_status` remains whatever it was set to at upload time (`queued`) — this module deliberately did not touch `evidence_records` in Phase 2.1 (out of the task's explicit scope, and the `deferred`/`cancelled` -> status mapping is genuinely ambiguous). A later phase should decide the exact status-mapping policy.
@@ -1066,6 +1067,322 @@ See ADR-020.
   a query parameter**, not a second path segment — the plan's own route
   shape names only `{id}` in the path; `candidate_id` disambiguates which
   of that entity's several possible candidates the decision is about.
+- **Resolved (Gap-Closure follow-up): case-scoped entity listing now
+  exists.** `GET /api/v1/cases/{case_id}/entities` closes a real gap in the
+  three routes above: none of them let a caller discover which entities
+  exist for a case without already knowing their UUIDs. Surfaced by an
+  external caller — TraceX-Synthetic-Data's truth-generation script — that
+  had no read surface for what the entity layer produced. Same
+  `require_graph_read` (`CaseAction.GRAPH_READ`) authorization and the same
+  keyset-cursor pagination (`app.core.pagination`, G17) as every other
+  paginated collection route; no new `CaseAction`, no change to `EntityV1`.
+- **Resolved (Gap-Closure follow-up): entity creation and candidate
+  generation now have a live caller.** `entity_service.create_entities_
+  for_case`/`generate_entity_resolution_candidates` (this WP, ADR-020) were
+  fully implemented and unit-tested from day one but had **zero callers
+  anywhere in the running system** — the exact "built and tested in
+  isolation, nothing real ever calls it" situation this file already
+  documents twice elsewhere (graph projection; `CommunicationLinkCandidate`
+  generation). Every real ingestion run produced correct observations but
+  never a single entity, silently, until surfaced by live multi-service
+  testing (real evidence ingested end-to-end, zero entities appeared) — not
+  by this repo's own test suite, which only ever calls these functions
+  directly. `intelligence_worker.py --resolve-entities --case-id <uuid>`
+  (new mode, mirrors `--generate`/`--evaluate`'s exact per-case, operator-
+  invoked shape) closes it: calls both functions verbatim, no change to
+  their internal logic. Deliberately manual, not an automatic pipeline
+  trigger — ADR-020 never specified when entity resolution should run
+  relative to ingestion, and this repo's own precedent for this exact
+  situation (the two cases above) is manual/deferred, not auto-wired; a
+  future WP can revisit automatic triggering as its own explicit decision.
+  Live-verified: run against a case with real, previously-ingested
+  observations, producing 52 real entities. Candidate generation itself
+  crashed on that same run (`ValueError: candidate retrieval exceeded
+  bounded limit`) -- corrected below, not the "candidates, not zero"
+  outcome originally reported here before that crash was discovered. See
+  `intelligence_worker.py`'s own module docstring and `docs/qa/
+  test-results.md` for the exact live counts.
+- **Resolved (Gap-Closure follow-up, ADR-027): entity-resolution candidate
+  generation no longer crashes on a real case's combinatorial identifier
+  reuse.** The `create_entities_for_case` fix above only got entity
+  creation working; `generate_entity_resolution_candidates`'s downstream
+  call into `intelligence.retrieval.retrieve_candidates` then crashed on
+  the same live case -- its exact-identifier tier does raw pairwise
+  expansion (`C(N,2)` pairs for any identifier shared by `N` descriptors),
+  and an account mentioned 14 times alone produced 91 pairs restating one
+  fact, totalling 268 across just 4 distinct account values and blowing
+  past `MAX_CANDIDATES=200`. Manually verified against Fulcrum's authored
+  ground truth: all 268 were genuinely correct matches, zero false
+  positives -- pure combinatorial waste, not a data or judgment problem,
+  and one that will recur in any case where an identifier repeats more
+  than a handful of times. Found via live testing, not by this
+  repository's own test suite. New `identifier_star_edges()`
+  (`retrieval.py`) collapses each identifier group's `C(N,2)` pairs down
+  to `N-1` star edges, opted into only by `entity_service.py` (an
+  optional, default-`None` parameter on `retrieve_candidates`; every other
+  call site, including Phase 5's frozen, release-freeze-gated correlation
+  pipeline, is provably unaffected). `ENTITY_CANDIDATE_CONFIG_VERSION`
+  bumped `v1` -> `v2` accordingly. See ADR-027 for the full design,
+  including why `retrieve_candidates` was extended rather than modified
+  in place.
+- **Resolved (Gap-Closure follow-up): `sourcing.py` now maps a structural
+  vehicle identifier (CDR/financial `vehicle_context`, and a `vehicle_id`/
+  `vehicle_context`-named `json_scalar_value` leaf -- e.g. Fulcrum's
+  `structured/sightings.json`, ingested via `generic_json_v1`'s one-
+  observation-per-scalar-leaf fallback) to the *existing*
+  `vehicle_registration` identifier kind -- previously only reachable via
+  OCR'd document text. Not a new identifier category, and not the same
+  circularity problem `person_id`/`location_id` have (see the next item):
+  `_EXACT_IDENTIFIER_ENTITY_TYPES` already trusted a vehicle-plate-shaped
+  value from document text as a genuine, source-backed identity signal;
+  this only widens which modality can supply that already-trusted kind.
+  Found live: previously, every `SYN-VEH-*` Fulcrum ground-truth token
+  failed to resolve to any entity. `descriptors_from_observation`'s two-
+  party CDR/finance expansion merges the record's `vehicle_context` into
+  *both* role-scoped party descriptors (it's shared, not role-scoped
+  itself); `descriptor_from_observation` (singular) gained the same
+  mapping for parity, plus a new `json_scalar_value` case matching
+  `source_locator.json_path`'s exact trailing segment (never a substring)
+  against `{"vehicle_id", "vehicle_context"}`. Shared with Phase 5's
+  correlation pipeline (`sourcing.py` isn't release-freeze-gated the way
+  `retrieval.py`'s pairing algorithm is -- confirmed `RULES_CONFIG_HASH`
+  only hashes `scoring.py`'s weights -- and this module's own docstring
+  already shows a history of additive extensions without version-bump
+  ceremony), so `--generate`'s candidate output also sees vehicle-
+  registration matches now, not only `--resolve-entities`'s. Live-verified
+  against the same real Fulcrum case: entity count 52 -> 61, candidate
+  count 44 -> 49 (sightings-derived observations that previously produced
+  zero descriptors now produce one), and all four `SYN-VEH-FULD-*` tokens
+  confirmed present on real entities' `stable_identifiers`.
+- **`person_id`/`location_id`-shaped fields remain deliberately unmapped,
+  however they arrive.** Unlike a vehicle registration plate, no external
+  registry makes a person's or a location's identity a directly-labeled,
+  independently-verifiable field in real evidence -- that is exactly what
+  entity resolution exists to *infer* from contact-method/vehicle signals,
+  never to accept as given; accepting a raw `person_id`/`location_id`
+  field directly would be circular for real (non-synthetic) data.
+  `_IDENTIFIER_TYPES` has no `person`/`location` kind at all, deliberately
+  -- so Fulcrum's `SYN-PER-*`/`SYN-LOC-*` ground-truth tokens remain
+  permanently out of scope for this pipeline; see
+  `generate_entity_resolution_truth.py` in the sibling `TraceX-Synthetic-
+  Data` repository for where that boundary is now documented on the
+  truth-generation side.
+- **Fulcrum's `candidate_precision`/`candidate_recall`/`false_link_rate`
+  now reflect a simulated-reviewer oracle, not genuine human judgment.**
+  Run for real against `case-fulcrum-dev`/`case-fulcrum-val` for the first
+  time, `--evaluate` came back with every candidate implicitly "predicted
+  different" (`candidate_recall: 0.0`, `candidate_precision: null`) --
+  honest, not a bug: `EntityReviewOutcome.VERIFIED_SAME` is "never
+  automatic, never inferred", and nobody had ever reviewed either case's
+  real candidates. `TraceX-Synthetic-Data/scripts/simulate_reviews_for_
+  evaluation.py` (external, evaluation-only, invoked opt-in via
+  `generate_entity_resolution_truth.py --simulate-reviews-for-evaluation`)
+  now applies ground-truth-driven decisions through the real `POST
+  .../resolution-review` endpoint, exact-pair-match only, anything the
+  truth file doesn't explicitly cover left unreviewed -- see ADR-028 for
+  the full design and its Fulcrum-only, never-Nightfall boundary. This
+  means these metrics measure candidate-generation/ranking quality against
+  a perfect oracle reviewer, not real human-review-workflow quality -- a
+  genuine human-review-quality measurement was never obtainable from a
+  pre-authored synthetic truth file regardless.
+- **Resolved (Gap-Closure follow-up, ADR-029): `identifier_star_edges`
+  (the entry above) was itself a symptom patch, not the actual design --
+  corrected here, not silently.** The master implementation plan's Section
+  15.2 specifies true Tier-1 "exact blocking": group descriptors sharing
+  an identifier into a block first (no scoring, no candidates), then only
+  compare *across* blocks via Tiers 2-4. `identifier_star_edges` never did
+  this -- it still emitted `N-1` pairwise candidate rows *within* one
+  block. Run against Nightfall's real case (381 descriptors, far more
+  distinct identifier groups than Fulcrum ever had), the sum of `N-1`
+  edges across all groups reached 370+, still over `MAX_CANDIDATES=200`,
+  still crashing `--resolve-entities` -- found live, not by this repo's
+  own test suite, same as the original bug. New `exact_identifier_blocks()`
+  (`retrieval.py`) replaces it entirely (removed, no parallel code path):
+  union-find across descriptor IDs, transitive and cross-kind (strictly
+  more correct than the old per-`(kind, value)` grouping), collapsing each
+  block to its one canonical member before any pairwise comparison --
+  zero within-block candidates, not `N-1`. `ENTITY_CANDIDATE_CONFIG_
+  VERSION` bumped `v2` -> `v3` accordingly. `create_entities_for_case` is
+  untouched -- blocking never merges entities, preserving `EntityRepository.
+  get_or_create_entity_for_observation`'s explicit "never merges" invariant.
+  See ADR-029 for the full design.
+
+  **Honest correction to the entry above's live numbers**: this fix does
+  not, and provably cannot, improve Fulcrum's `candidate_recall` over the
+  star-edge baseline (0.1667, 2/12) -- it is mathematically 0 for *any*
+  Fulcrum-shaped truth structure, confirmed by direct computation
+  (`tests/unit/graph/test_intelligence.py::
+  test_fulcrum_shaped_recall_is_zero_under_true_blocking_not_hand_tuned`),
+  not merely theorized. Every one of Fulcrum's 12 truth "same" pairs is,
+  by `generate_entity_resolution_truth.py::build_pairs`' own construction,
+  two members of one identifier block -- and true blocking guarantees zero
+  candidates between any two same-block members, by design, regardless of
+  which specific pair a truth file happens to assert. Closing this
+  specific gap would require either full `C(N,2)` coverage (reintroducing
+  the volume explosion this fix exists to close) or aligning `build_pairs`'
+  canonical-pair-selection rule with retrieval's own -- a `TraceX-
+  Synthetic-Data` change, out of this fix's scope. Nightfall's volume
+  crash is unambiguously fixed; Fulcrum's `candidate_recall` regressed
+  further as a direct, provable consequence of the same fix, not a
+  separate defect -- see ADR-029's own "Known, accepted limitation"
+  section and this session's live-measured before/after numbers.
+- **Resolved (Gap-Closure follow-up, ADR-030): Tiers 2-3 also did raw
+  pairwise expansion -- ADR-029 only fixed Tier 1.** A follow-up audit
+  read every candidate-generation module and found Tier 2 (alias/handle/
+  transliteration) computed inline in the same unbounded `combinations()`
+  loop as everything else -- live-confirmed on Nightfall's real (corpus-
+  bug-fixed) data: 10 alias values repeated 6 times each produced 150
+  `EXACT_ALIAS` pairs, the identical pattern Tier 1 had. Tier 3 had a
+  spec-correct implementation (`PgvectorCandidateStore.search`, a real
+  bounded nearest-neighbor query) sitting completely unused (zero live
+  callers), while what actually ran was an inline all-pairs cosine scan in
+  the same loop. New `retrieval.lexical_blocks()` (Tier 2, same union-find
+  shape as Tier 1's `exact_identifier_blocks`, on a combined casefolded-
+  alias/transliteration/handle token space) and
+  `vector_store.vector_linked_candidates()` (Tier 3, wires in the
+  previously-unused pgvector store for real) close both gaps.
+  `ENTITY_CANDIDATE_CONFIG_VERSION` bumped `v3` -> `v4`. First live run
+  surfaced a real bug in this fix itself, not a corpus issue: Tier 3 was
+  initially called against the *raw, unblocked* descriptor set instead of
+  the same reduced set Tiers 1-2 had already collapsed -- caught by
+  inspecting Nightfall's real candidate graph (60 of 351 entities showed
+  candidate edges, a near-complete clique, clearly wrong for supposedly
+  bounded retrieval) before accepting the result, not from a passing test
+  suite. Fixed by threading the same `apply_blocks` reduction through to
+  `vector_linked_candidates`'s input; re-verified live. See ADR-030 for
+  the full design, including a documented, deliberately-unfixed pre-
+  existing characteristic of `graph_intelligence_vectors`' schema (a
+  two-party CDR/finance descriptor pair sharing one `observation_id` can
+  overwrite each other's vector row on upsert -- currently a no-op since
+  neither carries lexical signal, not redesigned in this ADR).
+
+  Live-verified, all three real cases, after both the Tier-1 (ADR-029) and
+  Tier-2/3 (ADR-030) fixes: `case-fulcrum-dev`/`case-fulcrum-val` each
+  72 entities, 36 real candidates (down from 53 candidates measured with
+  the Tier-3 bug still present, confirming the fix's effect), `candidate_
+  recall: 0.0` (same provable-zero reason as the ADR-029 entry above --
+  unrelated to this fix), `precision_at_k`/`recall_at_k`: `0.0` (real
+  ranked candidates now exist to score, previously `null`). Nightfall:
+  351 entities, 43 candidates, **no `MAX_CANDIDATES` crash** -- the
+  session's hard requirement -- `--evaluate` run exactly once (ADR-016):
+  every metric `null` (Nightfall's truth file has zero pairs by design,
+  nothing to score against). Real Nightfall candidate graph inspected
+  directly (not inferred from a recall number): all 10 `SYN-PER-NF-*`
+  entities form one connected component via `local_vector_candidate`
+  edges at 43/45 possible pairs -- a near-complete clique, not two
+  distinguishable communities with one bridge. This is the local hashed-
+  token vector's own documented, pre-existing limitation (`retrieval.py`'s
+  module docstring: "a weak retrieval aid, not a semantic model") showing
+  up concretely: Nightfall's 10 synthetic person names are structurally
+  near-identical short tokens (`SYN-PER-NF-01` .. `SYN-PER-NF-10`), so
+  their hashed-token vectors land almost indistinguishably
+  close together regardless of which two people a chat message actually
+  concerns -- a corpus/vector-provider interaction, not a blocking bug and
+  not something this session's Tier 1-3 fixes could address.
+- **Resolved (Gap-Closure follow-up, ADR-032): the vector-quality gap
+  above -- fixed, and the fix's real result reported precisely, not
+  forced.** Replaced `hashed_token_vector`'s single-token 32-bucket hash
+  (only ever used by `vector_linked_candidates`'s Tier-3 path; every other
+  caller, including Phase 5's frozen pipeline, is untouched) with `vector_
+  store.case_tfidf_vectors` -- real, case-scoped character n-gram TF-IDF
+  (`analyzer="char_wb"`, `ngram_range=(2, 4)`) reduced by `TruncatedSVD` to
+  the same 32 dimensions, so no `graph_intelligence_vectors` schema
+  migration was needed. `ENTITY_CANDIDATE_CONFIG_VERSION` bumped `v4` ->
+  `v5`. Required promoting `scikit-learn` from a transitive, benchmark-
+  extra-only dependency to a real core one (`pyproject.toml`) -- confirmed
+  it was never actually installed in the real deployment despite being
+  fully resolved in `uv.lock`; the promotion resolved in under 100ms with
+  no new network round-trip, low risk, same tier as `igraph`/`leidenalg`.
+
+  **Live result, evidence-based, not assumed**: re-ran the same real
+  Nightfall case with the new signal and inspected the actual similarity
+  values directly (not just a candidate count). The fix genuinely works --
+  the 10 `SYN-PER-NF-*` names' pairwise cosine similarities now spread
+  across 0.673-0.690 (real, computed, differentiated values), a world
+  away from the old scheme's uniform near-1.0 clique. But at the
+  unchanged default `threshold=0.75`, every one of those similarities
+  still falls short, so the real candidate count for this case is **0**,
+  not "two communities + a bridge." This was not tuned or forced either
+  way: full reduced-descriptor-set (21 representatives: 10 PER + 5 ACC + 6
+  VEH) pairwise similarities were computed and the true maximum (0.690)
+  is reported as found. The honest conclusion: the *signal* was the real
+  bug and is now fixed (confirmed by the similarity spread), but
+  Nightfall's actual authored corpus contains no genuine near-duplicate
+  or engineered same-identity structure for *any* signal to discover --
+  consistent with this session's earlier, separate finding that
+  Nightfall's corpus was never designed with intra-case identity/bridge
+  structure the way Fulcrum's `communities.json`/`bridge_entity_id` was.
+  The remaining gap is in what the corpus was authored to contain, not in
+  the retrieval algorithm.
+
+  Fulcrum dev/val, same fix, live-verified: candidate count 36 -> 30 (both
+  cases, identical shift -- expected, since both cases share the same
+  corpus-generation logic and the new signal changes which descriptor
+  pairs clear the vector threshold); `candidate_recall` stays `0.0` for
+  the same provable ADR-029 reason, unrelated to this fix;
+  `precision_at_k`/`recall_at_k` stay `0.0` (real candidates still exist
+  to rank, just a different real set of them).
+- **`operation_nightfall_truth.json` (master plan Section 17.2's narrative-
+  level truth artifact -- expected clusters/bridge/motifs/false clues,
+  distinct from `entity_resolution_truth.json`) does not exist anywhere in
+  either repository, under that name or any equivalent.** Searched both
+  repos exhaustively (filenames, and the plan's own quoted language --
+  "false clues", "expected clusters", "never served by investigator
+  APIs") -- zero matches. `communities.json`/`motif.json` (the closest
+  candidates) exist only for Fulcrum's dev/validation split
+  (`operation-fulcrum/case-fulcrum-{dev,val}/metadata/`), authored to
+  support Fulcrum's own bridge-ambiguity/motif ground truth; Nightfall's
+  corpus (`operation-nightfall/case-operation-nightfall/`) has no
+  equivalent file and never has, confirmed in an earlier session's own
+  audit (this session's Part E investigation) of Nightfall's actual
+  metadata. A real, separate authoring gap from anything this session
+  touched -- not fixed here, reported per instruction.
+- **The hypothesis-assembly engine (Phase 6 Part 5) has never been
+  invoked against real WP-2 entity-resolution candidate data -- and,
+  live-confirmed, structurally cannot be, as currently wired.**
+  `hypothesis_models.py`'s own docstring states hypotheses are "never
+  automatically generated" -- this is a human-authored citation+review
+  workflow (`POST /cases/{case_id}/hypotheses`, real, reachable, requires
+  `CaseAction.HYPOTHESIS_PROPOSE`), not an automated evidence-for/against
+  assembly engine; there is no "reason codes"/"evidence-for/against"
+  field anywhere in `HypothesisRecord` to begin with. Live-invoked for
+  real this session against a fresh `case-fulcrum-dev` ingestion (72
+  entities, 36 real WP-2 candidates): citing a real `worker_observations`
+  row succeeded end-to-end (created at `needs_review`, reviewed to
+  `accepted_by_reviewer`, both real HTTP calls, both persisted). Citing a
+  real WP-2 `entity_resolution_candidates` row failed with `422
+  Unprocessable Entity` -- traced to `hypothesis_repository.py`'s own
+  `create_hypothesis`: `supporting_candidate_ids` is verified against
+  `candidate_links_table`, which is Phase 5's *correlation* pipeline
+  output (`--generate`/`build_case_correlation_submission`), never WP-2's
+  `entity_resolution_candidates` table (`--resolve-entities`, what this
+  entire session's work populates). The hypothesis system can cite real
+  observations directly, but has no path to cite any of this session's
+  real entity-resolution candidates at all -- the same category of gap as
+  entity-resolution's own previously-missing trigger (`docs/qa/known-
+  limitations.md`'s WP-2 section), not fixed here per this session's
+  discovery-only scope for this item.
+- **Resolved (Gap-Closure follow-up, ADR-031): a hypothesis can now cite a
+  real WP-2 entity-resolution candidate.** Root cause confirmed by date:
+  ADR-015 (2026-09-15, hypothesis workflow design) predates ADR-020's
+  entity-resolution work, so `HypothesisCreateSubmission.supporting_
+  candidate_ids` only ever knew about Phase 5's `candidate_links_table` --
+  a sequencing accident, not a deliberate exclusion (the two candidate
+  tables' own separation, confirmed the same session, IS deliberate and
+  stays untouched). New, parallel `supporting_entity_resolution_candidate_
+  ids` field (`HypothesisCreateSubmission`/`HypothesisRecord`), verified
+  against `entity_resolution_candidates_table` with the same case-scoped
+  existence check already used for the pre-existing field; the
+  deterministic `hypothesis_id` hash folds in the new field too, so a
+  hypothesis with vs. without this citation gets two different, both-
+  idempotent IDs. Additive migration `7a8b9c0d1e2f` backfills existing
+  rows with an empty array. Neo4j projection is explicitly, deliberately
+  skipped for this citation type (WP-2 has no Neo4j footprint at all,
+  by design) -- documented as a known, accepted limitation, not silently
+  dropped. Live-verified: created a real hypothesis via `POST /hypotheses`
+  against a fresh Fulcrum ingestion, citing one of its 36 real WP-2
+  candidates through the new field -- see ADR-031 for the full design and
+  root-cause writeup.
 
 # Phase 7 Closure — WP-3 (Shreshtha)
 
