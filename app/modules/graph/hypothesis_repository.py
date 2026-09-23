@@ -28,6 +28,7 @@ from app.core.config import Settings
 from app.core.ids import deterministic_uuid
 from app.core.pagination import CursorPosition
 from app.modules.evidence_lifecycle.repository import worker_observations_table
+from app.modules.graph.entity_repository import entity_resolution_candidates_table
 from app.modules.graph.hypothesis_models import (
     HypothesisActionKind,
     HypothesisActionRecord,
@@ -55,6 +56,9 @@ hypotheses_table = sa.Table(
     sa.Column("decided_by", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("supporting_observation_ids", postgresql.JSONB(), nullable=False),
     sa.Column("supporting_candidate_ids", postgresql.JSONB(), nullable=False),
+    #: ADR-031, additive migration -- see module docstring for why this is
+    #: a second, parallel citation column, never merged with the one above.
+    sa.Column("supporting_entity_resolution_candidate_ids", postgresql.JSONB(), nullable=False),
     sa.Column("statement", sa.Text(), nullable=False),
     sa.Column("statement_commitment_sha256", sa.Text(), nullable=False),
     sa.Column("rationale", sa.Text(), nullable=True),
@@ -86,6 +90,9 @@ def _hypothesis(row: sa.RowMapping | dict[str, object]) -> HypothesisRecord:
         UUID(v) for v in values["supporting_observation_ids"]
     )
     values["supporting_candidate_ids"] = tuple(UUID(v) for v in values["supporting_candidate_ids"])
+    values["supporting_entity_resolution_candidate_ids"] = tuple(
+        UUID(v) for v in values["supporting_entity_resolution_candidate_ids"]
+    )
     return HypothesisRecord.model_validate(values)
 
 
@@ -109,6 +116,7 @@ class HypothesisRepository:
         created_by: UUID,
         supporting_observation_ids: tuple[UUID, ...],
         supporting_candidate_ids: tuple[UUID, ...],
+        supporting_entity_resolution_candidate_ids: tuple[UUID, ...] = (),
         now: datetime | None = None,
     ) -> tuple[HypothesisRecord, HypothesisActionRecord, bool]:
         """Persist one hypothesis and its creation action atomically.
@@ -117,6 +125,12 @@ class HypothesisRepository:
         the same case/author/statement/rationale/references maps to the same
         deterministic ID and replays; every reference is re-verified against
         its own canonical, case-scoped table before any write.
+
+        `supporting_entity_resolution_candidate_ids` (ADR-031) is a second,
+        parallel reference list verified against `entity_resolution_
+        candidates_table` -- never merged with `supporting_candidate_ids`,
+        which stays verified against `candidate_links_table` exactly as
+        before.
         """
         now = now or datetime.now(UTC)
         statement_commitment = text_commitment(statement)
@@ -129,6 +143,7 @@ class HypothesisRepository:
             rationale_commitment or "",
             ",".join(sorted(str(v) for v in supporting_observation_ids)),
             ",".join(sorted(str(v) for v in supporting_candidate_ids)),
+            ",".join(sorted(str(v) for v in supporting_entity_resolution_candidate_ids)),
         )
         async with self._engine.begin() as conn:
             existing = (
@@ -194,6 +209,24 @@ class HypothesisRepository:
                         "one or more supporting candidates are missing or belong to a"
                         " different case"
                     )
+            if supporting_entity_resolution_candidate_ids:
+                found = (
+                    await conn.execute(
+                        sa.select(sa.func.count())
+                        .select_from(entity_resolution_candidates_table)
+                        .where(
+                            entity_resolution_candidates_table.c.case_id == case_id,
+                            entity_resolution_candidates_table.c.entity_resolution_candidate_id.in_(
+                                supporting_entity_resolution_candidate_ids
+                            ),
+                        )
+                    )
+                ).scalar_one()
+                if found != len(set(supporting_entity_resolution_candidate_ids)):
+                    raise HypothesisValidationError(
+                        "one or more supporting entity-resolution candidates are missing or"
+                        " belong to a different case"
+                    )
 
             record = HypothesisRecord(
                 hypothesis_id=hypothesis_id,
@@ -206,6 +239,7 @@ class HypothesisRepository:
                 decided_by=None,
                 supporting_observation_ids=supporting_observation_ids,
                 supporting_candidate_ids=supporting_candidate_ids,
+                supporting_entity_resolution_candidate_ids=supporting_entity_resolution_candidate_ids,
                 statement=statement,
                 statement_commitment_sha256=statement_commitment or "",
                 rationale=rationale,
@@ -223,6 +257,9 @@ class HypothesisRepository:
                     decided_by=record.decided_by,
                     supporting_observation_ids=[str(v) for v in record.supporting_observation_ids],
                     supporting_candidate_ids=[str(v) for v in record.supporting_candidate_ids],
+                    supporting_entity_resolution_candidate_ids=[
+                        str(v) for v in record.supporting_entity_resolution_candidate_ids
+                    ],
                     statement=record.statement,
                     statement_commitment_sha256=record.statement_commitment_sha256,
                     rationale=record.rationale,

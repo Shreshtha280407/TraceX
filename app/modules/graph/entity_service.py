@@ -34,8 +34,18 @@ from app.modules.graph.entity_models import (
     EntityResolutionCandidateRecord,
 )
 from app.modules.graph.entity_repository import EntityRepository
-from app.modules.graph.intelligence.retrieval import retrieve_candidates
+from app.modules.graph.intelligence.retrieval import (
+    apply_blocks,
+    exact_identifier_blocks,
+    lexical_blocks,
+    merge_candidates,
+    retrieve_candidates,
+)
 from app.modules.graph.intelligence.sourcing import descriptors_from_observation
+from app.modules.graph.intelligence.vector_store import (
+    PgvectorCandidateStore,
+    vector_linked_candidates,
+)
 
 
 def _entity_type_and_label(
@@ -108,6 +118,7 @@ async def generate_entity_resolution_candidates(
     observations: list[ObservationV1],
     *,
     now: datetime | None = None,
+    vector_store: PgvectorCandidateStore | None = None,
 ) -> tuple[EntityResolutionCandidateRecord, ...]:
     """Create entities (if needed), run the existing retrieval cascade, persist candidates.
 
@@ -115,6 +126,16 @@ async def generate_entity_resolution_candidates(
     same entities (deterministic IDs) and upserts the same candidates
     (deduplicated by `(case_id, left_entity_id, right_entity_id,
     config_version)`) -- never a duplicate row, never a merge.
+
+    `vector_store` (ADR-030, entity-resolution cascade v4) is `None` by
+    default -- Tier 3 (pgvector retrieval) is then simply skipped, and
+    every existing caller/test (none of which have a real Postgres
+    connection to spare) is unaffected. When a real caller passes one
+    (`intelligence_worker.py`'s `--resolve-entities`), Tier 3 runs as a
+    genuine bounded nearest-neighbor query per descriptor via `vector_
+    store.vector_linked_candidates`, merged with Tiers 1-2's blocked
+    output via `retrieval.merge_candidates` -- never a second, competing
+    all-pairs scan alongside it (`include_inline_vector=False`).
     """
     now = now or datetime.now(UTC)
     entities_by_observation = await create_entities_for_case(
@@ -132,7 +153,24 @@ async def generate_entity_resolution_candidates(
     if len(descriptors) < 2:
         return ()
 
-    retrieved = retrieve_candidates(descriptors)
+    tier1_blocks = exact_identifier_blocks(descriptors)
+    tier2_blocks = lexical_blocks(descriptors)
+    blocked = retrieve_candidates(
+        descriptors,
+        exact_identifier_blocks=tier1_blocks,
+        lexical_blocks=tier2_blocks,
+        include_inline_vector=vector_store is None,
+    )
+    retrieved = blocked
+    if vector_store is not None:
+        # Tier 3 shares Tier 1-2's own reduced item set (`apply_blocks`,
+        # the identical reduction `retrieve_candidates` applied
+        # internally) -- never the raw, unblocked descriptor list, or a
+        # descriptor already absorbed into a Tier-1/2 block would still
+        # get its own separate vector query.
+        reduced = apply_blocks(apply_blocks(descriptors, tier1_blocks), tier2_blocks)
+        vector_candidates = await vector_linked_candidates(vector_store, reduced)
+        retrieved = merge_candidates(blocked, vector_candidates)
     persisted: list[EntityResolutionCandidateRecord] = []
     for item in retrieved:
         left_entity = entities_by_observation.get(item.left_observation_id)

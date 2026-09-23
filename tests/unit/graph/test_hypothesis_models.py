@@ -34,6 +34,7 @@ def _hypothesis(
         decided_by=None,
         supporting_observation_ids=(uuid4(),),
         supporting_candidate_ids=(),
+        supporting_entity_resolution_candidate_ids=(),
         statement=statement,
         statement_commitment_sha256=text_commitment(statement),
         rationale="a synthetic supporting rationale",
@@ -87,6 +88,27 @@ def test_create_submission_rejects_duplicate_candidate_refs() -> None:
         )
 
 
+def test_create_submission_accepts_entity_resolution_candidate_only_reference() -> None:
+    """ADR-031: a hypothesis can cite a WP-2 entity-resolution candidate --
+    a second, parallel citation path, distinct from `supporting_candidate_
+    ids` (which stays scoped to Phase 5 correlation candidates)."""
+    submission = HypothesisCreateSubmission(
+        statement="cites one entity-resolution candidate",
+        supporting_entity_resolution_candidate_ids=(uuid4(),),
+    )
+    assert len(submission.supporting_entity_resolution_candidate_ids) == 1
+    assert submission.supporting_candidate_ids == ()
+
+
+def test_create_submission_rejects_duplicate_entity_resolution_candidate_refs() -> None:
+    candidate_id = uuid4()
+    with pytest.raises(ValidationError):
+        HypothesisCreateSubmission(
+            statement="duplicate refs",
+            supporting_entity_resolution_candidate_ids=(candidate_id, candidate_id),
+        )
+
+
 def test_statement_and_rationale_are_bounded() -> None:
     with pytest.raises(ValidationError):
         HypothesisCreateSubmission(statement="x" * 5000, supporting_observation_ids=(uuid4(),))
@@ -100,6 +122,18 @@ def test_safe_metadata_never_carries_raw_statement_or_rationale() -> None:
     assert hypothesis.rationale not in serialized
     assert metadata["statement_commitment_sha256"] == hypothesis.statement_commitment_sha256
     assert metadata["rationale_commitment_sha256"] == hypothesis.rationale_commitment_sha256
+
+
+def test_safe_metadata_carries_entity_resolution_candidate_ids() -> None:
+    """ADR-031: the new citation list flows through `safe_metadata()` the
+    same as the pre-existing two, so it reaches the integrity event and
+    Neo4j projection surfaces identically."""
+    candidate_id = uuid4()
+    hypothesis = _hypothesis(uuid4(), uuid4()).model_copy(
+        update={"supporting_entity_resolution_candidate_ids": (candidate_id,)}
+    )
+    metadata = hypothesis.safe_metadata()
+    assert metadata["supporting_entity_resolution_candidate_ids"] == [str(candidate_id)]
 
 
 def test_hypothesis_action_integrity_submission_never_carries_raw_text() -> None:

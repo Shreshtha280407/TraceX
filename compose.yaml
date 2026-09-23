@@ -254,6 +254,14 @@ services:
     command: ["python", "-m", "app.modules.structured_processing.worker", "--once"]
     environment:
       <<: *tracex-app-env
+      # Gap-Closure follow-up: each worker role needs its own credential
+      # (see `worker_credentials` -- distinct `allowed_processor_names` per
+      # row), so it needs its own token, not the anchor's shared
+      # `WORKER_TOKEN`. `Settings.worker_token` is a single field read
+      # identically by every worker module -- this override, not app code,
+      # is what makes this container present the structured-worker-scoped
+      # credential. See docs/architecture/worker-identity-and-security.md.
+      WORKER_TOKEN: ${STRUCTURED_WORKER_TOKEN:-}
     networks:
       - tracex-internal
     depends_on:
@@ -269,6 +277,7 @@ services:
     command: ["python", "-m", "app.modules.communication_processing.worker", "--once"]
     environment:
       <<: *tracex-app-env
+      WORKER_TOKEN: ${COMMUNICATION_WORKER_TOKEN:-}
     networks:
       - tracex-internal
     depends_on:
@@ -284,6 +293,7 @@ services:
     command: ["python", "-m", "app.modules.media_processing.worker", "--loop"]
     environment:
       <<: *tracex-app-env
+      WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:-}
     volumes:
       # Read-only: this service only ever reads the model `media-model-
       # bootstrap` already downloaded and verified -- it never writes here.

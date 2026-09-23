@@ -105,6 +105,41 @@ def test_evaluate_requires_case_id(capsys: pytest.CaptureFixture[str]) -> None:
     assert "--evaluate requires --case-id" in capsys.readouterr().err
 
 
+def test_resolve_entities_requires_case_id(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        intelligence_worker.main(["--resolve-entities"])
+    assert "--resolve-entities requires --case-id" in capsys.readouterr().err
+
+
+def test_resolve_entities_mode_prints_counts_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Gap-Closure follow-up: `--resolve-entities` composes `entity_service.
+    generate_entity_resolution_candidates`/`create_entities_for_case`
+    (already fully unit-tested in isolation, unchanged here) with real I/O
+    -- this test covers the CLI wiring only, mirroring `test_evaluate_mode_
+    prints_the_report_and_exits_zero`'s exact monkeypatch pattern."""
+    seen_case_id: UUID | None = None
+
+    async def _fake_resolve_entities_once(
+        _settings: object, case_id: UUID
+    ) -> intelligence_worker.ResolveEntitiesSummary:
+        nonlocal seen_case_id
+        seen_case_id = case_id
+        return intelligence_worker.ResolveEntitiesSummary(entity_count=4, candidate_count=2)
+
+    monkeypatch.setattr(intelligence_worker, "resolve_entities_once", _fake_resolve_entities_once)
+    case_id = uuid4()
+
+    exit_code = intelligence_worker.main(["--resolve-entities", "--case-id", str(case_id)])
+
+    assert exit_code == 0
+    assert seen_case_id == case_id
+    out = capsys.readouterr().out
+    assert "entities: 4" in out
+    assert "candidates: 2" in out
+
+
 def test_evaluate_mode_prints_the_report_and_exits_zero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

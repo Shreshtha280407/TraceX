@@ -56,6 +56,7 @@ def _hypothesis(case_id, hypothesis_id) -> HypothesisRecord:
         decided_by=None,
         supporting_observation_ids=(uuid4(),),
         supporting_candidate_ids=(),
+        supporting_entity_resolution_candidate_ids=(),
         statement="the raw human-authored statement text",
         statement_commitment_sha256="b" * 64,
         rationale="the raw human-authored rationale text",

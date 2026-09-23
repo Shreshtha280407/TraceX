@@ -216,6 +216,14 @@ async def _best_effort_project_hypothesis(
         )
         if not projected:
             return
+        # ADR-031: `supporting_entity_resolution_candidate_ids` is
+        # deliberately never projected here -- WP-2 entity-resolution
+        # candidates have no Neo4j node kind at all (entity_service.py
+        # never touches `graph_repository`, by design, to stay decoupled
+        # from Phase 5's Gate-C-bound scoring/correlation pipeline). This
+        # loop stays scoped to `supporting_candidate_ids` (Phase 5
+        # correlation candidates, which do have a projected `Correlation`
+        # node) exactly as before.
         for candidate_id in hypothesis.supporting_candidate_ids:
             candidate = await integration_repository.get_candidate_link(
                 hypothesis.case_id, candidate_id
@@ -270,6 +278,9 @@ async def create_hypothesis(
         created_by=created_by,
         supporting_observation_ids=submission.supporting_observation_ids,
         supporting_candidate_ids=submission.supporting_candidate_ids,
+        supporting_entity_resolution_candidate_ids=(
+            submission.supporting_entity_resolution_candidate_ids
+        ),
         now=now,
     )
     if is_new:

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.contracts.entity import EntityV1
+from app.core.pagination import CursorPosition
 from app.modules.graph.entity_models import (
     EntityResolutionCandidateRecord,
     EntityReviewDecisionRecord,
@@ -72,6 +73,20 @@ class FakeEntityRepository:
             for (c_id, obs_id), entity_id in self._entity_by_observation.items()
             if c_id == case_id and obs_id in observation_ids
         }
+
+    async def list_entities(
+        self, case_id: UUID, *, limit: int | None = None, after: CursorPosition | None = None
+    ) -> list[EntityV1]:
+        items = sorted(
+            (e for e in self.entities.values() if e.case_id == case_id),
+            key=lambda e: (e.created_at, e.entity_id),
+            reverse=True,
+        )
+        if after is not None:
+            items = [
+                e for e in items if (e.created_at, e.entity_id) < (after.created_at, after.row_id)
+            ]
+        return items[:limit] if limit is not None else items
 
     async def upsert_candidate(
         self, candidate: EntityResolutionCandidateRecord

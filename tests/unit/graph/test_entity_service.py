@@ -69,10 +69,17 @@ async def test_entity_creation_is_idempotent_for_the_same_observation() -> None:
     assert len(repository.entities) == 1
 
 
-async def test_exact_identifier_produces_a_candidate_never_a_merge() -> None:
-    """Two DIFFERENT observations stating the identical phone number get TWO
-    entities and a resolution candidate between them -- never one merged
-    entity. This is the hard "no automatic identity merge" rule."""
+async def test_exact_identifier_match_never_merges_and_needs_no_candidate() -> None:
+    """ADR-029: true Tier-1 "exact blocking". Two DIFFERENT observations
+    stating the identical phone number get TWO entities -- never one
+    merged entity, still the hard "no automatic identity merge" rule --
+    but, unlike the pre-blocking behavior this test used to assert, zero
+    resolution candidates: an exact Tier-1 identifier match is blocking-
+    level certainty, not a fuzzy signal that needs a human-reviewable
+    candidate to confirm. See `test_intelligence.py`'s
+    `test_exact_identifier_blocking_produces_zero_within_block_candidates_
+    regardless_of_n` for the retrieval-layer proof this holds for any
+    block size, not just two."""
     repository = FakeEntityRepository()
     case_id = uuid4()
     first = _observation(
@@ -87,12 +94,7 @@ async def test_exact_identifier_produces_a_candidate_never_a_merge() -> None:
     )
 
     assert len(repository.entities) == 2, "an exact identifier match must never auto-merge entities"
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert "exact_identifier" in candidate.reasons
-    assert {candidate.left_entity_id, candidate.right_entity_id} == {
-        e.entity_id for e in repository.entities.values()
-    }
+    assert candidates == ()
 
 
 async def test_unrelated_observations_produce_no_candidate() -> None:
@@ -114,6 +116,13 @@ async def test_unrelated_observations_produce_no_candidate() -> None:
 
 
 async def test_generation_is_idempotent_and_upserts_not_duplicates() -> None:
+    """Same-block (identical phone) observations now produce zero
+    candidates (see `test_exact_identifier_match_never_merges_and_needs_
+    no_candidate` above) -- rerunning must still be idempotent: no crash,
+    no duplicate entity creation, consistently empty candidates both
+    times. Candidate-upsert-not-duplicated semantics for a genuine
+    cross-block match are covered separately by `EntityRepository.
+    upsert_candidate`'s own repository-level tests."""
     repository = FakeEntityRepository()
     case_id = uuid4()
     first = _observation(
@@ -127,10 +136,10 @@ async def test_generation_is_idempotent_and_upserts_not_duplicates() -> None:
     run_a = await generate_entity_resolution_candidates(repository, case_id, observations, now=_NOW)
     run_b = await generate_entity_resolution_candidates(repository, case_id, observations, now=_NOW)
 
-    assert len(run_a) == 1
-    assert len(run_b) == 1
-    assert run_a[0].entity_resolution_candidate_id == run_b[0].entity_resolution_candidate_id
-    assert len(repository.candidates) == 1
+    assert run_a == ()
+    assert run_b == ()
+    assert len(repository.entities) == 2
+    assert len(repository.candidates) == 0
 
 
 async def test_observation_with_no_identity_signal_produces_no_entity() -> None:

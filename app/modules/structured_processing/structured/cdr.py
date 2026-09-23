@@ -51,9 +51,16 @@ from app.modules.structured_processing.structured.profiles import CDR_GENERIC_V1
 # Accepted CDR timestamp formats, tried in this order. A value matching
 # none of these is a documented, safe extraction limit, not a guess — see
 # docs/architecture/document-and-structured-processing-v1.md.
+#
+# `%Y-%m-%dT%H:%M:%S%z` (Gap-Closure follow-up) accepts trailing-Z ISO 8601
+# (`2032-01-01T00:10:00Z`) alongside a numeric offset (`+05:30`/`+0530`) --
+# Python's `%z` directive has parsed a literal `Z` as UTC since 3.7. Still a
+# fixed, documented list, just a longer one -- an unmatched string is still
+# rejected, never guessed.
 _TIMESTAMP_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S%z",
     "%d/%m/%Y %H:%M:%S",
     "%d-%m-%Y %H:%M:%S",
     "%Y-%m-%d",
@@ -132,14 +139,25 @@ def resolve_timezone(raw: str | None) -> tuple[ZoneInfo | timezone, str]:
     return ZoneInfo(default_name), default_name
 
 
-def _parse_timestamp(raw: str, tzinfo: ZoneInfo | timezone) -> datetime | None:
+def _parse_timestamp(raw: str, tzinfo: ZoneInfo | timezone) -> tuple[datetime, bool] | None:
+    """Returns `(datetime, self_describing)`, or `None` if no format matches.
+
+    `self_describing=True` only for a format carrying its own explicit
+    offset (currently just `%z`, e.g. a trailing `Z` or `+05:30`) -- that
+    parsed offset wins outright, never reinterpreted against `tzinfo`
+    (resolved from `source_timezone`/the configured default), since the
+    raw string itself already said what zone it's in. Every other,
+    naive-format match applies `tzinfo` exactly as before.
+    """
     stripped = raw.strip()
     for fmt in _TIMESTAMP_FORMATS:
         try:
-            naive = datetime.strptime(stripped, fmt)
+            parsed = datetime.strptime(stripped, fmt)
         except ValueError:
             continue
-        return naive.replace(tzinfo=tzinfo)
+        if parsed.tzinfo is not None:
+            return parsed, True
+        return parsed.replace(tzinfo=tzinfo), False
     return None
 
 
@@ -156,9 +174,16 @@ def parse_record_timestamp(
     identical timezone policy (see this module's docstring).
     """
     tzinfo, resolved_tz_name = resolve_timezone(raw_timezone)
-    parsed = _parse_timestamp(raw_timestamp, tzinfo)
-    if parsed is None:
+    result = _parse_timestamp(raw_timestamp, tzinfo)
+    if result is None:
         return None
+    parsed, self_describing = result
+    if self_describing:
+        # The raw timestamp carried its own explicit offset (e.g. a
+        # trailing "Z"), which _parse_timestamp already honored over the
+        # separately-resolved source_timezone/default -- reflect the zone
+        # actually used, not the one that was resolved but never applied.
+        resolved_tz_name = "UTC" if parsed.utcoffset() == timedelta(0) else parsed.strftime("%z")
     utc_offset = parsed.strftime("%z") or ""
     return parsed.astimezone(UTC), resolved_tz_name, utc_offset
 

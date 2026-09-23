@@ -298,6 +298,7 @@ def _hypothesis(case_id, *, supporting_candidate_ids=()) -> HypothesisRecord:
         decided_by=None,
         supporting_observation_ids=(),
         supporting_candidate_ids=supporting_candidate_ids,
+        supporting_entity_resolution_candidate_ids=(),
         statement=statement,
         statement_commitment_sha256=text_commitment(statement),
         rationale=None,

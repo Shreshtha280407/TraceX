@@ -111,7 +111,26 @@ docker compose --profile gpu-worker down
 
 `structured-worker`/`communication-worker` run `--once`, not `--loop` — neither worker module has a real poll-loop mode in this phase (documented in each module's own CLI help text: "No daemon or polling mode exists"). `restart: unless-stopped` on a one-shot command is a deliberate, honestly-imperfect substitute for a real poll loop: each container restart is one more claim attempt (with Docker's own restart backoff between attempts), not a clean idle wait like `graph-projector`/`intelligence-worker`/`media-worker`'s real `--loop` modes. See `docs/qa/known-limitations.md`'s "WP-8" section.
 
-Every worker waits for its real dependencies to be healthy and uses `restart: unless-stopped`. `media-model-bootstrap` is a one-shot command (`docker compose run`, not `up` — nothing depends on it, so `up` never starts it on its own), writing the checksum-verified detector model into the shared `media-models-data` named volume `media-worker` mounts read-only. None of these services need a `WORKER_TOKEN` provisioned specially — the existing `${WORKER_TOKEN:-}` passthrough (shared with `api`) is reused; provision a real credential via the trusted-operator CLI exactly as for a host-run worker (see "Media-processing worker CLI" below), and set `WORKER_TOKEN` in `.env` before starting these services.
+Every worker waits for its real dependencies to be healthy and uses `restart: unless-stopped`. `media-model-bootstrap` is a one-shot command (`docker compose run`, not `up` — nothing depends on it, so `up` never starts it on its own), writing the checksum-verified detector model into the shared `media-models-data` named volume `media-worker` mounts read-only.
+
+**Each worker role needs its own credential — never one shared `WORKER_TOKEN`.**
+An earlier version of this note said the shared `${WORKER_TOKEN:-}` passthrough
+was fine to reuse across all three worker services; that was wrong; it was
+never actually verified against `docker compose --profile cpu-worker up`
+running several worker containers at once (only against pytest's live
+suites, which each self-provision their own scoped credential in
+isolation — see "Structured-processing worker CLI"/"Communication-
+processing worker CLI"/"Media-processing worker CLI" below). Each worker's
+`worker_credentials` row has a distinct `allowed_processor_names` scope; a
+single shared token's digest can only ever match one of those rows, so the
+other worker services 403 on every claim. `compose.yaml` gives each worker
+service its own env var (`STRUCTURED_WORKER_TOKEN`/
+`COMMUNICATION_WORKER_TOKEN`/`MEDIA_WORKER_TOKEN`), each overriding
+`WORKER_TOKEN` for that one service only — provision one credential per
+role via the trusted-operator CLI (see the three CLI sections below) and
+set all three in `.env` before starting these services. See
+`docs/architecture/worker-identity-and-security.md` and
+`docs/qa/known-limitations.md` for the full writeup.
 
 ## Verifying the API is up
 
