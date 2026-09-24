@@ -1395,6 +1395,38 @@ See ADR-020.
   against a fresh Fulcrum ingestion, citing one of its 36 real WP-2
   candidates through the new field -- see ADR-031 for the full design and
   root-cause writeup.
+- **Operation Nightfall's `cdr.csv` schema mismatch is corpus-wide, not
+  Fulcrum-specific.** `operation-nightfall/case-operation-{nightfall,
+  copper,echo}`'s `structured/cdr.csv` files all use `source_id`/
+  `target_id` columns, but the real `cdr_generic_v1` processor requires
+  `caller_number`/`callee_number` -- confirmed via live ingestion this
+  session (Nightfall's `cdr.csv` job fails with `ambiguous_schema`).
+  Fulcrum's own `cdr.csv` already uses the correct column names and
+  ingests successfully (already fixed there). This blocks real CDR
+  ingestion for all three v1 cases except Fulcrum. Not fixed here: the
+  shared baseline generator (`TraceX-Synthetic-Data`'s `generate_operation_
+  nightfall.py`, `authored_files()`) produces all three cases' `cdr.csv`
+  from one code path, so a column-name fix would change Copper and Echo
+  too -- out of scope for a task authoring only Nightfall's own bridge/
+  community content. Needs its own scoped session.
+- **Tier 3's case-scoped TF-IDF similarity signal (ADR-032) appears to
+  weaken at scale.** It correctly separates entities on Fulcrum (~72
+  entities, cosine similarities spread 0.673-0.85+, real candidates form)
+  but produces near-uniform low similarity on Nightfall (~380 entities),
+  confirmed live this session even with a structurally correct near-miss
+  bridge design (two distinct alias tokens, `SYN-PER-NF-BRIDGE`/`SYN-PER-
+  NF-BRIDGE-ALT`, mirroring Operation Echo's own already-proven near-miss-
+  alias mechanism rather than an exact-match token, which Tier 1/2
+  blocking would collapse before Tier 3 ever compared it). Net effect:
+  Operation Nightfall's required "two communities + reviewable P99
+  bridge" scenario (master plan Section 10/17.2) does not currently clear
+  the real pipeline's threshold, for reasons independent of corpus
+  content -- a possible TF-IDF dilution effect at larger entity counts,
+  not yet root-caused further. Follow-up options: revisit the similarity
+  threshold with justification, or investigate whether TF-IDF's dilution
+  is inherent at this scale and a different Tier 3 approach is needed for
+  larger cases in general -- this may affect any future case larger than
+  Fulcrum's, not just Nightfall.
 
 # Phase 7 Closure — WP-3 (Shreshtha)
 
