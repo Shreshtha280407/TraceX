@@ -4,7 +4,11 @@ import type {
   CaseCreateRequest,
   CaseMemberAddRequest,
   CaseMemberView,
+  CaseNoteCreateRequest,
+  CaseNoteListResponse,
+  CaseNoteRecord,
   EvidenceClassification,
+  EvidenceIntegrityCheck,
   EvidenceListResponse,
   EvidenceUploadResponse,
   JobView,
@@ -22,6 +26,7 @@ import type {
   EntityReviewDecisionRecord,
   EntityReviewOutcome,
   EntityV1,
+  EvidenceObservationsResponse,
   GraphAnalyticsResponse,
   GraphMotifsResponse,
   GraphSnapshotResponse,
@@ -30,7 +35,9 @@ import type {
   HypothesisListResponse,
   HypothesisRecord,
   HypothesisReviewOutcome,
+  ObservationProvenanceResponse,
 } from './graph-types'
+import type { IntegrityCheckpointListResponse, VerificationResult } from './integrity-types'
 import type {
   AdminProvisionUserRequest,
   AdminResetCredentialsResponse,
@@ -266,6 +273,34 @@ export const evidenceApi = {
 
   getJob: (caseId: string, jobId: string) =>
     apiRequest<JobView>(`/api/v1/cases/${caseId}/jobs/${jobId}`),
+
+  /** Gap-Closure WP-4 (G7): re-hash the stored object vs. the ingestion-time hash. */
+  getIntegrity: (caseId: string, evidenceId: string) =>
+    apiRequest<EvidenceIntegrityCheck>(`/api/v1/cases/${caseId}/evidence/${evidenceId}/integrity`),
+}
+
+export const notesApi = {
+  /** Gap-Closure WP-4 (G3): append-only case narrative -- Investigation Memory's real data source. */
+  list: (caseId: string, cursor?: string, limit = 50) =>
+    apiRequest<CaseNoteListResponse>(
+      `/api/v1/cases/${caseId}/notes?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+    ),
+
+  create: (caseId: string, request: CaseNoteCreateRequest) =>
+    apiRequest<CaseNoteRecord>(`/api/v1/cases/${caseId}/notes`, { method: 'POST', body: request }),
+}
+
+export const integrityApi = {
+  listCheckpoints: (caseId: string, limit = 50, offset = 0) =>
+    apiRequest<IntegrityCheckpointListResponse>(
+      `/api/v1/cases/${caseId}/integrity/checkpoints?limit=${limit}&offset=${offset}`,
+    ),
+
+  verifyCheckpoint: (caseId: string, checkpointId: string) =>
+    apiRequest<VerificationResult>(
+      `/api/v1/cases/${caseId}/integrity/checkpoints/${checkpointId}/verify`,
+      { method: 'POST' },
+    ),
 }
 
 export const reviewApi = {
@@ -339,6 +374,22 @@ export const graphApi = {
   listObservations: (caseId: string, limit = 200, offset = 0) =>
     apiRequest<CaseGraphObservationsResponse>(
       `/api/v1/cases/${caseId}/graph/observations?limit=${limit}&offset=${offset}`,
+    ),
+
+  /** Evidence Viewer's real drill-down data source (Section 5, page 13): every
+   * observation yielded by one piece of evidence, each carrying its exact
+   * `source_locator` (page/row/frame/timestamp). */
+  getEvidenceObservations: (caseId: string, evidenceId: string) =>
+    apiRequest<EvidenceObservationsResponse>(
+      `/api/v1/cases/${caseId}/evidence/${evidenceId}/observations`,
+    ),
+
+  /** Citation drill-down (Section 9 row 13): resolves one observation_id, as
+   * cited by a Hypothesis or Candidate Review evidence panel, to its exact
+   * source location. */
+  getObservationProvenance: (caseId: string, observationId: string) =>
+    apiRequest<ObservationProvenanceResponse>(
+      `/api/v1/cases/${caseId}/observations/${observationId}/provenance`,
     ),
 }
 

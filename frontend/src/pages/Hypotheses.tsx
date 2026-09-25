@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, CheckCircle2, Lightbulb, Plus, ShieldAlert, XCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { ActiveCaseGate } from '../components/ActiveCaseGate'
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
@@ -376,7 +377,7 @@ export function Hypotheses() {
                         key={h.hypothesis_id}
                         type="button"
                         onClick={() => setSelectedId(h.hypothesis_id)}
-                        className={`flex flex-col items-start gap-1 rounded-control border px-3 py-2 text-left transition-colors ${
+                        className={`flex flex-col items-start gap-1 rounded-control border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson ${
                           h.hypothesis_id === selected?.hypothesis_id
                             ? 'border-crimson bg-crimson/5'
                             : 'border-card-border bg-card hover:bg-canvas/10'
@@ -423,10 +424,15 @@ export function Hypotheses() {
                         )
                       </span>
                       {selected.supporting_observation_ids.map((id) => (
-                        <span key={id} className="font-mono text-xs text-text-dim">
+                        <Link
+                          key={id}
+                          to="/evidence"
+                          state={{ observationId: id }}
+                          className="font-mono text-xs text-text-dim underline-offset-2 hover:text-crimson hover:underline"
+                        >
                           observation {id.slice(0, 8)} &middot;{' '}
                           {observationById.get(id)?.observation_type ?? 'unresolved'}
-                        </span>
+                        </Link>
                       ))}
                       {selected.supporting_candidate_ids.map((id) => (
                         <span key={id} className="font-mono text-xs text-text-dim">
@@ -464,10 +470,15 @@ export function Hypotheses() {
                         </span>
                       ) : (
                         contradictingObservationIds.map((id) => (
-                          <span key={id} className="font-mono text-xs text-text-dim">
+                          <Link
+                            key={id}
+                            to="/evidence"
+                            state={{ observationId: id }}
+                            className="font-mono text-xs text-text-dim underline-offset-2 hover:text-crimson hover:underline"
+                          >
                             observation {id.slice(0, 8)} &middot;{' '}
                             {observationById.get(id)?.observation_type ?? 'unresolved'}
-                          </span>
+                          </Link>
                         ))
                       )}
                     </Card>

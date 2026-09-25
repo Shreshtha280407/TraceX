@@ -6,6 +6,8 @@
  * docs/decisions/ADR-021-graph-taxonomy-alignment.md.
  */
 
+import type { CaseNoteRecord } from './case-types'
+
 // --- Case graph snapshot (Entity/Event nodes only -- Section 7) ------------
 
 /** Mirrors `GraphRelationshipKind` in app/modules/graph/models.py exactly.
@@ -101,6 +103,64 @@ export interface CaseGraphObservationsResponse {
   limit: number
   offset: number
   has_more: boolean
+}
+
+// --- Evidence Viewer drill-down (Section 5 page 13 / Section 9 row 13) -----
+// Mirrors `SourceLocatorView`/`EvidenceObservationView`/`EvidenceSummaryView`
+// in app/modules/graph/schemas.py exactly. Unlike `GraphObservationView`
+// above, these carry `source_locator` -- the exact page/row/frame/timestamp
+// pointer back into the source evidence.
+
+export interface SourceLocatorView {
+  page: number | null
+  span_start: number | null
+  span_end: number | null
+  bbox_x_min: number | null
+  bbox_y_min: number | null
+  bbox_x_max: number | null
+  bbox_y_max: number | null
+  sheet: string | null
+  row: number | null
+  column: number | null
+  json_path: string | null
+  frame_number: number | null
+  time_start_ms: number | null
+  time_end_ms: number | null
+  message_id: string | null
+}
+
+export interface EvidenceObservationView {
+  observation_id: string
+  case_id: string
+  evidence_id: string
+  observation_type: string
+  extraction_confidence: number
+  event_time: string | null
+  source_locator: SourceLocatorView
+  extractor_name: string
+  extractor_version: string
+}
+
+export interface EvidenceSummaryView {
+  evidence_id: string
+  case_id: string
+  source_type: string
+  content_type: string
+  classification: string
+  processing_status: string
+}
+
+export interface EvidenceObservationsResponse {
+  case_id: string
+  evidence_id: string
+  items: EvidenceObservationView[]
+  total_observations: number
+  truncated: boolean
+}
+
+export interface ObservationProvenanceResponse {
+  observation: EvidenceObservationView
+  evidence: EvidenceSummaryView | null
 }
 
 // --- Entities (Gap-Closure WP-2) --------------------------------------------
@@ -330,4 +390,5 @@ export interface HandoffSummary {
   open_hypotheses: HypothesisRecord[]
   accepted_hypothesis_count: number
   rejected_hypothesis_count: number
+  recent_notes: CaseNoteRecord[]
 }

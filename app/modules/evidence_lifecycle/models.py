@@ -137,6 +137,17 @@ class WorkerJobRecord(EvidenceLifecycleModel):
     updated_at: datetime
 
     def to_contract(self) -> WorkerJobV1:
+        # `self.idempotency_key` (the `worker_jobs.idempotency_key` DB
+        # dedup key) is a lifecycle-only bookkeeping detail, not this
+        # contract field: `reprocess_evidence` suffixes it with
+        # `:reprocess:{caller_key}` so a fresh reprocess attempt never
+        # collides with the original upload's job, but `WorkerJobV1.
+        # idempotency_key`'s own validator requires exactly
+        # `{case_id}:{evidence_id}:{processor_name}:{processor_version}` --
+        # passing the suffixed value through raised a real `ValidationError`
+        # (500) the moment a reprocessed job was actually claimed. Always
+        # derive the canonical form directly instead of echoing the stored
+        # column.
         return WorkerJobV1(
             job_id=self.job_id,
             case_id=self.case_id,
@@ -145,7 +156,8 @@ class WorkerJobRecord(EvidenceLifecycleModel):
             processor_name=self.processor_name,
             processor_version=self.processor_version,
             attempt=self.attempt,
-            idempotency_key=self.idempotency_key,
+            idempotency_key=f"{self.case_id}:{self.evidence_id}:"
+            f"{self.processor_name}:{self.processor_version}",
             input_object_uri=self.input_object_uri,
             requested_at=self.requested_at,
         )

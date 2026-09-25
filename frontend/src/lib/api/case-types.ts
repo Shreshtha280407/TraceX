@@ -113,6 +113,38 @@ export interface EvidenceUploadResponse {
   job: JobView
 }
 
+/** Gap-Closure WP-4 (G7): mirrors `EvidenceIntegrityCheck` in
+ * app/modules/evidence_lifecycle/schemas.py exactly -- a re-hash of the
+ * stored object vs. the ingestion-time hash. */
+export interface EvidenceIntegrityCheck {
+  evidence_id: string
+  stored_sha256: string
+  recomputed_sha256: string
+  matches: boolean
+}
+
+/** Gap-Closure WP-4 (G3): mirrors `CaseNoteRecord` in
+ * app/modules/access_control/notes_models.py exactly -- append-only case
+ * narrative, never an UPDATE (an "edit" is a new row with `supersedes_note_id` set). */
+export interface CaseNoteRecord {
+  note_id: string
+  case_id: string
+  author_user_id: string
+  text: string
+  supersedes_note_id: string | null
+  created_at: string
+}
+
+export interface CaseNoteCreateRequest {
+  text: string
+  supersedes_note_id?: string | null
+}
+
+export interface CaseNoteListResponse {
+  items: CaseNoteRecord[]
+  next_cursor: string | null
+}
+
 /** A case the current investigator has an active membership on, hydrated from real endpoints. */
 export interface AssignedCase extends CaseView {
   role: CaseRole

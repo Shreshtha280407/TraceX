@@ -1607,3 +1607,126 @@ this task. No Part 4 candidate is selected; Gate C decides after Parts
   `uv run mypy app` (243 files), `docker compose config` all pass
   (backend untouched this phase). Frontend: `tsc -b --noEmit`, `oxlint`,
   production build all clean.
+
+# Phase 8 Part 2 — Investigator frontend, Phase 4 (Claude Code)
+
+- [x] Evidence, Memory, Trust & System pages (13-15) -- Settings/Security
+  (16) already existed. Read every real route in `app/modules/graph/api.py`,
+  `evidence_lifecycle/api.py`, `integrity/api.py`, and
+  `access_control/cases_api.py` before writing any page.
+- [x] Found a real backend gap during that read: `ObservationV1.source_locator`
+  (page/row/frame/timestamp) was projected into Neo4j
+  (`ObservationNode.source_locator`) but never exposed by any HTTP route --
+  `GraphObservationView` (the case-wide observation feed) deliberately omits
+  it, and `queries.get_evidence_provenance`/`get_observation_provenance`
+  existed but were wired to nothing. Added two new read-only endpoints to
+  close it: `GET /cases/{id}/evidence/{evidence_id}/observations` (Evidence
+  Viewer's real data source) and `GET /cases/{id}/observations/{observation_id}/provenance`
+  (citation drill-down target), both gated on `evidence_read` (matching
+  `navigation.ts`'s existing `requiresCaseAction`), both excluding
+  `EvidenceNode.object_uri` from their response (the same "no unrestricted
+  raw-evidence-download" rule `evidence_lifecycle.schemas.EvidenceView`
+  already follows). 8 new tests in `tests/unit/graph/test_graph_api.py`
+  (404/403/cross-case/object-uri-never-leaked cases); full suite still
+  2695 passed, 12 skipped, 0 failed.
+- [x] Evidence Viewer (13): real per-evidence, per-observation drill-down to
+  the exact `source_locator` (page/span/sheet/row/column/frame/timestamp,
+  rendering only whichever fields the source extractor actually populated),
+  plus a real "Verify hash integrity" action against the existing
+  `GET .../evidence/{id}/integrity` re-hash endpoint.
+- [x] Investigation Memory (14): real case notes (`GET`/`POST .../notes`,
+  already backend-real from an earlier gap-closure phase but never wired to
+  any page) plus the existing `GET .../handoff` summary (open/accepted/
+  rejected candidate and hypothesis counts) -- also added the handoff
+  response's missing `recent_notes` field to the TypeScript mirror, which
+  had drifted from the real Python model. The note composer is gated
+  behind `useHasCaseAction('case_note_write')`.
+- [x] Integrity / Audit (15): real Merkle checkpoint list, real Ed25519
+  signature display, a real `POST .../verify` action, and the same
+  case audit-event feed already used elsewhere -- new `integrity-types.ts`
+  mirror and `integrityApi` client, matching `app/modules/integrity/api.py`
+  exactly.
+- [x] Citation drill-down (Section 9's own acceptance row 13): every
+  `observation_id` citation rendered on Hypotheses and Candidate Review is
+  now a real link to Evidence Viewer (`state: { observationId }`, matching
+  Processing Pipeline's existing nav-state convention); Evidence Viewer
+  resolves it via the new observation-provenance endpoint, auto-selects
+  the right evidence item, and highlights the exact cited observation.
+- [x] Live-verified end-to-end against the real stack (Docker Postgres/
+  Neo4j/Redis/MinIO -- rebuilt the `api` image, which was silently running
+  13-day-old code; see known-limitations note below) using Playwright
+  (the Claude-in-Chrome browser extension was not connected in this
+  environment) with real TOTP codes computed from the on-screen secrets:
+  a real admin-provisioned investigator completes the full temp-password
+  + forced-change + MFA-enrollment ceremony; uploads real CDR/FIR evidence;
+  the real structured-processing and graph-projection workers turn it into
+  real observations and entities; a real hypothesis is proposed citing a
+  real observation; clicking that citation on the Hypotheses page lands on
+  Evidence Viewer with the exact right evidence selected and the exact
+  cited observation highlighted, showing its real source span; Investigation
+  Memory shows the real 1-open-hypothesis handoff count and a real persisted
+  note; Integrity/Audit shows a real signed checkpoint and a real passing
+  verify result; Settings/Security correctly shows no admin section for the
+  investigator and a real admin-only section for the admin; an admin
+  resetting the investigator's credentials from the real UI correctly forces
+  the investigator through the full re-enrollment ceremony again on next
+  login; a `viewer`-role membership on a second case gets a real, calm
+  `403` ("You don't have permission to upload evidence to this case") on
+  Evidence Upload, not a crash. Zero browser console errors across the
+  entire walkthrough.
+- [x] Found and fixed one real infrastructure gap while bringing the stack
+  up for this verification (unrelated to this phase's own code, but
+  discovered by it): the running `api` container was 13 days old, predating
+  several already-merged backend phases -- 17 "live" integration tests that
+  should pass were failing with a bare `404` on
+  `POST .../worker-jobs/{id}/observations` purely because of this. Confirmed
+  via `git stash` that these failures reproduce identically without any of
+  this phase's changes (not a regression introduced here). Rebuilt the
+  image (`docker compose up --build -d api`); a separate, already-committed
+  `minio` image migration (`minio/minio:latest` deleted from Docker Hub;
+  compose.yaml already pinned the `cgr.dev/chainguard/minio` replacement)
+  also recreated the long-running `minio` container onto that new image for
+  the first time in this environment and it took a few seconds to pass its
+  own health check on the existing data volume -- transient, resolved on
+  retry, no data lost (volume ownership double-checked, unchanged). All 22
+  previously-failing live tests pass now; full suite 2695 passed either way.
+- [x] Initially flagged rather than fixed (`evidence_lifecycle` is another
+  contributor's module, and the fix touches the shared
+  `claim_job`/`submit_result` repository path with wide existing test
+  coverage) -- `EvidenceRecord.processing_status` was set to `queued` at
+  upload time (`evidence_lifecycle/service.py:600`) and no code path
+  anywhere ever transitioned it afterward, even after the worker job
+  underneath it reached `succeeded`. Real, visible on both Processing
+  Pipeline (Phase 2) and this phase's own Evidence Viewer status badge --
+  confirmed live (uploaded evidence whose worker job completed and produced
+  real projected observations still showed `queued` in both places).
+  **Fixed on request, same session.** `claim_job` now transitions the
+  evidence to `processing` in the same transaction as the job's own
+  `running` transition; `submit_result` (including the retry-exhausted
+  sweep, which reuses it) now transitions it to `processed`/`failed` in the
+  same transaction as the job's own terminal transition, guarded on that
+  update actually matching a row; `reprocess_evidence`'s `create_job`
+  resets a re-queued item back to `queued`. One new live integration test
+  proves the full cycle against a real database; 215/215 evidence-lifecycle
+  tests and the full repo suite pass unchanged otherwise.
+  `docs/architecture/evidence-lifecycle.md` and `docs/qa/known-
+  limitations.md` updated to match.
+- [x] Found and fixed a second, real pre-existing bug while live-verifying
+  the fix above: `WorkerJobRecord.to_contract()` echoed the raw
+  `worker_jobs.idempotency_key` DB dedup key straight into
+  `WorkerJobV1.idempotency_key`, whose validator requires exactly
+  `{case_id}:{evidence_id}:{processor_name}:{processor_version}` -- a real
+  reprocessed job's `:reprocess:{caller_key}`-suffixed key raised a real
+  `ValidationError` (HTTP 500) the moment it was actually claimed, live-
+  reproduced against the real stack (and could wedge an entire processor's
+  claim queue: `claim_job` claims oldest-eligible-first, so every later
+  claim kept hitting the same stuck job until its lease finally expired
+  five retries later). Fixed by always deriving the canonical key
+  directly instead of echoing the stored column. 2 new unit tests
+  (`tests/unit/evidence_lifecycle/test_worker_job_record.py`); re-verified
+  live end-to-end (fresh evidence upload -> real claim -> real result ->
+  `processing_status: processed`).
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (244 files), `uv run pytest` (2698 passed, 12 skipped,
+  0 failed), `docker compose config` all pass. Frontend: `tsc -b --noEmit`,
+  `oxlint`, production build all clean.

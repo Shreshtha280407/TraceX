@@ -50,7 +50,7 @@ export function Sidebar({ counts = {} }: SidebarProps) {
                 key={page.path}
                 to={page.path}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-control px-3 py-2 text-sm font-medium transition-colors ${
+                  `flex items-center gap-3 rounded-control px-3 py-2 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson ${
                     isActive
                       ? 'bg-crimson text-shell-text'
                       : 'text-shell-text-dim hover:bg-shell-nav-2 hover:text-shell-text'

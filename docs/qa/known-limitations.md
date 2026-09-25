@@ -1942,3 +1942,84 @@ unreachable that session). Both are now closed.
 - `ruff format --check .`, `ruff check .`, and `mypy app` all pass clean
   after this pass. No database migration; `git status --short`/`git diff
   --cached --stat` remain empty (nothing staged).
+
+## Frontend Phase 8 Part 2, Phase 4 (2026-09-25)
+
+- **Fixed (same phase, on request): `EvidenceRecord.processing_status`
+  used to never transition past `queued`.** Was set once at upload time
+  (`app/modules/evidence_lifecycle/service.py:600`,
+  `EvidenceProcessingStatus.QUEUED`) with no code path in `claim_job`,
+  `submit_result`, or the retry-exhausted sweep ever writing it again, even
+  after the underlying `WorkerJobRecord` reached `succeeded` and real
+  observations had been persisted and projected into Neo4j. Confirmed live
+  before the fix: uploaded a real FIR text file and a real CDR CSV, ran the
+  structured-processing worker to completion, and both Processing Pipeline
+  and the new Evidence Viewer page still showed `queued` for both items
+  despite correct job status, results, and graph projection underneath.
+  Initially flagged rather than fixed (the natural fix touches
+  `EvidenceLifecycleRepository.claim_job`/`submit_result`, another
+  contributor's module with wide existing test coverage) per `CLAUDE.md`'s
+  module-boundary rule; fixed in the same session once the operator
+  explicitly asked for it. `claim_job` now transitions the evidence to
+  `processing` in the same transaction as the job's own `running`
+  transition; `submit_result` (including the retry-exhausted sweep, which
+  reuses it) now transitions it to `processed` (`SUCCEEDED`) or `failed`
+  (`FAILED`/`DEFERRED`/`CANCELLED` -- `EvidenceProcessingStatus` has no
+  separate deferred/cancelled state) in the same transaction as the job's
+  own terminal transition, guarded on that job update actually matching a
+  row; `reprocess_evidence`'s `create_job` resets a re-queued evidence item
+  back to `queued`. One new live integration test
+  (`test_processing_status_transitions_through_a_real_claim_and_result`)
+  proves the full `queued -> processing -> processed`, `-> failed`, and
+  `-> queued` (reprocess) cycle against a real database; full evidence-
+  lifecycle suite (215 tests) and full repo suite pass unchanged otherwise.
+  See `docs/architecture/evidence-lifecycle.md`'s "Intentional deferrals"
+  section for the resolved note.
+- **Found and fixed while live-verifying the fix above: a real,
+  pre-existing `WorkerJobRecord.to_contract()` bug that could wedge an
+  entire processor's claim queue.** `reprocess_evidence` builds
+  `worker_jobs.idempotency_key` as `{case_id}:{evidence_id}:
+  {processor_name}:{processor_version}:reprocess:{caller_key}` (so a
+  retried reprocess never collides with the original upload's job), but
+  `to_contract()` echoed that raw stored value straight into
+  `WorkerJobV1.idempotency_key`, whose own validator requires exactly the
+  un-suffixed `{case_id}:{evidence_id}:{processor_name}:{processor_version}`
+  form. The moment a real reprocessed job was actually claimed, this raised
+  a real `pydantic.ValidationError` deep in the internal claim endpoint's
+  response construction -- surfaced live as an HTTP `500` on
+  `POST /internal/worker-jobs/claim`, after the claim's own DB transaction
+  had already committed the job as `running` with a claim token that was
+  never returned to any caller: the job was left stuck, and because
+  `claim_job` claims oldest-eligible-first, every subsequent claim attempt
+  for that same processor would keep hitting this exact poisoned job
+  (self-healing only after 5 lease-expiry cycles, via the existing
+  retry-exhausted sweep). Not caught by any existing test because none of
+  them exercised a real claim of a real reprocessed job end-to-end -- the
+  unit-level reprocess tests use a fake repository/claim path, and the live
+  suite never happened to reprocess-then-claim the same evidence. Fixed by
+  having `to_contract()` always derive the canonical form from
+  `case_id`/`evidence_id`/`processor_name`/`processor_version` directly,
+  never echoing the stored DB dedup key. Two new unit tests in
+  `tests/unit/evidence_lifecycle/test_worker_job_record.py`.
+- **The long-running dev `api` Docker container was 13 days stale.**
+  Discovered while bringing the stack up for this phase's live browser
+  verification: `docker compose ps` showed `tracex-api-1` running an image
+  built well before this session, silently serving old code. This caused
+  17 "live" integration tests
+  (`tests/integration/{communication_processing,evidence_lifecycle,graph,
+  media_processing,structured_processing}/test_*_live.py`) to fail with a
+  bare `404` on `POST /api/v1/internal/worker-jobs/{id}/observations` --
+  confirmed via `git stash` that this reproduces identically with none of
+  this phase's own changes applied, i.e. not a regression from this phase.
+  Fixed by `docker compose up --build -d api`; all 17 pass afterward
+  (2695 passed, 12 skipped, 0 failed full-suite). Rebuilding also
+  triggered, for the first time in this environment, the already-committed
+  `minio/minio:latest` -> `cgr.dev/chainguard/minio:latest` image migration
+  (the former was deleted from Docker Hub) to actually recreate the
+  long-running `minio` container against the existing data volume; it
+  briefly failed its own healthcheck (`unable to rename ... file access
+  denied`) before passing on retry with no code or config change. Worth
+  the team's attention if it recurs: this dev sandbox's `api`/`minio`
+  containers can silently drift from both the checked-out code and each
+  other's expected image for a long time without anything surfacing it
+  short of an explicit rebuild.
