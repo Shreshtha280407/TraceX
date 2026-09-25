@@ -28,12 +28,18 @@ Dependency direction is one-way: `api.py`/`dependencies.py` → `service.py` →
 ## Authentication flow
 
 ```text
-POST /api/v1/auth/register  -> PublicUser (201)
-POST /api/v1/auth/login     -> TokenPairResponse (200) | 401 generic | 429
-POST /api/v1/auth/refresh   -> TokenPairResponse (200) | 401 generic | 429
-POST /api/v1/auth/logout    -> 204 (idempotent)
-GET  /api/v1/auth/me        -> MeResponse (200) | 401
+POST /api/v1/auth/register         -> PublicUser (201)
+POST /api/v1/auth/login            -> TokenPairResponse (200) | 401 generic | 429
+POST /api/v1/auth/refresh          -> TokenPairResponse (200) | 401 generic | 429
+POST /api/v1/auth/logout           -> 204 (idempotent)
+GET  /api/v1/auth/me               -> MeResponse (200) | 401
+POST /api/v1/auth/mfa/enroll       -> MfaEnrollResponse (200) | 401
+POST /api/v1/auth/mfa/verify       -> PublicUser (200) | 401 | 409
+POST /api/v1/auth/mfa/login-verify -> TokenPairResponse (200) | 401 generic | 429
+POST /api/v1/auth/change-password  -> 204 | 401
 ```
+
+See "Multi-factor authentication (TOTP) and forced credential ceremony" below for the last four.
 
 - **Register**: validates email format (hand-rolled regex + normalization — see below; `pydantic.EmailStr` needs `email-validator`, not an approved dependency this phase) and the password policy (`password.MIN_PASSWORD_LENGTH` = 10, `MAX_PASSWORD_LENGTH` = 256), hashes the password with Argon2id, stores the user with `is_active=True` and **no role/privilege field at all** — there is nothing to elevate, since privilege only ever comes from an explicit `case_memberships` row created later, out of band. Duplicate email returns `409 Conflict` (not a generic anti-enumeration denial — see ADR-003 for why register and login differ here).
 - **Login**: rate-limited first (`rate_limit.py`), then looks up the user and verifies the password. Unknown email, inactive user, and wrong password all raise the identical `AuthenticationError` → identical `401` body — and an unknown/inactive-user attempt still runs a real Argon2id verification against a fixed dummy hash, so response *timing* can't distinguish the three cases either (see `service._DUMMY_PASSWORD_HASH`). On success, creates a brand-new session (`sessions.create_session`) and a short-lived access token.
@@ -76,6 +82,58 @@ Every successful `/refresh` call:
 4. Returns a new access token + a new opaque refresh token.
 
 **Reuse detection**: if a refresh token that was already rotated away (`replaced_by_session_id IS NOT NULL`) is presented again, the *entire token family* is revoked — including whatever session it was rotated into, even if that session is still legitimately active. Reuse anywhere in a chain is treated as a signal the family may be compromised; the safe response is to force full re-authentication rather than trust the current leaf. A session revoked for an unrelated reason (logout) has `replaced_by_session_id IS NULL` and is a plain denial, not reuse detection.
+
+## Multi-factor authentication (TOTP) and forced credential ceremony
+
+See ADR-033 for why this exists and the frontend requirement that drove it.
+`POST /api/v1/admin/users` now always creates an account with
+`must_change_password=True` — the admin-chosen password is treated as a
+one-time credential the investigator must replace before anything else, not
+because the schema generates it (it doesn't; the admin still picks the
+initial value), but because the server refuses to clear the flag until
+`change_password` succeeds. `PublicUser`/`MeResponse` expose
+`must_change_password` and `totp_enabled` so a frontend can gate its own
+onboarding screens; neither the API nor this module enforces that ordering
+on any *other* endpoint — it is a UI-level ceremony, not a server-side hard
+lock on the rest of the API surface.
+
+TOTP itself is a hand-rolled RFC 6238 implementation (`totp.py`, stdlib
+`hmac`/`hashlib` only — SHA1, 6 digits, 30-second step, ±1 step drift
+tolerance), not a third-party dependency; `password.py`'s own
+already-narrow, reviewed dependency list was the reason not to add one.
+
+```text
+1. POST /auth/mfa/enroll        (authenticated) -> fresh secret, not yet enabled
+2. POST /auth/mfa/verify        (authenticated) -> confirm one real code -> totp_enabled=True
+3. POST /auth/login             -> mfa_required=true + mfa_token, once totp_enabled
+4. POST /auth/mfa/login-verify  -> mfa_token + code -> real session (TokenPairResponse)
+```
+
+`TokenPairResponse` carries both shapes additively (`mfa_required`/`mfa_token`
+alongside the original `access_token`/`refresh_token`/`expires_in`, all now
+optional) — every pre-MFA caller of `/login` is unaffected as long as the
+account has no TOTP enrolled. `enroll_mfa` can be called again before
+`verify` confirms it (each call overwrites the pending secret); nothing
+about MFA is ever silently auto-enabled — `totp_enabled` flips to `True`
+only inside `confirm_mfa_enrollment`, after a real code has been checked.
+`mfa/login-verify` is rate-limited independently (`AUTH_MFA_RATE_LIMIT`,
+default 8/60s) — a 6-digit code has only 1e6 possibilities, so this stays as
+tight as login itself.
+
+**Admin-only lost-device/lost-password recovery**:
+`POST /api/v1/admin/users/{user_id}/reset-credentials` (admin-only, never
+self-service) reissues a fresh one-time temporary password, clears
+`totp_secret`/`totp_enabled` entirely (the investigator re-enrolls from
+scratch), sets `must_change_password=True` again, and immediately revokes
+every live session for that account — a still-valid old access/refresh
+token pair cannot outlive the reset.
+
+**Admin-only account listing**: `GET /api/v1/admin/users` (`limit`/`offset`,
+bounded 1-200, default 200) backs the Settings/Security admin sub-section's
+account picker — the frontend needs a real way to choose *which* account to
+reset without inventing one. Returns `PublicUser` rows only (same safe shape
+as everywhere else; never a password hash or TOTP secret), oldest-first, no
+audit event recorded (a plain read, exactly like `GET /admin/workers`).
 
 ## Role/action matrix
 

@@ -37,8 +37,10 @@ def test_latest_gap_closure_migration_is_the_current_head() -> None:
         timeout=60,
         check=True,
     )
-    # Updated for ADR-031's additive hypotheses.supporting_entity_
-    # resolution_candidate_ids migration, which now sits on top of Gap-
-    # Closure WP-6's `6f7a8b9c0d1e` -- see `alembic history` for the
-    # unbroken chain back through Phase 6 Part 5's `a3b4c5d6e7f8`.
-    assert "7a8b9c0d1e2f" in result.stdout
+    # Updated for ADR-033's additive users.must_change_password/totp_secret/
+    # totp_enabled migration, which now sits on top of ADR-031's
+    # hypotheses.supporting_entity_resolution_candidate_ids migration
+    # (`7a8b9c0d1e2f`) -- see `alembic history` for the unbroken chain back
+    # through Gap-Closure WP-6's `6f7a8b9c0d1e` and Phase 6 Part 5's
+    # `a3b4c5d6e7f8`.
+    assert "b2c3d4e5f6a7" in result.stdout

@@ -20,6 +20,7 @@ from app.main import app
 from app.modules.access_control.dependencies import (
     get_access_control_repository,
     get_login_rate_limiter,
+    get_mfa_rate_limiter,
     get_refresh_rate_limiter,
 )
 from app.modules.access_control.models import (
@@ -49,13 +50,16 @@ def _override_dependencies(fake_repository: FakeAccessControlRepository) -> Iter
     # every single request and rate limiting would never trigger.
     login_limiter = InMemoryRateLimiter()
     refresh_limiter = InMemoryRateLimiter()
+    mfa_limiter = InMemoryRateLimiter()
     app.dependency_overrides[get_access_control_repository] = lambda: fake_repository
     app.dependency_overrides[get_login_rate_limiter] = lambda: login_limiter
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: refresh_limiter
+    app.dependency_overrides[get_mfa_rate_limiter] = lambda: mfa_limiter
     yield
     app.dependency_overrides.pop(get_access_control_repository, None)
     app.dependency_overrides.pop(get_login_rate_limiter, None)
     app.dependency_overrides.pop(get_refresh_rate_limiter, None)
+    app.dependency_overrides.pop(get_mfa_rate_limiter, None)
 
 
 @pytest_asyncio.fixture
@@ -406,6 +410,289 @@ async def test_list_workers_requires_admin(
 async def test_list_workers_unauthenticated_is_401(client: AsyncClient) -> None:
     response = await client.get("/api/v1/admin/workers")
     assert response.status_code == 401
+
+
+async def _current_totp_code(secret: str) -> str:
+    import base64
+    import hashlib
+    import hmac
+    import struct
+    import time
+
+    counter = int(time.time() // 30)
+    padded = secret + "=" * (-len(secret) % 8)
+    key = base64.b32decode(padded)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    truncated = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return str(truncated % 1_000_000).zfill(6)
+
+
+# --- ADR-033: forced first-login password change ----------------------------
+
+
+async def test_admin_provisioned_user_must_change_password(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    _admin_token, created = await _provision_via_admin_route(
+        client, fake_repository, email="mustchange@example.test"
+    )
+    assert created["must_change_password"] is True
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "mustchange@example.test", "password": VALID_PASSWORD},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.json()["user"]["must_change_password"] is True
+
+    change = await client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": VALID_PASSWORD, "new_password": "brand-new-password-1"},
+    )
+    assert change.status_code == 204
+
+    me_after = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_after.json()["user"]["must_change_password"] is False
+
+
+async def test_change_password_wrong_current_password_is_401(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "changepw@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "changepw@example.test", "password": VALID_PASSWORD}
+    )
+    token = login.json()["access_token"]
+    response = await client.post(
+        "/api/v1/auth/change-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "wrong-one", "new_password": "brand-new-password-1"},
+    )
+    assert response.status_code == 401
+
+
+# --- ADR-033: TOTP enrollment + two-factor login over real HTTP -------------
+
+
+async def test_full_mfa_enrollment_and_two_factor_login_round_trip(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "mfauser@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "mfauser@example.test", "password": VALID_PASSWORD}
+    )
+    assert login.json()["mfa_required"] is False
+    token = login.json()["access_token"]
+
+    enroll = await client.post(
+        "/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert enroll.status_code == 200, enroll.text
+    secret = enroll.json()["secret"]
+    assert enroll.json()["provisioning_uri"].startswith("otpauth://totp/")
+
+    code = await _current_totp_code(secret)
+    verify = await client.post(
+        "/api/v1/auth/mfa/verify",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"code": code},
+    )
+    assert verify.status_code == 200, verify.text
+    assert verify.json()["totp_enabled"] is True
+
+    # Every login from now on requires the second factor.
+    second_login = await client.post(
+        "/api/v1/auth/login", json={"email": "mfauser@example.test", "password": VALID_PASSWORD}
+    )
+    assert second_login.status_code == 200
+    body = second_login.json()
+    assert body["mfa_required"] is True
+    assert body["access_token"] is None
+    mfa_token = body["mfa_token"]
+
+    login_code = await _current_totp_code(secret)
+    finish = await client.post(
+        "/api/v1/auth/mfa/login-verify", json={"mfa_token": mfa_token, "code": login_code}
+    )
+    assert finish.status_code == 200, finish.text
+    finished = finish.json()
+    assert finished["mfa_required"] is False
+    assert finished["access_token"]
+
+    me = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {finished['access_token']}"}
+    )
+    assert me.json()["user"]["totp_enabled"] is True
+
+
+async def test_mfa_login_verify_wrong_code_is_401(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "mfawrong@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "mfawrong@example.test", "password": VALID_PASSWORD}
+    )
+    token = login.json()["access_token"]
+    enroll = await client.post(
+        "/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"}
+    )
+    secret = enroll.json()["secret"]
+    code = await _current_totp_code(secret)
+    await client.post(
+        "/api/v1/auth/mfa/verify",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"code": code},
+    )
+
+    second_login = await client.post(
+        "/api/v1/auth/login", json={"email": "mfawrong@example.test", "password": VALID_PASSWORD}
+    )
+    mfa_token = second_login.json()["mfa_token"]
+    response = await client.post(
+        "/api/v1/auth/mfa/login-verify", json={"mfa_token": mfa_token, "code": "000000"}
+    )
+    assert response.status_code == 401
+
+
+async def test_mfa_enroll_requires_authentication(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/auth/mfa/enroll")
+    assert response.status_code == 401
+
+
+# --- ADR-033: admin-only lost-device/lost-password recovery -----------------
+
+
+async def test_admin_reset_credentials_round_trip(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token, created = await _provision_via_admin_route(
+        client, fake_repository, email="resetme@example.test"
+    )
+    user_id = created["user_id"]
+
+    reset = await client.post(
+        f"/api/v1/admin/users/{user_id}/reset-credentials",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert reset.status_code == 200, reset.text
+    new_password = reset.json()["temporary_password"]
+    assert new_password
+
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "resetme@example.test", "password": new_password}
+    )
+    assert login.status_code == 200
+    assert login.json()["access_token"]
+
+    me = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {login.json()['access_token']}"}
+    )
+    assert me.json()["user"]["must_change_password"] is True
+    assert me.json()["user"]["totp_enabled"] is False
+
+
+async def test_admin_reset_credentials_requires_admin(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "notadmin@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "notadmin@example.test", "password": VALID_PASSWORD}
+    )
+    token = login.json()["access_token"]
+    response = await client.post(
+        f"/api/v1/admin/users/{uuid4()}/reset-credentials",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+
+
+async def test_admin_reset_credentials_unknown_user_is_404(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token = await _login_as_admin(client, fake_repository)
+    response = await client.post(
+        f"/api/v1/admin/users/{uuid4()}/reset-credentials",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+
+# --- Admin-only account listing (backs the Settings/Security admin picker) --
+
+
+async def test_list_users_requires_admin(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    await _register(client, "notadmin-listing@example.test", fake_repository)
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "notadmin-listing@example.test", "password": VALID_PASSWORD},
+    )
+    token = login.json()["access_token"]
+    response = await client.get("/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 403
+
+
+async def test_list_users_unauthenticated_is_401(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/admin/users")
+    assert response.status_code == 401
+
+
+async def test_list_users_returns_real_accounts_never_a_secret(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token, created = await _provision_via_admin_route(
+        client, fake_repository, email="listed-user@example.test"
+    )
+    response = await client.get(
+        "/api/v1/admin/users", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200, response.text
+    emails = {item["email_normalized"] for item in response.json()["items"]}
+    assert "listed-user@example.test" in emails
+    assert created["user_id"] in {item["user_id"] for item in response.json()["items"]}
+    assert "password_hash" not in response.text
+    assert "totp_secret" not in response.text
+    for item in response.json()["items"]:
+        assert set(item.keys()) == {
+            "user_id",
+            "email_normalized",
+            "display_name",
+            "is_active",
+            "created_at",
+            "system_role",
+            "must_change_password",
+            "totp_enabled",
+        }
+
+
+async def test_list_users_respects_limit_and_offset(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    admin_token = await _login_as_admin(client, fake_repository)
+    for i in range(3):
+        await fake_repository.create_user(
+            make_user_record(email_normalized=f"page-{i}@example.test")
+        )
+
+    first_page = await client.get(
+        "/api/v1/admin/users?limit=2&offset=0", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert first_page.status_code == 200
+    assert len(first_page.json()["items"]) == 2
+
+    second_page = await client.get(
+        "/api/v1/admin/users?limit=2&offset=2", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert second_page.status_code == 200
+    first_ids = {item["user_id"] for item in first_page.json()["items"]}
+    second_ids = {item["user_id"] for item in second_page.json()["items"]}
+    assert first_ids.isdisjoint(second_ids)
 
 
 async def test_list_workers_reports_liveness_and_never_the_credential_digest(

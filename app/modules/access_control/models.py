@@ -207,9 +207,14 @@ class AuditOutcome(StrEnum):
 
 
 class TokenType(StrEnum):
-    """`typ` claim value on an access token. A version bump if the claim shape ever changes."""
+    """`typ` claim value on a token this module issues."""
 
     ACCESS_V1 = "access_v1"
+    #: A short-lived, single-purpose token proving "password already
+    #: verified for this user" -- carries no session, only a green light to
+    #: attempt `POST /auth/mfa/login-verify`. See `docs/decisions/ADR-033-
+    #: frontend-totp-mfa.md`.
+    MFA_PENDING = "mfa_pending"
 
 
 # --- Persistence-layer records (never returned directly from an API) -------
@@ -226,6 +231,20 @@ class UserRecord(AccessControlModel):
     created_at: datetime
     updated_at: datetime
     system_role: SystemRole | None = None
+    #: True immediately after admin provisioning or an admin-triggered
+    #: credential reset; cleared only by a successful `change_password`
+    #: call. A UI-enforced ceremony, not a server-side hard gate on every
+    #: other endpoint -- see ADR-033.
+    must_change_password: bool = False
+    #: The current (possibly not-yet-confirmed) base32 TOTP shared secret,
+    #: or `None` before enrollment has ever started. Never returned from
+    #: any API response -- see `PublicUser`, which deliberately omits it.
+    totp_secret: str | None = None
+    #: True only after the investigator has confirmed a real code against
+    #: `totp_secret` (`confirm_mfa_enrollment`). While `False`, `login`
+    #: never issues an MFA challenge -- there would be nothing to verify
+    #: against yet.
+    totp_enabled: bool = False
 
 
 class CaseRecord(AccessControlModel):
@@ -355,7 +374,7 @@ class SecurityAuditEventRecord(AccessControlModel):
 
 
 class PublicUser(AccessControlModel):
-    """The only user representation ever returned from the API."""
+    """The only user representation ever returned from the API. Never `totp_secret`."""
 
     user_id: UUID
     email_normalized: str
@@ -363,6 +382,14 @@ class PublicUser(AccessControlModel):
     is_active: bool
     created_at: datetime
     system_role: SystemRole | None = None
+    must_change_password: bool = False
+    totp_enabled: bool = False
+
+
+class PublicUserListResponse(AccessControlModel):
+    """`GET /api/v1/admin/users`'s response shape. Admin-only account listing."""
+
+    items: tuple[PublicUser, ...]
 
 
 class CaseMembershipView(AccessControlModel):
@@ -469,15 +496,83 @@ class LogoutRequest(AccessControlModel):
 
 
 class TokenPairResponse(AccessControlModel):
-    access_token: str
-    refresh_token: str
+    """`POST /auth/login`'s response.
+
+    Two disjoint shapes in one model (additive, not a breaking rename --
+    every pre-MFA caller of this endpoint keeps working against the
+    `mfa_required=False` shape unchanged):
+
+    - `mfa_required=False` (the only shape this endpoint ever returned
+      before MFA existed): `access_token`/`refresh_token`/`expires_in` are
+      set, `mfa_token` is `None`. A real session already exists.
+    - `mfa_required=True`: password was correct and the account has TOTP
+      enabled, but no session exists yet. `mfa_token` is set;
+      `access_token`/`refresh_token`/`expires_in` are `None`. The caller
+      must present a code to `POST /auth/mfa/login-verify` with this
+      `mfa_token` to actually obtain a session.
+    """
+
+    access_token: str | None = None
+    refresh_token: str | None = None
     token_type: str = "bearer"
-    expires_in: int
+    expires_in: int | None = None
+    mfa_required: bool = False
+    mfa_token: str | None = None
 
 
 class MeResponse(AccessControlModel):
     user: PublicUser
     case_memberships: tuple[CaseMembershipView, ...]
+
+
+class ChangePasswordRequest(AccessControlModel):
+    """`POST /api/v1/auth/change-password` body. Requires the current password.
+
+    `current_password` is bounded the same generous way `LoginRequest.password`
+    is (a DoS guard only) -- it is verified against the stored hash, not
+    subject to the registration policy. `new_password` enforces the real
+    policy, exactly like `AdminProvisionUserRequest.password`.
+    """
+
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
+class MfaEnrollResponse(AccessControlModel):
+    """`POST /api/v1/auth/mfa/enroll`'s response -- shown to the investigator once.
+
+    `secret` is included alongside `provisioning_uri` for an authenticator
+    app that cannot scan a QR code (manual entry) -- the same information
+    already embedded in the URI, never a second secret.
+    """
+
+    secret: str
+    provisioning_uri: str
+
+
+class MfaVerifyRequest(AccessControlModel):
+    """`POST /api/v1/auth/mfa/verify` body -- confirms enrollment with one real code."""
+
+    code: str = Field(min_length=6, max_length=6)
+
+
+class MfaLoginVerifyRequest(AccessControlModel):
+    """`POST /api/v1/auth/mfa/login-verify` body: the challenge from `login` plus a live code."""
+
+    mfa_token: str = Field(min_length=1, max_length=2048)
+    code: str = Field(min_length=6, max_length=6)
+
+
+class AdminResetCredentialsResponse(AccessControlModel):
+    """`POST /api/v1/admin/users/{user_id}/reset-credentials`'s response.
+
+    Shown to the admin once, exactly like `AdminProvisionUserRequest`'s
+    initial password -- the investigator must re-enroll MFA from scratch
+    (the old `totp_secret` is cleared), and `must_change_password` is set
+    again on the affected account.
+    """
+
+    temporary_password: str
 
 
 # --- Token/session working types --------------------------------------------
@@ -488,6 +583,17 @@ class AccessTokenClaims(AccessControlModel):
 
     sub: UUID
     sid: UUID
+    iat: datetime
+    exp: datetime
+    iss: str
+    aud: str
+    typ: TokenType
+
+
+class MfaChallengeClaims(AccessControlModel):
+    """Decoded, validated MFA-challenge-token claims. No `sid`: no session exists yet."""
+
+    sub: UUID
     iat: datetime
     exp: datetime
     iss: str

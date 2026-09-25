@@ -79,7 +79,7 @@ If Redis is unreachable when a login/refresh attempt needs a rate-limit check, `
 
 ## What is not covered by this phase
 
-- **No MFA, no SSO, no external identity provider.** Single-factor email+password only.
+- **TOTP MFA exists; SSO/an external identity provider still do not.** See ADR-033 and "Multi-factor authentication (TOTP) and forced credential ceremony" in `docs/architecture/access-control-v1.md` — hand-rolled RFC 6238, no third-party IdP, no SAML/OIDC.
 - **No production secret manager.** `AUTH_JWT_SECRET`/`POSTGRES_PASSWORD`/etc. come from `.env` (git-ignored) for local development only.
 - **No case CRUD API.** `cases`/`case_memberships` are a minimal access-control anchor with repository methods only — no `/api/v1/cases` endpoints exist to create/list/update them in this phase (that's Nipun's later work, against `require_case_*` dependencies this module provides).
 - **No per-evidence classification.** `policy.authorize_case_action`'s `resource_classification` parameter is a forward-compatible hook for it, unused by anything in this phase.

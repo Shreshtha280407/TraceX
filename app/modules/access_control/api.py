@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -32,11 +33,17 @@ from app.modules.access_control.errors import (
 )
 from app.modules.access_control.models import (
     AdminProvisionUserRequest,
+    AdminResetCredentialsResponse,
     AuthenticatedPrincipal,
+    ChangePasswordRequest,
     LoginRequest,
     LogoutRequest,
     MeResponse,
+    MfaEnrollResponse,
+    MfaLoginVerifyRequest,
+    MfaVerifyRequest,
     PublicUser,
+    PublicUserListResponse,
     RefreshRequest,
     TokenPairResponse,
     WorkerLivenessListResponse,
@@ -166,6 +173,73 @@ async def me(
         ) from exc
 
 
+@router.post("/mfa/enroll", response_model=MfaEnrollResponse)
+async def mfa_enroll(
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> MfaEnrollResponse:
+    try:
+        return await auth_service.enroll_mfa(principal.user_id, _build_context(request))
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required"
+        ) from exc
+
+
+@router.post("/mfa/verify", response_model=PublicUser)
+async def mfa_verify(
+    body: MfaVerifyRequest,
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> PublicUser:
+    try:
+        return await auth_service.confirm_mfa_enrollment(
+            principal.user_id, body.code, _build_context(request)
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid authentication code"
+        ) from exc
+
+
+@router.post("/mfa/login-verify", response_model=TokenPairResponse)
+async def mfa_login_verify(
+    body: MfaLoginVerifyRequest,
+    request: Request,
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> TokenPairResponse:
+    try:
+        return await auth_service.verify_mfa_login(body, _build_context(request))
+    except RateLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_RATE_LIMIT_DETAIL
+        ) from exc
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or expired authentication code",
+        ) from exc
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> None:
+    try:
+        await auth_service.change_password(principal.user_id, body, _build_context(request))
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="current password is incorrect"
+        ) from exc
+
+
 @admin_router.post("/users", response_model=PublicUser, status_code=status.HTTP_201_CREATED)
 async def provision_user(
     body: AdminProvisionUserRequest,
@@ -180,6 +254,52 @@ async def provision_user(
         )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@admin_router.get("/users", response_model=PublicUserListResponse)
+async def list_users(
+    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PublicUserListResponse:
+    """Admin-only account listing -- backs the Settings/Security admin sub-section's
+    account picker (Section 6, page 16). Never a password hash or TOTP secret;
+    `PublicUser` already guarantees that (see its own docstring)."""
+    users = await repository.list_users(limit=limit, offset=offset)
+    return PublicUserListResponse(
+        items=tuple(
+            PublicUser(
+                user_id=u.user_id,
+                email_normalized=u.email_normalized,
+                display_name=u.display_name,
+                is_active=u.is_active,
+                created_at=u.created_at,
+                system_role=u.system_role,
+                must_change_password=u.must_change_password,
+                totp_enabled=u.totp_enabled,
+            )
+            for u in users
+        )
+    )
+
+
+@admin_router.post(
+    "/users/{user_id}/reset-credentials", response_model=AdminResetCredentialsResponse
+)
+async def reset_user_credentials(
+    user_id: UUID,
+    request: Request,
+    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> AdminResetCredentialsResponse:
+    """Lost-device / lost-password recovery (Section 6): admin-only, never self-service."""
+    try:
+        return await auth_service.admin_reset_credentials(
+            user_id, _build_context(request), reset_by=admin.user_id
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/workers", response_model=WorkerLivenessListResponse)

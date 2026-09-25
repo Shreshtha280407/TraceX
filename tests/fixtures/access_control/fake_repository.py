@@ -49,6 +49,36 @@ class FakeAccessControlRepository:
     async def get_user_by_id(self, user_id: UUID) -> UserRecord | None:
         return self.users.get(user_id)
 
+    async def list_users(self, *, limit: int, offset: int) -> list[UserRecord]:
+        ordered = sorted(self.users.values(), key=lambda u: u.created_at)
+        return ordered[offset : offset + limit]
+
+    async def update_password(
+        self, user_id: UUID, *, password_hash: str, must_change_password: bool, updated_at: datetime
+    ) -> None:
+        user = self.users.get(user_id)
+        if user is not None:
+            self.users[user_id] = user.model_copy(
+                update={
+                    "password_hash": password_hash,
+                    "must_change_password": must_change_password,
+                    "updated_at": updated_at,
+                }
+            )
+
+    async def update_totp(
+        self, user_id: UUID, *, totp_secret: str | None, totp_enabled: bool, updated_at: datetime
+    ) -> None:
+        user = self.users.get(user_id)
+        if user is not None:
+            self.users[user_id] = user.model_copy(
+                update={
+                    "totp_secret": totp_secret,
+                    "totp_enabled": totp_enabled,
+                    "updated_at": updated_at,
+                }
+            )
+
     async def count_users_with_system_role(self, system_role: str) -> int:
         return sum(
             1
@@ -120,6 +150,11 @@ class FakeAccessControlRepository:
         session = self.sessions.get(session_id)
         if session is not None and session.revoked_at is None:
             self.sessions[session_id] = session.model_copy(update={"revoked_at": revoked_at})
+
+    async def revoke_all_sessions_for_user(self, user_id: UUID, revoked_at: datetime) -> None:
+        for session_id, session in list(self.sessions.items()):
+            if session.user_id == user_id and session.revoked_at is None:
+                self.sessions[session_id] = session.model_copy(update={"revoked_at": revoked_at})
 
     async def revoke_family(self, token_family_id: UUID, revoked_at: datetime) -> None:
         for session_id, session in list(self.sessions.items()):

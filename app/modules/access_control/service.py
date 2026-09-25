@@ -8,6 +8,7 @@ module raises onto HTTP responses.
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ from uuid import UUID, uuid4
 from app.modules.access_control.audit import record_audit_event
 from app.modules.access_control.errors import (
     AuthenticationError,
+    InvalidTokenError,
     RateLimitExceededError,
     RefreshReuseDetectedError,
     SessionRevokedError,
@@ -22,11 +24,15 @@ from app.modules.access_control.errors import (
 )
 from app.modules.access_control.models import (
     AdminProvisionUserRequest,
+    AdminResetCredentialsResponse,
     AuditOutcome,
     CaseMembershipView,
+    ChangePasswordRequest,
     LoginRequest,
     LogoutRequest,
     MeResponse,
+    MfaEnrollResponse,
+    MfaLoginVerifyRequest,
     PublicUser,
     RefreshRequest,
     TokenPairResponse,
@@ -40,7 +46,17 @@ from app.modules.access_control.sessions import (
     revoke_session_by_refresh_token,
     rotate_session,
 )
-from app.modules.access_control.tokens import create_access_token
+from app.modules.access_control.tokens import (
+    create_access_token,
+    create_mfa_challenge_token,
+    decode_mfa_challenge_token,
+)
+from app.modules.access_control.totp import generate_totp_secret, totp_provisioning_uri, verify_totp
+
+#: Length of a generated one-time temporary password (`admin_reset_credentials`).
+#: `secrets.token_urlsafe(n)` yields ~4n/3 characters -- comfortably inside
+#: `password.py`'s `MIN_PASSWORD_LENGTH`..`MAX_PASSWORD_LENGTH` bounds.
+_TEMPORARY_PASSWORD_BYTES = 16
 
 # Hashed once at import time and reused for every "unknown email" / "inactive
 # user" login attempt, so verifying against it costs the same as a real
@@ -69,6 +85,8 @@ def _public_user(user: UserRecord) -> PublicUser:
         is_active=user.is_active,
         created_at=user.created_at,
         system_role=user.system_role,
+        must_change_password=user.must_change_password,
+        totp_enabled=user.totp_enabled,
     )
 
 
@@ -81,26 +99,32 @@ class AuthService:
         repository: AccessControlRepository,
         login_rate_limiter: RateLimiter,
         refresh_rate_limiter: RateLimiter,
+        mfa_rate_limiter: RateLimiter,
         jwt_secret: str,
         jwt_algorithm: str,
         jwt_issuer: str,
         jwt_audience: str,
         access_token_ttl_seconds: int,
         refresh_token_ttl_seconds: int,
+        mfa_challenge_ttl_seconds: int,
         login_rate_limit: int,
         refresh_rate_limit: int,
+        mfa_rate_limit: int,
     ) -> None:
         self._repository = repository
         self._login_rate_limiter = login_rate_limiter
         self._refresh_rate_limiter = refresh_rate_limiter
+        self._mfa_rate_limiter = mfa_rate_limiter
         self._jwt_secret = jwt_secret
         self._jwt_algorithm = jwt_algorithm
         self._jwt_issuer = jwt_issuer
         self._jwt_audience = jwt_audience
         self._access_token_ttl_seconds = access_token_ttl_seconds
         self._refresh_token_ttl_seconds = refresh_token_ttl_seconds
+        self._mfa_challenge_ttl_seconds = mfa_challenge_ttl_seconds
         self._login_rate_limit = login_rate_limit
         self._refresh_rate_limit = refresh_rate_limit
+        self._mfa_rate_limit = mfa_rate_limit
 
     def _issue_access_token(self, *, user_id: UUID, session_id: UUID, now: datetime) -> str:
         return create_access_token(
@@ -112,6 +136,31 @@ class AuthService:
             audience=self._jwt_audience,
             ttl_seconds=self._access_token_ttl_seconds,
             now=now,
+        )
+
+    def _issue_mfa_challenge_token(self, *, user_id: UUID, now: datetime) -> str:
+        return create_mfa_challenge_token(
+            user_id=user_id,
+            secret=self._jwt_secret,
+            algorithm=self._jwt_algorithm,
+            issuer=self._jwt_issuer,
+            audience=self._jwt_audience,
+            ttl_seconds=self._mfa_challenge_ttl_seconds,
+            now=now,
+        )
+
+    async def _establish_session(self, *, user_id: UUID, now: datetime) -> TokenPairResponse:
+        """Shared tail of both login paths: create a session, issue tokens, `mfa_required=False`."""
+        issued = await create_session(
+            self._repository, user_id=user_id, now=now, ttl_seconds=self._refresh_token_ttl_seconds
+        )
+        access_token = self._issue_access_token(
+            user_id=user_id, session_id=issued.session.session_id, now=now
+        )
+        return TokenPairResponse(
+            access_token=access_token,
+            refresh_token=issued.refresh_token,
+            expires_in=self._access_token_ttl_seconds,
         )
 
     async def provision_user(
@@ -143,6 +192,11 @@ class AuthService:
             created_at=ctx.now,
             updated_at=ctx.now,
             system_role=request.system_role,
+            # Every admin-provisioned account must change this password and
+            # enroll MFA before it can be treated as fully onboarded (see
+            # ADR-033) -- never optional, never a request field the admin
+            # can turn off.
+            must_change_password=True,
         )
         await self._repository.create_user(user)
         await record_audit_event(
@@ -202,15 +256,22 @@ class AuthService:
             )
             raise AuthenticationError("invalid email or password")
 
-        issued = await create_session(
-            self._repository,
-            user_id=user.user_id,
-            now=ctx.now,
-            ttl_seconds=self._refresh_token_ttl_seconds,
-        )
-        access_token = self._issue_access_token(
-            user_id=user.user_id, session_id=issued.session.session_id, now=ctx.now
-        )
+        if user.totp_enabled:
+            # Password verified, but MFA is enrolled: no session yet -- only
+            # a short-lived ticket good for one shot at `mfa/login-verify`.
+            mfa_token = self._issue_mfa_challenge_token(user_id=user.user_id, now=ctx.now)
+            await record_audit_event(
+                self._repository,
+                event_type="auth.mfa.login_challenge",
+                outcome=AuditOutcome.SUCCESS,
+                now=ctx.now,
+                request_id=ctx.request_id,
+                user_id=user.user_id,
+                ip_marker=ctx.ip_marker,
+            )
+            return TokenPairResponse(mfa_required=True, mfa_token=mfa_token)
+
+        tokens = await self._establish_session(user_id=user.user_id, now=ctx.now)
         await record_audit_event(
             self._repository,
             event_type="auth.login.success",
@@ -220,11 +281,7 @@ class AuthService:
             user_id=user.user_id,
             ip_marker=ctx.ip_marker,
         )
-        return TokenPairResponse(
-            access_token=access_token,
-            refresh_token=issued.refresh_token,
-            expires_in=self._access_token_ttl_seconds,
-        )
+        return tokens
 
     async def refresh(self, request: RefreshRequest, ctx: RequestContext) -> TokenPairResponse:
         """Rotate a refresh token.
@@ -338,3 +395,212 @@ class AuthService:
                 for m in memberships
             ),
         )
+
+    async def verify_mfa_login(
+        self, request: MfaLoginVerifyRequest, ctx: RequestContext
+    ) -> TokenPairResponse:
+        """The second step of a two-factor login: exchange a valid `mfa_token` + code for a session.
+
+        Rate-limited by `ip_marker`, exactly like `refresh` -- a 6-digit
+        code has only 1e6 possibilities, so this must stay tight regardless
+        of which account is being targeted. Raises `RateLimitExceededError`
+        or `AuthenticationError` (generic denial: an expired/malformed
+        token and a wrong code are indistinguishable from the outside).
+        """
+        rate_limit_key = hash_rate_limit_key("mfa_login", ctx.ip_marker or "unknown")
+        allowed = await self._mfa_rate_limiter.check_and_increment(
+            rate_limit_key, limit=self._mfa_rate_limit
+        )
+        if not allowed:
+            await record_audit_event(
+                self._repository,
+                event_type="auth.mfa.login_rate_limited",
+                outcome=AuditOutcome.DENIED,
+                now=ctx.now,
+                request_id=ctx.request_id,
+                ip_marker=ctx.ip_marker,
+            )
+            raise RateLimitExceededError("too many authentication code attempts")
+
+        try:
+            claims = decode_mfa_challenge_token(
+                request.mfa_token,
+                secret=self._jwt_secret,
+                algorithm=self._jwt_algorithm,
+                issuer=self._jwt_issuer,
+                audience=self._jwt_audience,
+            )
+        except InvalidTokenError as exc:
+            raise AuthenticationError("invalid or expired authentication challenge") from exc
+
+        user = await self._repository.get_user_by_id(claims.sub)
+        if (
+            user is None
+            or not user.is_active
+            or not user.totp_enabled
+            or user.totp_secret is None
+            or not verify_totp(user.totp_secret, request.code)
+        ):
+            await record_audit_event(
+                self._repository,
+                event_type="auth.mfa.login_failure",
+                outcome=AuditOutcome.FAILURE,
+                now=ctx.now,
+                request_id=ctx.request_id,
+                user_id=user.user_id if user is not None else None,
+                ip_marker=ctx.ip_marker,
+            )
+            raise AuthenticationError("invalid authentication code")
+
+        tokens = await self._establish_session(user_id=user.user_id, now=ctx.now)
+        await record_audit_event(
+            self._repository,
+            event_type="auth.login.success",
+            outcome=AuditOutcome.SUCCESS,
+            now=ctx.now,
+            request_id=ctx.request_id,
+            user_id=user.user_id,
+            ip_marker=ctx.ip_marker,
+        )
+        return tokens
+
+    async def enroll_mfa(self, user_id: UUID, ctx: RequestContext) -> MfaEnrollResponse:
+        """(Re)start TOTP enrollment: generate a fresh secret, not yet enabled.
+
+        Safe to call again before `confirm_mfa_enrollment` (e.g. the
+        investigator's first attempt QR didn't scan) -- each call overwrites
+        whatever secret was pending; `totp_enabled` only ever flips to
+        `True` inside `confirm_mfa_enrollment`.
+        """
+        user = await self._repository.get_user_by_id(user_id)
+        if user is None or not user.is_active:
+            raise AuthenticationError("account is no longer active")
+        secret = generate_totp_secret()
+        await self._repository.update_totp(
+            user_id, totp_secret=secret, totp_enabled=False, updated_at=ctx.now
+        )
+        return MfaEnrollResponse(
+            secret=secret,
+            provisioning_uri=totp_provisioning_uri(
+                secret=secret, account_name=user.email_normalized
+            ),
+        )
+
+    async def confirm_mfa_enrollment(
+        self, user_id: UUID, code: str, ctx: RequestContext
+    ) -> PublicUser:
+        """Confirm enrollment with one real code from the authenticator app.
+
+        Raises `ValidationError` if no enrollment is pending, or
+        `AuthenticationError` for a wrong code (mirrors `verify_mfa_login`'s
+        generic-denial shape).
+        """
+        user = await self._repository.get_user_by_id(user_id)
+        if user is None or not user.is_active:
+            raise AuthenticationError("account is no longer active")
+        if user.totp_secret is None:
+            raise ValidationError("no MFA enrollment is pending for this account")
+        if not verify_totp(user.totp_secret, code):
+            await record_audit_event(
+                self._repository,
+                event_type="auth.mfa.enroll_failure",
+                outcome=AuditOutcome.FAILURE,
+                now=ctx.now,
+                request_id=ctx.request_id,
+                user_id=user_id,
+                ip_marker=ctx.ip_marker,
+            )
+            raise AuthenticationError("invalid authentication code")
+        await self._repository.update_totp(
+            user_id, totp_secret=user.totp_secret, totp_enabled=True, updated_at=ctx.now
+        )
+        await record_audit_event(
+            self._repository,
+            event_type="auth.mfa.enrolled",
+            outcome=AuditOutcome.SUCCESS,
+            now=ctx.now,
+            request_id=ctx.request_id,
+            user_id=user_id,
+            ip_marker=ctx.ip_marker,
+        )
+        updated = await self._repository.get_user_by_id(user_id)
+        assert updated is not None  # just written above, in the same repository
+        return _public_user(updated)
+
+    async def change_password(
+        self, user_id: UUID, request: ChangePasswordRequest, ctx: RequestContext
+    ) -> None:
+        """Self-service password change -- clears `must_change_password` on success.
+
+        Raises `AuthenticationError` if the current password is wrong (the
+        account itself, never the reason, is what the HTTP layer maps to a
+        generic 401 -- consistent with every other credential check in this
+        module).
+        """
+        user = await self._repository.get_user_by_id(user_id)
+        if user is None or not user.is_active:
+            raise AuthenticationError("account is no longer active")
+        if not verify_password(request.current_password, user.password_hash):
+            await record_audit_event(
+                self._repository,
+                event_type="auth.password_change_failure",
+                outcome=AuditOutcome.FAILURE,
+                now=ctx.now,
+                request_id=ctx.request_id,
+                user_id=user_id,
+                ip_marker=ctx.ip_marker,
+            )
+            raise AuthenticationError("current password is incorrect")
+        await self._repository.update_password(
+            user_id,
+            password_hash=hash_password(request.new_password),
+            must_change_password=False,
+            updated_at=ctx.now,
+        )
+        await record_audit_event(
+            self._repository,
+            event_type="auth.password_changed",
+            outcome=AuditOutcome.SUCCESS,
+            now=ctx.now,
+            request_id=ctx.request_id,
+            user_id=user_id,
+            ip_marker=ctx.ip_marker,
+        )
+
+    async def admin_reset_credentials(
+        self, user_id: UUID, ctx: RequestContext, *, reset_by: UUID
+    ) -> AdminResetCredentialsResponse:
+        """Lost-device / lost-password recovery (Section 6): admin-only.
+
+        Reissues a fresh one-time temporary password, clears TOTP enrollment
+        entirely (the investigator re-enrolls from scratch -- there is no
+        such thing as "trust the old secret a little"), forces a password
+        change on next login, and immediately revokes every live session
+        for the affected account so a still-valid old token can't outlive
+        the reset.
+        """
+        user = await self._repository.get_user_by_id(user_id)
+        if user is None:
+            raise ValidationError("user not found")
+        temporary_password = secrets.token_urlsafe(_TEMPORARY_PASSWORD_BYTES)
+        await self._repository.update_password(
+            user_id,
+            password_hash=hash_password(temporary_password),
+            must_change_password=True,
+            updated_at=ctx.now,
+        )
+        await self._repository.update_totp(
+            user_id, totp_secret=None, totp_enabled=False, updated_at=ctx.now
+        )
+        await self._repository.revoke_all_sessions_for_user(user_id, ctx.now)
+        await record_audit_event(
+            self._repository,
+            event_type="admin.reset_credentials",
+            outcome=AuditOutcome.SUCCESS,
+            now=ctx.now,
+            request_id=ctx.request_id,
+            user_id=reset_by,
+            ip_marker=ctx.ip_marker,
+            metadata={"reset_user_id": str(user_id)},
+        )
+        return AdminResetCredentialsResponse(temporary_password=temporary_password)

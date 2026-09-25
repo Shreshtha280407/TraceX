@@ -1463,3 +1463,147 @@ this task. No Part 4 candidate is selected; Gate C decides after Parts
   `docs/qa/known-limitations.md` ("WP-6" section, new).
 - [x] Exactly one alembic head after the new migration; `git status
   --short`/`git diff --cached --stat` remain empty (nothing staged).
+
+# Phase 8 Part 2 — Investigator frontend, Phase 0 + Phase 1 (Shreshtha)
+
+- [x] Phase 0 (frontend scaffold): React 18 + TypeScript + Vite in
+  `frontend/`, Tailwind configured with the exact Section 3 design tokens,
+  Section 4 component primitives (TopBar/Sidebar/Card/Badge/Button/
+  StatCard/DataTable), routing shell for all 17 screens, real Landing +
+  Login/MFA-shell pages. Verified with a headless-Chrome walkthrough of
+  every route (zero console errors); one real bug found and fixed in the
+  process (React DOM-node reuse across the Login form's two steps leaked
+  the typed password into the MFA code field -- fixed with distinct `key`s).
+- [x] ADR-033 (new): before wiring Phase 1 auth against the real backend,
+  found that TOTP MFA and the admin-forced-password-change ceremony
+  Section 6 of the frontend prompt specifies did not exist server-side --
+  documented in three places (`security-boundaries-v1.md`,
+  `known-limitations.md`, `README.md`) as a deliberate prior decision, not
+  an oversight. Escalated rather than resolved unilaterally (`CLAUDE.md`
+  module-boundary rule); operator chose to implement it for real.
+- [x] Backend: hand-rolled RFC 6238 TOTP (`access_control/totp.py`, stdlib
+  only -- no new dependency), migration `b2c3d4e5f6a7` (additive
+  `users.must_change_password`/`totp_secret`/`totp_enabled`), five new
+  endpoints (`mfa/enroll`, `mfa/verify`, `mfa/login-verify`,
+  `change-password`, admin `reset-credentials`), `TokenPairResponse`'s
+  `mfa_required`/`mfa_token` fields (additive, every pre-MFA caller
+  unaffected). `AdminProvisionUserRequest` deliberately left unchanged
+  (admin still picks the initial password) to avoid an invasive contract
+  change across ~12 existing call sites.
+- [x] New tests: 8 in `test_totp.py`, 14 in `test_service.py`, 9 in
+  `test_api.py`, 1 in `test_auth_no_secret_leakage.py`, 1 live integration
+  round trip in `test_auth_lifecycle_live.py` (self-skips without
+  PostgreSQL) -- 2674 total passed, 0 failed.
+- [x] `docs/decisions/ADR-033-frontend-totp-mfa.md` (new),
+  `docs/architecture/access-control-v1.md` ("Multi-factor authentication"
+  section, new), `security-boundaries-v1.md`/`known-limitations.md`/
+  `README.md` MFA lines updated to match reality.
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (243 files), `uv run pytest` (2674 passed, 12 skipped),
+  `docker compose config` all pass.
+- [x] Live verification against the real stack (Docker Postgres/Neo4j/
+  Redis/MinIO, real migration, real bootstrapped admin): full golden path
+  browser-driven with Playwright, computing real TOTP codes from the
+  on-screen secrets -- admin forced into MFA enrollment, creates an
+  investigator via the real Settings UI, investigator's forced password
+  change + MFA enrollment, a real case created (`case_owner`) unlocks all
+  15 case-scoped nav items, a third `viewer`-role account sees exactly 9 of
+  them, and a real `403 forbidden` from a `member_manage`-gated call the
+  viewer lacks. Zero console errors. Two real bugs found and fixed this
+  way (not by unit tests): a React 18 StrictMode double-invoke of the
+  non-idempotent `/mfa/enroll` call racing the displayed QR against what
+  got persisted, and the auth store never refreshing `/me` after login so
+  a newly-created case never appeared in the sidebar without a full
+  re-login.
+- [x] Follow-up: `GET /api/v1/admin/users` (new, admin-only, paginated
+  `limit`/`offset`) so the Settings/Security admin sub-section's
+  reset-credentials panel can pick a real account instead of taking a raw
+  UUID -- the backend had no listing endpoint at all before this. 4 new
+  tests in `test_api.py`; `docs/architecture/access-control-v1.md` updated.
+- [x] Live-verified the new picker against the real dev database (which
+  already has >200 pre-existing test-fixture users) and found a real,
+  serious bug: `listUsers` is oldest-first and capped at 200, so a
+  freshly-created account never appears in a naive re-fetch of the list --
+  the picker's `<select value={justCreatedId}>` then matched no `<option>`,
+  and the browser silently fell back to selecting a completely unrelated
+  account with no visible error. An admin trusting the pre-fill could have
+  reset a stranger's credentials. Fixed by prepending the newly-created
+  `PublicUser` directly into local state instead of re-fetching, plus a
+  defensive guard so the `<select>` only ever shows a real match as
+  selected (falls back to the disabled placeholder otherwise) -- re-verified
+  live end-to-end including a real reset and a real login with the new
+  temporary password.
+
+# Phase 8 Part 2 — Investigator frontend, Phase 2 (Shreshtha)
+
+- [x] Command Center & Case pages (2-6), entirely frontend-only -- no
+  backend code touched. Read every real route in `access_control/
+  cases_api.py`, `evidence_lifecycle/api.py`, and `graph/api.py`'s
+  candidates/hypotheses endpoints before writing any page. Found no
+  endpoint lists "every case the current user has access to" (only
+  create/get-by-id/status exist); handled entirely client-side by fanning
+  `/me`'s real `case_memberships` out to `GET /cases/{id}` per membership
+  (`lib/cases.ts`) -- zero backend changes, real data throughout, at the
+  honest cost of client-side-only search/filter (no server pagination at
+  scale). Also found and fixed a real RBAC bug from Phase 1's placeholder
+  wiring: Processing Pipeline was gated on `case_read` (every role has it,
+  including `viewer`) but its real page calls `evidence_read`-gated
+  endpoints -- `viewer` would have hit a live 403 the moment this page
+  became real. Regated to `evidence_read`.
+- [x] Dashboard: real assigned cases, pending-review counts (candidates +
+  hypotheses `needs_review`, fanned out per case), alerts (real non-success
+  audit events), recent activity (real audit stream), evidence-processed
+  count -- all real, all with loading/error/empty states. Dropped the
+  approved mockup's "priority" badges and "candidate bridge surfaced" /
+  "contradiction flagged" alert framing outright: nothing in the real
+  backend backs a priority ranking or bridge/contradiction detection yet,
+  and fabricating one to match the mockup would violate the master
+  prompt's own "no mocked content" rule.
+- [x] Case Management: real case list (via the fan-out above) with
+  client-side search/status filter; opening a row sets the active case and
+  routes to Workspace (the real destination once Phase 3 builds it).
+- [x] Create Case: real form matching `CaseCreateRequest` exactly
+  (`case_reference` + `classification` -- there is no separate "access
+  policy" field on creation itself); refreshes identity on success so the
+  new `case_owner` membership appears immediately, without a re-login.
+- [x] Evidence Upload: real multipart upload against
+  `POST /cases/{id}/evidence` with every real `SourceType`/
+  `EvidenceClassification` enum value from `app/contracts/evidence.py` (15
+  source types, not a client-invented subset); a case-scoped 403 (this
+  investigator's role lacks `evidence_write` on the case picked in the
+  switcher) renders as a calm, real forbidden state.
+- [x] Processing Pipeline: real per-evidence `processing_status` from
+  `GET /cases/{id}/evidence` (no separate job-listing endpoint exists, only
+  `GET .../jobs/{job_id}` for one already-known job); polls only while an
+  item is genuinely still in flight, never a fixed/fake progress bar.
+- [x] Live-verified end-to-end against the real stack (Docker Postgres/
+  Neo4j/Redis/MinIO, real migration, two real bootstrapped accounts): an
+  admin (`case_owner`) creates a real case -- it appears immediately in
+  Case Management and the Dashboard, sidebar unlocks all case-scoped items;
+  uploads a real text file as evidence -- Processing Pipeline shows the
+  real returned job (`fir_report_text_v1` processor, real job ID, real
+  `queued` status); Dashboard's Recent Activity shows the real `case.create`
+  and `evidence.upload` events. A second `viewer`-role account on the same
+  case sees the correctly narrower nav (no Evidence Upload/Processing
+  Pipeline -- `viewer` lacks `evidence_read`) and correctly empty
+  evidence-processed/pending-review stats.
+- [x] Two more real bugs found and fixed via this live walkthrough (not by
+  unit tests): (1) Dashboard's own "recent activity" audit-event fetch was
+  entirely drowned out by `case_access_granted` telemetry (recorded on
+  every single successful case-scoped API call, confirmed live) -- pushed
+  the actual `case.create`/`evidence.upload` events out of even a 20-row
+  window; fixed by excluding `case_access_granted` from both feeds and
+  raising the fetched page to the endpoint's real 200-row max. (2) For a
+  role that structurally lacks `graph_read`/`evidence_read` (e.g.
+  `viewer`), the Dashboard's own background aggregation calls would 403 on
+  *every single visit*, generating a real `case_access_denied` audit event
+  from nothing the investigator did, then showing that as a confusing
+  phantom "alert" -- fixed by checking the per-case role client-side before
+  attempting a call that role can never pass (Section 6's own ABAC rule:
+  "if the backend would reject an action, the UI should not offer it in
+  the first place"), applied here to the app's own internal calls, not
+  just user-facing ones.
+- [x] `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app` (243 files), `docker compose config` all pass
+  (backend untouched this phase). Frontend: `tsc -b --noEmit`, `oxlint`,
+  production build all clean.
