@@ -83,6 +83,26 @@ docker compose down          # stop containers, keep volumes (data persists)
 docker compose down -v       # stop containers and remove volumes (fresh state)
 ```
 
+### One-time step if you already have a `minio-data` volume from before 2026-09-25
+
+MinIO Inc. deleted `minio/minio` from Docker Hub on 2026-09-11, then
+`quay.io/minio/minio` (the stopgap this repo used) itself started refusing
+anonymous pulls with `401 Unauthorized` on 2026-09-24 — both official free
+distribution channels are gone. `compose.yaml` now pulls
+`cgr.dev/chainguard/minio` instead (same real MinIO source, actively
+maintained, verified anonymously pullable). That image runs as a non-root
+user (UID `65532`), so a `minio-data` volume already populated by the old
+image (which ran as root) will fail to start with `Unable to write to the
+backend`. Fix it once, non-destructively — this only changes file
+ownership, your existing buckets/evidence are untouched:
+
+```bash
+docker run --rm -v tracex_minio-data:/data alpine chown -R 65532:65532 /data
+docker compose up -d minio
+```
+
+A brand-new environment (no pre-existing volume) needs no such step.
+
 ### Optional continuous workers (`cpu-worker`/`gpu-worker` Compose profiles)
 
 Gap-Closure WP-8 (G15) split the previous single `workers` profile in two, so an operator can start only the workers their hardware actually supports — no worker is started by a plain `docker compose up`, both remain opt-in:

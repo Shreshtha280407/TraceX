@@ -143,7 +143,18 @@ services:
       retries: 10
 
   minio:
-    image: quay.io/minio/minio:latest
+    # MinIO Inc. deleted `minio/minio` from Docker Hub on 2026-09-11, then
+    # `quay.io/minio/minio` (the original stopgap) itself started refusing
+    # anonymous pulls with `401 Unauthorized` on 2026-09-24 -- both the
+    # official free distribution channels are gone, not a config mistake on
+    # our end. Chainguard mirrors the same real MinIO source
+    # (github.com/chainguard-forks/minio) as a minimal, actively-maintained,
+    # anonymously-pullable image -- verified locally: identical
+    # `server /data --console-address ":9001"` command, identical
+    # `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` env vars, `mc` bundled for the
+    # healthcheck below, real S3 API confirmed (bucket create/upload/read)
+    # all unchanged. Zero other lines in this service needed to change.
+    image: cgr.dev/chainguard/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
