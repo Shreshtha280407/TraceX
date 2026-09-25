@@ -107,12 +107,19 @@ jobs:
         # --console-address ":9001"`), so it's started as a plain container
         # instead, then polled the same way compose.yaml's own healthcheck
         # does (`mc ready`) before any test runs.
+        #
+        # Image: matches compose.yaml's own `minio` service -- see that
+        # file's comment for why this is `cgr.dev/chainguard/minio`, not
+        # `quay.io/minio/minio`: MinIO Inc. deleted the Docker Hub image on
+        # 2026-09-11, and quay.io's own copy (the original stopgap) started
+        # refusing anonymous pulls with `401 Unauthorized` on 2026-09-24 --
+        # confirmed live in this repo's own CI run, not a config mistake.
         run: |
           docker run -d --name minio \
             -p 9000:9000 -p 9001:9001 \
             -e MINIO_ROOT_USER=tracex-minio \
             -e MINIO_ROOT_PASSWORD=change-me-dev-only \
-            quay.io/minio/minio:latest server /data --console-address ":9001"
+            cgr.dev/chainguard/minio:latest server /data --console-address ":9001"
           for _ in $(seq 1 20); do
             docker exec minio mc ready local && break
             sleep 3

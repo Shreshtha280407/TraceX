@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     # Attempts allowed per 60-second fixed window (see `rate_limit.py`).
     auth_login_rate_limit: int = Field(default=5, ge=1)
     auth_refresh_rate_limit: int = Field(default=20, ge=1)
+    # 5 minutes: long enough for an investigator to open their authenticator
+    # app and type a code, short enough that a leaked `mfa_token` (it grants
+    # no session by itself, only a shot at `mfa/login-verify`) is a narrow
+    # window of exposure.
+    auth_mfa_challenge_ttl_seconds: int = Field(default=300, ge=60)
+    # A TOTP code is only 6 digits (1e6 space) -- kept tight per 60-second
+    # window, same reasoning as `auth_login_rate_limit`.
+    auth_mfa_rate_limit: int = Field(default=8, ge=1)
 
     @field_validator("auth_jwt_secret")
     @classmethod

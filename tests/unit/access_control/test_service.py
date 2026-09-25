@@ -16,13 +16,16 @@ from app.modules.access_control.errors import (
 from app.modules.access_control.models import (
     AdminProvisionUserRequest,
     CaseRole,
+    ChangePasswordRequest,
     LoginRequest,
     LogoutRequest,
+    MfaLoginVerifyRequest,
     RefreshRequest,
     SystemRole,
 )
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
 from app.modules.access_control.service import AuthService, RequestContext
+from app.modules.access_control.totp import verify_totp
 from tests.fixtures.access_control.factories import (
     DEFAULT_PASSWORD,
     make_case_record,
@@ -35,25 +38,60 @@ NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 CTX = RequestContext(now=NOW, request_id="test-request-id", ip_marker=None)
 
 
+def _real_ctx() -> RequestContext:
+    """A context stamped with the real wall clock.
+
+    Needed specifically for tests that mint an MFA-challenge JWT and then
+    decode it: `decode_mfa_challenge_token`'s underlying `jwt.decode` checks
+    `exp` against real wall-clock time, not against whatever fake `now` the
+    token was minted with -- so a token minted against the fixed, long-past
+    `CTX`/`NOW` above would already look expired by the time it's decoded.
+    Plain business-logic tests that never round-trip through real JWT
+    decoding are unaffected and keep using the fixed `CTX`.
+    """
+    return RequestContext(now=datetime.now(UTC), request_id="test-request-id", ip_marker=None)
+
+
+def _current_totp_code(secret: str) -> str:
+    """Compute a real, currently-valid code for `secret` -- test-only, mirrors RFC 6238."""
+    import base64
+    import hashlib
+    import hmac
+    import struct
+    import time
+
+    counter = int(time.time() // 30)
+    padded = secret + "=" * (-len(secret) % 8)
+    key = base64.b32decode(padded)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    truncated = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return str(truncated % 1_000_000).zfill(6)
+
+
 def _make_service(
     repository: FakeAccessControlRepository | None = None,
     *,
     login_rate_limit: int = 1000,
     refresh_rate_limit: int = 1000,
+    mfa_rate_limit: int = 1000,
 ) -> tuple[AuthService, FakeAccessControlRepository]:
     repo = repository or FakeAccessControlRepository()
     service = AuthService(
         repository=repo,  # type: ignore[arg-type]
         login_rate_limiter=InMemoryRateLimiter(),
         refresh_rate_limiter=InMemoryRateLimiter(),
+        mfa_rate_limiter=InMemoryRateLimiter(),
         jwt_secret="x" * 32,
         jwt_algorithm="HS256",
         jwt_issuer="tracex-api-test",
         jwt_audience="tracex-clients-test",
         access_token_ttl_seconds=900,
         refresh_token_ttl_seconds=1_209_600,
+        mfa_challenge_ttl_seconds=300,
         login_rate_limit=login_rate_limit,
         refresh_rate_limit=refresh_rate_limit,
+        mfa_rate_limit=mfa_rate_limit,
     )
     return service, repo
 
@@ -310,3 +348,213 @@ async def test_get_me_rejects_unknown_user() -> None:
     service, _ = _make_service()
     with pytest.raises(AuthenticationError):
         await service.get_me(uuid4())
+
+
+# --- ADR-033: admin-forced password change ----------------------------------
+
+
+async def test_provision_user_always_forces_a_password_change() -> None:
+    service, repo = _make_service()
+    request = AdminProvisionUserRequest(
+        email="forced@example.test", password=DEFAULT_PASSWORD, display_name="A"
+    )
+    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
+    assert public_user.must_change_password is True
+    assert repo.users[public_user.user_id].must_change_password is True
+
+
+async def test_change_password_clears_the_forced_flag_and_accepts_the_new_password() -> None:
+    service, repo = _make_service()
+    user = make_user_record(must_change_password=True)
+    repo.users[user.user_id] = user
+
+    await service.change_password(
+        user.user_id,
+        ChangePasswordRequest(current_password=DEFAULT_PASSWORD, new_password="a-new-password-1"),
+        CTX,
+    )
+    assert repo.users[user.user_id].must_change_password is False
+
+    # The new password now works; the old one no longer does.
+    result = await service.login(
+        LoginRequest(email=user.email_normalized, password="a-new-password-1"), CTX
+    )
+    assert result.access_token
+    with pytest.raises(AuthenticationError):
+        await service.login(
+            LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), CTX
+        )
+
+
+async def test_change_password_rejects_a_wrong_current_password() -> None:
+    service, repo = _make_service()
+    user = make_user_record()
+    repo.users[user.user_id] = user
+    with pytest.raises(AuthenticationError):
+        await service.change_password(
+            user.user_id,
+            ChangePasswordRequest(current_password="totally-wrong", new_password="a-new-pass-1"),
+            CTX,
+        )
+    # Unaffected: no partial state change on a rejected attempt.
+    assert repo.users[user.user_id].password_hash == user.password_hash
+
+
+# --- ADR-033: TOTP enrollment ------------------------------------------------
+
+
+async def test_enroll_then_confirm_mfa_enables_totp() -> None:
+    service, repo = _make_service()
+    user = make_user_record()
+    repo.users[user.user_id] = user
+
+    enrollment = await service.enroll_mfa(user.user_id, CTX)
+    assert enrollment.secret
+    assert enrollment.provisioning_uri.startswith("otpauth://totp/")
+    assert repo.users[user.user_id].totp_enabled is False  # not yet confirmed
+
+    code = _current_totp_code(enrollment.secret)
+    public_user = await service.confirm_mfa_enrollment(user.user_id, code, CTX)
+    assert public_user.totp_enabled is True
+    assert repo.users[user.user_id].totp_enabled is True
+
+
+async def test_confirm_mfa_enrollment_rejects_a_wrong_code() -> None:
+    service, repo = _make_service()
+    user = make_user_record()
+    repo.users[user.user_id] = user
+    enrollment = await service.enroll_mfa(user.user_id, CTX)
+    with pytest.raises(AuthenticationError):
+        await service.confirm_mfa_enrollment(user.user_id, "000000", CTX)
+    assert repo.users[user.user_id].totp_enabled is False
+    assert enrollment.secret  # sanity: enrollment itself succeeded
+
+
+async def test_confirm_mfa_enrollment_without_a_pending_enrollment_is_rejected() -> None:
+    service, repo = _make_service()
+    user = make_user_record()
+    repo.users[user.user_id] = user
+    with pytest.raises(ValidationError):
+        await service.confirm_mfa_enrollment(user.user_id, "123456", CTX)
+
+
+# --- ADR-033: two-factor login -----------------------------------------------
+
+
+async def test_login_with_totp_enabled_returns_a_challenge_not_tokens() -> None:
+    service, repo = _make_service()
+    user = make_user_record(totp_secret="JBSWY3DPEHPK3PXP", totp_enabled=True)
+    repo.users[user.user_id] = user
+
+    result = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), CTX
+    )
+    assert result.mfa_required is True
+    assert result.mfa_token
+    assert result.access_token is None
+    assert result.refresh_token is None
+    assert len(repo.sessions) == 0  # no session until the second factor is verified
+
+
+async def test_verify_mfa_login_completes_the_session_with_a_correct_code() -> None:
+    service, repo = _make_service()
+    secret = "JBSWY3DPEHPK3PXP"
+    user = make_user_record(totp_secret=secret, totp_enabled=True)
+    repo.users[user.user_id] = user
+
+    challenge = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), _real_ctx()
+    )
+    code = _current_totp_code(secret)
+    result = await service.verify_mfa_login(
+        MfaLoginVerifyRequest(mfa_token=challenge.mfa_token, code=code), _real_ctx()
+    )
+    assert result.mfa_required is False
+    assert result.access_token
+    assert result.refresh_token
+    assert len(repo.sessions) == 1
+
+
+async def test_verify_mfa_login_rejects_a_wrong_code() -> None:
+    service, repo = _make_service()
+    secret = "JBSWY3DPEHPK3PXP"
+    user = make_user_record(totp_secret=secret, totp_enabled=True)
+    repo.users[user.user_id] = user
+    challenge = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), _real_ctx()
+    )
+    with pytest.raises(AuthenticationError):
+        await service.verify_mfa_login(
+            MfaLoginVerifyRequest(mfa_token=challenge.mfa_token, code="000000"), _real_ctx()
+        )
+    assert len(repo.sessions) == 0
+
+
+async def test_verify_mfa_login_rejects_a_garbage_challenge_token() -> None:
+    service, _ = _make_service()
+    with pytest.raises(AuthenticationError):
+        await service.verify_mfa_login(
+            MfaLoginVerifyRequest(mfa_token="not-a-real-token", code="123456"), _real_ctx()
+        )
+
+
+async def test_verify_mfa_login_rate_limit_raises_after_threshold() -> None:
+    service, repo = _make_service(mfa_rate_limit=2)
+    secret = "JBSWY3DPEHPK3PXP"
+    user = make_user_record(totp_secret=secret, totp_enabled=True)
+    repo.users[user.user_id] = user
+    challenge = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), _real_ctx()
+    )
+    for _ in range(2):
+        with pytest.raises(AuthenticationError):
+            await service.verify_mfa_login(
+                MfaLoginVerifyRequest(mfa_token=challenge.mfa_token, code="000000"), _real_ctx()
+            )
+    with pytest.raises(RateLimitExceededError):
+        await service.verify_mfa_login(
+            MfaLoginVerifyRequest(mfa_token=challenge.mfa_token, code="000000"), _real_ctx()
+        )
+
+
+# --- ADR-033: admin-only lost-device/lost-password recovery -----------------
+
+
+async def test_admin_reset_credentials_forces_change_and_clears_mfa() -> None:
+    service, repo = _make_service()
+    user = make_user_record(totp_secret="JBSWY3DPEHPK3PXP", totp_enabled=True)
+    repo.users[user.user_id] = user
+    login_result = await service.login(
+        LoginRequest(email=user.email_normalized, password=DEFAULT_PASSWORD), _real_ctx()
+    )
+    code = _current_totp_code("JBSWY3DPEHPK3PXP")
+    await service.verify_mfa_login(
+        MfaLoginVerifyRequest(mfa_token=login_result.mfa_token, code=code), _real_ctx()
+    )
+    assert len(repo.sessions) == 1
+
+    reset = await service.admin_reset_credentials(user.user_id, CTX, reset_by=uuid4())
+    assert reset.temporary_password
+    updated = repo.users[user.user_id]
+    assert updated.must_change_password is True
+    assert updated.totp_enabled is False
+    assert updated.totp_secret is None
+    assert all(s.revoked_at is not None for s in repo.sessions.values())
+
+    # The new temporary password actually works.
+    fresh_login = await service.login(
+        LoginRequest(email=user.email_normalized, password=reset.temporary_password), CTX
+    )
+    assert fresh_login.access_token
+
+
+async def test_admin_reset_credentials_rejects_an_unknown_user() -> None:
+    service, _ = _make_service()
+    with pytest.raises(ValidationError):
+        await service.admin_reset_credentials(uuid4(), CTX, reset_by=uuid4())
+
+
+def test_totp_test_fixture_secret_is_actually_valid_base32() -> None:
+    """Guards the other tests here: `verify_totp` must accept our fixed test secret."""
+    code = _current_totp_code("JBSWY3DPEHPK3PXP")
+    assert verify_totp("JBSWY3DPEHPK3PXP", code)

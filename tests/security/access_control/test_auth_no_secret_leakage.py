@@ -15,6 +15,7 @@ from app.main import app
 from app.modules.access_control.dependencies import (
     get_access_control_repository,
     get_login_rate_limiter,
+    get_mfa_rate_limiter,
     get_refresh_rate_limiter,
 )
 from app.modules.access_control.models import SystemRole
@@ -36,13 +37,16 @@ def fake_repository() -> FakeAccessControlRepository:
 def _override_dependencies(fake_repository: FakeAccessControlRepository) -> Iterator[None]:
     login_limiter = InMemoryRateLimiter()
     refresh_limiter = InMemoryRateLimiter()
+    mfa_limiter = InMemoryRateLimiter()
     app.dependency_overrides[get_access_control_repository] = lambda: fake_repository
     app.dependency_overrides[get_login_rate_limiter] = lambda: login_limiter
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: refresh_limiter
+    app.dependency_overrides[get_mfa_rate_limiter] = lambda: mfa_limiter
     yield
     app.dependency_overrides.pop(get_access_control_repository, None)
     app.dependency_overrides.pop(get_login_rate_limiter, None)
     app.dependency_overrides.pop(get_refresh_rate_limiter, None)
+    app.dependency_overrides.pop(get_mfa_rate_limiter, None)
 
 
 @pytest_asyncio.fixture
@@ -174,6 +178,42 @@ async def test_refresh_and_logout_never_leak_the_refresh_token_value(
     for event in fake_repository.audit_events:
         assert refresh_token not in event.model_dump_json()
     assert refresh_token not in caplog.text
+
+
+async def test_totp_secret_never_appears_outside_the_enroll_response(
+    client: AsyncClient,
+    fake_repository: FakeAccessControlRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`/mfa/enroll` legitimately returns the secret once (that's its job) --
+    it must never additionally appear in `/me`, `/mfa/verify`, a login
+    response, or logs."""
+    caplog.set_level(logging.DEBUG)
+    email = "totpsecret@example.test"
+    await fake_repository.create_user(
+        make_user_record(email_normalized=email, password_hash=hash_password(SECRET_PASSWORD))
+    )
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": email, "password": SECRET_PASSWORD}
+    )
+    token = login.json()["access_token"]
+
+    enroll = await client.post(
+        "/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"}
+    )
+    secret = enroll.json()["secret"]
+    assert secret in enroll.text  # the one legitimate place it appears
+
+    me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert secret not in me.text
+    assert "totp_secret" not in me.text
+
+    for event in fake_repository.audit_events:
+        assert secret not in event.model_dump_json()
+    assert secret not in caplog.text
+
+    stored = next(iter(fake_repository.users.values()))
+    assert stored.totp_secret == secret  # sanity: it really was persisted
 
 
 async def test_unexpected_backend_failure_never_leaks_a_connection_secret(

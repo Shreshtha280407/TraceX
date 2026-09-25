@@ -22,12 +22,13 @@ import jwt
 from pydantic import ValidationError as PydanticValidationError
 
 from app.modules.access_control.errors import InvalidTokenError
-from app.modules.access_control.models import AccessTokenClaims, TokenType
+from app.modules.access_control.models import AccessTokenClaims, MfaChallengeClaims, TokenType
 
 #: Bytes of entropy for a generated refresh-token secret (256 bits).
 REFRESH_TOKEN_BYTES = 32
 
 _REQUIRED_CLAIMS = ("sub", "sid", "iat", "exp", "iss", "aud", "typ")
+_REQUIRED_MFA_CHALLENGE_CLAIMS = ("sub", "iat", "exp", "iss", "aud", "typ")
 
 
 def create_access_token(
@@ -93,6 +94,64 @@ def decode_access_token(
 
     if claims.typ is not TokenType.ACCESS_V1:
         raise InvalidTokenError("unexpected access token type")
+    return claims
+
+
+def create_mfa_challenge_token(
+    *,
+    user_id: UUID,
+    secret: str,
+    algorithm: str,
+    issuer: str,
+    audience: str,
+    ttl_seconds: int,
+    now: datetime,
+) -> str:
+    """Mint a short-lived "password already verified, MFA still owed" token.
+
+    Deliberately carries no session ID: `login` has not created a session
+    yet at the point this is issued, and never will unless the caller comes
+    back with a valid code (see `service.verify_mfa_login`).
+    """
+    claims = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(seconds=ttl_seconds),
+        "iss": issuer,
+        "aud": audience,
+        "typ": TokenType.MFA_PENDING.value,
+    }
+    return jwt.encode(claims, secret, algorithm=algorithm)
+
+
+def decode_mfa_challenge_token(
+    token: str,
+    *,
+    secret: str,
+    algorithm: str,
+    issuer: str,
+    audience: str,
+) -> MfaChallengeClaims:
+    """Decode and fully validate an MFA-challenge token. Mirrors `decode_access_token`."""
+    try:
+        raw_claims = jwt.decode(
+            token,
+            secret,
+            algorithms=[algorithm],
+            issuer=issuer,
+            audience=audience,
+            options={"require": list(_REQUIRED_MFA_CHALLENGE_CLAIMS)},
+        )
+    except jwt.PyJWTError as exc:
+        raise InvalidTokenError("mfa challenge token failed validation") from exc
+
+    try:
+        claims = MfaChallengeClaims.model_validate(raw_claims)
+    except PydanticValidationError as exc:
+        raise InvalidTokenError("mfa challenge token claims are malformed") from exc
+
+    if claims.typ is not TokenType.MFA_PENDING:
+        raise InvalidTokenError("unexpected mfa challenge token type")
     return claims
 
 

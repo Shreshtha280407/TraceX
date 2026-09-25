@@ -63,6 +63,9 @@ users_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("system_role", sa.Text(), nullable=True),
+    sa.Column("must_change_password", sa.Boolean(), nullable=False),
+    sa.Column("totp_secret", sa.Text(), nullable=True),
+    sa.Column("totp_enabled", sa.Boolean(), nullable=False),
 )
 
 cases_table = sa.Table(
@@ -204,6 +207,55 @@ class AccessControlRepository:
                 .first()
             )
         return _user_from_row(row) if row is not None else None
+
+    async def list_users(self, *, limit: int, offset: int) -> list[UserRecord]:
+        """Admin-only account listing (`GET /api/v1/admin/users`), oldest first.
+
+        Bounded like every other list method in this module (`list_case_audit_events`,
+        `list_worker_credentials`) -- never an unbounded `SELECT *`.
+        """
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(users_table)
+                        .order_by(users_table.c.created_at.asc())
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_user_from_row(row) for row in rows]
+
+    async def update_password(
+        self, user_id: UUID, *, password_hash: str, must_change_password: bool, updated_at: datetime
+    ) -> None:
+        """Set a new password hash and the forced-change flag together (`change_password`,
+        `admin_reset_credentials`) -- always updated atomically, never one without the other."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(users_table)
+                .where(users_table.c.user_id == user_id)
+                .values(
+                    password_hash=password_hash,
+                    must_change_password=must_change_password,
+                    updated_at=updated_at,
+                )
+            )
+
+    async def update_totp(
+        self, user_id: UUID, *, totp_secret: str | None, totp_enabled: bool, updated_at: datetime
+    ) -> None:
+        """Set the TOTP secret and enabled flag together (`enroll_mfa`,
+        `confirm_mfa_enrollment`, `admin_reset_credentials`)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(users_table)
+                .where(users_table.c.user_id == user_id)
+                .values(totp_secret=totp_secret, totp_enabled=totp_enabled, updated_at=updated_at)
+            )
 
     async def count_users_with_system_role(self, system_role: str) -> int:
         """Bootstrap-CLI idempotency check: how many active admins already exist."""
@@ -347,6 +399,18 @@ class AccessControlRepository:
             await conn.execute(
                 sa.update(auth_sessions_table)
                 .where(auth_sessions_table.c.session_id == session_id)
+                .where(auth_sessions_table.c.revoked_at.is_(None))
+                .values(revoked_at=revoked_at)
+            )
+
+    async def revoke_all_sessions_for_user(self, user_id: UUID, revoked_at: datetime) -> None:
+        """Lost-device recovery (`admin_reset_credentials`): kill every live session for
+        this user immediately, regardless of token family -- a reset must not leave an
+        old, already-issued access/refresh token pair usable after the fact."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.update(auth_sessions_table)
+                .where(auth_sessions_table.c.user_id == user_id)
                 .where(auth_sessions_table.c.revoked_at.is_(None))
                 .values(revoked_at=revoked_at)
             )

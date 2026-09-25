@@ -52,6 +52,7 @@ _notes_repository = CaseNoteRepository(create_notes_engine(_settings))
 _redis_client: redis.Redis = redis.from_url(str(_settings.redis_url))
 _login_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _refresh_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
+_mfa_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 logger = structlog.get_logger(__name__)
@@ -75,24 +76,32 @@ def get_refresh_rate_limiter() -> RateLimiter:
     return _refresh_rate_limiter
 
 
+def get_mfa_rate_limiter() -> RateLimiter:
+    return _mfa_rate_limiter
+
+
 def get_auth_service(
     repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     settings: Annotated[Settings, Depends(get_settings)],
     login_rate_limiter: Annotated[RateLimiter, Depends(get_login_rate_limiter)],
     refresh_rate_limiter: Annotated[RateLimiter, Depends(get_refresh_rate_limiter)],
+    mfa_rate_limiter: Annotated[RateLimiter, Depends(get_mfa_rate_limiter)],
 ) -> AuthService:
     return AuthService(
         repository=repository,
         login_rate_limiter=login_rate_limiter,
         refresh_rate_limiter=refresh_rate_limiter,
+        mfa_rate_limiter=mfa_rate_limiter,
         jwt_secret=settings.auth_jwt_secret.get_secret_value(),
         jwt_algorithm=settings.auth_jwt_algorithm,
         jwt_issuer=settings.auth_jwt_issuer,
         jwt_audience=settings.auth_jwt_audience,
         access_token_ttl_seconds=settings.auth_access_token_ttl_seconds,
         refresh_token_ttl_seconds=settings.auth_refresh_token_ttl_seconds,
+        mfa_challenge_ttl_seconds=settings.auth_mfa_challenge_ttl_seconds,
         login_rate_limit=settings.auth_login_rate_limit,
         refresh_rate_limit=settings.auth_refresh_rate_limit,
+        mfa_rate_limit=settings.auth_mfa_rate_limit,
     )
 
 

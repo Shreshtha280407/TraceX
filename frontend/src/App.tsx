@@ -1,0 +1,57 @@
+import type { ReactNode } from 'react'
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { AppShell } from './layouts/AppShell'
+import { RequireAuth, RequireSession } from './lib/auth/guards'
+import { PAGES } from './lib/navigation'
+import { CaseManagement } from './pages/CaseManagement'
+import { CreateCase } from './pages/CreateCase'
+import { Dashboard } from './pages/Dashboard'
+import { EvidenceUpload } from './pages/EvidenceUpload'
+import { ForcePasswordChange } from './pages/ForcePasswordChange'
+import { Landing } from './pages/Landing'
+import { Login } from './pages/Login'
+import { MfaEnroll } from './pages/MfaEnroll'
+import { PlaceholderPage } from './pages/PlaceholderPage'
+import { ProcessingPipeline } from './pages/ProcessingPipeline'
+import { SettingsSecurity } from './pages/SettingsSecurity'
+
+const SHELL_PAGES = PAGES.filter((page) => page.inShell)
+
+const SHELL_PAGE_ELEMENTS: Record<string, ReactNode> = {
+  '/dashboard': <Dashboard />,
+  '/cases': <CaseManagement />,
+  '/cases/new': <CreateCase />,
+  '/evidence/upload': <EvidenceUpload />,
+  '/pipeline': <ProcessingPipeline />,
+  '/settings': <SettingsSecurity />,
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Landing />} />
+      <Route path="/login" element={<Login />} />
+
+      <Route element={<RequireSession />}>
+        <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="/mfa/enroll" element={<MfaEnroll />} />
+      </Route>
+
+      <Route element={<RequireAuth />}>
+        <Route element={<AppShell />}>
+          {SHELL_PAGES.map((page) => (
+            <Route
+              key={page.path}
+              path={page.path}
+              element={SHELL_PAGE_ELEMENTS[page.path] ?? <PlaceholderPage page={page} />}
+            />
+          ))}
+        </Route>
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
+}
+
+export default App
