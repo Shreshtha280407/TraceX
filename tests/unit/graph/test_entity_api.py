@@ -2,13 +2,18 @@
 
 Mirrors `test_graph_api.py`'s pattern: `get_access_control_repository`
 overridden with an in-memory fake, `get_entity_repository` overridden with
-`FakeEntityRepository` (no live PostgreSQL needed).
+`FakeEntityRepository` (no live PostgreSQL needed). `get_graph_repository`
+is overridden the same way `test_graph_api.py` does it, with a local
+`_FakeGraphRepository` -- needed since `submit_entity_resolution_review`
+now best-effort re-projects the decision into Neo4j (`entity_graph_sync`
+gap-closure follow-up).
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -23,7 +28,7 @@ from app.modules.access_control.dependencies import (
 )
 from app.modules.access_control.models import CaseRole, ClearanceLevel
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
-from app.modules.graph.dependencies import get_entity_repository
+from app.modules.graph.dependencies import get_entity_repository, get_graph_repository
 from app.modules.graph.entity_models import EntityResolutionCandidateRecord
 from tests.fixtures.access_control.factories import (
     DEFAULT_PASSWORD,
@@ -37,6 +42,26 @@ from tests.fixtures.graph.fake_entity_repository import FakeEntityRepository
 VALID_PASSWORD = DEFAULT_PASSWORD
 
 
+class _FakeGraphRepository:
+    """Duck-typed stand-in for `Neo4jGraphRepository`, mirrors
+    `test_graph_api.py`'s `_FakeGraphRepository` exactly. Records every
+    `write` call; `apply_writes=False` simulates every candidate's entities
+    not being projected yet (a normal `DEFERRED` outcome, never an error)."""
+
+    def __init__(self, *, apply_writes: bool = True) -> None:
+        self.write_calls: list[tuple[str, dict[str, Any]]] = []
+        self._apply_writes = apply_writes
+
+    async def write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        self.write_calls.append((query, parameters))
+        if not self._apply_writes:
+            return []
+        return [{"candidate_id": parameters.get("candidate_id")}]
+
+    async def read(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        raise AssertionError("this endpoint's graph side effect only ever writes")
+
+
 @pytest.fixture
 def ac_repository() -> FakeAccessControlRepository:
     return FakeAccessControlRepository()
@@ -48,13 +73,21 @@ def entity_repository() -> FakeEntityRepository:
 
 
 @pytest.fixture
+def graph_repository() -> _FakeGraphRepository:
+    return _FakeGraphRepository()
+
+
+@pytest.fixture
 def _override_dependencies(
-    ac_repository: FakeAccessControlRepository, entity_repository: FakeEntityRepository
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+    graph_repository: _FakeGraphRepository,
 ) -> Iterator[None]:
     app.dependency_overrides[get_access_control_repository] = lambda: ac_repository
     app.dependency_overrides[get_login_rate_limiter] = lambda: InMemoryRateLimiter()
     app.dependency_overrides[get_refresh_rate_limiter] = lambda: InMemoryRateLimiter()
     app.dependency_overrides[get_entity_repository] = lambda: entity_repository
+    app.dependency_overrides[get_graph_repository] = lambda: graph_repository
     yield
     app.dependency_overrides.clear()
 
@@ -293,6 +326,82 @@ async def test_rejected_candidate_is_retained_in_history_not_deleted(
     item = listing.json()["items"][0]
     assert item["effective_status"] == "rejected"
     assert len(item["decision_history"]) == 1
+
+
+async def test_reviewer_decision_best_effort_projects_to_graph(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    """Gap-Closure follow-up: a real decision re-projects the candidate's
+    `POSSIBLY_SAME_AS` edge with the new effective status -- the graph edge
+    and the review-listing view must never disagree."""
+    token, case_id = await _member(client, ac_repository, role=CaseRole.REVIEWER)
+    candidate = await _seed_two_entities_and_a_candidate(entity_repository, case_id)
+
+    response = await client.post(
+        f"/api/v1/entities/{candidate.left_entity_id}/resolution-review"
+        f"?candidate_id={candidate.entity_resolution_candidate_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "verified_same"},
+    )
+    assert response.status_code == 201, response.text
+
+    assert len(graph_repository.write_calls) == 1
+    _query, params = graph_repository.write_calls[0]
+    assert params["effective_status"] == "verified_same"
+    assert params["candidate_id"] == str(candidate.entity_resolution_candidate_id)
+
+
+async def test_reviewer_decision_survives_the_entities_not_being_in_neo4j_yet(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    """A `DEFERRED` graph projection (this case's entities were never
+    projected, e.g. `--resolve-entities` hasn't run yet) must never block or
+    fail the decision -- Postgres, not Neo4j, is authoritative for it."""
+    app.dependency_overrides[get_graph_repository] = lambda: _FakeGraphRepository(
+        apply_writes=False
+    )
+    token, case_id = await _member(client, ac_repository, role=CaseRole.REVIEWER)
+    candidate = await _seed_two_entities_and_a_candidate(entity_repository, case_id)
+
+    response = await client.post(
+        f"/api/v1/entities/{candidate.left_entity_id}/resolution-review"
+        f"?candidate_id={candidate.entity_resolution_candidate_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "verified_same"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["decision"] == "verified_same"
+
+
+async def test_reviewer_decision_survives_a_graph_write_failure(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    entity_repository: FakeEntityRepository,
+) -> None:
+    """A genuine Neo4j failure (not just a deferred projection) must also
+    never block or fail the decision -- matches `_record_integrity_event_
+    safely`'s exact best-effort contract for the integrity side effect."""
+
+    class _RaisingGraphRepository:
+        async def write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+            raise RuntimeError("graph unreachable")
+
+    app.dependency_overrides[get_graph_repository] = _RaisingGraphRepository
+    token, case_id = await _member(client, ac_repository, role=CaseRole.REVIEWER)
+    candidate = await _seed_two_entities_and_a_candidate(entity_repository, case_id)
+
+    response = await client.post(
+        f"/api/v1/entities/{candidate.left_entity_id}/resolution-review"
+        f"?candidate_id={candidate.entity_resolution_candidate_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "verified_same"},
+    )
+    assert response.status_code == 201, response.text
 
 
 async def test_investigator_cannot_submit_a_review_decision(

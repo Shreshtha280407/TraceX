@@ -129,6 +129,16 @@ class GraphSnapshotRelationshipView(_ResponseModel):
     kind: GraphRelationshipKind
     from_id: UUID
     to_id: UUID
+    #: The real domain ID backing this specific relationship instance --
+    #: `entity_resolution_candidate_id` for `POSSIBLY_SAME_AS`/
+    #: `CONTRADICTED_BY` (already exposed via `EntityResolutionCandidateRecord`
+    #: on `/entity-candidates`, so this is not a new disclosure). `None` for
+    #: `HAS_PARTICIPANT`, which carries no such per-edge identifier today.
+    #: Needed because two distinct real candidates can reference the same
+    #: `(from_id, to_id)` pair (different `config_version`s from separate
+    #: retrieval-cascade runs) -- `(kind, from_id, to_id)` alone is not
+    #: always unique.
+    relationship_id: UUID | None = None
 
 
 class GraphSnapshotResponse(_ResponseModel):

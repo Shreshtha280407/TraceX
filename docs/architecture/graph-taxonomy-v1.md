@@ -114,7 +114,7 @@ These rules bind every later phase that extends this graph, not just Phase 1:
 
 ## What later Shreshtha phases add on top of this foundation
 
-Phase 2.5 (`docs/architecture/graph-projection.md`) wired `project_evidence`/`project_observation`/`project_observation_mentions` to a real, durable pipeline for the first time — `project_entity`/`project_event` remain unwired (nothing in this repository constructs a real `EntityV1`/`EventV1` yet). Still not built here:
+Phase 2.5 (`docs/architecture/graph-projection.md`) wired `project_evidence`/`project_observation`/`project_observation_mentions` to a real, durable pipeline for the first time. A Gap-Closure follow-up (`app/modules/graph/entity_graph_sync.py`) has since wired `project_entity` and `project_entity_resolution_candidate` too, composed with WP-2's real Postgres entity/candidate records. `project_event` remains unwired: no service in this repository constructs a real `EventV1` yet, so there is no real data for it to project. Still not built here:
 
 - Candidate identity links (fuzzy/transliteration/corroboration-based), stored as their own reviewable relationship type, distinct from `HAS_*`/`SUPPORTS`/`HAS_PARTICIPANT`.
 - The human review workflow that promotes a candidate link (or a set of `EntityMention`s) to a confirmed identity relationship/resolved `Entity`.

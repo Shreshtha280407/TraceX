@@ -126,7 +126,13 @@ def test_resolve_entities_mode_prints_counts_and_exits_zero(
     ) -> intelligence_worker.ResolveEntitiesSummary:
         nonlocal seen_case_id
         seen_case_id = case_id
-        return intelligence_worker.ResolveEntitiesSummary(entity_count=4, candidate_count=2)
+        return intelligence_worker.ResolveEntitiesSummary(
+            entity_count=4,
+            candidate_count=2,
+            projected_entity_count=4,
+            applied_candidate_count=1,
+            deferred_candidate_count=1,
+        )
 
     monkeypatch.setattr(intelligence_worker, "resolve_entities_once", _fake_resolve_entities_once)
     case_id = uuid4()
@@ -138,6 +144,9 @@ def test_resolve_entities_mode_prints_counts_and_exits_zero(
     out = capsys.readouterr().out
     assert "entities: 4" in out
     assert "candidates: 2" in out
+    assert "projected_entities: 4" in out
+    assert "applied_candidates: 1" in out
+    assert "deferred_candidates: 1" in out
 
 
 def test_evaluate_mode_prints_the_report_and_exits_zero(

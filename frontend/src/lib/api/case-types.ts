@@ -113,51 +113,6 @@ export interface EvidenceUploadResponse {
   job: JobView
 }
 
-/** Mirrors `CandidateReviewOutcome` + the `needs_review` sentinel in review_models.py. */
-export type CandidateReviewStatus = 'needs_review' | 'accepted_by_reviewer' | 'rejected_by_reviewer'
-
-export interface CandidateLinkRecord {
-  candidate_link_id: string
-  correlation_id: string
-  case_id: string
-  left_observation_id: string
-  right_observation_id: string
-  status: string
-  reason_reference: string | null
-  created_at: string
-}
-
-export interface CandidateReviewView {
-  candidate: CandidateLinkRecord
-  review_status: CandidateReviewStatus
-  // `CandidateReviewDecisionRecord | null` in review_models.py -- left loosely
-  // typed here since only `review_status` is consumed until Phase 3's
-  // Candidate Review page reads a decision's own fields (rationale, reviewer).
-  decision: Record<string, unknown> | null
-}
-
-export interface CandidateReviewListResponse {
-  items: CandidateReviewView[]
-}
-
-/** Mirrors `HypothesisStatus` in hypothesis_models.py exactly. */
-export type HypothesisStatus = 'needs_review' | 'accepted_by_reviewer' | 'rejected_by_reviewer'
-
-export interface HypothesisRecord {
-  hypothesis_id: string
-  case_id: string
-  status: HypothesisStatus
-  created_by: string
-  created_at: string
-  updated_at: string
-  statement: string
-}
-
-export interface HypothesisListResponse {
-  items: HypothesisRecord[]
-  next_cursor: string | null
-}
-
 /** A case the current investigator has an active membership on, hydrated from real endpoints. */
 export interface AssignedCase extends CaseView {
   role: CaseRole

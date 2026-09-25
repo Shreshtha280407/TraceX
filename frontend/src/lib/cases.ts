@@ -62,3 +62,19 @@ export function useAssignedCases() {
 
   return { cases, loading, error, refresh }
 }
+
+/**
+ * Investigate-section pages (7-12) all share one case selection, not a
+ * per-page local one (Section 8: Timeline + Map "synced to the same case
+ * ... selection state as the Workspace") -- this wraps `useAssignedCases`
+ * with the auth store's global `activeCaseId` instead of local state.
+ */
+export function useActiveCaseWorkspace() {
+  const { cases, loading, error } = useAssignedCases()
+  const activeCaseId = useAuthStore((state) => state.activeCaseId)
+  const setActiveCase = useAuthStore((state) => state.setActiveCase)
+
+  const activeCase = cases.find((c) => c.case_id === activeCaseId) ?? null
+
+  return { cases, loading, error, activeCaseId, activeCase, setActiveCase }
+}

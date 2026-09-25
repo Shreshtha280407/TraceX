@@ -1102,6 +1102,52 @@ See ADR-020.
   outcome originally reported here before that crash was discovered. See
   `intelligence_worker.py`'s own module docstring and `docs/qa/
   test-results.md` for the exact live counts.
+- **Resolved (Gap-Closure follow-up): WP-2 now has a real Neo4j footprint.**
+  `project_entity`/`project_entity_resolution_candidate` (`projection.py`,
+  `entity_projection.py`) were themselves fully implemented and unit-tested
+  from day one -- Decision 2 of ADR-020 and ADR-021's own Decision 2 -- but,
+  exactly like `create_entities_for_case`/`generate_entity_resolution_
+  candidates` above before this same follow-up gave *them* a caller,
+  neither function had a real caller anywhere in the running system: found
+  via live frontend verification (Phase 3, investigator UI) against a real
+  case with 72 real Postgres entities and 36 real candidates -- the
+  Investigation Workspace graph rendered completely empty, because zero
+  `Entity`/`Event` nodes existed in Neo4j for *any* case in the dev
+  database, ever. New module `app/modules/graph/entity_graph_sync.py`
+  closes it with two real callers: `intelligence_worker.
+  resolve_entities_once` (`--resolve-entities`) now also syncs the case's
+  full, current entity/candidate lists into Neo4j after its existing
+  Postgres work, so re-running it against an already-processed case
+  backfills that case too; `entity_api.submit_entity_resolution_review`
+  best-effort re-projects one candidate's edge with its new effective
+  status on every review decision, mirroring `_record_integrity_event_
+  safely`'s exact "never block or reverse an already-committed decision"
+  contract. Entities are always projected before candidates in both call
+  sites -- `project_entity_resolution_candidate` only `MATCH`es (never
+  `MERGE`s) its two entities, so the reverse order would defer every
+  candidate. `project_event` remains unwired -- see this file's later
+  ADR-031 entry and `docs/architecture/graph-taxonomy-v1.md`: no service in
+  this codebase constructs a real `EventV1` yet, so there is nothing real
+  for it to project. Live-verified: re-ran `--resolve-entities` against
+  `case-fulcrum-dev-07863ba4` (72 real Postgres entities) after this fix --
+  `entities: 72 candidates: 66 projected_entities: 72 applied_candidates: 66
+  deferred_candidates: 0`. Direct Neo4j query confirmed 72 real `:Entity`
+  nodes and 66 real `POSSIBLY_SAME_AS` edges now exist for this case, none
+  fabricated. See ADR-034 for the full design.
+- **Resolved (Gap-Closure follow-up): duplicate React keys on `POSSIBLY_
+  SAME_AS` edges sharing an entity pair.** Surfaced immediately by the fix
+  above being the first time real `POSSIBLY_SAME_AS` data ever existed to
+  render: 18 real entity pairs in the same live-verification case have two
+  distinct `entity_resolution_candidates` rows each (different
+  `config_version`s from separate retrieval-cascade runs), so Neo4j
+  legitimately holds two separate relationships between the same two
+  `Entity` nodes. `GraphSnapshotRelationshipView` had no per-relationship
+  identifier -- only `(kind, from_id, to_id)`, which collided -- and the
+  frontend keyed its rendered edges the same way. Fixed by adding
+  `relationship_id: UUID | None` (the real `entity_resolution_candidate_id`,
+  `null` for `HAS_PARTICIPANT`) to `GraphSnapshotRelationshipView`
+  (`app/modules/graph/schemas.py`, `queries.py`), threaded into the
+  frontend's edge key. See ADR-034.
 - **Resolved (Gap-Closure follow-up, ADR-027): entity-resolution candidate
   generation no longer crashes on a real case's combinatorial identifier
   reuse.** The `create_entities_for_case` fix above only got entity
@@ -1388,10 +1434,13 @@ See ADR-020.
   deterministic `hypothesis_id` hash folds in the new field too, so a
   hypothesis with vs. without this citation gets two different, both-
   idempotent IDs. Additive migration `7a8b9c0d1e2f` backfills existing
-  rows with an empty array. Neo4j projection is explicitly, deliberately
-  skipped for this citation type (WP-2 has no Neo4j footprint at all,
-  by design) -- documented as a known, accepted limitation, not silently
-  dropped. Live-verified: created a real hypothesis via `POST /hypotheses`
+  rows with an empty array. A hypothesis citing this field is still never
+  itself projected into Neo4j -- hypotheses are never rendered as graph
+  edges at all, by design, regardless of what they cite (see `hypothesis_
+  models.py`'s own module docstring); this is unrelated to WP-2's entity/
+  candidate data, which does now have a real Neo4j footprint (see this
+  file's later "WP-2 now has a real Neo4j footprint" entry). Live-verified:
+  created a real hypothesis via `POST /hypotheses`
   against a fresh Fulcrum ingestion, citing one of its 36 real WP-2
   candidates through the new field -- see ADR-031 for the full design and
   root-cause writeup.

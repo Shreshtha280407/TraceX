@@ -159,7 +159,7 @@ export const PAGES: PageDef[] = [
     path: '/review/candidates',
     label: 'Candidate Review',
     section: 'Investigate',
-    role: 'Verify / Reject / Needs More Evidence on entity-resolution candidates -- human-in-the-loop, never auto-merge.',
+    role: 'Verify / Reject entity-resolution candidates -- human-in-the-loop, never auto-merge.',
     icon: ListChecks,
     inShell: true,
     requiresCaseAction: 'review_decide',
