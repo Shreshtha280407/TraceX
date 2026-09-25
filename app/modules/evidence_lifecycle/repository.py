@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.contracts.evidence import EvidenceProcessingStatus
 from app.contracts.worker import WorkerStatus
 from app.core.canonical import canonical_sha256
 from app.core.config import Settings
@@ -314,6 +315,20 @@ media_checkpoints_table = sa.Table(
 #: (`running`/`succeeded`/`failed`/`deferred`) is `app/modules/graph/`'s.
 _GRAPH_PROJECTION_STATUS_QUEUED = "queued"
 
+#: `evidence_records.processing_status`'s terminal value for each terminal
+#: `WorkerResultV1.status` a job can be submitted with (`docs/architecture/
+#: worker-job-lifecycle.md`: "deferred"/"cancelled" are equally terminal
+#: outcomes, never auto-retried by anything in this repository) --
+#: `EvidenceProcessingStatus` itself has no separate deferred/cancelled
+#: state, so both map to `failed`: the evidence did not finish processing
+#: and nothing will retry it on its own.
+_RESULT_STATUS_TO_EVIDENCE_STATUS: dict[WorkerStatus, EvidenceProcessingStatus] = {
+    WorkerStatus.SUCCEEDED: EvidenceProcessingStatus.PROCESSED,
+    WorkerStatus.FAILED: EvidenceProcessingStatus.FAILED,
+    WorkerStatus.DEFERRED: EvidenceProcessingStatus.FAILED,
+    WorkerStatus.CANCELLED: EvidenceProcessingStatus.FAILED,
+}
+
 
 def create_engine(settings: Settings) -> AsyncEngine:
     """Build the async PostgreSQL engine from application configuration."""
@@ -518,7 +533,11 @@ class EvidenceLifecycleRepository:
     async def create_job(self, job: WorkerJobRecord) -> None:
         """Gap-Closure WP-4 (G7): insert one standalone job row for
         already-existing evidence (`POST .../evidence/{id}/reprocess`) --
-        unlike `create_evidence_with_job`, no evidence row is written.
+        unlike `create_evidence_with_job`, no evidence row is written (it
+        already exists), but its `processing_status` is reset to `queued`
+        in this same transaction: reprocessing a `processed`/`failed`
+        evidence item is exactly the event that makes its old terminal
+        status stale.
         Raises `sqlalchemy.exc.IntegrityError` on a duplicate
         `idempotency_key`; the caller (`service.reprocess_evidence`)
         resolves that via `get_job_by_idempotency_key`, exactly like
@@ -527,6 +546,14 @@ class EvidenceLifecycleRepository:
         job_values = _dump_for_insert(job, ("source_type", "status"))
         async with self._engine.begin() as conn:
             await conn.execute(sa.insert(worker_jobs_table).values(**job_values))
+            await conn.execute(
+                sa.update(evidence_records_table)
+                .where(evidence_records_table.c.evidence_id == job.evidence_id)
+                .values(
+                    processing_status=EvidenceProcessingStatus.QUEUED.value,
+                    updated_at=job.requested_at,
+                )
+            )
 
     # --- evidence (read) ---------------------------------------------------
 
@@ -738,6 +765,16 @@ class EvidenceLifecycleRepository:
                     updated_at=now,
                 )
             )
+            # Gap-closure: `evidence_records.processing_status` previously
+            # never left `queued` -- a claim (first-ever or a reclaim after
+            # an expired lease) is the real "processing started" signal, so
+            # it belongs here in the same transaction as the job's own
+            # `running` transition.
+            await conn.execute(
+                sa.update(evidence_records_table)
+                .where(evidence_records_table.c.evidence_id == candidate["evidence_id"])
+                .values(processing_status=EvidenceProcessingStatus.PROCESSING.value, updated_at=now)
+            )
             updated = dict(candidate)
             updated.update(
                 status=WorkerStatus.RUNNING.value,
@@ -919,7 +956,7 @@ class EvidenceLifecycleRepository:
             if observation_values:
                 await conn.execute(sa.insert(worker_observations_table), observation_values)
                 await conn.execute(sa.insert(graph_projection_jobs_table), projection_job_values)
-            await conn.execute(
+            job_update = await conn.execute(
                 sa.update(worker_jobs_table)
                 .where(
                     worker_jobs_table.c.job_id == job_id,
@@ -933,6 +970,22 @@ class EvidenceLifecycleRepository:
                     updated_at=result.updated_at,
                 )
             )
+            # Gap-closure: mirrors the `claim_job` -> `processing` transition
+            # above -- a terminal result is the real "processing finished"
+            # signal for `evidence_records.processing_status`. Guarded on
+            # the job update actually matching a row (mirrors that update's
+            # own claim-token defense in depth): a stale/invalid token here
+            # means the job's own status was never touched either, and the
+            # evidence's status must not diverge from it.
+            if job_update.rowcount > 0:
+                await conn.execute(
+                    sa.update(evidence_records_table)
+                    .where(evidence_records_table.c.evidence_id == result.evidence_id)
+                    .values(
+                        processing_status=_RESULT_STATUS_TO_EVIDENCE_STATUS[result.status].value,
+                        updated_at=result.updated_at,
+                    )
+                )
 
     # --- observation batches (Phase 3: partial micro-batch submission) ------
 

@@ -804,3 +804,142 @@ async def test_hypotheses_tampered_cursor_is_rejected(
         params={"cursor": tampered},
     )
     assert response.status_code == 422
+
+
+# --- Evidence Viewer drill-down: GET .../evidence/{id}/observations, ------
+# GET .../observations/{id}/provenance (Section 5 page 13 / Section 9 row 13)
+
+
+def _evidence_node_props(case_id: Any, evidence_id: Any) -> dict[str, Any]:
+    return {
+        "evidence_id": str(evidence_id),
+        "case_id": str(case_id),
+        "source_type": "document",
+        "content_type": "application/pdf",
+        "object_uri": "s3://tracex-evidence/should-never-leave-this-repository",
+        "sha256": "a" * 64,
+        "classification": "unclassified",
+        "processing_status": "completed",
+    }
+
+
+def _observation_props_with_locator(
+    case_id: Any, evidence_id: Any, observation_id: Any
+) -> dict[str, Any]:
+    props = _observation_props(case_id, evidence_id, observation_id)
+    props["source_locator_page"] = 3
+    props["source_locator_span_start"] = 120
+    props["source_locator_span_end"] = 160
+    return props
+
+
+async def test_evidence_observations_returns_source_locator(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    evidence_id, observation_id = uuid4(), uuid4()
+    graph_repository._read_results = [
+        [
+            {
+                "evidence": _evidence_node_props(case_id, evidence_id),
+                "page": [_observation_props_with_locator(case_id, evidence_id, observation_id)],
+                "total": 1,
+            }
+        ],
+    ]
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/evidence/{evidence_id}/observations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["evidence_id"] == str(evidence_id)
+    assert body["total_observations"] == 1
+    assert body["truncated"] is False
+    item = body["items"][0]
+    assert item["observation_id"] == str(observation_id)
+    assert item["source_locator"]["page"] == 3
+    assert item["source_locator"]["span_start"] == 120
+    assert item["source_locator"]["span_end"] == 160
+    assert "object_uri" not in response.text
+
+
+async def test_evidence_observations_404_when_evidence_missing_in_case(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    graph_repository._read_results = [[]]
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/evidence/{uuid4()}/observations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
+async def test_evidence_observations_cross_case_is_denied(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    token_a, _case_a_id = await _authenticated_member(client, ac_repository)
+    _token_b, case_b_id = await _authenticated_member(client, ac_repository)
+
+    response = await client.get(
+        f"/api/v1/cases/{case_b_id}/evidence/{uuid4()}/observations",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert response.status_code == 403
+
+
+async def test_observation_provenance_resolves_evidence_without_object_uri(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    evidence_id, observation_id = uuid4(), uuid4()
+    graph_repository._read_results = [
+        [
+            {
+                "observation": _observation_props_with_locator(
+                    case_id, evidence_id, observation_id
+                ),
+                "evidence": _evidence_node_props(case_id, evidence_id),
+            }
+        ],
+    ]
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/observations/{observation_id}/provenance",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["observation"]["observation_id"] == str(observation_id)
+    assert body["observation"]["source_locator"]["page"] == 3
+    assert body["evidence"]["evidence_id"] == str(evidence_id)
+    assert "object_uri" not in response.text
+
+
+async def test_observation_provenance_404_when_observation_missing(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    graph_repository._read_results = [[]]
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/observations/{uuid4()}/provenance",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
+async def test_observation_provenance_unauthenticated_is_denied(client: AsyncClient) -> None:
+    response = await client.get(f"/api/v1/cases/{uuid4()}/observations/{uuid4()}/provenance")
+    assert response.status_code == 401

@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Sidebar } from '../components/Sidebar'
 import { TopBar } from '../components/TopBar'
-import { authApi } from '../lib/api/client'
+import { authApi, entityApi, reviewApi } from '../lib/api/client'
+import { roleHasCaseAction } from '../lib/auth/permissions'
 import { useAuthStore } from '../lib/auth/store'
 import { PAGES } from '../lib/navigation'
 
@@ -31,6 +32,38 @@ export function AppShell() {
   const activeCaseRole =
     caseMemberships.find((m) => m.case_id === activeCaseId && m.is_active)?.role ?? null
 
+  const [navCounts, setNavCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    // Gap-closure (Phase 5 cross-page-integration audit): `Sidebar`'s own
+    // `counts` prop (Section 4: "counts shown as small trailing badges")
+    // was never wired to anything real. ABAC (Section 6): skip the calls
+    // entirely for a role that structurally lacks `graph_read` rather than
+    // generating a self-inflicted `case_access_denied` audit event on
+    // every shell mount, mirroring the Dashboard's own identical guard.
+    if (!activeCaseId || !activeCaseRole || !roleHasCaseAction(activeCaseRole, 'graph_read')) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setNavCounts({})
+      return
+    }
+    let cancelled = false
+    Promise.all([
+      entityApi.listCandidates(activeCaseId).catch(() => ({ items: [] })),
+      reviewApi.listCandidates(activeCaseId).catch(() => ({ items: [] })),
+      reviewApi.listHypotheses(activeCaseId).catch(() => ({ items: [], next_cursor: null })),
+    ]).then(([entityCandidates, correlationCandidates, hypotheses]) => {
+      if (cancelled) return
+      const candidateCount =
+        entityCandidates.items.filter((item) => item.effective_status === 'needs_review').length +
+        correlationCandidates.items.filter((item) => item.review_status === 'needs_review').length
+      const hypothesisCount = hypotheses.items.filter((item) => item.status === 'needs_review').length
+      setNavCounts({ '/review/candidates': candidateCount, '/hypotheses': hypothesisCount })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeCaseId, activeCaseRole])
+
   useEffect(() => {
     // The persisted session's `case_memberships` reflect whatever `/me`
     // returned at login; nothing else updates it. A fresh read on every
@@ -58,7 +91,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-canvas">
-      <Sidebar />
+      <Sidebar counts={navCounts} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
           breadcrumb={currentPage?.label ?? 'TraceX'}

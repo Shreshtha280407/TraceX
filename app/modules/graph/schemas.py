@@ -13,7 +13,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.modules.graph.models import CaseObservationsPage, GraphRelationshipKind
+from app.modules.graph.models import (
+    CaseObservationsPage,
+    EvidenceNode,
+    EvidenceProvenance,
+    GraphRelationshipKind,
+    ObservationNode,
+    ObservationProvenance,
+    SourceLocatorRef,
+)
 
 
 class _ResponseModel(BaseModel):
@@ -93,6 +101,127 @@ def case_graph_observations_response(page: CaseObservationsPage) -> CaseGraphObs
         limit=page.limit,
         offset=page.offset,
         has_more=page.has_more,
+    )
+
+
+# --- Evidence Viewer drill-down (Section 5, page 13 / Section 9 row 13) -----
+#
+# Unlike `GraphObservationView` (the case-wide observation feed), these
+# carry `source_locator` -- the exact page/row/frame/timestamp pointer back
+# into the source evidence. `EvidenceSummaryView` deliberately omits
+# `EvidenceNode.object_uri`: "no unrestricted raw-evidence-download APIs"
+# (`docs/architecture/evidence-lifecycle.md`) applies here exactly as it
+# does to `evidence_lifecycle.schemas.EvidenceView`.
+
+
+class SourceLocatorView(_ResponseModel):
+    page: int | None
+    span_start: int | None
+    span_end: int | None
+    bbox_x_min: float | None
+    bbox_y_min: float | None
+    bbox_x_max: float | None
+    bbox_y_max: float | None
+    sheet: str | None
+    row: int | None
+    column: int | None
+    json_path: str | None
+    frame_number: int | None
+    time_start_ms: int | None
+    time_end_ms: int | None
+    message_id: str | None
+
+
+class EvidenceObservationView(_ResponseModel):
+    observation_id: UUID
+    case_id: UUID
+    evidence_id: UUID
+    observation_type: str
+    extraction_confidence: float
+    event_time: datetime | None
+    source_locator: SourceLocatorView
+    extractor_name: str
+    extractor_version: str
+
+
+class EvidenceSummaryView(_ResponseModel):
+    """Safe evidence identity for a provenance response -- never `object_uri`."""
+
+    evidence_id: UUID
+    case_id: UUID
+    source_type: str
+    content_type: str
+    classification: str
+    processing_status: str
+
+
+class EvidenceObservationsResponse(_ResponseModel):
+    """The Evidence Viewer's real data source: every observation yielded by
+    one piece of evidence, each carrying its exact source location."""
+
+    case_id: UUID
+    evidence_id: UUID
+    items: tuple[EvidenceObservationView, ...]
+    total_observations: int
+    truncated: bool
+
+
+class ObservationProvenanceResponse(_ResponseModel):
+    """Citation drill-down target: resolves one observation_id (as cited by a
+    Hypothesis or Candidate Review evidence panel) to its exact source
+    location and originating evidence."""
+
+    observation: EvidenceObservationView
+    evidence: EvidenceSummaryView | None
+
+
+def _source_locator_view(locator: SourceLocatorRef) -> SourceLocatorView:
+    return SourceLocatorView(**locator.model_dump())
+
+
+def _evidence_observation_view(node: ObservationNode) -> EvidenceObservationView:
+    return EvidenceObservationView(
+        observation_id=node.observation_id,
+        case_id=node.case_id,
+        evidence_id=node.evidence_id,
+        observation_type=node.observation_type,
+        extraction_confidence=node.extraction_confidence,
+        event_time=node.event_time,
+        source_locator=_source_locator_view(node.source_locator),
+        extractor_name=node.extractor_name,
+        extractor_version=node.extractor_version,
+    )
+
+
+def _evidence_summary_view(node: EvidenceNode) -> EvidenceSummaryView:
+    return EvidenceSummaryView(
+        evidence_id=node.evidence_id,
+        case_id=node.case_id,
+        source_type=node.source_type,
+        content_type=node.content_type,
+        classification=node.classification,
+        processing_status=node.processing_status,
+    )
+
+
+def evidence_observations_response(provenance: EvidenceProvenance) -> EvidenceObservationsResponse:
+    return EvidenceObservationsResponse(
+        case_id=provenance.evidence.case_id,
+        evidence_id=provenance.evidence.evidence_id,
+        items=tuple(_evidence_observation_view(o) for o in provenance.observations),
+        total_observations=provenance.total_observations,
+        truncated=provenance.truncated,
+    )
+
+
+def observation_provenance_response(
+    provenance: ObservationProvenance,
+) -> ObservationProvenanceResponse:
+    return ObservationProvenanceResponse(
+        observation=_evidence_observation_view(provenance.observation),
+        evidence=(
+            _evidence_summary_view(provenance.evidence) if provenance.evidence is not None else None
+        ),
     )
 
 

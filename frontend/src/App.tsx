@@ -9,8 +9,11 @@ import { CreateCase } from './pages/CreateCase'
 import { Dashboard } from './pages/Dashboard'
 import { EntityIntelligence } from './pages/EntityIntelligence'
 import { EvidenceUpload } from './pages/EvidenceUpload'
+import { EvidenceViewer } from './pages/EvidenceViewer'
 import { ForcePasswordChange } from './pages/ForcePasswordChange'
 import { Hypotheses } from './pages/Hypotheses'
+import { IntegrityAudit } from './pages/IntegrityAudit'
+import { InvestigationMemory } from './pages/InvestigationMemory'
 import { InvestigationWorkspace } from './pages/InvestigationWorkspace'
 import { Landing } from './pages/Landing'
 import { Login } from './pages/Login'
@@ -35,6 +38,9 @@ const SHELL_PAGE_ELEMENTS: Record<string, ReactNode> = {
   '/review/candidates': <CandidateReview />,
   '/motifs': <MotifsCorrelations />,
   '/hypotheses': <Hypotheses />,
+  '/evidence': <EvidenceViewer />,
+  '/memory': <InvestigationMemory />,
+  '/integrity': <IntegrityAudit />,
   '/settings': <SettingsSecurity />,
 }
 

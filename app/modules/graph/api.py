@@ -32,6 +32,7 @@ from app.core.pagination import (
 )
 from app.modules.access_control.dependencies import (
     get_case_note_repository,
+    require_evidence_read,
     require_graph_read,
     require_hypothesis_propose,
     require_review_decision,
@@ -46,7 +47,7 @@ from app.modules.graph.dependencies import (
     get_postgres_engine,
     get_review_projection_outbox_repository,
 )
-from app.modules.graph.errors import GraphConnectionError, GraphValidationError
+from app.modules.graph.errors import GraphConnectionError, GraphNotFoundError, GraphValidationError
 from app.modules.graph.handoff_service import HandoffSummary, build_handoff_summary
 from app.modules.graph.hypothesis_models import (
     HypothesisConflictError,
@@ -79,6 +80,8 @@ from app.modules.graph.queries import (
     get_case_graph_analytics,
     get_case_graph_motifs,
     get_case_graph_snapshot,
+    get_evidence_provenance,
+    get_observation_provenance,
     list_case_observations,
 )
 from app.modules.graph.repository import Neo4jGraphRepository
@@ -100,12 +103,16 @@ from app.modules.graph.review_service import (
 )
 from app.modules.graph.schemas import (
     CaseGraphObservationsResponse,
+    EvidenceObservationsResponse,
     GraphAnalyticsResponse,
     GraphMotifsResponse,
     GraphPathRequest,
     GraphPathResponse,
     GraphSnapshotResponse,
+    ObservationProvenanceResponse,
     case_graph_observations_response,
+    evidence_observations_response,
+    observation_provenance_response,
 )
 from app.modules.integrity.dependencies import get_integrity_service
 from app.modules.integrity.service import IntegrityService
@@ -160,6 +167,61 @@ async def list_graph_observations(
             detail="graph service temporarily unavailable",
         ) from exc
     return case_graph_observations_response(page)
+
+
+@router.get(
+    "/{case_id}/evidence/{evidence_id}/observations",
+    response_model=EvidenceObservationsResponse,
+)
+async def get_evidence_observations(
+    case_id: UUID,
+    evidence_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_evidence_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+) -> EvidenceObservationsResponse:
+    """Evidence Viewer's real drill-down data source (Section 5, page 13):
+    every observation yielded by one piece of evidence, each carrying its
+    exact `source_locator` (page/row/frame/timestamp) -- never a raw object
+    URI or evidence body."""
+    try:
+        provenance = await get_evidence_provenance(repository, case_id, evidence_id)
+    except GraphNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="evidence not found"
+        ) from exc
+    except GraphConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="graph service temporarily unavailable",
+        ) from exc
+    return evidence_observations_response(provenance)
+
+
+@router.get(
+    "/{case_id}/observations/{observation_id}/provenance",
+    response_model=ObservationProvenanceResponse,
+)
+async def get_observation_provenance_view(
+    case_id: UUID,
+    observation_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_evidence_read)],
+    repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
+) -> ObservationProvenanceResponse:
+    """Citation drill-down (Section 9 row 13): resolves one observation_id, as
+    cited by a Hypothesis or Candidate Review evidence panel, to its exact
+    source location and originating evidence."""
+    try:
+        provenance = await get_observation_provenance(repository, case_id, observation_id)
+    except GraphNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="observation not found"
+        ) from exc
+    except GraphConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="graph service temporarily unavailable",
+        ) from exc
+    return observation_provenance_response(provenance)
 
 
 @router.get("/{case_id}/graph", response_model=GraphSnapshotResponse)

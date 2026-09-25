@@ -136,7 +136,7 @@ export function EntityIntelligence() {
                     key={entity.entity_id}
                     type="button"
                     onClick={() => setSelectedEntityId(entity.entity_id)}
-                    className={`flex flex-col items-start gap-0.5 rounded-control border px-3 py-2 text-left transition-colors ${
+                    className={`flex flex-col items-start gap-0.5 rounded-control border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson ${
                       entity.entity_id === selectedEntityId
                         ? 'border-crimson bg-crimson/5'
                         : 'border-card-border bg-card hover:bg-canvas/10'

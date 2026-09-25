@@ -167,7 +167,7 @@ export function NetworkGraph({
             type="button"
             onClick={() => handleZoom(1.25)}
             aria-label="Zoom in"
-            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text"
+            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson"
           >
             <ZoomIn size={15} aria-hidden="true" />
           </button>
@@ -175,7 +175,7 @@ export function NetworkGraph({
             type="button"
             onClick={() => handleZoom(0.8)}
             aria-label="Zoom out"
-            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text"
+            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson"
           >
             <ZoomOut size={15} aria-hidden="true" />
           </button>
@@ -183,7 +183,7 @@ export function NetworkGraph({
             type="button"
             onClick={handleRecenter}
             aria-label="Recenter"
-            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text"
+            className="flex h-8 w-8 items-center justify-center rounded-control bg-black/30 text-shell-text-dim hover:bg-black/50 hover:text-shell-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson"
           >
             <Crosshair size={15} aria-hidden="true" />
           </button>
@@ -308,7 +308,7 @@ export function NetworkGraph({
             <button
               type="button"
               onClick={() => setPlayhead(null)}
-              className="shrink-0 text-[10px] font-medium text-shell-text-dim underline hover:text-shell-text"
+              className="shrink-0 rounded-control text-[10px] font-medium text-shell-text-dim underline hover:text-shell-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson"
             >
               Reset
             </button>

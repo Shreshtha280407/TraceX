@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, FileStack, ListChecks, ShieldAlert } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Badge } from '../components/Badge'
 import { Card } from '../components/Card'
 import { DataTable, DataTableRow } from '../components/DataTable'
 import { EmptyState, ErrorState, LoadingState } from '../components/DataState'
 import { StatCard } from '../components/StatCard'
-import { casesApi, evidenceApi, reviewApi } from '../lib/api/client'
+import { casesApi, entityApi, evidenceApi, reviewApi } from '../lib/api/client'
 import type { AssignedCase, SecurityAuditEventRecord } from '../lib/api/case-types'
 import { useAssignedCases } from '../lib/cases'
 import { formatRelativeTime } from '../lib/format'
@@ -20,6 +20,14 @@ const CASE_COLUMNS = [
   { key: 'classification', header: 'Classification' },
 ]
 
+interface PendingQueueItem {
+  key: string
+  caseId: string
+  caseReference: string
+  label: string
+  path: '/review/candidates' | '/hypotheses'
+}
+
 interface DashboardAggregate {
   pendingCandidates: number
   pendingHypotheses: number
@@ -27,6 +35,7 @@ interface DashboardAggregate {
   evidenceTotal: number
   alerts: (SecurityAuditEventRecord & { caseReference: string })[]
   recentActivity: (SecurityAuditEventRecord & { caseReference: string })[]
+  pendingQueue: PendingQueueItem[]
 }
 
 const EMPTY_AGGREGATE: DashboardAggregate = {
@@ -36,6 +45,7 @@ const EMPTY_AGGREGATE: DashboardAggregate = {
   evidenceTotal: 0,
   alerts: [],
   recentActivity: [],
+  pendingQueue: [],
 }
 
 /**
@@ -60,8 +70,14 @@ async function loadAggregate(cases: AssignedCase[]): Promise<DashboardAggregate>
       // both the wasted round-trip and the self-inflicted audit noise.
       const canReadGraph = roleHasCaseAction(c.role, 'graph_read')
       const canReadEvidence = roleHasCaseAction(c.role, 'evidence_read')
-      const [candidates, hypotheses, evidence, audit] = await Promise.all([
+      const [candidates, entityCandidates, hypotheses, evidence, audit] = await Promise.all([
         canReadGraph ? reviewApi.listCandidates(c.case_id).catch(() => ({ items: [] })) : { items: [] },
+        // Entity-resolution candidates share the same `graph_read` gate as
+        // the correlation-candidate queue above (`entity_api.py`'s
+        // `list_entity_candidates`) -- both queues are reviewable on the
+        // real Candidate Review page, so both count toward "pending
+        // reviews" here.
+        canReadGraph ? entityApi.listCandidates(c.case_id).catch(() => ({ items: [] })) : { items: [] },
         canReadGraph
           ? reviewApi.listHypotheses(c.case_id).catch(() => ({ items: [], next_cursor: null }))
           : { items: [], next_cursor: null },
@@ -75,24 +91,63 @@ async function loadAggregate(cases: AssignedCase[]): Promise<DashboardAggregate>
         // Still a mitigation, not a guarantee, under heavy enough traffic.
         casesApi.listAuditEvents(c.case_id, 200).catch(() => ({ items: [] })),
       ])
-      return { case: c, candidates, hypotheses, evidence, audit }
+      return { case: c, candidates, entityCandidates, hypotheses, evidence, audit }
     }),
   )
 
-  const aggregate: DashboardAggregate = { ...EMPTY_AGGREGATE, alerts: [], recentActivity: [] }
+  const aggregate: DashboardAggregate = {
+    ...EMPTY_AGGREGATE,
+    alerts: [],
+    recentActivity: [],
+    pendingQueue: [],
+  }
   for (const result of perCase) {
     if (result.status !== 'fulfilled') continue
-    const { case: c, candidates, hypotheses, evidence, audit } = result.value
-    aggregate.pendingCandidates += candidates.items.filter(
+    const { case: c, candidates, entityCandidates, hypotheses, evidence, audit } = result.value
+    const pendingCorrelationCandidates = candidates.items.filter(
       (item) => item.review_status === 'needs_review',
-    ).length
-    aggregate.pendingHypotheses += hypotheses.items.filter(
-      (item) => item.status === 'needs_review',
-    ).length
+    )
+    const pendingEntityCandidates = entityCandidates.items.filter(
+      (item) => item.effective_status === 'needs_review',
+    )
+    const pendingHypothesesForCase = hypotheses.items.filter((item) => item.status === 'needs_review')
+    aggregate.pendingCandidates += pendingCorrelationCandidates.length + pendingEntityCandidates.length
+    aggregate.pendingHypotheses += pendingHypothesesForCase.length
     aggregate.evidenceTotal += evidence.items.length
     aggregate.evidenceProcessed += evidence.items.filter(
       (item) => item.processing_status === 'processed',
     ).length
+    // "Queue preview" (Section 5's own role text for this page) -- a few
+    // real, specific pending items to jump straight into, not just a
+    // count. Capped per case so one noisy case can't crowd out every
+    // other assigned case's own pending work.
+    for (const item of pendingEntityCandidates.slice(0, 3)) {
+      aggregate.pendingQueue.push({
+        key: `entity-${item.candidate.entity_resolution_candidate_id}`,
+        caseId: c.case_id,
+        caseReference: c.case_reference,
+        label: `Entity-resolution candidate ${item.candidate.entity_resolution_candidate_id.slice(0, 8)}`,
+        path: '/review/candidates',
+      })
+    }
+    for (const item of pendingCorrelationCandidates.slice(0, 3)) {
+      aggregate.pendingQueue.push({
+        key: `correlation-${item.candidate.candidate_link_id}`,
+        caseId: c.case_id,
+        caseReference: c.case_reference,
+        label: `Correlation candidate ${item.candidate.candidate_link_id.slice(0, 8)}`,
+        path: '/review/candidates',
+      })
+    }
+    for (const item of pendingHypothesesForCase.slice(0, 3)) {
+      aggregate.pendingQueue.push({
+        key: `hypothesis-${item.hypothesis_id}`,
+        caseId: c.case_id,
+        caseReference: c.case_reference,
+        label: item.statement.length > 60 ? `${item.statement.slice(0, 60)}...` : item.statement,
+        path: '/hypotheses',
+      })
+    }
     for (const event of audit.items) {
       // `case_access_granted` fires on every single successful case-scoped
       // API call (confirmed live: browsing this dashboard itself generates
@@ -112,6 +167,7 @@ async function loadAggregate(cases: AssignedCase[]): Promise<DashboardAggregate>
   aggregate.alerts.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
   aggregate.recentActivity = aggregate.recentActivity.slice(0, 10)
   aggregate.alerts = aggregate.alerts.slice(0, 10)
+  aggregate.pendingQueue = aggregate.pendingQueue.slice(0, 8)
   return aggregate
 }
 
@@ -130,10 +186,22 @@ function humanizeEventType(eventType: string): string {
  * real audit stream, both across every case this investigator can see.
  */
 export function Dashboard() {
+  const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
+  const setActiveCase = useAuthStore((state) => state.setActiveCase)
   const { cases, loading: casesLoading, error: casesError } = useAssignedCases()
   const [aggregate, setAggregate] = useState<DashboardAggregate>(EMPTY_AGGREGATE)
   const [aggLoading, setAggLoading] = useState(true)
+
+  function openCase(caseId: string) {
+    setActiveCase(caseId)
+    navigate('/workspace')
+  }
+
+  function openPendingItem(item: PendingQueueItem) {
+    setActiveCase(item.caseId)
+    navigate(item.path)
+  }
 
   useEffect(() => {
     if (casesLoading) return
@@ -227,6 +295,7 @@ export function Dashboard() {
                   columns={CASE_COLUMNS}
                   primary={c.case_reference}
                   secondary={c.case_id}
+                  onClick={() => openCase(c.case_id)}
                   cells={{
                     status: <Badge tone="steel-neutral">{c.status}</Badge>,
                     role: <span className="text-sm text-text-dim">{c.role.replace(/_/g, ' ')}</span>,
@@ -235,6 +304,32 @@ export function Dashboard() {
                 />
               ))}
             </DataTable>
+          )}
+
+          <h2 className="mt-3 text-sm font-semibold uppercase tracking-wide text-text-faint">
+            Pending review queue
+          </h2>
+          {aggLoading ? (
+            <LoadingState label="Loading pending reviews..." />
+          ) : aggregate.pendingQueue.length === 0 ? (
+            <EmptyState title="Nothing pending" description="No candidates or hypotheses currently need your review." />
+          ) : (
+            <Card className="flex flex-col divide-y divide-card-border p-0">
+              {aggregate.pendingQueue.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => openPendingItem(item)}
+                  className="flex items-center justify-between gap-3 p-4 text-left transition-colors hover:bg-canvas/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-crimson"
+                >
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm font-medium text-text">{item.label}</span>
+                    <span className="text-xs text-text-dim">{item.caseReference}</span>
+                  </div>
+                  <Badge tone="berry">needs review</Badge>
+                </button>
+              ))}
+            </Card>
           )}
         </div>
 
