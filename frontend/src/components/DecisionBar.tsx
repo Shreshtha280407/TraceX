@@ -1,55 +1,55 @@
 import { useState } from 'react'
-import { CheckCircle2, HelpCircle, ShieldAlert, XCircle } from 'lucide-react'
+import { ShieldAlert } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 
-export type Decision = 'verify' | 'reject' | 'needs_more_evidence'
+export interface DecisionOption<T extends string> {
+  value: T
+  label: string
+  icon: LucideIcon
+  tone: 'palm' | 'crimson' | 'berry' | 'neutral'
+}
 
-interface DecisionBarProps {
-  onDecide: (decision: Decision) => void | Promise<void>
+const TONE_CLASSES: Record<DecisionOption<string>['tone'], string> = {
+  palm: 'bg-palm text-shell-text hover:bg-palm/90 border border-transparent',
+  crimson: 'bg-transparent text-crimson border border-crimson/50 hover:bg-crimson/5',
+  berry: 'bg-transparent text-berry border border-berry/50 hover:bg-berry/5',
+  neutral: 'bg-transparent text-text-dim border border-card-border hover:bg-canvas/10',
+}
+
+interface DecisionBarProps<T extends string> {
+  options: DecisionOption<T>[]
+  onDecide: (decision: T) => void | Promise<void>
   disabled?: boolean
 }
 
-const DECISIONS: {
-  value: Decision
-  label: string
-  icon: typeof CheckCircle2
-  classes: string
-}[] = [
-  {
-    value: 'verify',
-    label: 'Verify',
-    icon: CheckCircle2,
-    classes: 'bg-palm text-shell-text hover:bg-palm/90 border border-transparent',
-  },
-  {
-    value: 'reject',
-    label: 'Reject',
-    icon: XCircle,
-    classes: 'bg-transparent text-crimson border border-crimson/50 hover:bg-crimson/5',
-  },
-  {
-    value: 'needs_more_evidence',
-    label: 'Needs more evidence',
-    icon: HelpCircle,
-    classes: 'bg-transparent text-text-dim border border-card-border hover:bg-canvas/10',
-  },
-]
-
 /**
- * The never-auto-merge house rule (Section 6/7), enforced once, here --
- * not as a per-page choice. Every merge/verify/reject decision on
- * Candidate Review and Hypotheses goes through this component:
+ * The never-auto-merge house rule (Section 6/7), enforced once, here -- not
+ * as a per-page choice. Every review decision on Candidate Review and
+ * Hypotheses goes through this component:
  *
  * - Never pre-selected, never auto-submitted.
- * - A decision requires two deliberate clicks (arm, then confirm) --
- *   never a single accidental click.
- * - Always paired with the persistent audit-trail notice below, whether
- *   armed or not.
+ * - A decision requires two deliberate clicks (arm, then confirm) -- never
+ *   a single accidental click.
+ * - Always paired with the persistent audit-trail notice below.
+ *
+ * `options` is caller-supplied rather than a fixed three-button set: the
+ * real backend has no single "review decision" vocabulary shared across
+ * every reviewable thing. Correlation-candidate review and hypothesis
+ * review each expose exactly two outcomes (`accepted_by_reviewer`/
+ * `rejected_by_reviewer` -- see `review_models.py`/`hypothesis_models.py`'s
+ * own docstrings: "never itself a verified identity... only records
+ * whether a human accepted or rejected"). Entity-resolution review exposes
+ * three (`verified_same`/`rejected`/`split`), where `split` only makes
+ * sense once a pair is already `verified_same`. None of the three real
+ * decision surfaces has a "needs more evidence" option -- an earlier
+ * version of this component invented one that called no real endpoint;
+ * this generalized shape is the fix.
  */
-export function DecisionBar({ onDecide, disabled = false }: DecisionBarProps) {
-  const [armed, setArmed] = useState<Decision | null>(null)
+export function DecisionBar<T extends string>({ options, onDecide, disabled = false }: DecisionBarProps<T>) {
+  const [armed, setArmed] = useState<T | null>(null)
   const [pending, setPending] = useState(false)
 
-  async function handleClick(decision: Decision) {
+  async function handleClick(decision: T) {
     if (disabled || pending) return
     if (armed !== decision) {
       setArmed(decision)
@@ -67,13 +67,13 @@ export function DecisionBar({ onDecide, disabled = false }: DecisionBarProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-2">
-        {DECISIONS.map(({ value, label, icon: Icon, classes }) => (
+        {options.map(({ value, label, icon: Icon, tone }) => (
           <button
             key={value}
             type="button"
             disabled={disabled || pending}
             onClick={() => handleClick(value)}
-            className={`inline-flex items-center gap-2 rounded-control px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson ${classes} ${
+            className={`inline-flex items-center gap-2 rounded-control px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-crimson ${TONE_CLASSES[tone]} ${
               armed === value ? 'ring-2 ring-offset-1 ring-current' : ''
             }`}
           >

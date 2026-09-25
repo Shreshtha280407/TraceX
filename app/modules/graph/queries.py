@@ -484,24 +484,32 @@ async def get_case_graph_snapshot(
             GraphRelationshipKind.HAS_PARTICIPANT,
             "MATCH (v:Event {case_id: $case_id})"
             "-[:HAS_PARTICIPANT]->(e:Entity {case_id: $case_id}) "
-            "RETURN v.event_id AS from_id, e.entity_id AS to_id LIMIT $limit",
+            "RETURN v.event_id AS from_id, e.entity_id AS to_id, "
+            "null AS relationship_id LIMIT $limit",
         ),
         (
             GraphRelationshipKind.POSSIBLY_SAME_AS,
             "MATCH (a:Entity {case_id: $case_id})"
-            "-[:POSSIBLY_SAME_AS]->(b:Entity {case_id: $case_id}) "
-            "RETURN a.entity_id AS from_id, b.entity_id AS to_id LIMIT $limit",
+            "-[rel:POSSIBLY_SAME_AS]->(b:Entity {case_id: $case_id}) "
+            "RETURN a.entity_id AS from_id, b.entity_id AS to_id, "
+            "rel.entity_resolution_candidate_id AS relationship_id LIMIT $limit",
         ),
         (
             GraphRelationshipKind.CONTRADICTED_BY,
             "MATCH (a:Entity {case_id: $case_id})"
-            "-[:CONTRADICTED_BY]->(b:Entity {case_id: $case_id}) "
-            "RETURN a.entity_id AS from_id, b.entity_id AS to_id LIMIT $limit",
+            "-[rel:CONTRADICTED_BY]->(b:Entity {case_id: $case_id}) "
+            "RETURN a.entity_id AS from_id, b.entity_id AS to_id, "
+            "rel.entity_resolution_candidate_id AS relationship_id LIMIT $limit",
         ),
     ):
         rows = await repository.read(query, {**params, "limit": relationship_limit})
         relationships.extend(
-            GraphSnapshotRelationshipView(kind=kind, from_id=row["from_id"], to_id=row["to_id"])
+            GraphSnapshotRelationshipView(
+                kind=kind,
+                from_id=row["from_id"],
+                to_id=row["to_id"],
+                relationship_id=row["relationship_id"],
+            )
             for row in rows
         )
 

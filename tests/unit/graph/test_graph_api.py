@@ -469,6 +469,7 @@ async def test_graph_snapshot_returns_entities_events_and_relationships(
 ) -> None:
     token, case_id = await _authenticated_member(client, ac_repository)
     entity_a, entity_b, event_a = uuid4(), uuid4(), uuid4()
+    candidate_id = uuid4()
     graph_repository._read_results = [
         [
             {
@@ -488,8 +489,16 @@ async def test_graph_snapshot_returns_entities_events_and_relationships(
                 "event_time": None,
             }
         ],
-        [{"from_id": str(event_a), "to_id": str(entity_a)}],  # HAS_PARTICIPANT
-        [{"from_id": str(entity_a), "to_id": str(entity_b)}],  # POSSIBLY_SAME_AS
+        [
+            {"from_id": str(event_a), "to_id": str(entity_a), "relationship_id": None}
+        ],  # HAS_PARTICIPANT
+        [
+            {
+                "from_id": str(entity_a),
+                "to_id": str(entity_b),
+                "relationship_id": str(candidate_id),
+            }
+        ],  # POSSIBLY_SAME_AS
         [],  # CONTRADICTED_BY
     ]
 
@@ -503,6 +512,10 @@ async def test_graph_snapshot_returns_entities_events_and_relationships(
     assert len(body["events"]) == 1
     kinds = {r["kind"] for r in body["relationships"]}
     assert kinds == {"HAS_PARTICIPANT", "POSSIBLY_SAME_AS"}
+    possibly_same_as = next(r for r in body["relationships"] if r["kind"] == "POSSIBLY_SAME_AS")
+    assert possibly_same_as["relationship_id"] == str(candidate_id)
+    has_participant = next(r for r in body["relationships"] if r["kind"] == "HAS_PARTICIPANT")
+    assert has_participant["relationship_id"] is None
 
 
 async def test_graph_snapshot_empty_case_returns_empty_snapshot(

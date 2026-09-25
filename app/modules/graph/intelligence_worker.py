@@ -68,8 +68,10 @@ from uuid import UUID
 
 import structlog
 
+from app.contracts.entity import EntityV1
 from app.core.config import Settings, get_settings
 from app.core.pagination import CursorPosition
+from app.modules.graph.entity_graph_sync import sync_case_entities_and_candidates
 from app.modules.graph.entity_repository import EntityRepository
 from app.modules.graph.entity_repository import create_engine as create_entity_engine
 from app.modules.graph.entity_service import (
@@ -357,11 +359,14 @@ class ResolveEntitiesSummary:
 
     entity_count: int
     candidate_count: int
+    projected_entity_count: int
+    applied_candidate_count: int
+    deferred_candidate_count: int
 
 
 async def resolve_entities_once(settings: Settings, case_id: UUID) -> ResolveEntitiesSummary:
     """Run one entity-creation + entity-resolution-candidate-generation pass
-    for one case.
+    for one case, then sync the result into Neo4j.
 
     Calls `entity_service.generate_entity_resolution_candidates` verbatim --
     no change to its internal logic. That function already calls
@@ -370,38 +375,62 @@ async def resolve_entities_once(settings: Settings, case_id: UUID) -> ResolveEnt
     re-running against the same case's unchanged observations recreates the
     same entities (deterministic IDs) and upserts the same candidates,
     matching both functions' own documented idempotency.
+
+    Gap-Closure follow-up: also calls `entity_graph_sync.
+    sync_case_entities_and_candidates`, which had no real caller until now
+    (`docs/qa/known-limitations.md`'s "WP-2 has no Neo4j footprint" entry).
+    Uses the case's full, current entity/candidate lists from Postgres --
+    not just what this pass created -- so re-running `--resolve-entities`
+    for a case processed before this fix existed also backfills it.
     """
     postgres_engine = create_postgres_engine(settings)
     entity_engine = create_entity_engine(settings)
     entity_repository = EntityRepository(entity_engine)
     vector_store = PgvectorCandidateStore(postgres_engine)
+    neo4j_driver = create_driver(settings)
+    graph_repository = Neo4jGraphRepository(neo4j_driver)
     try:
         observations = await fetch_case_observations(postgres_engine, case_id)
         candidates = await generate_entity_resolution_candidates(
             entity_repository, case_id, observations, vector_store=vector_store
         )
-        entities = await entity_repository.list_entities(case_id, limit=200)
-        entity_count = len(entities)
-        while len(entities) == 200:
-            last = entities[-1]
-            entities = await entity_repository.list_entities(
+        entities: list[EntityV1] = []
+        page = await entity_repository.list_entities(case_id, limit=200)
+        entities.extend(page)
+        while len(page) == 200:
+            last = page[-1]
+            page = await entity_repository.list_entities(
                 case_id,
                 limit=200,
                 after=CursorPosition(
                     case_id=case_id, created_at=last.created_at, row_id=last.entity_id
                 ),
             )
-            entity_count += len(entities)
+            entities.extend(page)
+        all_candidates = await entity_repository.list_candidates(case_id)
+        sync_summary = await sync_case_entities_and_candidates(
+            graph_repository, entity_repository, case_id, entities, all_candidates
+        )
     finally:
         await entity_repository.close()
         await postgres_engine.dispose()
+        await graph_repository.close()
     logger.info(
         "graph.intelligence_worker.resolve_entities_completed",
         case_id=str(case_id),
-        entity_count=entity_count,
+        entity_count=len(entities),
         candidate_count=len(candidates),
+        projected_entity_count=sync_summary.projected_entity_count,
+        applied_candidate_count=sync_summary.applied_candidate_count,
+        deferred_candidate_count=sync_summary.deferred_candidate_count,
     )
-    return ResolveEntitiesSummary(entity_count=entity_count, candidate_count=len(candidates))
+    return ResolveEntitiesSummary(
+        entity_count=len(entities),
+        candidate_count=len(candidates),
+        projected_entity_count=sync_summary.projected_entity_count,
+        applied_candidate_count=sync_summary.applied_candidate_count,
+        deferred_candidate_count=sync_summary.deferred_candidate_count,
+    )
 
 
 async def evaluate_once(settings: Settings, case_id: UUID) -> OfflineEvaluationReport:
@@ -552,7 +581,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         print(
             f"entities: {resolve_summary.entity_count}  "
-            f"candidates: {resolve_summary.candidate_count}"
+            f"candidates: {resolve_summary.candidate_count}  "
+            f"projected_entities: {resolve_summary.projected_entity_count}  "
+            f"applied_candidates: {resolve_summary.applied_candidate_count}  "
+            f"deferred_candidates: {resolve_summary.deferred_candidate_count}"
         )
         return 0
 

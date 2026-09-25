@@ -49,16 +49,19 @@ from app.modules.access_control.models import (
 )
 from app.modules.access_control.policy import authorize_case_action
 from app.modules.access_control.repository import AccessControlRepository
-from app.modules.graph.dependencies import get_entity_repository
+from app.modules.graph.dependencies import get_entity_repository, get_graph_repository
 from app.modules.graph.entity_models import (
     EntityListResponse,
     EntityResolutionCandidateListResponse,
+    EntityResolutionCandidateRecord,
     EntityReviewDecisionRecord,
     EntityReviewDecisionSubmission,
     EntityView,
     entity_resolution_review_view,
 )
+from app.modules.graph.entity_projection import project_entity_resolution_candidate
 from app.modules.graph.entity_repository import EntityRepository
+from app.modules.graph.repository import Neo4jGraphRepository
 from app.modules.integrity.dependencies import get_integrity_service
 from app.modules.integrity.service import IntegrityService
 
@@ -85,6 +88,35 @@ async def _record_integrity_event_safely(
             event_kind="entity_resolution_decision",
             subject_id=str(decision.entity_review_decision_id),
             retry_state="reconciliation_pending",
+            failure_category=type(exc).__name__,
+        )
+
+
+async def _project_decision_to_graph_safely(
+    graph_repository: Neo4jGraphRepository,
+    entity_repository: EntityRepository,
+    candidate: EntityResolutionCandidateRecord,
+    case_id: UUID,
+) -> None:
+    """Best-effort side effect, mirrors `_record_integrity_event_safely`
+    exactly: the decision has already durably committed to Postgres by the
+    time this runs, so this never blocks or reverses it. A `DEFERRED`
+    outcome (this candidate's two entities aren't both in Neo4j yet -- e.g.
+    `--resolve-entities` hasn't backfilled this case) is a normal, silent
+    no-op here, not a failure; only a genuine Neo4j error is logged."""
+    try:
+        decisions = await entity_repository.list_decisions(
+            case_id, candidate.entity_resolution_candidate_id
+        )
+        view = entity_resolution_review_view(candidate, tuple(decisions))
+        await project_entity_resolution_candidate(
+            graph_repository, candidate, effective_status=view.effective_status
+        )
+    except Exception as exc:  # noqa: BLE001 - a side-effect failure must never propagate
+        logger.warning(
+            "graph.entity_resolution_candidate_projection_failed",
+            case_id=str(case_id),
+            entity_resolution_candidate_id=str(candidate.entity_resolution_candidate_id),
             failure_category=type(exc).__name__,
         )
 
@@ -221,6 +253,7 @@ async def submit_entity_resolution_review(
     ac_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     entity_repository: Annotated[EntityRepository, Depends(get_entity_repository)],
     integrity_service: Annotated[IntegrityService, Depends(get_integrity_service)],
+    graph_repository: Annotated[Neo4jGraphRepository, Depends(get_graph_repository)],
 ) -> EntityReviewDecisionRecord:
     """`candidate_id` (query param) names which resolution candidate this
     decision is about; `entity_id` in the path is used only to resolve the
@@ -249,6 +282,9 @@ async def submit_entity_resolution_review(
         decision_id=uuid4(),
     )
     await _record_integrity_event_safely(integrity_service, decision)
+    await _project_decision_to_graph_safely(
+        graph_repository, entity_repository, candidate, entity.case_id
+    )
     return decision
 
 

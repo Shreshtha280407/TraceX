@@ -4,14 +4,33 @@ import type {
   CaseCreateRequest,
   CaseMemberAddRequest,
   CaseMemberView,
-  CandidateReviewListResponse,
   EvidenceClassification,
   EvidenceListResponse,
   EvidenceUploadResponse,
-  HypothesisListResponse,
   JobView,
   SourceType,
 } from './case-types'
+import type {
+  CandidateListResponse,
+  CandidateReviewListResponse,
+  CandidateReviewOutcome,
+  CandidateReviewView,
+  CaseGraphObservationsResponse,
+  CorrelationListResponse,
+  EntityListResponse,
+  EntityResolutionCandidateListResponse,
+  EntityReviewDecisionRecord,
+  EntityReviewOutcome,
+  EntityV1,
+  GraphAnalyticsResponse,
+  GraphMotifsResponse,
+  GraphSnapshotResponse,
+  HandoffSummary,
+  HypothesisCreateSubmission,
+  HypothesisListResponse,
+  HypothesisRecord,
+  HypothesisReviewOutcome,
+} from './graph-types'
 import type {
   AdminProvisionUserRequest,
   AdminResetCredentialsResponse,
@@ -250,14 +269,102 @@ export const evidenceApi = {
 }
 
 export const reviewApi = {
-  /**
-   * Read-only in Phase 2 -- the full Verify/Reject decision UI is Phase 3's
-   * Candidate Review page. Used here only to compute Dashboard's real
-   * pending-review count and queue preview.
-   */
+  /** Correlation-candidate review (Nipun's Phase 5 links) -- Verify/Reject only, no third option. */
   listCandidates: (caseId: string, limit = 50) =>
     apiRequest<CandidateReviewListResponse>(`/api/v1/cases/${caseId}/candidates?limit=${limit}`),
 
-  listHypotheses: (caseId: string, limit = 50) =>
-    apiRequest<HypothesisListResponse>(`/api/v1/cases/${caseId}/hypotheses?limit=${limit}`),
+  getCandidate: (caseId: string, candidateId: string) =>
+    apiRequest<CandidateReviewView>(`/api/v1/cases/${caseId}/candidates/${candidateId}`),
+
+  reviewCandidate: (
+    caseId: string,
+    candidateId: string,
+    decision: CandidateReviewOutcome,
+    rationale?: string,
+  ) =>
+    apiRequest<CandidateReviewView>(`/api/v1/cases/${caseId}/candidates/${candidateId}/review`, {
+      method: 'POST',
+      body: { decision, rationale: rationale ?? null },
+    }),
+
+  listHypotheses: (caseId: string, limit = 50, includeRejected = false) =>
+    apiRequest<HypothesisListResponse>(
+      `/api/v1/cases/${caseId}/hypotheses?limit=${limit}&include_rejected=${includeRejected}`,
+    ),
+
+  getHypothesis: (caseId: string, hypothesisId: string) =>
+    apiRequest<HypothesisRecord>(`/api/v1/cases/${caseId}/hypotheses/${hypothesisId}`),
+
+  proposeHypothesis: (caseId: string, submission: HypothesisCreateSubmission) =>
+    apiRequest<HypothesisRecord>(`/api/v1/cases/${caseId}/hypotheses`, {
+      method: 'POST',
+      body: submission,
+    }),
+
+  reviewHypothesis: (
+    caseId: string,
+    hypothesisId: string,
+    decision: HypothesisReviewOutcome,
+    rationale?: string,
+  ) =>
+    apiRequest<HypothesisRecord>(`/api/v1/cases/${caseId}/hypotheses/${hypothesisId}/review`, {
+      method: 'POST',
+      body: { decision, rationale: rationale ?? null },
+    }),
+
+  getHandoff: (caseId: string) => apiRequest<HandoffSummary>(`/api/v1/cases/${caseId}/handoff`),
+}
+
+export const graphApi = {
+  /** Bounded Entity/Event snapshot -- the Network Graph component's real data source (Section 7). */
+  getSnapshot: (caseId: string, nodeLimit = 500, relationshipLimit = 1000) =>
+    apiRequest<GraphSnapshotResponse>(
+      `/api/v1/cases/${caseId}/graph?node_limit=${nodeLimit}&relationship_limit=${relationshipLimit}`,
+    ),
+
+  getAnalytics: (caseId: string) =>
+    apiRequest<GraphAnalyticsResponse>(`/api/v1/cases/${caseId}/analytics`),
+
+  getMotifs: (caseId: string, limit = 100) =>
+    apiRequest<GraphMotifsResponse>(`/api/v1/cases/${caseId}/motifs?limit=${limit}`),
+
+  listCorrelations: (caseId: string, limit = 50) =>
+    apiRequest<CorrelationListResponse>(`/api/v1/cases/${caseId}/graph/correlations?limit=${limit}`),
+
+  /** Read-only pass-through of Nipun's Phase 5 candidate links -- never decorated with a review status. */
+  listRawCandidates: (caseId: string, limit = 50) =>
+    apiRequest<CandidateListResponse>(`/api/v1/cases/${caseId}/graph/candidates?limit=${limit}`),
+
+  /** Real observation-level provenance (event_time, lat/lng, mentions) -- Timeline + Map's data source. */
+  listObservations: (caseId: string, limit = 200, offset = 0) =>
+    apiRequest<CaseGraphObservationsResponse>(
+      `/api/v1/cases/${caseId}/graph/observations?limit=${limit}&offset=${offset}`,
+    ),
+}
+
+export const entityApi = {
+  list: (caseId: string, limit = 200) =>
+    apiRequest<EntityListResponse>(`/api/v1/cases/${caseId}/entities?limit=${limit}`),
+
+  get: (entityId: string) => apiRequest<{ entity: EntityV1 }>(`/api/v1/entities/${entityId}`),
+
+  listCandidates: (caseId: string) =>
+    apiRequest<EntityResolutionCandidateListResponse>(`/api/v1/cases/${caseId}/entity-candidates`),
+
+  /**
+   * Entity-resolution review decision -- the real backend behind Section 5's
+   * "Candidate Review" page (its own role text names "entity-resolution
+   * candidates" explicitly). `candidate_id` is a query param, not part of
+   * the path, matching `entity_api.py`'s real signature exactly.
+   */
+  reviewResolution: (
+    entityId: string,
+    candidateId: string,
+    decision: EntityReviewOutcome,
+    rationale?: string,
+  ) =>
+    apiRequest<EntityReviewDecisionRecord>(
+      `/api/v1/entities/${entityId}/resolution-review?candidate_id=${candidateId}`,
+      { method: 'POST', body: { decision, rationale: rationale ?? null } },
+    ),
 }
