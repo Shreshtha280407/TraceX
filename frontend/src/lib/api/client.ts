@@ -3,6 +3,9 @@ import type {
   CaseAuditEventListResponse,
   CaseCreateRequest,
   CaseMemberAddRequest,
+  CaseMemberCandidateListResponse,
+  CaseMemberListResponse,
+  CaseMemberUpdateRequest,
   CaseMemberView,
   CaseNoteCreateRequest,
   CaseNoteListResponse,
@@ -48,6 +51,8 @@ import type {
   PublicUser,
   PublicUserListResponse,
   TokenPairResponse,
+  FirstAdminSetupRequest,
+  FirstAdminSetupStatusResponse,
 } from './types'
 
 /**
@@ -129,6 +134,7 @@ const AUTH_BOOTSTRAP_PATHS = new Set([
   '/api/v1/auth/login',
   '/api/v1/auth/refresh',
   '/api/v1/auth/mfa/login-verify',
+  '/api/v1/setup/first-admin',
 ])
 
 /**
@@ -226,6 +232,19 @@ export const adminApi = {
     }),
 }
 
+export const setupApi = {
+  status: () =>
+    apiRequest<FirstAdminSetupStatusResponse>('/api/v1/setup/first-admin/status', { skipAuth: true }),
+
+  createFirstAdmin: (request: FirstAdminSetupRequest, setupToken: string) =>
+    apiRequest<PublicUser>('/api/v1/setup/first-admin', {
+      method: 'POST',
+      body: request,
+      skipAuth: true,
+      headers: { 'X-TraceX-First-Admin-Setup-Token': setupToken },
+    }),
+}
+
 export const casesApi = {
   get: (caseId: string) => apiRequest<CaseView>(`/api/v1/cases/${caseId}`),
 
@@ -237,6 +256,23 @@ export const casesApi = {
       method: 'POST',
       body: request,
     }),
+
+  listMembers: (caseId: string) =>
+    apiRequest<CaseMemberListResponse>(`/api/v1/cases/${caseId}/members`),
+
+  listMemberCandidates: (caseId: string, limit = 200) =>
+    apiRequest<CaseMemberCandidateListResponse>(
+      `/api/v1/cases/${caseId}/member-candidates?limit=${limit}`,
+    ),
+
+  updateMember: (caseId: string, userId: string, request: CaseMemberUpdateRequest) =>
+    apiRequest<CaseMemberView>(`/api/v1/cases/${caseId}/members/${userId}`, {
+      method: 'PATCH',
+      body: request,
+    }),
+
+  deactivateMember: (caseId: string, userId: string) =>
+    apiRequest<CaseMemberView>(`/api/v1/cases/${caseId}/members/${userId}`, { method: 'DELETE' }),
 
   /** Newest-first, bounded to 200 -- matches `list_case_audit_events`'s own cap. */
   listAuditEvents: (caseId: string, limit = 50) =>

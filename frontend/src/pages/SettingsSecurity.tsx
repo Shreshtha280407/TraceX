@@ -95,7 +95,7 @@ function AdminCreateAccountPanel({ onCreated }: { onCreated: (user: PublicUser) 
       <div className="flex items-center gap-2">
         <UserPlus size={16} className="text-text-faint" aria-hidden="true" />
         <h2 className="text-sm font-semibold uppercase tracking-wide text-text-faint">
-          Create investigator account
+          Create user account
         </h2>
       </div>
       <p className="text-xs text-text-dim">

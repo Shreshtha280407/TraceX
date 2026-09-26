@@ -19,7 +19,9 @@ from app.modules.access_control.models import (
     AuditOutcome,
     CaseCreateRequest,
     CaseMemberAddRequest,
+    CaseMemberDetailView,
     CaseMembershipRecord,
+    CaseMemberUpdateRequest,
     CaseMemberView,
     CaseRecord,
     CaseRole,
@@ -122,20 +124,51 @@ async def add_case_member(
     now: datetime,
     request_id: str | None,
 ) -> CaseMemberView:
-    """Add an active member to an existing case. Never reactivates a removed member implicitly.
-
-    Raises `ValidationError` if the target user doesn't exist or already
-    has an active membership on this case -- membership changes for an
-    existing member are out of this WP's scope (no update/remove route
-    exists yet; see `docs/qa/known-limitations.md`).
-    """
+    """Assign an active user with an explicit case role and clearance."""
     target_user = await repository.get_user_by_id(request.user_id)
     if target_user is None:
         raise ValidationError("target user does not exist")
+    if not target_user.is_active:
+        raise ValidationError("target user is inactive")
 
     existing = await repository.get_active_membership(case_id, request.user_id)
     if existing is not None:
         raise ValidationError("user already has an active membership on this case")
+
+    # The schema has one membership row per (case, user). Reassignment of a
+    # deliberately deactivated account is explicit here, with fresh role and
+    # clearance selected by the manager; it never happens as a side effect of
+    # a login or unrelated account action.
+    inactive = next(
+        (
+            membership
+            for membership, _user in await repository.list_case_members(case_id)
+            if membership.user_id == request.user_id and not membership.is_active
+        ),
+        None,
+    )
+    if inactive is not None:
+        restored = await repository.update_case_membership(
+            case_id,
+            request.user_id,
+            role=request.role.value,
+            clearance=request.clearance.value,
+            is_active=True,
+            updated_at=now,
+        )
+        if restored is None:  # defensive: the row was concurrently changed
+            raise ValidationError("case membership could not be restored")
+        await record_audit_event(
+            repository,
+            event_type="case.member_update",
+            outcome=AuditOutcome.SUCCESS,
+            now=now,
+            request_id=request_id,
+            user_id=added_by_user_id,
+            case_id=case_id,
+            metadata={"added_user_id": str(request.user_id), "role": request.role.value},
+        )
+        return _member_view(restored)
 
     membership = CaseMembershipRecord(
         membership_id=uuid4(),
@@ -162,4 +195,103 @@ async def add_case_member(
     return _member_view(membership)
 
 
-__all__ = ["add_case_member", "create_case", "get_case_status", "get_case_view"]
+async def list_case_members(
+    repository: AccessControlRepository, case_id: UUID
+) -> list[CaseMemberDetailView]:
+    """Case-scoped directory for a caller already authorized to manage members."""
+    rows = await repository.list_case_members(case_id)
+    return [
+        CaseMemberDetailView(
+            user_id=membership.user_id,
+            display_name=user.display_name,
+            email_normalized=user.email_normalized,
+            role=membership.role,
+            clearance=membership.clearance,
+            is_active=membership.is_active,
+        )
+        for membership, user in rows
+    ]
+
+
+async def update_case_member(
+    repository: AccessControlRepository,
+    case_id: UUID,
+    user_id: UUID,
+    request: CaseMemberUpdateRequest,
+    *,
+    changed_by_user_id: UUID,
+    now: datetime,
+    request_id: str | None,
+    is_active: bool = True,
+) -> CaseMemberView:
+    try:
+        membership = await repository.update_case_membership(
+            case_id,
+            user_id,
+            role=request.role.value,
+            clearance=request.clearance.value,
+            is_active=is_active,
+            updated_at=now,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if membership is None:
+        raise ValidationError("active case membership not found")
+    if is_active:
+        await record_audit_event(
+            repository,
+            event_type="case.member_update",
+            outcome=AuditOutcome.SUCCESS,
+            now=now,
+            request_id=request_id,
+            user_id=changed_by_user_id,
+            case_id=case_id,
+            metadata={"changed_user_id": str(user_id), "role": request.role.value},
+        )
+    else:
+        await record_audit_event(
+            repository,
+            event_type="case.member_deactivate",
+            outcome=AuditOutcome.SUCCESS,
+            now=now,
+            request_id=request_id,
+            user_id=changed_by_user_id,
+            case_id=case_id,
+            metadata={"changed_user_id": str(user_id), "role": request.role.value},
+        )
+    return _member_view(membership)
+
+
+async def deactivate_case_member(
+    repository: AccessControlRepository,
+    case_id: UUID,
+    user_id: UUID,
+    *,
+    changed_by_user_id: UUID,
+    now: datetime,
+    request_id: str | None,
+) -> CaseMemberView:
+    current = await repository.get_active_membership(case_id, user_id)
+    if current is None:
+        raise ValidationError("active case membership not found")
+    return await update_case_member(
+        repository,
+        case_id,
+        user_id,
+        CaseMemberUpdateRequest(role=current.role, clearance=current.clearance),
+        changed_by_user_id=changed_by_user_id,
+        now=now,
+        request_id=request_id,
+        is_active=False,
+    )
+
+
+__all__ = [
+    "add_case_member",
+    "create_case",
+    "deactivate_case_member",
+    "get_case_status",
+    "get_case_view",
+    "list_case_members",
+    "update_case_member",
+]

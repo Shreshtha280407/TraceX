@@ -14,6 +14,7 @@ top of that migration. Keep the two in sync when either changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -139,27 +140,27 @@ def create_engine(settings: Settings) -> AsyncEngine:
     return create_async_engine(str(settings.postgres_dsn))
 
 
-def _user_from_row(row: sa.RowMapping) -> UserRecord:
+def _user_from_row(row: sa.RowMapping | Mapping[str, Any]) -> UserRecord:
     return UserRecord.model_validate(dict(row))
 
 
-def _case_from_row(row: sa.RowMapping) -> CaseRecord:
+def _case_from_row(row: sa.RowMapping | Mapping[str, Any]) -> CaseRecord:
     return CaseRecord.model_validate(dict(row))
 
 
-def _membership_from_row(row: sa.RowMapping) -> CaseMembershipRecord:
+def _membership_from_row(row: sa.RowMapping | Mapping[str, Any]) -> CaseMembershipRecord:
     return CaseMembershipRecord.model_validate(dict(row))
 
 
-def _session_from_row(row: sa.RowMapping) -> SessionRecord:
+def _session_from_row(row: sa.RowMapping | Mapping[str, Any]) -> SessionRecord:
     return SessionRecord.model_validate(dict(row))
 
 
-def _audit_event_from_row(row: sa.RowMapping) -> SecurityAuditEventRecord:
+def _audit_event_from_row(row: sa.RowMapping | Mapping[str, Any]) -> SecurityAuditEventRecord:
     return SecurityAuditEventRecord.model_validate(dict(row))
 
 
-def _worker_credential_from_row(row: sa.RowMapping) -> WorkerCredentialRecord:
+def _worker_credential_from_row(row: sa.RowMapping | Mapping[str, Any]) -> WorkerCredentialRecord:
     return WorkerCredentialRecord.model_validate(dict(row))
 
 
@@ -267,6 +268,34 @@ class AccessControlRepository:
             )
             return int(result.scalar_one())
 
+    async def create_first_admin_if_none(
+        self, user: UserRecord, audit_event: SecurityAuditEventRecord
+    ) -> bool:
+        """Create the first active administrator exactly once.
+
+        An advisory transaction lock serializes setup across API processes
+        without requiring a throwaway database row or a schema migration.
+        The user and audit event are committed together.
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": 71026001}
+            )
+            count = await conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(users_table)
+                .where(
+                    users_table.c.system_role == "admin",
+                    users_table.c.is_active.is_(True),
+                )
+            )
+            if count and int(count) > 0:
+                return False
+            await conn.execute(sa.insert(users_table).values(**user.model_dump(mode="python")))
+            values = _dump_for_insert(audit_event, ("outcome",))
+            await conn.execute(sa.insert(security_audit_events_table).values(**values))
+            return True
+
     # --- cases / memberships (minimal access-control anchor; no case CRUD API) --
 
     async def create_case(self, case: CaseRecord) -> None:
@@ -328,6 +357,132 @@ class AccessControlRepository:
                 .all()
             )
         return [_membership_from_row(row) for row in rows]
+
+    async def list_case_members(
+        self, case_id: UUID
+    ) -> list[tuple[CaseMembershipRecord, UserRecord]]:
+        """Return only users attached to this exact case, including inactive memberships."""
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(case_memberships_table, users_table)
+                        .join(
+                            users_table, users_table.c.user_id == case_memberships_table.c.user_id
+                        )
+                        .where(case_memberships_table.c.case_id == case_id)
+                        .order_by(
+                            users_table.c.display_name.asc(), users_table.c.email_normalized.asc()
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            (
+                _membership_from_row(
+                    {column.name: row[column.name] for column in case_memberships_table.c}
+                ),
+                _user_from_row({column.name: row[column.name] for column in users_table.c}),
+            )
+            for row in rows
+        ]
+
+    async def list_active_user_candidates(self, *, limit: int) -> list[UserRecord]:
+        """Safe account picker source, callable only after case-member authorization."""
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(users_table)
+                        .where(users_table.c.is_active.is_(True))
+                        .order_by(
+                            users_table.c.display_name.asc(), users_table.c.email_normalized.asc()
+                        )
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_user_from_row(row) for row in rows]
+
+    async def update_case_membership(
+        self,
+        case_id: UUID,
+        user_id: UUID,
+        *,
+        role: str,
+        clearance: str,
+        is_active: bool,
+        updated_at: datetime,
+    ) -> CaseMembershipRecord | None:
+        """Atomically edit/deactivate a membership while retaining an active owner.
+
+        A per-case advisory lock serializes every membership mutation, then
+        row locks protect the owner-count invariant within that transaction.
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtext(CAST(:case_id AS text)))"),
+                {"case_id": str(case_id)},
+            )
+            current_row = (
+                (
+                    await conn.execute(
+                        sa.select(case_memberships_table)
+                        .where(
+                            case_memberships_table.c.case_id == case_id,
+                            case_memberships_table.c.user_id == user_id,
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if current_row is None:
+                return None
+            current = _membership_from_row(current_row)
+            await conn.execute(
+                sa.select(case_memberships_table.c.membership_id)
+                .where(
+                    case_memberships_table.c.case_id == case_id,
+                    case_memberships_table.c.role == "case_owner",
+                    case_memberships_table.c.is_active.is_(True),
+                )
+                .with_for_update()
+            )
+            removes_owner = current.role.value == "case_owner" and (
+                role != "case_owner" or not is_active
+            )
+            if removes_owner:
+                owners = await conn.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(case_memberships_table)
+                    .where(
+                        case_memberships_table.c.case_id == case_id,
+                        case_memberships_table.c.role == "case_owner",
+                        case_memberships_table.c.is_active.is_(True),
+                    )
+                )
+                if owners is not None and int(owners) <= 1:
+                    raise ValueError("cannot remove or demote the final active case owner")
+            await conn.execute(
+                sa.update(case_memberships_table)
+                .where(case_memberships_table.c.membership_id == current.membership_id)
+                .values(role=role, clearance=clearance, is_active=is_active, updated_at=updated_at)
+            )
+            return CaseMembershipRecord.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "role": role,
+                    "clearance": clearance,
+                    "is_active": is_active,
+                    "updated_at": updated_at,
+                }
+            )
 
     # --- sessions --------------------------------------------------------
 

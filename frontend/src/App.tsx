@@ -11,6 +11,7 @@ import { EntityIntelligence } from './pages/EntityIntelligence'
 import { EvidenceUpload } from './pages/EvidenceUpload'
 import { EvidenceViewer } from './pages/EvidenceViewer'
 import { ForcePasswordChange } from './pages/ForcePasswordChange'
+import { FirstAdminSetup } from './pages/FirstAdminSetup'
 import { Hypotheses } from './pages/Hypotheses'
 import { IntegrityAudit } from './pages/IntegrityAudit'
 import { InvestigationMemory } from './pages/InvestigationMemory'
@@ -49,6 +50,7 @@ function App() {
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/setup/first-admin" element={<FirstAdminSetup />} />
 
       <Route element={<RequireSession />}>
         <Route path="/force-password-change" element={<ForcePasswordChange />} />

@@ -422,3 +422,98 @@ async def test_audit_route_returns_case_scoped_events(
     assert audit.status_code == 200
     events = audit.json()["items"]
     assert any(e["case_id_nullable"] == case_id for e in events)
+
+
+async def test_owner_can_list_update_and_deactivate_case_member_but_not_final_owner(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    owner_token = await _login(client, fake_repository)
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    create = await client.post(
+        "/api/v1/cases",
+        headers=owner_headers,
+        json={"case_reference": f"CASE-{uuid4().hex[:8]}", "classification": "confidential"},
+    )
+    case_id = create.json()["case_id"]
+    member_email = f"member-{uuid4().hex[:10]}@example.test"
+    member = make_user_record(email_normalized=member_email, display_name="Case Member")
+    await fake_repository.create_user(member)
+
+    added = await client.post(
+        f"/api/v1/cases/{case_id}/members",
+        headers=owner_headers,
+        json={"user_id": str(member.user_id), "role": "viewer", "clearance": "restricted"},
+    )
+    assert added.status_code == 201
+    listed = await client.get(f"/api/v1/cases/{case_id}/members", headers=owner_headers)
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()["items"] if item["user_id"] == str(member.user_id))
+    assert row["display_name"] == "Case Member"
+    assert row["email_normalized"] == member_email
+
+    updated = await client.patch(
+        f"/api/v1/cases/{case_id}/members/{member.user_id}",
+        headers=owner_headers,
+        json={"role": "analyst", "clearance": "confidential"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["role"] == "analyst"
+    deactivated = await client.delete(
+        f"/api/v1/cases/{case_id}/members/{member.user_id}", headers=owner_headers
+    )
+    assert deactivated.status_code == 200
+    assert deactivated.json()["is_active"] is False
+
+    owner_id = next(
+        item.user_id
+        for item in fake_repository.users.values()
+        if item.email_normalized.startswith("agent-")
+    )
+    protected = await client.delete(
+        f"/api/v1/cases/{case_id}/members/{owner_id}", headers=owner_headers
+    )
+    assert protected.status_code == 409
+    assert "final active case owner" in protected.json()["error"]["message"]
+
+
+async def test_non_member_cannot_list_candidates_or_manage_another_case(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    owner_token = await _login(client, fake_repository)
+    case = await client.post(
+        "/api/v1/cases",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"case_reference": f"CASE-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    outsider_token = await _login(client, fake_repository)
+    headers = {"Authorization": f"Bearer {outsider_token}"}
+    for path in ("/members", "/member-candidates"):
+        response = await client.get(
+            f"/api/v1/cases/{case.json()['case_id']}{path}", headers=headers
+        )
+        assert response.status_code == 403
+
+
+async def test_me_returns_only_the_callers_assigned_cases(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    token_a = await _login(client, fake_repository)
+    token_b = await _login(client, fake_repository)
+    create_a = await client.post(
+        "/api/v1/cases",
+        headers={"Authorization": f"Bearer {token_a}"},
+        json={"case_reference": f"CASE-A-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    create_b = await client.post(
+        "/api/v1/cases",
+        headers={"Authorization": f"Bearer {token_b}"},
+        json={"case_reference": f"CASE-B-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    me_a = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_a}"})
+    assert me_a.status_code == 200
+    assert [item["case_id"] for item in me_a.json()["case_memberships"]] == [
+        create_a.json()["case_id"]
+    ]
+    assert create_b.json()["case_id"] not in {
+        item["case_id"] for item in me_a.json()["case_memberships"]
+    }

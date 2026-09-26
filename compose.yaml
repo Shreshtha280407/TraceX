@@ -45,6 +45,12 @@ x-tracex-app-env: &tracex-app-env
   AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-1209600}
   AUTH_LOGIN_RATE_LIMIT: ${AUTH_LOGIN_RATE_LIMIT:-5}
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-20}
+  # Browser first-admin setup is opt-in and closes after the first active
+  # administrator. The secret remains an operator-provided `.env` value;
+  # never give it a Compose default or bake it into an image.
+  TRACEX_FIRST_ADMIN_SETUP_ENABLED: ${TRACEX_FIRST_ADMIN_SETUP_ENABLED:-false}
+  TRACEX_FIRST_ADMIN_SETUP_TOKEN: ${TRACEX_FIRST_ADMIN_SETUP_TOKEN:-}
+  TRACEX_FIRST_ADMIN_SETUP_RATE_LIMIT: ${TRACEX_FIRST_ADMIN_SETUP_RATE_LIMIT:-5}
   MAX_EVIDENCE_BYTES: ${MAX_EVIDENCE_BYTES:-209715200}
   WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-300}
   WORKER_LEASE_MAX_SECONDS: ${WORKER_LEASE_MAX_SECONDS:-3600}
@@ -199,6 +205,19 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    networks:
+      - tracex-internal
+    depends_on:
+      api:
+        condition: service_healthy
 
   # Optional continuous/one-shot workers, split across two Compose profiles
   # (Gap-Closure WP-8, G15) so an operator can start only the workers their

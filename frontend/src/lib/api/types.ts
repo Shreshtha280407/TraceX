@@ -76,6 +76,17 @@ export interface PublicUserListResponse {
   items: PublicUser[]
 }
 
+export interface FirstAdminSetupStatusResponse {
+  setup_required: boolean
+}
+
+export interface FirstAdminSetupRequest {
+  organization_name: string
+  display_name: string
+  email: string
+  password: string
+}
+
 /** The safe, structured error envelope every non-2xx response body carries. */
 export interface ApiErrorBody {
   error: {

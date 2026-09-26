@@ -461,6 +461,62 @@ class CaseMemberView(AccessControlModel):
     is_active: bool
 
 
+class CaseMemberUpdateRequest(AccessControlModel):
+    """A member-management change; global system roles are intentionally absent."""
+
+    role: CaseRole
+    clearance: ClearanceLevel
+
+
+class CaseMemberDetailView(AccessControlModel):
+    """Case-scoped member directory row.  Deliberately excludes credentials and MFA secrets."""
+
+    user_id: UUID
+    display_name: str
+    email_normalized: str
+    role: CaseRole
+    clearance: ClearanceLevel
+    is_active: bool
+
+
+class CaseMemberListResponse(AccessControlModel):
+    items: tuple[CaseMemberDetailView, ...]
+
+
+class CaseMemberCandidateView(AccessControlModel):
+    """Minimum account data necessary for a case manager to assign an active account."""
+
+    user_id: UUID
+    display_name: str
+    email_normalized: str
+
+
+class CaseMemberCandidateListResponse(AccessControlModel):
+    items: tuple[CaseMemberCandidateView, ...]
+
+
+class FirstAdminSetupStatusResponse(AccessControlModel):
+    setup_required: bool
+
+
+class FirstAdminSetupRequest(AccessControlModel):
+    """Private-deployment bootstrap input.  `organization_name` is acknowledged, not persisted.
+
+    TraceX has no organization table; accepting the label makes the UI
+    deployment-oriented without inventing unowned tenant persistence.
+    """
+
+    organization_name: str = Field(min_length=1, max_length=200)
+    email: str
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    display_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+
 class CaseAuditEventListResponse(AccessControlModel):
     """Gap-Closure WP-4 (G7): `GET /cases/{id}/audit`'s response shape.
     Wraps `SecurityAuditEventRecord` directly -- already safe by that

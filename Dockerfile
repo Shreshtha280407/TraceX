@@ -41,4 +41,7 @@ COPY migrations ./migrations
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The single Compose API service owns migration startup for a clean private
+# deployment. PostgreSQL is health-gated by compose before this command
+# runs; Alembic is an application runtime dependency, not a dev-only tool.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]

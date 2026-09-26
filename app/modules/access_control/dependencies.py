@@ -53,6 +53,7 @@ _redis_client: redis.Redis = redis.from_url(str(_settings.redis_url))
 _login_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _refresh_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 _mfa_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
+_first_admin_setup_rate_limiter: RateLimiter = RedisRateLimiter(_redis_client)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 logger = structlog.get_logger(__name__)
@@ -78,6 +79,10 @@ def get_refresh_rate_limiter() -> RateLimiter:
 
 def get_mfa_rate_limiter() -> RateLimiter:
     return _mfa_rate_limiter
+
+
+def get_first_admin_setup_rate_limiter() -> RateLimiter:
+    return _first_admin_setup_rate_limiter
 
 
 def get_auth_service(
