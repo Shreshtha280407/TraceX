@@ -14,12 +14,12 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
-    AdminProvisionUserRequest,
     CaseRole,
     ChangePasswordRequest,
     LoginRequest,
     LogoutRequest,
     MfaLoginVerifyRequest,
+    ProvisionCaseHeadRequest,
     RefreshRequest,
     SystemRole,
 )
@@ -101,16 +101,16 @@ def _make_service(
 
 def test_register_request_rejects_short_password() -> None:
     with pytest.raises(Exception):  # noqa: B017 - pydantic.ValidationError, not this module's
-        AdminProvisionUserRequest(email="a@b.com", password="short", display_name="A")
+        ProvisionCaseHeadRequest(email="a@b.com", password="short", display_name="A")
 
 
 def test_register_request_rejects_malformed_email() -> None:
     with pytest.raises(Exception):  # noqa: B017
-        AdminProvisionUserRequest(email="not-an-email", password=DEFAULT_PASSWORD, display_name="A")
+        ProvisionCaseHeadRequest(email="not-an-email", password=DEFAULT_PASSWORD, display_name="A")
 
 
 def test_register_request_normalizes_email() -> None:
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="  Someone@Example.COM  ", password=DEFAULT_PASSWORD, display_name="A"
     )
     assert request.email == "someone@example.com"
@@ -118,10 +118,10 @@ def test_register_request_normalizes_email() -> None:
 
 async def test_register_creates_a_user_and_never_returns_the_password_hash() -> None:
     service, repo = _make_service()
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="new@example.test", password=DEFAULT_PASSWORD, display_name="New"
     )
-    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
+    public_user = await service.provision_case_head(request, CTX, provisioned_by=uuid4())
 
     assert public_user.email_normalized == "new@example.test"
     assert not hasattr(public_user, "password_hash")
@@ -132,12 +132,12 @@ async def test_register_creates_a_user_and_never_returns_the_password_hash() -> 
 
 async def test_register_rejects_duplicate_email() -> None:
     service, repo = _make_service()
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="dup@example.test", password=DEFAULT_PASSWORD, display_name="A"
     )
-    await service.provision_user(request, CTX, provisioned_by=uuid4())
+    await service.provision_case_head(request, CTX, provisioned_by=uuid4())
     with pytest.raises(ValidationError):
-        await service.provision_user(request, CTX, provisioned_by=uuid4())
+        await service.provision_case_head(request, CTX, provisioned_by=uuid4())
 
 
 async def test_registered_user_is_never_automatically_privileged() -> None:
@@ -146,25 +146,24 @@ async def test_registered_user_is_never_automatically_privileged() -> None:
     # one -- provisioning cannot grant case-level privilege either, since
     # that only ever comes from an explicit `case_memberships` row.
     service, repo = _make_service()
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="plain@example.test", password=DEFAULT_PASSWORD, display_name="A"
     )
-    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
-    assert public_user.system_role is None
+    public_user = await service.provision_case_head(request, CTX, provisioned_by=uuid4())
+    assert public_user.system_role is SystemRole.CASE_HEAD
     assert repo.memberships == {}
 
 
-async def test_provision_user_can_mint_another_admin_when_requested() -> None:
+async def test_provisioner_can_create_case_head_only() -> None:
     service, repo = _make_service()
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="newadmin@example.test",
         password=DEFAULT_PASSWORD,
         display_name="A",
-        system_role=SystemRole.ADMIN,
     )
-    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
-    assert public_user.system_role is SystemRole.ADMIN
-    assert repo.users[public_user.user_id].system_role is SystemRole.ADMIN
+    public_user = await service.provision_case_head(request, CTX, provisioned_by=uuid4())
+    assert public_user.system_role is SystemRole.CASE_HEAD
+    assert repo.users[public_user.user_id].system_role is SystemRole.CASE_HEAD
 
 
 # --- Scenario 3: login success creates valid access and refresh tokens -----
@@ -355,10 +354,10 @@ async def test_get_me_rejects_unknown_user() -> None:
 
 async def test_provision_user_always_forces_a_password_change() -> None:
     service, repo = _make_service()
-    request = AdminProvisionUserRequest(
+    request = ProvisionCaseHeadRequest(
         email="forced@example.test", password=DEFAULT_PASSWORD, display_name="A"
     )
-    public_user = await service.provision_user(request, CTX, provisioned_by=uuid4())
+    public_user = await service.provision_case_head(request, CTX, provisioned_by=uuid4())
     assert public_user.must_change_password is True
     assert repo.users[public_user.user_id].must_change_password is True
 
@@ -520,7 +519,7 @@ async def test_verify_mfa_login_rate_limit_raises_after_threshold() -> None:
 # --- ADR-033: admin-only lost-device/lost-password recovery -----------------
 
 
-async def test_admin_reset_credentials_forces_change_and_clears_mfa() -> None:
+async def test_credential_reset_forces_change_and_clears_mfa() -> None:
     service, repo = _make_service()
     user = make_user_record(totp_secret="JBSWY3DPEHPK3PXP", totp_enabled=True)
     repo.users[user.user_id] = user
@@ -533,7 +532,7 @@ async def test_admin_reset_credentials_forces_change_and_clears_mfa() -> None:
     )
     assert len(repo.sessions) == 1
 
-    reset = await service.admin_reset_credentials(user.user_id, CTX, reset_by=uuid4())
+    reset = await service.reset_credentials(user.user_id, CTX, reset_by=uuid4())
     assert reset.temporary_password
     updated = repo.users[user.user_id]
     assert updated.must_change_password is True
@@ -548,10 +547,10 @@ async def test_admin_reset_credentials_forces_change_and_clears_mfa() -> None:
     assert fresh_login.access_token
 
 
-async def test_admin_reset_credentials_rejects_an_unknown_user() -> None:
+async def test_credential_reset_rejects_an_unknown_user() -> None:
     service, _ = _make_service()
     with pytest.raises(ValidationError):
-        await service.admin_reset_credentials(uuid4(), CTX, reset_by=uuid4())
+        await service.reset_credentials(uuid4(), CTX, reset_by=uuid4())
 
 
 def test_totp_test_fixture_secret_is_actually_valid_base32() -> None:

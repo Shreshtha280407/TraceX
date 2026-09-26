@@ -7,6 +7,7 @@ import type {
   CaseMemberListResponse,
   CaseMemberUpdateRequest,
   CaseMemberView,
+  CaseTeamMemberCreateRequest,
   CaseNoteCreateRequest,
   CaseNoteListResponse,
   CaseNoteRecord,
@@ -42,8 +43,8 @@ import type {
 } from './graph-types'
 import type { IntegrityCheckpointListResponse, VerificationResult } from './integrity-types'
 import type {
-  AdminProvisionUserRequest,
-  AdminResetCredentialsResponse,
+  CaseHeadStatusUpdateRequest,
+  CredentialResetResponse,
   ApiErrorBody,
   CaseView,
   MeResponse,
@@ -53,6 +54,7 @@ import type {
   TokenPairResponse,
   FirstAdminSetupRequest,
   FirstAdminSetupStatusResponse,
+  ProvisionCaseHeadRequest,
 } from './types'
 
 /**
@@ -219,15 +221,23 @@ export const authApi = {
     apiRequest<PublicUser>('/api/v1/auth/mfa/verify', { method: 'POST', body: { code } }),
 }
 
-export const adminApi = {
-  provisionUser: (request: AdminProvisionUserRequest) =>
-    apiRequest<PublicUser>('/api/v1/admin/users', { method: 'POST', body: request }),
+export const provisioningApi = {
+  createCaseHead: (request: ProvisionCaseHeadRequest) =>
+    apiRequest<PublicUser>('/api/v1/provisioning/case-heads', { method: 'POST', body: request }),
 
   listUsers: (limit = 200, offset = 0) =>
-    apiRequest<PublicUserListResponse>(`/api/v1/admin/users?limit=${limit}&offset=${offset}`),
+    apiRequest<PublicUserListResponse>(
+      `/api/v1/provisioning/case-heads?limit=${limit}&offset=${offset}`,
+    ),
 
-  resetCredentials: (userId: string) =>
-    apiRequest<AdminResetCredentialsResponse>(`/api/v1/admin/users/${userId}/reset-credentials`, {
+  updateCaseHeadStatus: (userId: string, request: CaseHeadStatusUpdateRequest) =>
+    apiRequest<PublicUser>(`/api/v1/provisioning/case-heads/${userId}`, {
+      method: 'PATCH',
+      body: request,
+    }),
+
+  resetCaseHeadCredentials: (userId: string) =>
+    apiRequest<CredentialResetResponse>(`/api/v1/provisioning/case-heads/${userId}/reset-credentials`, {
       method: 'POST',
     }),
 }
@@ -273,6 +283,18 @@ export const casesApi = {
 
   deactivateMember: (caseId: string, userId: string) =>
     apiRequest<CaseMemberView>(`/api/v1/cases/${caseId}/members/${userId}`, { method: 'DELETE' }),
+
+  createTeamMember: (caseId: string, request: CaseTeamMemberCreateRequest) =>
+    apiRequest<CaseMemberView>(`/api/v1/cases/${caseId}/team-members`, {
+      method: 'POST',
+      body: request,
+    }),
+
+  resetTeamMemberCredentials: (caseId: string, userId: string) =>
+    apiRequest<CredentialResetResponse>(
+      `/api/v1/cases/${caseId}/members/${userId}/reset-credentials`,
+      { method: 'POST' },
+    ),
 
   /** Newest-first, bounded to 200 -- matches `list_case_audit_events`'s own cap. */
   listAuditEvents: (caseId: string, limit = 50) =>

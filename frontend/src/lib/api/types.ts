@@ -5,7 +5,8 @@
  * docs/architecture/access-control-v1.md and ADR-033.
  */
 
-export type SystemRole = 'admin'
+/** Organisation-level role; ordinary Team Members have `null`. */
+export type SystemRole = 'provisioner' | 'case_head'
 
 export type CaseRole = 'case_owner' | 'case_manager' | 'investigator' | 'analyst' | 'reviewer' | 'viewer'
 
@@ -61,15 +62,18 @@ export interface MfaEnrollResponse {
   provisioning_uri: string
 }
 
-export interface AdminResetCredentialsResponse {
+export interface CredentialResetResponse {
   temporary_password: string
 }
 
-export interface AdminProvisionUserRequest {
+export interface ProvisionCaseHeadRequest {
   email: string
   password: string
   display_name: string
-  system_role?: SystemRole | null
+}
+
+export interface CaseHeadStatusUpdateRequest {
+  is_active: boolean
 }
 
 export interface PublicUserListResponse {

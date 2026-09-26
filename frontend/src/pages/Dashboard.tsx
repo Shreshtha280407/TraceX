@@ -280,7 +280,7 @@ export function Dashboard() {
           ) : cases.length === 0 ? (
             <EmptyState
               title="No assigned cases yet"
-              description="Create a case to start an investigation, or ask an admin to add you to an existing one."
+              description="Create a case to start an investigation, or ask a Case Head to add you to an existing one."
               action={
                 <Link to="/cases/new" className="text-xs font-medium text-crimson hover:underline">
                   Create a case &rarr;

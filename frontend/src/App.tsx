@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './layouts/AppShell'
-import { RequireAuth, RequireSession } from './lib/auth/guards'
+import { RequireApplicationRoute, RequireAuth, RequireSession } from './lib/auth/guards'
 import { PAGES } from './lib/navigation'
 import { CandidateReview } from './pages/CandidateReview'
 import { CaseManagement } from './pages/CaseManagement'
@@ -58,14 +58,16 @@ function App() {
       </Route>
 
       <Route element={<RequireAuth />}>
-        <Route element={<AppShell />}>
-          {SHELL_PAGES.map((page) => (
-            <Route
-              key={page.path}
-              path={page.path}
-              element={SHELL_PAGE_ELEMENTS[page.path] ?? <PlaceholderPage page={page} />}
-            />
-          ))}
+        <Route element={<RequireApplicationRoute />}>
+          <Route element={<AppShell />}>
+            {SHELL_PAGES.map((page) => (
+              <Route
+                key={page.path}
+                path={page.path}
+                element={SHELL_PAGE_ELEMENTS[page.path] ?? <PlaceholderPage page={page} />}
+              />
+            ))}
+          </Route>
         </Route>
       </Route>
 

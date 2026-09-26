@@ -10,7 +10,7 @@ import { Card } from '../components/Card'
 
 /**
  * TOTP enrollment (Section 6): shown once, on first login, if the account
- * has not already been enrolled via an admin-issued QR code. Calls the real
+ * has not already been enrolled via an account-recovery QR code. Calls the real
  * `/auth/mfa/enroll` + `/auth/mfa/verify` endpoints -- the QR/secret is
  * never re-fetchable once this screen is left, exactly like the backend's
  * one-time-display contract for it.

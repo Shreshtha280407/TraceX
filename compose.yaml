@@ -45,8 +45,8 @@ x-tracex-app-env: &tracex-app-env
   AUTH_REFRESH_TOKEN_TTL_SECONDS: ${AUTH_REFRESH_TOKEN_TTL_SECONDS:-1209600}
   AUTH_LOGIN_RATE_LIMIT: ${AUTH_LOGIN_RATE_LIMIT:-5}
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-20}
-  # Browser first-admin setup is opt-in and closes after the first active
-  # administrator. The secret remains an operator-provided `.env` value;
+  # Browser first-Provisioner setup is opt-in and closes after the first active
+  # Provisioner. The secret remains an operator-provided `.env` value;
   # never give it a Compose default or bake it into an image.
   TRACEX_FIRST_ADMIN_SETUP_ENABLED: ${TRACEX_FIRST_ADMIN_SETUP_ENABLED:-false}
   TRACEX_FIRST_ADMIN_SETUP_TOKEN: ${TRACEX_FIRST_ADMIN_SETUP_TOKEN:-}

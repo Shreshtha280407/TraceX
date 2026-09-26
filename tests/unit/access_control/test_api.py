@@ -9,7 +9,6 @@ HTTP semantics without any live PostgreSQL/Redis.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -23,11 +22,7 @@ from app.modules.access_control.dependencies import (
     get_mfa_rate_limiter,
     get_refresh_rate_limiter,
 )
-from app.modules.access_control.models import (
-    SystemRole,
-    WorkerCredentialRecord,
-    WorkerCredentialStatus,
-)
+from app.modules.access_control.models import SystemRole
 from app.modules.access_control.password import MIN_PASSWORD_LENGTH
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
 from tests.fixtures.access_control.factories import DEFAULT_PASSWORD, make_user_record
@@ -80,33 +75,33 @@ async def _register(
     await fake_repository.create_user(make_user_record(email_normalized=email))
 
 
-async def _provision_via_admin_route(
+async def _create_case_head_via_provisioner_route(
     client: AsyncClient,
     fake_repository: FakeAccessControlRepository,
     *,
     email: str,
-    system_role: SystemRole | None = None,
 ) -> tuple[str, dict]:
-    """Seed an admin, log them in, then provision `email` through the real HTTP route."""
-    admin_email = f"admin-{uuid4().hex[:10]}@example.test"
-    admin = make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
-    await fake_repository.create_user(admin)
+    """Seed a Provisioner, then create a Case Head through the real API."""
+    provisioner_email = f"provisioner-{uuid4().hex[:10]}@example.test"
+    provisioner = make_user_record(
+        email_normalized=provisioner_email, system_role=SystemRole.PROVISIONER
+    )
+    await fake_repository.create_user(provisioner)
     login = await client.post(
-        "/api/v1/auth/login", json={"email": admin_email, "password": VALID_PASSWORD}
+        "/api/v1/auth/login", json={"email": provisioner_email, "password": VALID_PASSWORD}
     )
     assert login.status_code == 200, login.text
-    admin_token = login.json()["access_token"]
+    provisioner_token = login.json()["access_token"]
     response = await client.post(
-        "/api/v1/admin/users",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        "/api/v1/provisioning/case-heads",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
         json={
             "email": email,
             "password": VALID_PASSWORD,
             "display_name": "Provisioned User",
-            "system_role": system_role.value if system_role else None,
         },
     )
-    return admin_token, response.json() if response.status_code == 201 else {
+    return provisioner_token, response.json() if response.status_code == 201 else {
         "status": response.status_code,
         "body": response.text,
     }
@@ -169,18 +164,18 @@ async def test_public_register_route_no_longer_exists(client: AsyncClient) -> No
     assert response.status_code == 404
 
 
-async def test_admin_provision_duplicate_email_is_conflict(
+async def test_provisioner_case_head_creation_rejects_duplicate_email(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token, first = await _provision_via_admin_route(
-        client, fake_repository, email="dup-admin@example.test"
+    provisioner_token, first = await _create_case_head_via_provisioner_route(
+        client, fake_repository, email="duplicate-case-head@example.test"
     )
     assert "user_id" in first, first
     response = await client.post(
-        "/api/v1/admin/users",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        "/api/v1/provisioning/case-heads",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
         json={
-            "email": "dup-admin@example.test",
+            "email": "duplicate-case-head@example.test",
             "password": VALID_PASSWORD,
             "display_name": "Again",
         },
@@ -188,15 +183,15 @@ async def test_admin_provision_duplicate_email_is_conflict(
     assert response.status_code == 409
 
 
-async def test_admin_provision_requires_authentication(client: AsyncClient) -> None:
+async def test_case_head_creation_requires_authentication(client: AsyncClient) -> None:
     response = await client.post(
-        "/api/v1/admin/users",
+        "/api/v1/provisioning/case-heads",
         json={"email": "nobody@example.test", "password": VALID_PASSWORD, "display_name": "X"},
     )
     assert response.status_code == 401
 
 
-async def test_admin_provision_rejects_non_admin_caller(
+async def test_case_head_creation_rejects_non_provisioner_caller(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
     await _register(client, "plain-user@example.test", fake_repository)
@@ -206,7 +201,7 @@ async def test_admin_provision_rejects_non_admin_caller(
     assert login.status_code == 200
     token = login.json()["access_token"]
     response = await client.post(
-        "/api/v1/admin/users",
+        "/api/v1/provisioning/case-heads",
         headers={"Authorization": f"Bearer {token}"},
         json={"email": "escalated@example.test", "password": VALID_PASSWORD, "display_name": "X"},
     )
@@ -376,40 +371,18 @@ async def test_cache_control_not_forced_on_unrelated_endpoints(client: AsyncClie
     assert response.headers.get("cache-control") != "no-store"
 
 
-# --- Gap-Closure WP-6 (G16): GET /api/v1/admin/workers -----------------------
-
-
-async def _login_as_admin(client: AsyncClient, fake_repository: FakeAccessControlRepository) -> str:
-    admin_email = f"admin-{uuid4().hex[:10]}@example.test"
+async def _login_as_provisioner(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> str:
+    provisioner_email = f"provisioner-{uuid4().hex[:10]}@example.test"
     await fake_repository.create_user(
-        make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
+        make_user_record(email_normalized=provisioner_email, system_role=SystemRole.PROVISIONER)
     )
     login = await client.post(
-        "/api/v1/auth/login", json={"email": admin_email, "password": VALID_PASSWORD}
+        "/api/v1/auth/login", json={"email": provisioner_email, "password": VALID_PASSWORD}
     )
     assert login.status_code == 200, login.text
     return login.json()["access_token"]
-
-
-async def test_list_workers_requires_admin(
-    client: AsyncClient, fake_repository: FakeAccessControlRepository
-) -> None:
-    await _register(client, "not-admin@example.test", fake_repository)
-    login = await client.post(
-        "/api/v1/auth/login",
-        json={"email": "not-admin@example.test", "password": VALID_PASSWORD},
-    )
-    token = login.json()["access_token"]
-
-    response = await client.get(
-        "/api/v1/admin/workers", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert response.status_code == 403
-
-
-async def test_list_workers_unauthenticated_is_401(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/admin/workers")
-    assert response.status_code == 401
 
 
 async def _current_totp_code(secret: str) -> str:
@@ -431,10 +404,10 @@ async def _current_totp_code(secret: str) -> str:
 # --- ADR-033: forced first-login password change ----------------------------
 
 
-async def test_admin_provisioned_user_must_change_password(
+async def test_provisioned_case_head_must_change_password(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    _admin_token, created = await _provision_via_admin_route(
+    _provisioner_token, created = await _create_case_head_via_provisioner_route(
         client, fake_repository, email="mustchange@example.test"
     )
     assert created["must_change_password"] is True
@@ -564,20 +537,20 @@ async def test_mfa_enroll_requires_authentication(client: AsyncClient) -> None:
     assert response.status_code == 401
 
 
-# --- ADR-033: admin-only lost-device/lost-password recovery -----------------
+# --- Credential recovery -----------------------------------------------------
 
 
-async def test_admin_reset_credentials_round_trip(
+async def test_provisioner_resets_case_head_credentials_round_trip(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token, created = await _provision_via_admin_route(
+    provisioner_token, created = await _create_case_head_via_provisioner_route(
         client, fake_repository, email="resetme@example.test"
     )
     user_id = created["user_id"]
 
     reset = await client.post(
-        f"/api/v1/admin/users/{user_id}/reset-credentials",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"/api/v1/provisioning/case-heads/{user_id}/reset-credentials",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
     )
     assert reset.status_code == 200, reset.text
     new_password = reset.json()["temporary_password"]
@@ -596,7 +569,7 @@ async def test_admin_reset_credentials_round_trip(
     assert me.json()["user"]["totp_enabled"] is False
 
 
-async def test_admin_reset_credentials_requires_admin(
+async def test_case_head_reset_requires_provisioner(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
     await _register(client, "notadmin@example.test", fake_repository)
@@ -605,27 +578,27 @@ async def test_admin_reset_credentials_requires_admin(
     )
     token = login.json()["access_token"]
     response = await client.post(
-        f"/api/v1/admin/users/{uuid4()}/reset-credentials",
+        f"/api/v1/provisioning/case-heads/{uuid4()}/reset-credentials",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 403
 
 
-async def test_admin_reset_credentials_unknown_user_is_404(
+async def test_case_head_reset_unknown_user_is_404(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token = await _login_as_admin(client, fake_repository)
+    provisioner_token = await _login_as_provisioner(client, fake_repository)
     response = await client.post(
-        f"/api/v1/admin/users/{uuid4()}/reset-credentials",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"/api/v1/provisioning/case-heads/{uuid4()}/reset-credentials",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
     )
     assert response.status_code == 404
 
 
-# --- Admin-only account listing (backs the Settings/Security admin picker) --
+# --- Provisioner-only Case Head listing -------------------------------------
 
 
-async def test_list_users_requires_admin(
+async def test_list_case_heads_requires_provisioner(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
     await _register(client, "notadmin-listing@example.test", fake_repository)
@@ -634,23 +607,25 @@ async def test_list_users_requires_admin(
         json={"email": "notadmin-listing@example.test", "password": VALID_PASSWORD},
     )
     token = login.json()["access_token"]
-    response = await client.get("/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"})
+    response = await client.get(
+        "/api/v1/provisioning/case-heads", headers={"Authorization": f"Bearer {token}"}
+    )
     assert response.status_code == 403
 
 
-async def test_list_users_unauthenticated_is_401(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/admin/users")
+async def test_list_case_heads_unauthenticated_is_401(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/provisioning/case-heads")
     assert response.status_code == 401
 
 
-async def test_list_users_returns_real_accounts_never_a_secret(
+async def test_list_case_heads_returns_minimal_accounts_never_a_secret(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token, created = await _provision_via_admin_route(
+    provisioner_token, created = await _create_case_head_via_provisioner_route(
         client, fake_repository, email="listed-user@example.test"
     )
     response = await client.get(
-        "/api/v1/admin/users", headers={"Authorization": f"Bearer {admin_token}"}
+        "/api/v1/provisioning/case-heads", headers={"Authorization": f"Bearer {provisioner_token}"}
     )
     assert response.status_code == 200, response.text
     emails = {item["email_normalized"] for item in response.json()["items"]}
@@ -671,23 +646,27 @@ async def test_list_users_returns_real_accounts_never_a_secret(
         }
 
 
-async def test_list_users_respects_limit_and_offset(
+async def test_list_case_heads_respects_limit_and_offset(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token = await _login_as_admin(client, fake_repository)
+    provisioner_token = await _login_as_provisioner(client, fake_repository)
     for i in range(3):
         await fake_repository.create_user(
-            make_user_record(email_normalized=f"page-{i}@example.test")
+            make_user_record(
+                email_normalized=f"page-{i}@example.test", system_role=SystemRole.CASE_HEAD
+            )
         )
 
     first_page = await client.get(
-        "/api/v1/admin/users?limit=2&offset=0", headers={"Authorization": f"Bearer {admin_token}"}
+        "/api/v1/provisioning/case-heads?limit=2&offset=0",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
     )
     assert first_page.status_code == 200
     assert len(first_page.json()["items"]) == 2
 
     second_page = await client.get(
-        "/api/v1/admin/users?limit=2&offset=2", headers={"Authorization": f"Bearer {admin_token}"}
+        "/api/v1/provisioning/case-heads?limit=2&offset=2",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
     )
     assert second_page.status_code == 200
     first_ids = {item["user_id"] for item in first_page.json()["items"]}
@@ -695,33 +674,47 @@ async def test_list_users_respects_limit_and_offset(
     assert first_ids.isdisjoint(second_ids)
 
 
-async def test_list_workers_reports_liveness_and_never_the_credential_digest(
+async def test_provisioning_routes_cannot_modify_a_provisioner_account(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
-    admin_token = await _login_as_admin(client, fake_repository)
-    worker_id = uuid4()
-    await fake_repository.create_worker_credential(
-        WorkerCredentialRecord(
-            worker_id=worker_id,
-            display_name="cdr-worker-1",
-            status=WorkerCredentialStatus.ACTIVE,
-            allowed_processor_names=("cdr_generic_v1",),
-            credential_digest="super-secret-digest-must-never-appear-in-response",
-            created_at=datetime.now(UTC),
-            rotated_at=None,
-            revoked_at=None,
-            last_seen_at=datetime.now(UTC),
+    provisioner_token = await _login_as_provisioner(client, fake_repository)
+    provisioner = next(
+        user
+        for user in fake_repository.users.values()
+        if user.system_role is SystemRole.PROVISIONER
+    )
+    for method, path, payload in (
+        ("post", f"/api/v1/provisioning/case-heads/{provisioner.user_id}/reset-credentials", None),
+        ("patch", f"/api/v1/provisioning/case-heads/{provisioner.user_id}", {"is_active": False}),
+    ):
+        response = await getattr(client, method)(
+            path,
+            headers={"Authorization": f"Bearer {provisioner_token}"},
+            json=payload,
         )
-    )
+        assert response.status_code == 404
 
-    response = await client.get(
-        "/api/v1/admin/workers", headers={"Authorization": f"Bearer {admin_token}"}
+
+async def test_provisioner_can_deactivate_case_head_and_revokes_access(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    provisioner_token, created = await _create_case_head_via_provisioner_route(
+        client, fake_repository, email="deactivate-case-head@example.test"
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert len(body["items"]) == 1
-    item = body["items"][0]
-    assert item["worker_id"] == str(worker_id)
-    assert item["liveness"] == "active"
-    assert "credential_digest" not in response.text
-    assert "super-secret-digest" not in response.text
+    case_head_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "deactivate-case-head@example.test", "password": VALID_PASSWORD},
+    )
+    response = await client.patch(
+        f"/api/v1/provisioning/case-heads/{created['user_id']}",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
+        json={"is_active": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+    assert (
+        await client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {case_head_login.json()['access_token']}"},
+        )
+    ).status_code == 401

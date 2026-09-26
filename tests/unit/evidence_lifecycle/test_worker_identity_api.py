@@ -181,7 +181,7 @@ async def test_successful_authentication_populates_the_heartbeat_registry(
 ) -> None:
     """Gap-Closure WP-6 (G16): `require_worker_principal` touches `last_seen_at`
     on every successful auth -- no separate heartbeat endpoint is needed to
-    populate the registry `GET /api/v1/admin/workers` reads from."""
+    populate the registry the worker-security controls read from."""
     worker_id, token = await _provision_worker(ac_repository)
     assert ac_repository.worker_credentials[worker_id].last_seen_at is None
     job = _seed_queued_job(evidence_repository)

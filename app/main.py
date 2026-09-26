@@ -25,7 +25,7 @@ from app.core.errors import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
-from app.modules.access_control.api import SecurityHeadersMiddleware, admin_router
+from app.modules.access_control.api import SecurityHeadersMiddleware, provisioning_router
 from app.modules.access_control.api import router as auth_router
 from app.modules.access_control.cases_api import router as cases_router
 from app.modules.access_control.setup_api import router as setup_router
@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
     application.add_exception_handler(Exception, unhandled_exception_handler)
     application.include_router(health_router)
     application.include_router(auth_router)
-    application.include_router(admin_router)
+    application.include_router(provisioning_router)
     application.include_router(setup_router)
     application.include_router(cases_router)
     application.include_router(evidence_router)

@@ -9,7 +9,7 @@ import { Card } from '../components/Card'
 
 /**
  * Forced first-login password change (Section 6): reachable immediately
- * after a first successful login on an admin-provisioned account, before
+ * after a first successful login on a provisioned account, before
  * anything else in the app. Not skippable -- `RequireAuth` redirects back
  * here for as long as `must_change_password` is true.
  */

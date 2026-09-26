@@ -20,6 +20,7 @@ interface SidebarProps {
  */
 export function Sidebar({ counts = {} }: SidebarProps) {
   const activeCaseId = useAuthStore((state) => state.activeCaseId)
+  const user = useAuthStore((state) => state.user)
   const caseMemberships = useAuthStore((state) => state.caseMemberships)
   const activeRole = caseMemberships.find(
     (m) => m.case_id === activeCaseId && m.is_active,
@@ -29,6 +30,8 @@ export function Sidebar({ counts = {} }: SidebarProps) {
     .map(({ section, pages }) => ({
       section,
       pages: pages.filter((page) => {
+        if (user?.system_role === 'provisioner') return page.path === '/settings'
+        if (page.path === '/cases/new' && user?.system_role !== 'case_head') return false
         if (!page.requiresCaseAction) return true
         if (!activeRole) return false
         return ROLE_ACTIONS[activeRole].includes(page.requiresCaseAction)
@@ -45,6 +48,10 @@ export function Sidebar({ counts = {} }: SidebarProps) {
           </span>
           {pages.map((page) => {
             const count = counts[page.path]
+            const label =
+              user?.system_role === 'provisioner' && page.path === '/settings'
+                ? 'Provisioning Console'
+                : page.label
             return (
               <NavLink
                 key={page.path}
@@ -58,7 +65,7 @@ export function Sidebar({ counts = {} }: SidebarProps) {
                 }
               >
                 <page.icon size={16} className="shrink-0" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate">{page.label}</span>
+                <span className="min-w-0 flex-1 truncate">{label}</span>
                 {count ? (
                   <span className="shrink-0 rounded-pill bg-black/20 px-2 py-0.5 text-xs font-semibold">
                     {count}

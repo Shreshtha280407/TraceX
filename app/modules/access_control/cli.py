@@ -1,12 +1,12 @@
-"""First-admin bootstrap CLI (G5).
+"""First-Provisioner bootstrap CLI.
 
-    uv run python -m app.modules.access_control.cli create-admin --email a@example.test
+    uv run python -m app.modules.access_control.cli create-provisioner --email a@example.test
 
-Reads the password from `TRACEX_ADMIN_BOOTSTRAP_PASSWORD` if set, otherwise
+Reads the password from `TRACEX_PROVISIONER_BOOTSTRAP_PASSWORD` if set, otherwise
 prompts interactively via `getpass` -- never accepted as a CLI argument and
 never logged. Idempotent: refuses (exit 1, no user created) if an active
-admin already exists, unless `--force` is passed. Prints only the created
-user's ID on success -- never the password or its hash.
+Provisioner already exists, unless `--force` is passed. Prints only the
+created user's ID on success -- never the password or its hash.
 """
 
 from __future__ import annotations
@@ -29,10 +29,11 @@ from app.modules.access_control.password import (
 )
 from app.modules.access_control.repository import AccessControlRepository, create_engine
 
-_PASSWORD_ENV_VAR = "TRACEX_ADMIN_BOOTSTRAP_PASSWORD"
+_PASSWORD_ENV_VAR = "TRACEX_PROVISIONER_BOOTSTRAP_PASSWORD"
+_LEGACY_PASSWORD_ENV_VAR = "TRACEX_ADMIN_BOOTSTRAP_PASSWORD"
 
 
-async def provision_admin(
+async def provision_provisioner(
     repository: AccessControlRepository,
     email: str,
     password: str,
@@ -41,10 +42,12 @@ async def provision_admin(
     force: bool,
 ) -> int:
     """Injectable core logic (a real repository in production, a fake in tests)."""
-    existing_admins = await repository.count_users_with_system_role(SystemRole.ADMIN.value)
-    if existing_admins > 0 and not force:
+    existing_provisioners = await repository.count_users_with_system_role(
+        SystemRole.PROVISIONER.value
+    )
+    if existing_provisioners > 0 and not force:
         print(
-            f"refused: {existing_admins} active admin(s) already exist; "
+            f"refused: {existing_provisioners} active Provisioner(s) already exist; "
             "pass --force to add another",
             file=sys.stderr,
         )
@@ -76,7 +79,7 @@ async def provision_admin(
         is_active=True,
         created_at=now,
         updated_at=now,
-        system_role=SystemRole.ADMIN,
+        system_role=SystemRole.PROVISIONER,
     )
     try:
         await repository.create_user(user)
@@ -86,7 +89,7 @@ async def provision_admin(
 
     await record_audit_event(
         repository,
-        event_type="admin.bootstrap_create_admin",
+        event_type="provisioner.bootstrap_create",
         outcome=AuditOutcome.SUCCESS,
         now=now,
         user_id=user.user_id,
@@ -95,12 +98,12 @@ async def provision_admin(
     return 0
 
 
-async def _create_admin(email: str, password: str, display_name: str, *, force: bool) -> int:
+async def _create_provisioner(email: str, password: str, display_name: str, *, force: bool) -> int:
     settings = get_settings()
     engine = create_engine(settings)
     repository = AccessControlRepository(engine)
     try:
-        return await provision_admin(repository, email, password, display_name, force=force)
+        return await provision_provisioner(repository, email, password, display_name, force=force)
     finally:
         await repository.close()
 
@@ -113,32 +116,36 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    create_admin = subparsers.add_parser("create-admin", help="Bootstrap the first admin user.")
-    create_admin.add_argument("--email", required=True)
-    create_admin.add_argument("--display-name", default="Administrator")
-    create_admin.add_argument(
+    create_provisioner = subparsers.add_parser(
+        "create-provisioner", aliases=["create-admin"], help="Bootstrap the first Provisioner."
+    )
+    create_provisioner.add_argument("--email", required=True)
+    create_provisioner.add_argument("--display-name", default="Provisioner")
+    create_provisioner.add_argument(
         "--force",
         action="store_true",
-        help="Create another admin even if one already exists.",
+        help="Create another Provisioner even if one already exists.",
     )
 
     args = parser.parse_args(argv)
-    if args.command != "create-admin":
+    if args.command not in {"create-provisioner", "create-admin"}:
         parser.error(f"unknown command: {args.command}")
 
-    password = os.environ.get(_PASSWORD_ENV_VAR)
+    password = os.environ.get(_PASSWORD_ENV_VAR) or os.environ.get(_LEGACY_PASSWORD_ENV_VAR)
     if not password:
-        password = getpass.getpass("Admin password: ")
+        password = getpass.getpass("Provisioner password: ")
         confirm = getpass.getpass("Confirm password: ")
         if password != confirm:
             print("refused: passwords did not match", file=sys.stderr)
             return 1
 
-    return asyncio.run(_create_admin(args.email, password, args.display_name, force=args.force))
+    return asyncio.run(
+        _create_provisioner(args.email, password, args.display_name, force=args.force)
+    )
 
 
 if __name__ == "__main__":
     sys.exit(main())
 
 
-__all__ = ["main", "provision_admin"]
+__all__ = ["main", "provision_provisioner"]

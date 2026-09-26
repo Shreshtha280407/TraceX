@@ -1,4 +1,4 @@
-"""TOTP (RFC 6238) generation and verification, and admin-forced credential ceremony support.
+"""TOTP (RFC 6238) generation, verification, and credential-recovery support.
 
 Hand-rolled against the RFC rather than adding a third-party dependency:
 `password.py`'s own docstring documents this module's deliberately narrow,

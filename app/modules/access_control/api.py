@@ -15,14 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.core.config import Settings, get_settings
 from app.core.errors import get_request_id
-from app.modules.access_control.audit import hash_ip
+from app.modules.access_control.audit import hash_ip, record_audit_event
 from app.modules.access_control.dependencies import (
     get_access_control_repository,
     get_auth_service,
     require_authenticated_user,
-    require_system_admin,
+    require_provisioner,
 )
 from app.modules.access_control.errors import (
     AuthenticationError,
@@ -32,29 +31,29 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
-    AdminProvisionUserRequest,
-    AdminResetCredentialsResponse,
+    AuditOutcome,
     AuthenticatedPrincipal,
+    CaseHeadStatusUpdateRequest,
     ChangePasswordRequest,
+    CredentialResetResponse,
     LoginRequest,
     LogoutRequest,
     MeResponse,
     MfaEnrollResponse,
     MfaLoginVerifyRequest,
     MfaVerifyRequest,
+    ProvisionCaseHeadRequest,
     PublicUser,
     PublicUserListResponse,
     RefreshRequest,
+    SystemRole,
     TokenPairResponse,
-    WorkerLivenessListResponse,
-    WorkerLivenessView,
-    worker_liveness_status,
 )
 from app.modules.access_control.repository import AccessControlRepository
 from app.modules.access_control.service import AuthService, RequestContext
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-admin_router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+provisioning_router = APIRouter(prefix="/api/v1/provisioning", tags=["provisioning"])
 
 _RATE_LIMIT_DETAIL = "too many attempts, try again later"
 _LOGIN_DENIED_DETAIL = "invalid email or password"
@@ -240,33 +239,35 @@ async def change_password(
         ) from exc
 
 
-@admin_router.post("/users", response_model=PublicUser, status_code=status.HTTP_201_CREATED)
-async def provision_user(
-    body: AdminProvisionUserRequest,
+@provisioning_router.post(
+    "/case-heads", response_model=PublicUser, status_code=status.HTTP_201_CREATED
+)
+async def provision_case_head(
+    body: ProvisionCaseHeadRequest,
     request: Request,
-    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    provisioner: Annotated[AuthenticatedPrincipal, Depends(require_provisioner)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> PublicUser:
-    """The only user-provisioning path (G5): admin-only, no public self-signup."""
+    """Create exactly a Case Head; no public account provisioning exists."""
     try:
-        return await auth_service.provision_user(
-            body, _build_context(request), provisioned_by=admin.user_id
+        return await auth_service.provision_case_head(
+            body, _build_context(request), provisioned_by=provisioner.user_id
         )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@admin_router.get("/users", response_model=PublicUserListResponse)
-async def list_users(
-    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+@provisioning_router.get("/case-heads", response_model=PublicUserListResponse)
+async def list_case_heads(
+    provisioner: Annotated[AuthenticatedPrincipal, Depends(require_provisioner)],
     repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> PublicUserListResponse:
-    """Admin-only account listing -- backs the Settings/Security admin sub-section's
-    account picker (Section 6, page 16). Never a password hash or TOTP secret;
-    `PublicUser` already guarantees that (see its own docstring)."""
-    users = await repository.list_users(limit=limit, offset=offset)
+    """Minimal Case Head account list; never a case or credential directory."""
+    users = await repository.list_users_with_system_role(
+        SystemRole.CASE_HEAD.value, limit=limit, offset=offset
+    )
     return PublicUserListResponse(
         items=tuple(
             PublicUser(
@@ -284,51 +285,64 @@ async def list_users(
     )
 
 
-@admin_router.post(
-    "/users/{user_id}/reset-credentials", response_model=AdminResetCredentialsResponse
+@provisioning_router.patch("/case-heads/{user_id}", response_model=PublicUser)
+async def update_case_head_status(
+    user_id: UUID,
+    body: CaseHeadStatusUpdateRequest,
+    request: Request,
+    provisioner: Annotated[AuthenticatedPrincipal, Depends(require_provisioner)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> PublicUser:
+    """Activate/deactivate a Case Head only; other account classes are invisible here."""
+    target = await repository.get_user_by_id(user_id)
+    if target is None or target.system_role != SystemRole.CASE_HEAD:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="case head not found")
+    await repository.set_user_active(
+        user_id, is_active=body.is_active, updated_at=datetime.now(UTC)
+    )
+    if not body.is_active:
+        await repository.revoke_all_sessions_for_user(user_id, datetime.now(UTC))
+    updated = await repository.get_user_by_id(user_id)
+    assert updated is not None
+    await record_audit_event(
+        repository,
+        event_type="provisioner.update_case_head",
+        outcome=AuditOutcome.SUCCESS,
+        now=datetime.now(UTC),
+        request_id=get_request_id(),
+        user_id=provisioner.user_id,
+        ip_marker=_build_context(request).ip_marker,
+        metadata={"case_head_user_id": str(user_id), "is_active": body.is_active},
+    )
+    return PublicUser(
+        user_id=updated.user_id,
+        email_normalized=updated.email_normalized,
+        display_name=updated.display_name,
+        is_active=updated.is_active,
+        created_at=updated.created_at,
+        system_role=updated.system_role,
+        must_change_password=updated.must_change_password,
+        totp_enabled=updated.totp_enabled,
+    )
+
+
+@provisioning_router.post(
+    "/case-heads/{user_id}/reset-credentials", response_model=CredentialResetResponse
 )
-async def reset_user_credentials(
+async def reset_case_head_credentials(
     user_id: UUID,
     request: Request,
-    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
+    provisioner: Annotated[AuthenticatedPrincipal, Depends(require_provisioner)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-) -> AdminResetCredentialsResponse:
-    """Lost-device / lost-password recovery (Section 6): admin-only, never self-service."""
+) -> CredentialResetResponse:
+    """Provisioners can recover Case Heads, never lower accounts through this route."""
+    target = await repository.get_user_by_id(user_id)
+    if target is None or target.system_role != SystemRole.CASE_HEAD:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="case head not found")
     try:
-        return await auth_service.admin_reset_credentials(
-            user_id, _build_context(request), reset_by=admin.user_id
+        return await auth_service.reset_credentials(
+            user_id, _build_context(request), reset_by=provisioner.user_id
         )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-
-@admin_router.get("/workers", response_model=WorkerLivenessListResponse)
-async def list_workers(
-    admin: Annotated[AuthenticatedPrincipal, Depends(require_system_admin)],
-    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> WorkerLivenessListResponse:
-    """Gap-Closure WP-6 (G16): the worker heartbeat registry, admin-gated.
-
-    Never the credential digest. `list_worker_credentials` was previously
-    CLI-only by design ("never exposed through a public API") -- this route
-    narrows that to "never exposed without `system_role=admin`", not a
-    removal of the original protection.
-    """
-    credentials = await repository.list_worker_credentials()
-    now = datetime.now(UTC)
-    return WorkerLivenessListResponse(
-        items=tuple(
-            WorkerLivenessView(
-                worker_id=c.worker_id,
-                display_name=c.display_name,
-                status=c.status,
-                allowed_processor_names=c.allowed_processor_names,
-                last_seen_at=c.last_seen_at,
-                liveness=worker_liveness_status(
-                    c, now=now, stale_seconds=settings.worker_heartbeat_stale_seconds
-                ),
-            )
-            for c in credentials
-        )
-    )

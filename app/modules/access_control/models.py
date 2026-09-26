@@ -57,16 +57,16 @@ def normalize_email(raw_email: str) -> str:
 
 
 class SystemRole(StrEnum):
-    """A user's deployment-wide (not case-scoped) capability.
+    """A user's organisation-level (never case-scoped) capability.
 
-    `None` on `UserRecord.system_role` is the overwhelmingly common case
-    (an ordinary user with no capability beyond their per-case
-    memberships). The only defined value today is `ADMIN`, which gates
-    `POST /api/v1/admin/users` (see `dependencies.require_system_admin`) --
-    it is deliberately not a case role and never appears in `ROLE_ACTIONS`.
+    ``None`` remains the normal value for an ordinary team member.  These
+    roles deliberately never appear in ``ROLE_ACTIONS``: a Provisioner has
+    no implied investigative access, while a Case Head gains investigative
+    access only through an explicit active case membership.
     """
 
-    ADMIN = "admin"
+    PROVISIONER = "provisioner"
+    CASE_HEAD = "case_head"
 
 
 class CaseRole(StrEnum):
@@ -231,8 +231,8 @@ class UserRecord(AccessControlModel):
     created_at: datetime
     updated_at: datetime
     system_role: SystemRole | None = None
-    #: True immediately after admin provisioning or an admin-triggered
-    #: credential reset; cleared only by a successful `change_password`
+    #: True immediately after authorized provisioning or a credential reset;
+    #: cleared only by a successful `change_password`
     #: call. A UI-enforced ceremony, not a server-side hard gate on every
     #: other endpoint -- see ADR-033.
     must_change_password: bool = False
@@ -337,7 +337,7 @@ def worker_liveness_status(
 
 
 class WorkerLivenessView(AccessControlModel):
-    """Safe, admin-only read shape: never the credential digest."""
+    """Safe worker-control-plane read shape: never the credential digest."""
 
     worker_id: UUID
     display_name: str
@@ -387,7 +387,7 @@ class PublicUser(AccessControlModel):
 
 
 class PublicUserListResponse(AccessControlModel):
-    """`GET /api/v1/admin/users`'s response shape. Admin-only account listing."""
+    """Minimal, role-scoped account-list response without credentials."""
 
     items: tuple[PublicUser, ...]
 
@@ -401,27 +401,28 @@ class CaseMembershipView(AccessControlModel):
     is_active: bool
 
 
-class AdminProvisionUserRequest(AccessControlModel):
-    """Admin-only user provisioning. No public self-registration exists (G5).
+class ProvisionCaseHeadRequest(AccessControlModel):
+    """Provisioner-only creation of a Case Head account.
 
-    `password` bounds enforce the real MVP policy (see `password.py`). A
-    request-validation failure on any field of this model -- including this
-    one -- is rendered by `app.core.errors.request_validation_exception_handler`,
-    which never echoes the submitted value, so enforcing the policy here
-    (rather than only deeper in `service.py`) cannot leak the password.
-    `system_role` defaults to `None` (an ordinary user); only an existing
-    admin can set it to `ADMIN`, minting another admin.
+    There is intentionally no request field for an organisation role: this
+    route always creates exactly a ``case_head`` and cannot mint a
+    Provisioner or an ordinary account by caller-controlled input.
     """
 
     email: str
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     display_name: str = Field(min_length=1, max_length=200)
-    system_role: SystemRole | None = None
 
     @field_validator("email")
     @classmethod
     def _normalize_email(cls, value: str) -> str:
         return normalize_email(value)
+
+
+class CaseHeadStatusUpdateRequest(AccessControlModel):
+    """Provisioner-only lifecycle action for a Case Head account."""
+
+    is_active: bool
 
 
 class CaseCreateRequest(AccessControlModel):
@@ -452,6 +453,26 @@ class CaseMemberAddRequest(AccessControlModel):
     user_id: UUID
     role: CaseRole
     clearance: ClearanceLevel
+
+
+class CaseTeamMemberCreateRequest(AccessControlModel):
+    """Create one ordinary team account and assign it to this exact case.
+
+    ``role`` is validated again against the actor's membership in the
+    service layer.  It remains a case role only; no organisation role can
+    be supplied by this payload.
+    """
+
+    email: str
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    display_name: str = Field(min_length=1, max_length=200)
+    role: CaseRole
+    clearance: ClearanceLevel
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        return normalize_email(value)
 
 
 class CaseMemberView(AccessControlModel):
@@ -500,7 +521,9 @@ class FirstAdminSetupStatusResponse(AccessControlModel):
 
 
 class FirstAdminSetupRequest(AccessControlModel):
-    """Private-deployment bootstrap input.  `organization_name` is acknowledged, not persisted.
+    """Private-deployment first-Provisioner input.
+
+    ``organization_name`` is acknowledged, not persisted.
 
     TraceX has no organization table; accepting the label makes the UI
     deployment-oriented without inventing unowned tenant persistence.
@@ -587,7 +610,7 @@ class ChangePasswordRequest(AccessControlModel):
     `current_password` is bounded the same generous way `LoginRequest.password`
     is (a DoS guard only) -- it is verified against the stored hash, not
     subject to the registration policy. `new_password` enforces the real
-    policy, exactly like `AdminProvisionUserRequest.password`.
+    policy, exactly like other provisioned-account password inputs.
     """
 
     current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
@@ -619,10 +642,11 @@ class MfaLoginVerifyRequest(AccessControlModel):
     code: str = Field(min_length=6, max_length=6)
 
 
-class AdminResetCredentialsResponse(AccessControlModel):
-    """`POST /api/v1/admin/users/{user_id}/reset-credentials`'s response.
+class CredentialResetResponse(AccessControlModel):
+    """One-time credential-recovery response for an authorized account manager.
 
-    Shown to the admin once, exactly like `AdminProvisionUserRequest`'s
+    Shown to the authorized manager once, exactly like an account's initial
+    password,
     initial password -- the investigator must re-enroll MFA from scratch
     (the old `totp_secret` is cleared), and `must_change_password` is set
     again on the affected account.

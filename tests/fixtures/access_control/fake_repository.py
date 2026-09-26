@@ -51,9 +51,29 @@ class FakeAccessControlRepository:
     async def get_user_by_id(self, user_id: UUID) -> UserRecord | None:
         return self.users.get(user_id)
 
-    async def list_users(self, *, limit: int, offset: int) -> list[UserRecord]:
-        ordered = sorted(self.users.values(), key=lambda u: u.created_at)
+    async def list_users_with_system_role(
+        self, system_role: str, *, limit: int, offset: int
+    ) -> list[UserRecord]:
+        ordered = sorted(
+            (
+                user
+                for user in self.users.values()
+                if user.system_role and user.system_role.value == system_role
+            ),
+            key=lambda u: u.created_at,
+        )
         return ordered[offset : offset + limit]
+
+    async def set_user_active(
+        self, user_id: UUID, *, is_active: bool, updated_at: datetime
+    ) -> bool:
+        user = self.users.get(user_id)
+        if user is None:
+            return False
+        self.users[user_id] = user.model_copy(
+            update={"is_active": is_active, "updated_at": updated_at}
+        )
+        return True
 
     async def update_password(
         self, user_id: UUID, *, password_hash: str, must_change_password: bool, updated_at: datetime
@@ -88,11 +108,17 @@ class FakeAccessControlRepository:
             if u.is_active and u.system_role is not None and u.system_role.value == system_role
         )
 
-    async def create_first_admin_if_none(
+    async def has_user_with_system_role(self, system_role: str) -> bool:
+        return any(
+            user.system_role is not None and user.system_role.value == system_role
+            for user in self.users.values()
+        )
+
+    async def create_first_provisioner_if_none(
         self, user: UserRecord, audit_event: SecurityAuditEventRecord
     ) -> bool:
         async with self._first_admin_lock:
-            if await self.count_users_with_system_role("admin"):
+            if await self.has_user_with_system_role("provisioner"):
                 return False
             self.users[user.user_id] = user
             self.audit_events.append(audit_event)
@@ -108,11 +134,31 @@ class FakeAccessControlRepository:
             )
         self.cases[case.case_id] = case
 
+    async def create_case_with_owner(
+        self, case: CaseRecord, membership: CaseMembershipRecord
+    ) -> None:
+        await self.create_case(case)
+        self.memberships[membership.membership_id] = membership
+
     async def get_case(self, case_id: UUID) -> CaseRecord | None:
         return self.cases.get(case_id)
 
     async def create_membership(self, membership: CaseMembershipRecord) -> None:
         self.memberships[membership.membership_id] = membership
+
+    async def create_team_user_with_membership(
+        self,
+        user: UserRecord,
+        membership: CaseMembershipRecord,
+        audit_event: SecurityAuditEventRecord,
+    ) -> None:
+        if any(
+            existing.email_normalized == user.email_normalized for existing in self.users.values()
+        ):
+            raise sa.exc.IntegrityError("INSERT INTO users (...)", {}, Exception("duplicate email"))
+        self.users[user.user_id] = user
+        self.memberships[membership.membership_id] = membership
+        self.audit_events.append(audit_event)
 
     async def get_active_membership(
         self, case_id: UUID, user_id: UUID
@@ -139,9 +185,18 @@ class FakeAccessControlRepository:
         ]
         return sorted(rows, key=lambda row: (row[1].display_name, row[1].email_normalized))
 
-    async def list_active_user_candidates(self, *, limit: int) -> list[UserRecord]:
+    async def list_active_team_user_candidates(self, *, limit: int) -> list[UserRecord]:
         return sorted(
-            (user for user in self.users.values() if user.is_active),
+            (
+                user
+                for user in self.users.values()
+                if user.is_active
+                and user.system_role is None
+                and not any(
+                    membership.user_id == user.user_id and membership.is_active
+                    for membership in self.memberships.values()
+                )
+            ),
             key=lambda user: (user.display_name, user.email_normalized),
         )[:limit]
 

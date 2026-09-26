@@ -752,10 +752,9 @@ def _safe_content_disposition(filename: str) -> str:
 # worker-authentication boundary: `require_worker_principal`, the same
 # shared, revocable per-worker credential every other route above already
 # requires. The plan asks for this route to be worker-credential-scoped
-# (an authenticated worker/ops sidecar can see fleet health), not
-# admin-only; `GET /api/v1/admin/workers` (Gap-Closure WP-6) already exists
-# as a stricter, additional admin-gated view of the same data -- this
-# route doesn't replace that, it adds the spec-required surface.
+# (an authenticated worker/ops sidecar can see fleet health), not exposed
+# through the human Provisioner UI. This route is the bounded, internal
+# surface for that control-plane data.
 
 worker_fleet_router = APIRouter(prefix="/api/v1/internal", tags=["worker-internal"])
 
@@ -766,10 +765,11 @@ async def list_worker_fleet(
     ac_repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> WorkerLivenessListResponse:
-    """The same heartbeat-registry view `GET /api/v1/admin/workers` exposes
-    to a system admin, here reachable with any valid worker credential --
-    never the credential digest, structurally (`WorkerLivenessView` has no
-    such field)."""
+    """A bounded heartbeat-registry view for valid worker credentials.
+
+    It never includes a credential digest, structurally
+    (`WorkerLivenessView` has no such field).
+    """
     credentials = await ac_repository.list_worker_credentials()
     now = datetime.now(UTC)
     return WorkerLivenessListResponse(
