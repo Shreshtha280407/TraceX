@@ -27,6 +27,30 @@ export interface CaseMemberView {
   is_active: boolean
 }
 
+export interface CaseMemberUpdateRequest {
+  role: CaseRole
+  clearance: ClearanceLevel
+}
+
+export interface CaseMemberDetailView extends CaseMemberView {
+  display_name: string
+  email_normalized: string
+}
+
+export interface CaseMemberListResponse {
+  items: CaseMemberDetailView[]
+}
+
+export interface CaseMemberCandidateView {
+  user_id: string
+  display_name: string
+  email_normalized: string
+}
+
+export interface CaseMemberCandidateListResponse {
+  items: CaseMemberCandidateView[]
+}
+
 /** `security_audit_events` row -- safe telemetry only, never a secret or raw evidence value. */
 export interface SecurityAuditEventRecord {
   event_id: string

@@ -8,6 +8,7 @@ database.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from uuid import UUID
 
@@ -32,6 +33,7 @@ class FakeAccessControlRepository:
         self.sessions: dict[UUID, SessionRecord] = {}
         self.audit_events: list[SecurityAuditEventRecord] = []
         self.worker_credentials: dict[UUID, WorkerCredentialRecord] = {}
+        self._first_admin_lock = asyncio.Lock()
 
     async def close(self) -> None:
         pass
@@ -86,6 +88,16 @@ class FakeAccessControlRepository:
             if u.is_active and u.system_role is not None and u.system_role.value == system_role
         )
 
+    async def create_first_admin_if_none(
+        self, user: UserRecord, audit_event: SecurityAuditEventRecord
+    ) -> bool:
+        async with self._first_admin_lock:
+            if await self.count_users_with_system_role("admin"):
+                return False
+            self.users[user.user_id] = user
+            self.audit_events.append(audit_event)
+            return True
+
     # --- cases / memberships ---------------------------------------------
 
     async def create_case(self, case: CaseRecord) -> None:
@@ -116,6 +128,62 @@ class FakeAccessControlRepository:
 
     async def list_active_memberships_for_user(self, user_id: UUID) -> list[CaseMembershipRecord]:
         return [m for m in self.memberships.values() if m.user_id == user_id and m.is_active]
+
+    async def list_case_members(
+        self, case_id: UUID
+    ) -> list[tuple[CaseMembershipRecord, UserRecord]]:
+        rows = [
+            (m, self.users[m.user_id])
+            for m in self.memberships.values()
+            if m.case_id == case_id and m.user_id in self.users
+        ]
+        return sorted(rows, key=lambda row: (row[1].display_name, row[1].email_normalized))
+
+    async def list_active_user_candidates(self, *, limit: int) -> list[UserRecord]:
+        return sorted(
+            (user for user in self.users.values() if user.is_active),
+            key=lambda user: (user.display_name, user.email_normalized),
+        )[:limit]
+
+    async def update_case_membership(
+        self,
+        case_id: UUID,
+        user_id: UUID,
+        *,
+        role: str,
+        clearance: str,
+        is_active: bool,
+        updated_at: datetime,
+    ) -> CaseMembershipRecord | None:
+        membership = next(
+            (
+                item
+                for item in self.memberships.values()
+                if item.case_id == case_id and item.user_id == user_id
+            ),
+            None,
+        )
+        if membership is None:
+            return None
+        if membership.role.value == "case_owner" and (role != "case_owner" or not is_active):
+            owners = sum(
+                1
+                for item in self.memberships.values()
+                if item.case_id == case_id and item.is_active and item.role.value == "case_owner"
+            )
+            if owners <= 1:
+                raise ValueError("cannot remove or demote the final active case owner")
+        updated = CaseMembershipRecord.model_validate(
+            {
+                **membership.model_dump(mode="python"),
+                "role": role,
+                "clearance": clearance,
+                "is_active": is_active,
+                "updated_at": updated_at,
+            }
+        )
+        self.memberships[updated.membership_id] = updated
+        return updated
 
     # --- sessions --------------------------------------------------------
 

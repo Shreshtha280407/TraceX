@@ -12,12 +12,20 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator, model_validator
+from pydantic import (
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # HS256 wants a key with at least 256 bits of entropy; 32 ASCII characters is
 # the simplest way to guarantee that floor without parsing key encoding.
 _MIN_JWT_SECRET_LENGTH = 32
+_MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH = 32
 
 
 class AppEnv(StrEnum):
@@ -42,6 +50,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # --- Application ---
@@ -100,6 +109,23 @@ class Settings(BaseSettings):
     # A TOTP code is only 6 digits (1e6 space) -- kept tight per 60-second
     # window, same reasoning as `auth_login_rate_limit`.
     auth_mfa_rate_limit: int = Field(default=8, ge=1)
+
+    # First-admin setup is deliberately opt-in.  The CLI remains the
+    # operator fallback; deployments that want the browser ceremony enable
+    # it temporarily and provide a high-entropy, one-time deployment secret.
+    first_admin_setup_enabled: bool = Field(
+        default=False,
+        validation_alias="TRACEX_FIRST_ADMIN_SETUP_ENABLED",
+    )
+    first_admin_setup_token: SecretStr | None = Field(
+        default=None,
+        validation_alias="TRACEX_FIRST_ADMIN_SETUP_TOKEN",
+    )
+    first_admin_setup_rate_limit: int = Field(
+        default=5,
+        ge=1,
+        validation_alias="TRACEX_FIRST_ADMIN_SETUP_RATE_LIMIT",
+    )
 
     @field_validator("auth_jwt_secret")
     @classmethod
@@ -353,7 +379,12 @@ class Settings(BaseSettings):
     # ADR-023 before changing it in a live deployment.
     integrity_manifest_retention_years: int = Field(default=10, ge=1, le=100)
 
-    @field_validator("worker_token", "worker_credential_pepper", "integrity_signing_key")
+    @field_validator(
+        "worker_token",
+        "worker_credential_pepper",
+        "integrity_signing_key",
+        "first_admin_setup_token",
+    )
     @classmethod
     def _normalize_blank_worker_secret_to_none(cls, value: SecretStr | None) -> SecretStr | None:
         """An empty/whitespace-only value is treated as "not configured", not as a real secret.
@@ -388,6 +419,18 @@ class Settings(BaseSettings):
             )
         if self.worker_heartbeat_stale_seconds > self.worker_lease_seconds:
             raise ValueError("worker_heartbeat_stale_seconds must be <= worker_lease_seconds")
+        if self.first_admin_setup_enabled and self.app_env is AppEnv.PRODUCTION:
+            token = (
+                self.first_admin_setup_token.get_secret_value()
+                if self.first_admin_setup_token
+                else ""
+            )
+            if len(token) < _MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH:
+                raise ValueError(
+                    "first_admin_setup_token must be at least "
+                    f"{_MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH} characters when first-admin "
+                    "setup is enabled in production"
+                )
         return self
 
 

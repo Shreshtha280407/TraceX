@@ -38,6 +38,10 @@ from app.modules.access_control.models import (
     CaseAuditEventListResponse,
     CaseCreateRequest,
     CaseMemberAddRequest,
+    CaseMemberCandidateListResponse,
+    CaseMemberCandidateView,
+    CaseMemberListResponse,
+    CaseMemberUpdateRequest,
     CaseMemberView,
     CaseStatusView,
     CaseView,
@@ -118,6 +122,81 @@ async def add_case_member(
             case_id,
             body,
             added_by_user_id=principal.principal.user_id,
+            now=datetime.now(UTC),
+            request_id=get_request_id(),
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/{case_id}/members", response_model=CaseMemberListResponse)
+async def list_case_members(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> CaseMemberListResponse:
+    """Directory is restricted to owner/manager; it is never a global account listing."""
+    return CaseMemberListResponse(
+        items=tuple(await case_service.list_case_members(repository, case_id))
+    )
+
+
+@router.get("/{case_id}/member-candidates", response_model=CaseMemberCandidateListResponse)
+async def list_case_member_candidates(
+    case_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> CaseMemberCandidateListResponse:
+    """The account picker exposes only active account name/email/ID after case authorization."""
+    users = await repository.list_active_user_candidates(limit=limit)
+    return CaseMemberCandidateListResponse(
+        items=tuple(
+            CaseMemberCandidateView(
+                user_id=user.user_id,
+                display_name=user.display_name,
+                email_normalized=user.email_normalized,
+            )
+            for user in users
+        )
+    )
+
+
+@router.patch("/{case_id}/members/{user_id}", response_model=CaseMemberView)
+async def update_case_member(
+    case_id: UUID,
+    user_id: UUID,
+    body: CaseMemberUpdateRequest,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> CaseMemberView:
+    try:
+        return await case_service.update_case_member(
+            repository,
+            case_id,
+            user_id,
+            body,
+            changed_by_user_id=principal.principal.user_id,
+            now=datetime.now(UTC),
+            request_id=get_request_id(),
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.delete("/{case_id}/members/{user_id}", response_model=CaseMemberView)
+async def deactivate_case_member(
+    case_id: UUID,
+    user_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> CaseMemberView:
+    try:
+        return await case_service.deactivate_case_member(
+            repository,
+            case_id,
+            user_id,
+            changed_by_user_id=principal.principal.user_id,
             now=datetime.now(UTC),
             request_id=get_request_id(),
         )

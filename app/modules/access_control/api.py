@@ -62,7 +62,7 @@ _REFRESH_DENIED_DETAIL = "invalid or expired refresh token"
 
 #: Paths that carry credentials/tokens and must never be cached by a
 #: client, proxy, or browser history.
-_NO_STORE_PATH_PREFIX = "/api/v1/auth"
+_NO_STORE_PATH_PREFIXES = ("/api/v1/auth", "/api/v1/setup")
 
 
 class SecurityHeadersMiddleware:
@@ -98,7 +98,7 @@ class SecurityHeadersMiddleware:
                 headers["X-Content-Type-Options"] = "nosniff"
                 headers["X-Frame-Options"] = "DENY"
                 headers["Referrer-Policy"] = "no-referrer"
-                if path.startswith(_NO_STORE_PATH_PREFIX):
+                if path.startswith(_NO_STORE_PATH_PREFIXES):
                     headers["Cache-Control"] = "no-store"
             await send(message)
 
