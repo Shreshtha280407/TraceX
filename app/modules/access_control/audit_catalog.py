@@ -75,6 +75,8 @@ class AuditEventType(StrEnum):
     WORKER_PROCESSOR_SCOPE_DENIED = "worker_processor_scope_denied"
 
     # --- app/modules/evidence_lifecycle/*.py --------------------------------
+    EVIDENCE_CLASSIFICATION_UPDATE = "evidence.classification_update"
+    EVIDENCE_DETECTED_TYPE_OVERRIDE = "evidence.detected_type_override"
     EVIDENCE_REPROCESS = "evidence.reprocess"
     EVIDENCE_UPLOAD = "evidence.upload"
     WORKER_MEDIA_CHUNK_ACCEPTED = "worker.media_chunk.accepted"

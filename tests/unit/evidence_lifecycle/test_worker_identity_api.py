@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.contracts.evidence import SourceType
+from app.contracts.evidence import EvidenceClassification, SourceType
 from app.contracts.worker import WorkerStatus
 from app.core.config import get_settings
 from app.main import app
@@ -53,6 +53,7 @@ from tests.fixtures.access_control.factories import (
     make_user_record,
 )
 from tests.fixtures.access_control.fake_repository import FakeAccessControlRepository
+from tests.fixtures.evidence_lifecycle.factories import make_evidence_record
 from tests.fixtures.evidence_lifecycle.fake_repository import FakeEvidenceLifecycleRepository
 
 FIXED_TIME = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -370,7 +371,6 @@ async def test_reclaim_records_a_worker_job_reclaimed_audit_event(
             "claimed_by_worker_id": uuid4(),
         }
     )
-
     response = await client.post(
         "/api/v1/internal/worker-jobs/claim",
         headers={"Authorization": f"Bearer {token}"},
@@ -545,6 +545,14 @@ async def test_job_view_never_exposes_worker_identity_internals(
             "claimed_by_worker_id": worker_id,
             "claim_token_hash": "a" * 64,
         }
+    )
+    # Jobs are normally created atomically with their evidence record.  Seed
+    # that invariant here so the public job view can apply per-evidence
+    # clearance checks before returning safe status fields.
+    evidence_repository.evidence[job.evidence_id] = make_evidence_record(
+        evidence_id=job.evidence_id,
+        case_id=case.case_id,
+        classification=EvidenceClassification.CONFIDENTIAL,
     )
 
     response = await client.get(

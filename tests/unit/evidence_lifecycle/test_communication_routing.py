@@ -39,6 +39,7 @@ from app.modules.evidence_lifecycle.errors import UnsupportedContentTypeError
 from app.modules.evidence_lifecycle.jobs import FakeJobProducer
 from app.modules.evidence_lifecycle.service import EvidenceLifecycleService, UploadContext
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
+from app.modules.integrity.dependencies import get_integrity_service
 from tests.fixtures.access_control.factories import (
     make_case_record,
     make_membership_record,
@@ -52,6 +53,12 @@ JSON_BYTES = json.dumps({"segments": []}).encode()
 WHATSAPP_BYTES = b"01/01/26, 12:00 - Alice: hello\n"
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+
+
+class _NoopIntegrityService:
+    async def record_integrity_event(self, *args: object, **kwargs: object) -> None:
+        return None
+
 
 _VALID_ROUTES = [
     pytest.param(
@@ -254,6 +261,7 @@ def _override_dependencies(
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = FakeObjectStorage
     app.dependency_overrides[get_job_producer] = FakeJobProducer
+    app.dependency_overrides[get_integrity_service] = _NoopIntegrityService
     yield
     app.dependency_overrides.clear()
 

@@ -221,6 +221,15 @@ def detect_source(
         return DetectedEvidenceType(SourceType.FINANCIAL, "text/csv")
     if len(columns) > 1 and all(re.match(r"^[\w .-]+$", column) for column in columns):
         return DetectedEvidenceType(SourceType.STRUCTURED_TABULAR, "text/csv")
+    # A WhatsApp text export has a stable, content-derived line shape.  This
+    # check intentionally precedes the generic plaintext-document fallback:
+    # it does not rely on a caller's MIME field or filename to select a
+    # communications processor.
+    if re.search(
+        r"(?m)^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4},\s+\d{1,2}:\d{2}\s+-\s+[^:]+:",
+        text,
+    ):
+        return DetectedEvidenceType(SourceType.WHATSAPP_CHAT, "text/plain")
     # Plain UTF-8 text is a supported document input.  It is intentionally
     # not reclassified as a chat export merely because its name says so.
     if lower_name.endswith((".txt", ".md", ".log")) or len(stripped) > 0:
