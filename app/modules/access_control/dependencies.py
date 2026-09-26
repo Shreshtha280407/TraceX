@@ -253,42 +253,51 @@ def require_case_action(
     return _dependency
 
 
-async def require_system_admin(
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
-    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
-) -> AuthenticatedPrincipal:
-    """Gate `POST /api/v1/admin/users`: the caller must be an active admin.
+def require_organization_role(
+    required_role: SystemRole,
+) -> Callable[..., Awaitable[AuthenticatedPrincipal]]:
+    """Require one explicit active organisation role; default deny.
 
-    Deliberately a separate check from `require_case_action` -- admin
-    provisioning is deployment-wide, not case-scoped, so it has no
-    `case_id` to authorize against. Same default-deny shape: a missing
-    user row, an inactive user, or a non-admin `system_role` all deny with
-    the same generic 403, never revealing which condition failed.
+    Organisation roles are intentionally checked separately from case ABAC.
+    Possessing either role never creates or substitutes for a case
+    membership.
     """
-    try:
-        user = await repository.get_user_by_id(principal.user_id)
-    except sa.exc.SQLAlchemyError as exc:
-        logger.warning(
-            "authorization.admin_dependency_unavailable",
-            request_id=get_request_id() or None,
-            principal_ref=str(principal.user_id),
-            exc_type=type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="authorization service temporarily unavailable",
-        ) from exc
-    if user is None or not user.is_active or user.system_role != SystemRole.ADMIN:
-        await record_audit_event_safely(
-            repository,
-            event_type="admin.access_denied",
-            outcome=AuditOutcome.DENIED,
-            now=datetime.now(UTC),
-            request_id=get_request_id() or None,
-            user_id=principal.user_id,
-        )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
-    return principal
+
+    async def _dependency(
+        principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+        repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    ) -> AuthenticatedPrincipal:
+        try:
+            user = await repository.get_user_by_id(principal.user_id)
+        except sa.exc.SQLAlchemyError as exc:
+            logger.warning(
+                "authorization.organization_role_dependency_unavailable",
+                request_id=get_request_id() or None,
+                principal_ref=str(principal.user_id),
+                exc_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authorization service temporarily unavailable",
+            ) from exc
+        if user is None or not user.is_active or user.system_role != required_role:
+            await record_audit_event_safely(
+                repository,
+                event_type="organization_role.access_denied",
+                outcome=AuditOutcome.DENIED,
+                now=datetime.now(UTC),
+                request_id=get_request_id() or None,
+                user_id=principal.user_id,
+                metadata={"required_role": required_role.value},
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
+        return principal
+
+    return _dependency
+
+
+require_provisioner = require_organization_role(SystemRole.PROVISIONER)
+require_case_head = require_organization_role(SystemRole.CASE_HEAD)
 
 
 require_case_read = require_case_action(CaseAction.CASE_READ)

@@ -61,15 +61,15 @@ uv sync --all-groups
 
 Edit `.env` if you need non-default local values (ports already in use, etc). Never commit `.env` — it's git-ignored.
 
-### Optional first-admin browser setup
+### Optional first-Provisioner browser setup
 
-The default first-admin path remains the trusted-operator CLI. For a private
+The default first-Provisioner path remains the trusted-operator CLI. For a private
 deployment that needs a browser setup ceremony, temporarily set
 `TRACEX_FIRST_ADMIN_SETUP_ENABLED=true` and inject a unique, randomly generated
 `TRACEX_FIRST_ADMIN_SETUP_TOKEN` (at least 32 characters) through the deployment
-secret store. Visit `/setup/first-admin` only while no active administrator
+secret store. Visit `/setup/first-admin` only while no active Provisioner
 exists. The token is sent in a request header, never a URL, and the endpoint
-closes permanently after the first successful administrator. Disable/remove the
+closes permanently after the first successful Provisioner. Disable/remove the
 token after setup; it is not a public signup facility.
 
 ## Running the stack
@@ -82,7 +82,7 @@ docker compose up --build
 
 The browser UI is served at `http://localhost:5173`; it proxies `/api/*`
 same-origin to the API container. A fresh deployment with the optional
-first-admin setup enabled opens at `http://localhost:5173/setup/first-admin`.
+first-Provisioner setup enabled opens at `http://localhost:5173/setup/first-admin`.
 
 **Option B — infra in Docker, API on host (faster iteration/reload):**
 

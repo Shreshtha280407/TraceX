@@ -209,17 +209,16 @@ class AccessControlRepository:
             )
         return _user_from_row(row) if row is not None else None
 
-    async def list_users(self, *, limit: int, offset: int) -> list[UserRecord]:
-        """Admin-only account listing (`GET /api/v1/admin/users`), oldest first.
-
-        Bounded like every other list method in this module (`list_case_audit_events`,
-        `list_worker_credentials`) -- never an unbounded `SELECT *`.
-        """
+    async def list_users_with_system_role(
+        self, system_role: str, *, limit: int, offset: int
+    ) -> list[UserRecord]:
+        """Bounded list of accounts with one explicit organisation role."""
         async with self._engine.connect() as conn:
             rows = (
                 (
                     await conn.execute(
                         sa.select(users_table)
+                        .where(users_table.c.system_role == system_role)
                         .order_by(users_table.c.created_at.asc())
                         .limit(limit)
                         .offset(offset)
@@ -230,11 +229,22 @@ class AccessControlRepository:
             )
         return [_user_from_row(row) for row in rows]
 
+    async def set_user_active(
+        self, user_id: UUID, *, is_active: bool, updated_at: datetime
+    ) -> bool:
+        """Change account lifecycle state without exposing credential fields."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                sa.update(users_table)
+                .where(users_table.c.user_id == user_id)
+                .values(is_active=is_active, updated_at=updated_at)
+            )
+        return bool(result.rowcount)
+
     async def update_password(
         self, user_id: UUID, *, password_hash: str, must_change_password: bool, updated_at: datetime
     ) -> None:
-        """Set a new password hash and the forced-change flag together (`change_password`,
-        `admin_reset_credentials`) -- always updated atomically, never one without the other."""
+        """Set a new password hash and forced-change flag atomically."""
         async with self._engine.begin() as conn:
             await conn.execute(
                 sa.update(users_table)
@@ -249,8 +259,7 @@ class AccessControlRepository:
     async def update_totp(
         self, user_id: UUID, *, totp_secret: str | None, totp_enabled: bool, updated_at: datetime
     ) -> None:
-        """Set the TOTP secret and enabled flag together (`enroll_mfa`,
-        `confirm_mfa_enrollment`, `admin_reset_credentials`)."""
+        """Set the TOTP secret and enabled flag together."""
         async with self._engine.begin() as conn:
             await conn.execute(
                 sa.update(users_table)
@@ -259,7 +268,7 @@ class AccessControlRepository:
             )
 
     async def count_users_with_system_role(self, system_role: str) -> int:
-        """Bootstrap-CLI idempotency check: how many active admins already exist."""
+        """How many active accounts hold the supplied organisation role."""
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 sa.select(sa.func.count())
@@ -268,10 +277,23 @@ class AccessControlRepository:
             )
             return int(result.scalar_one())
 
-    async def create_first_admin_if_none(
+    async def has_user_with_system_role(self, system_role: str) -> bool:
+        """Whether any account has ever held an organisation role.
+
+        First-deployment setup deliberately uses this rather than the active
+        count above: deactivating a Provisioner must not reopen an
+        unauthenticated deployment ceremony.
+        """
+        async with self._engine.connect() as conn:
+            result = await conn.scalar(
+                sa.select(sa.exists().where(users_table.c.system_role == system_role))
+            )
+            return bool(result)
+
+    async def create_first_provisioner_if_none(
         self, user: UserRecord, audit_event: SecurityAuditEventRecord
     ) -> bool:
-        """Create the first active administrator exactly once.
+        """Create the first active Provisioner exactly once.
 
         An advisory transaction lock serializes setup across API processes
         without requiring a throwaway database row or a schema migration.
@@ -281,22 +303,27 @@ class AccessControlRepository:
             await conn.execute(
                 sa.text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": 71026001}
             )
-            count = await conn.scalar(
-                sa.select(sa.func.count())
-                .select_from(users_table)
-                .where(
-                    users_table.c.system_role == "admin",
-                    users_table.c.is_active.is_(True),
-                )
+            provisioner_exists = await conn.scalar(
+                sa.select(sa.exists().where(users_table.c.system_role == "provisioner"))
             )
-            if count and int(count) > 0:
+            if provisioner_exists:
                 return False
             await conn.execute(sa.insert(users_table).values(**user.model_dump(mode="python")))
             values = _dump_for_insert(audit_event, ("outcome",))
             await conn.execute(sa.insert(security_audit_events_table).values(**values))
             return True
 
-    # --- cases / memberships (minimal access-control anchor; no case CRUD API) --
+    # --- cases / memberships -------------------------------------------------
+
+    async def create_case_with_owner(
+        self, case: CaseRecord, membership: CaseMembershipRecord
+    ) -> None:
+        """Persist a new case and its first active owner in one transaction."""
+        case_values = _dump_for_insert(case, ("classification", "status"))
+        membership_values = _dump_for_insert(membership, ("role", "clearance"))
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.insert(cases_table).values(**case_values))
+            await conn.execute(sa.insert(case_memberships_table).values(**membership_values))
 
     async def create_case(self, case: CaseRecord) -> None:
         values = _dump_for_insert(case, ("classification", "status"))
@@ -316,6 +343,20 @@ class AccessControlRepository:
         values = _dump_for_insert(membership, ("role", "clearance"))
         async with self._engine.begin() as conn:
             await conn.execute(sa.insert(case_memberships_table).values(**values))
+
+    async def create_team_user_with_membership(
+        self,
+        user: UserRecord,
+        membership: CaseMembershipRecord,
+        audit_event: SecurityAuditEventRecord,
+    ) -> None:
+        """Atomically create an ordinary user and exactly one case membership."""
+        membership_values = _dump_for_insert(membership, ("role", "clearance"))
+        audit_values = _dump_for_insert(audit_event, ("outcome",))
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.insert(users_table).values(**user.model_dump(mode="python")))
+            await conn.execute(sa.insert(case_memberships_table).values(**membership_values))
+            await conn.execute(sa.insert(security_audit_events_table).values(**audit_values))
 
     async def get_active_membership(
         self, case_id: UUID, user_id: UUID
@@ -389,14 +430,29 @@ class AccessControlRepository:
             for row in rows
         ]
 
-    async def list_active_user_candidates(self, *, limit: int) -> list[UserRecord]:
-        """Safe account picker source, callable only after case-member authorization."""
+    async def list_active_team_user_candidates(self, *, limit: int) -> list[UserRecord]:
+        """Safe picker source: unassigned active ordinary users only.
+
+        This intentionally does not disclose Team Members already assigned to
+        another case.  A Case Head can re-activate an inactive membership in
+        their current case through the same narrow picker, but cannot use it
+        as a cross-case personnel directory.
+        """
         async with self._engine.connect() as conn:
             rows = (
                 (
                     await conn.execute(
                         sa.select(users_table)
-                        .where(users_table.c.is_active.is_(True))
+                        .where(
+                            users_table.c.is_active.is_(True),
+                            users_table.c.system_role.is_(None),
+                            ~sa.exists(
+                                sa.select(case_memberships_table.c.membership_id).where(
+                                    case_memberships_table.c.user_id == users_table.c.user_id,
+                                    case_memberships_table.c.is_active.is_(True),
+                                )
+                            ),
+                        )
                         .order_by(
                             users_table.c.display_name.asc(), users_table.c.email_normalized.asc()
                         )
@@ -559,7 +615,7 @@ class AccessControlRepository:
             )
 
     async def revoke_all_sessions_for_user(self, user_id: UUID, revoked_at: datetime) -> None:
-        """Lost-device recovery (`admin_reset_credentials`): kill every live session for
+        """Credential recovery: kill every live session for
         this user immediately, regardless of token family -- a reset must not leave an
         old, already-issued access/refresh token pair usable after the fact."""
         async with self._engine.begin() as conn:
@@ -694,9 +750,12 @@ class AccessControlRepository:
             )
 
     async def list_worker_credentials(self) -> list[WorkerCredentialRecord]:
-        """Trusted-operator inspection: CLI (`cli.py`) or the admin-gated
-        `GET /api/v1/admin/workers` route (Gap-Closure WP-6, G16) -- never an
-        unauthenticated or non-admin-gated public surface."""
+        """Trusted worker-control-plane inspection, never a public surface.
+
+        The Provisioner UI deliberately does not expose fleet or case data;
+        this method is used only by credential-authenticated internal worker
+        controls and trusted maintenance tooling.
+        """
         async with self._engine.connect() as conn:
             rows = (
                 (

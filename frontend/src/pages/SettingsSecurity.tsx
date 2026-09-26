@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { FormEvent } from 'react'
-import { AlertCircle, CheckCircle2, KeyRound, ShieldCheck, UserPlus } from 'lucide-react'
-import { adminApi, ApiError } from '../lib/api/client'
-import type { PublicUser } from '../lib/api/types'
-import { useAuthStore } from '../lib/auth/store'
-import { useIsSystemAdmin } from '../lib/auth/permissions'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { KeyRound, Search, ShieldCheck, UserPlus } from 'lucide-react'
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
+import { ApiError, provisioningApi } from '../lib/api/client'
+import type { PublicUser } from '../lib/api/types'
+import { useAuthStore } from '../lib/auth/store'
+
+function organizationRoleLabel(role: PublicUser['system_role']): string {
+  if (role === 'provisioner') return 'Provisioner'
+  if (role === 'case_head') return 'Case Head'
+  return 'Team Member'
+}
 
 function AccountPanel() {
   const user = useAuthStore((state) => state.user)
@@ -18,14 +22,8 @@ function AccountPanel() {
     <Card className="flex flex-col gap-4 p-6">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-text-faint">Your account</h2>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-faint">Name</span>
-          <span className="text-sm font-medium text-text">{user.display_name}</span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-faint">Email</span>
-          <span className="font-mono text-sm text-text">{user.email_normalized}</span>
-        </div>
+        <Info label="Name" value={user.display_name} />
+        <Info label="Email" value={user.email_normalized} mono />
         <div className="flex flex-col gap-1">
           <span className="text-xs text-text-faint">Two-factor authentication</span>
           <Badge tone={user.totp_enabled ? 'palm' : 'berry'}>
@@ -33,58 +31,72 @@ function AccountPanel() {
           </Badge>
         </div>
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-text-faint">System role</span>
-          <Badge tone={user.system_role === 'admin' ? 'crimson' : 'steel-neutral'}>
-            {user.system_role === 'admin' ? 'Administrator' : 'Standard'}
+          <span className="text-xs text-text-faint">Organisation role</span>
+          <Badge tone={user.system_role ? 'crimson' : 'steel-neutral'}>
+            {organizationRoleLabel(user.system_role)}
           </Badge>
         </div>
       </div>
-      <div className="flex flex-col gap-2">
-        <span className="text-xs text-text-faint">Case access</span>
-        {caseMemberships.length === 0 ? (
-          <span className="text-sm text-text-dim">No case memberships yet.</span>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {caseMemberships.map((m) => (
-              <Badge key={m.case_id} tone="steel-neutral">
-                {m.role.replace(/_/g, ' ')} &middot; {m.clearance}
-              </Badge>
-            ))}
-          </div>
-        )}
-      </div>
+      {user.system_role === 'provisioner' ? (
+        <p className="text-sm text-text-dim">
+          Provisioner access is limited to account and Case Head management. It does not grant
+          access to cases, evidence, graphs, or investigative records.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <span className="text-xs text-text-faint">Case access</span>
+          {caseMemberships.length === 0 ? (
+            <span className="text-sm text-text-dim">No case memberships yet.</span>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {caseMemberships.map((membership) => (
+                <Badge key={membership.case_id} tone="steel-neutral">
+                  {membership.role.replace(/_/g, ' ')} &middot; {membership.clearance}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
 
-function AdminCreateAccountPanel({ onCreated }: { onCreated: (user: PublicUser) => void }) {
+function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-text-faint">{label}</span>
+      <span className={`text-sm font-medium text-text${mono ? ' font-mono' : ''}`}>{value}</span>
+    </div>
+  )
+}
+
+function CreateCaseHead({ onCreated }: { onCreated: (user: PublicUser) => void }) {
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
-  const [asAdmin, setAsAdmin] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [created, setCreated] = useState<{ userId: string; email: string } | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  async function handleSubmit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     setError(null)
+    setSuccess(null)
     setSubmitting(true)
     try {
-      const user = await adminApi.provisionUser({
+      const created = await provisioningApi.createCaseHead({
         email,
-        password,
         display_name: displayName,
-        system_role: asAdmin ? 'admin' : null,
+        password,
       })
-      setCreated({ userId: user.user_id, email: user.email_normalized })
-      onCreated(user)
+      onCreated(created)
+      setSuccess(`${created.display_name} was created as a Case Head.`)
       setEmail('')
       setDisplayName('')
       setPassword('')
-      setAsAdmin(false)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Unable to reach the server.')
+      setError(err instanceof ApiError ? err.message : 'Unable to create the Case Head.')
     } finally {
       setSubmitting(false)
     }
@@ -92,307 +104,203 @@ function AdminCreateAccountPanel({ onCreated }: { onCreated: (user: PublicUser) 
 
   return (
     <Card className="flex flex-col gap-4 p-6">
-      <div className="flex items-center gap-2">
-        <UserPlus size={16} className="text-text-faint" aria-hidden="true" />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-text-faint">
-          Create user account
-        </h2>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 rounded-control bg-crimson/10 p-2 text-crimson">
+          <UserPlus size={18} aria-hidden="true" />
+        </span>
+        <div>
+          <h2 className="text-lg font-semibold text-text">Create a Case Head</h2>
+          <p className="mt-1 text-sm text-text-dim">
+            Create the organization-level account that will create and lead its own cases.
+          </p>
+        </div>
       </div>
-      <p className="text-xs text-text-dim">
-        The account is created with a forced password change and TOTP enrollment on first login.
-        Share the password below with the investigator through a channel outside this app -- it
-        will not be shown again.
-      </p>
-
-      {error ? (
-        <div className="flex items-start gap-2 rounded-control border border-crimson/30 bg-crimson/10 px-3 py-2 text-xs text-crimson">
-          <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+      <div className="rounded-control border border-card-border bg-canvas/50 px-3 py-2.5 text-sm text-text-dim">
+        <span className="font-medium text-text">Before you create the account:</span> choose a
+        temporary password to share through an approved channel. The Case Head will be required to
+        change it and complete MFA enrollment on first use. Case roles and clearance are assigned
+        later inside each individual case.
+      </div>
+      <Notice error={error} success={success} />
+      <form className="space-y-4" onSubmit={submit}>
+        <div className="grid gap-4 md:grid-cols-3">
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-text">
+            Case Head name
+            <input
+              required
+              type="text"
+              minLength={1}
+              maxLength={200}
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="e.g. Priya Sharma"
+              autoComplete="name"
+              className="rounded-control border border-card-border bg-canvas px-3 py-2 text-sm font-normal text-text"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-text">
+            Work email
+            <input
+              required
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="name@organization.example"
+              autoComplete="email"
+              className="rounded-control border border-card-border bg-canvas px-3 py-2 text-sm font-normal text-text"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-text">
+            Temporary password
+            <input
+              required
+              type="password"
+              minLength={10}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="At least 10 characters"
+              autoComplete="new-password"
+              className="rounded-control border border-card-border bg-canvas px-3 py-2 text-sm font-normal text-text"
+            />
+          </label>
         </div>
-      ) : null}
-
-      {created ? (
-        <div className="flex items-start gap-2 rounded-control border border-palm/30 bg-palm/10 px-3 py-2 text-xs text-palm">
-          <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>
-            Account created for {created.email}. User ID:{' '}
-            <span className="font-mono">{created.userId}</span>
-          </span>
-        </div>
-      ) : null}
-
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium text-text-dim">Email</span>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            className="rounded-control border border-card-border bg-card px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-crimson/40"
-          />
-        </label>
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium text-text-dim">Display name</span>
-          <input
-            type="text"
-            required
-            value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
-            className="rounded-control border border-card-border bg-card px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-crimson/40"
-          />
-        </label>
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium text-text-dim">Initial password (min. 10 characters)</span>
-          <input
-            type="text"
-            required
-            minLength={10}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className="rounded-control border border-card-border bg-card px-3 py-2 font-mono text-sm text-text focus:outline-none focus:ring-2 focus:ring-crimson/40"
-          />
-        </label>
-        <label className="flex items-center gap-2 text-sm text-text-dim">
-          <input
-            type="checkbox"
-            checked={asAdmin}
-            onChange={(event) => setAsAdmin(event.target.checked)}
-            className="h-4 w-4 rounded border-card-border"
-          />
-          Grant system administrator access
-        </label>
-        <Button type="submit" disabled={submitting} className="mt-1 w-fit">
-          {submitting ? 'Creating...' : 'Create account'}
+        <Button type="submit" disabled={submitting} className="w-fit">
+          {submitting ? 'Creating…' : 'Create Case Head'}
         </Button>
       </form>
     </Card>
   )
 }
 
-interface AdminResetCredentialsPanelProps {
-  users: PublicUser[]
-  usersLoading: boolean
-  usersError: string | null
-  prefillUserId: string
+function Notice({ error, success }: { error: string | null; success: string | null }) {
+  if (error) return <p className="rounded-control border border-crimson/30 bg-crimson/10 px-3 py-2 text-sm text-crimson">{error}</p>
+  if (success) return <p className="rounded-control border border-palm/30 bg-palm/10 px-3 py-2 text-sm text-palm">{success}</p>
+  return null
 }
 
-function AdminResetCredentialsPanel({
-  users,
-  usersLoading,
-  usersError,
-  prefillUserId,
-}: AdminResetCredentialsPanelProps) {
-  const [userId, setUserId] = useState(prefillUserId)
-  const [syncedPrefillUserId, setSyncedPrefillUserId] = useState(prefillUserId)
-  const [armed, setArmed] = useState(false)
+function CaseHeadsPanel() {
+  const [caseHeads, setCaseHeads] = useState<PublicUser[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
 
-  // Adjust state during render (React's documented pattern for "sync local
-  // state to a prop, but still allow local edits") rather than an effect --
-  // the parent's `prefillUserId` only changes right after a new account is
-  // created, and the investigator can still freely pick a different account
-  // from the dropdown afterward without this overwriting that choice.
-  //
-  // Guarded on the ID actually being present in `users`: a plain `<select
-  // value={userId}>` with a `value` that matches no `<option>` doesn't stay
-  // blank -- the browser silently falls back to whatever option happens to
-  // render first. Without this guard, a newly-created account's ID (not yet
-  // fetched back if it falls outside the paginated `users` list) would
-  // silently select a *different, unrelated* account with no visible error
-  // -- and an admin trusting the pre-fill could reset the wrong person's
-  // credentials. The parent already prepends the just-created user into
-  // `users` before this ID is ever passed down, so this guard is normally
-  // satisfied; it stays as the hard backstop against exactly that failure
-  // mode if that ever stops being true.
-  if (prefillUserId !== syncedPrefillUserId) {
-    setSyncedPrefillUserId(prefillUserId)
-    if (prefillUserId && users.some((u) => u.user_id === prefillUserId)) {
-      setUserId(prefillUserId)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await provisioningApi.listUsers()
+      setCaseHeads(response.items)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Unable to load Case Heads.')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    // This effect synchronizes the Case Head directory with the authenticated
+    // server state on mount; the loading transition is intentional.
+    // oxlint-disable-next-line react/set-state-in-effect
+    void load()
+  }, [load])
+
+  const visibleCaseHeads = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase()
+    if (!query) return caseHeads
+    return caseHeads.filter((caseHead) =>
+      `${caseHead.display_name} ${caseHead.email_normalized}`.toLocaleLowerCase().includes(query),
+    )
+  }, [caseHeads, searchQuery])
+
+  async function reset(userId: string) {
+    setActionError(null)
+    setTemporaryPassword(null)
+    setBusyId(userId)
+    try {
+      const result = await provisioningApi.resetCaseHeadCredentials(userId)
+      setTemporaryPassword(result.temporary_password)
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Unable to reset credentials.')
+    } finally {
+      setBusyId(null)
     }
   }
 
-  // The single source of truth for "is a real, currently-listed account
-  // selected" -- used by the `<select>`'s own `value`, the reset button's
-  // disabled state, and the reset call itself, so all three can never
-  // disagree about what's actually selected.
-  const selectedUserId = users.some((u) => u.user_id === userId) ? userId : ''
-
-  async function handleReset() {
-    if (!armed) {
-      setArmed(true)
-      return
-    }
-    setError(null)
-    setResult(null)
-    setSubmitting(true)
+  async function toggle(user: PublicUser) {
+    setActionError(null)
+    setBusyId(user.user_id)
     try {
-      const response = await adminApi.resetCredentials(selectedUserId)
-      setResult(response.temporary_password)
+      const updated = await provisioningApi.updateCaseHeadStatus(user.user_id, { is_active: !user.is_active })
+      setCaseHeads((current) => current.map((item) => (item.user_id === updated.user_id ? updated : item)))
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Unable to reach the server.')
+      setActionError(err instanceof ApiError ? err.message : 'Unable to update this Case Head.')
     } finally {
-      setSubmitting(false)
-      setArmed(false)
+      setBusyId(null)
     }
   }
 
   return (
-    <Card className="flex flex-col gap-4 p-6">
-      <div className="flex items-center gap-2">
-        <KeyRound size={16} className="text-text-faint" aria-hidden="true" />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-text-faint">
-          Lost-device / lost-password recovery
-        </h2>
-      </div>
-      <p className="text-xs text-text-dim">
-        Reissues a one-time temporary password and clears TOTP enrollment for the selected account
-        -- the investigator re-enrolls from scratch on next login, and every active session for
-        that account is revoked immediately.
-      </p>
-
-      {error ? (
-        <div className="flex items-start gap-2 rounded-control border border-crimson/30 bg-crimson/10 px-3 py-2 text-xs text-crimson">
-          <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+    <div className="flex flex-col gap-4">
+      <CreateCaseHead onCreated={(user) => setCaseHeads((current) => [user, ...current])} />
+      <Card className="flex flex-col gap-4 p-6">
+        <div className="flex items-center gap-2">
+          <ShieldCheck size={16} className="text-crimson" aria-hidden="true" />
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-text-faint">Case Heads</h2>
         </div>
-      ) : null}
-      {usersError ? (
-        <div className="flex items-start gap-2 rounded-control border border-crimson/30 bg-crimson/10 px-3 py-2 text-xs text-crimson">
-          <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>Could not load accounts: {usersError}</span>
-        </div>
-      ) : null}
-      {result ? (
-        <div className="flex items-start gap-2 rounded-control border border-palm/30 bg-palm/10 px-3 py-2 text-xs text-palm">
-          <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>
-            New temporary password: <span className="font-mono">{result}</span>
-          </span>
-        </div>
-      ) : null}
-
-      <label className="flex flex-col gap-1.5 text-sm">
-        <span className="font-medium text-text-dim">Account</span>
-        <select
-          required
-          // Defensive: a `value` matching no `<option>` makes the browser
-          // silently select whatever option renders first, not blank -- see
-          // the render-time sync's comment above for why that's dangerous
-          // here. `selectedUserId` is '' whenever `userId` isn't actually in
-          // `users`, so "no real match" always reads as "nothing selected,"
-          // never as a wrong, unnoticed pick.
-          value={selectedUserId}
-          onChange={(event) => {
-            setUserId(event.target.value)
-            setArmed(false)
-          }}
-          disabled={usersLoading || users.length === 0}
-          className="rounded-control border border-card-border bg-card px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-crimson/40 disabled:opacity-50"
-        >
-          <option value="" disabled>
-            {usersLoading
-              ? 'Loading accounts...'
-              : users.length === 0
-                ? 'No accounts found'
-                : 'Select an account'}
-          </option>
-          {users.map((u) => (
-            <option key={u.user_id} value={u.user_id}>
-              {u.display_name} &lt;{u.email_normalized}&gt;
-              {u.system_role === 'admin' ? ' (admin)' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
-      <Button
-        type="button"
-        variant="secondary"
-        disabled={submitting || !selectedUserId}
-        onClick={handleReset}
-        className="w-fit"
-      >
-        {submitting ? 'Resetting...' : armed ? 'Confirm reset' : 'Reset credentials'}
-      </Button>
-    </Card>
+        <p className="text-xs text-text-dim">
+          This account-only directory intentionally contains no case, evidence, graph, or
+          audit-record details. Search is limited to Case Head names and email addresses.
+        </p>
+        <Notice error={error ?? actionError} success={temporaryPassword ? `New temporary password: ${temporaryPassword}` : null} />
+        {loading ? <p className="text-sm text-text-dim">Loading Case Heads…</p> : null}
+        {!loading && caseHeads.length > 0 ? (
+          <label className="flex max-w-lg items-center gap-2 rounded-control border border-card-border bg-canvas px-3 py-2 text-text-dim">
+            <Search size={15} aria-hidden="true" />
+            <span className="sr-only">Search Case Heads</span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search Case Heads by name or email"
+              className="w-full bg-transparent text-sm text-text placeholder:text-text-faint focus:outline-none"
+            />
+          </label>
+        ) : null}
+        {!loading && caseHeads.length === 0 ? <p className="text-sm text-text-dim">No Case Heads yet.</p> : null}
+        {!loading && caseHeads.length > 0 && visibleCaseHeads.length === 0 ? (
+          <p className="text-sm text-text-dim">No Case Heads match that search.</p>
+        ) : null}
+        {!loading ? <div className="space-y-2">{visibleCaseHeads.map((user) => (
+          <div key={user.user_id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-card-border p-3">
+            <div><p className="text-sm font-medium text-text">{user.display_name}</p><p className="text-xs text-text-dim">{user.email_normalized}</p></div>
+            <div className="flex items-center gap-2"><Badge tone={user.is_active ? 'palm' : 'steel-neutral'}>{user.is_active ? 'Active' : 'Inactive'}</Badge><Button type="button" variant="secondary" disabled={busyId === user.user_id || !user.is_active} onClick={() => void reset(user.user_id)}><KeyRound size={14} />Reset credentials</Button><Button type="button" variant="ghost" disabled={busyId === user.user_id} onClick={() => void toggle(user)}>{user.is_active ? 'Deactivate' : 'Activate'}</Button></div>
+          </div>
+        ))}</div> : null}
+      </Card>
+    </div>
   )
 }
 
-/**
- * Page 16 -- Settings / Security. The Admin-only sub-section is gated on
- * `system_role === 'admin'` (RBAC, Section 6): not shown at all to anyone
- * else, never a disabled control that errors after a click.
- */
 export function SettingsSecurity() {
-  const isAdmin = useIsSystemAdmin()
-  const [lastCreatedUserId, setLastCreatedUserId] = useState('')
-  const [users, setUsers] = useState<PublicUser[]>([])
-  const [usersLoading, setUsersLoading] = useState(false)
-  const [usersError, setUsersError] = useState<string | null>(null)
-
-  const loadUsers = useCallback(() => {
-    if (!isAdmin) return
-    setUsersLoading(true)
-    setUsersError(null)
-    adminApi
-      .listUsers()
-      .then((response) => setUsers(response.items))
-      .catch((err) => setUsersError(err instanceof ApiError ? err.message : 'Unable to reach the server.'))
-      .finally(() => setUsersLoading(false))
-  }, [isAdmin])
-
-  useEffect(() => {
-    // Fetch-on-mount with loading/error state: `setUsersLoading`/
-    // `setUsersError` run synchronously the moment this effect fires, which
-    // is the standard, correct shape for this pattern (there is no prop or
-    // derivable value to compute instead) -- not the "should have been
-    // computed during render" case this lint rule targets.
-    // oxlint-disable-next-line react/set-state-in-effect
-    loadUsers()
-  }, [loadUsers])
-
+  const user = useAuthStore((state) => state.user)
+  const isProvisioner = user?.system_role === 'provisioner'
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold text-text">Settings / Security</h1>
-        <p className="text-sm text-text-dim">MFA, roles, permissions, and account security.</p>
+        <h1 className="text-2xl font-semibold text-text">
+          {isProvisioner ? 'Provisioning Console' : 'Settings / Security'}
+        </h1>
+        <p className="text-sm text-text-dim">
+          {isProvisioner
+            ? 'Manage your Provisioner account and Case Head accounts.'
+            : 'Profile, MFA, and account security.'}
+        </p>
       </div>
-
       <AccountPanel />
-
-      {isAdmin ? (
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center gap-2">
-            <ShieldCheck size={16} className="text-crimson" aria-hidden="true" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-crimson">
-              Admin-only
-            </h2>
-          </div>
-          <AdminCreateAccountPanel
-            onCreated={(user) => {
-              setLastCreatedUserId(user.user_id)
-              // Prepend directly rather than re-fetching: `listUsers` is
-              // oldest-first and capped at 200, so on a database with more
-              // than 200 pre-existing accounts (true even in this dev
-              // environment's own test fixtures), a fresh page would never
-              // actually contain the account that was just created --
-              // silently dropping it from the picker with no error. See
-              // `AdminResetCredentialsPanel`'s render-time sync guard for
-              // what happens if an ID it's told to pre-select isn't
-              // actually present in the list.
-              setUsers((current) => [user, ...current])
-            }}
-          />
-          <AdminResetCredentialsPanel
-            users={users}
-            usersLoading={usersLoading}
-            usersError={usersError}
-            prefillUserId={lastCreatedUserId}
-          />
-        </div>
-      ) : null}
+      {isProvisioner ? <CaseHeadsPanel /> : null}
     </div>
   )
 }

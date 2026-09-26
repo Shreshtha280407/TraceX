@@ -21,7 +21,7 @@ test('landing page exposes only the state-appropriate entry action', async ({ pa
 
   await page.goto('/')
   if (setupRequired) {
-    await expect(page.getByRole('link', { name: 'Set up first administrator' }).first()).toHaveAttribute(
+    await expect(page.getByRole('link', { name: 'Set up first Provisioner' }).first()).toHaveAttribute(
       'href',
       '/setup/first-admin',
     )

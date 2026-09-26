@@ -8,7 +8,8 @@ import { useAuthStore } from '../lib/auth/store'
 import { PAGES } from '../lib/navigation'
 
 function roleLabel(systemRole: string | null, caseRole: string | null): string {
-  if (systemRole === 'admin') return 'Administrator'
+  if (systemRole === 'provisioner') return 'Provisioner'
+  if (systemRole === 'case_head') return 'Case Head'
   if (caseRole) return caseRole.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
   return 'No active case'
 }
@@ -94,9 +95,14 @@ export function AppShell() {
       <Sidebar counts={navCounts} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
-          breadcrumb={currentPage?.label ?? 'TraceX'}
+          breadcrumb={
+            user?.system_role === 'provisioner' && currentPage?.path === '/settings'
+              ? 'Provisioning Console'
+              : (currentPage?.label ?? 'TraceX')
+          }
           userName={user?.display_name ?? ''}
           userRole={roleLabel(user?.system_role ?? null, activeCaseRole)}
+          showInvestigativeControls={user?.system_role !== 'provisioner'}
           onLogout={handleLogout}
         />
         <main className="flex-1 overflow-y-auto p-22">

@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # window, same reasoning as `auth_login_rate_limit`.
     auth_mfa_rate_limit: int = Field(default=8, ge=1)
 
-    # First-admin setup is deliberately opt-in.  The CLI remains the
+    # First-Provisioner setup is deliberately opt-in.  The CLI remains the
     # operator fallback; deployments that want the browser ceremony enable
     # it temporarily and provide a high-entropy, one-time deployment secret.
     first_admin_setup_enabled: bool = Field(
@@ -428,7 +428,7 @@ class Settings(BaseSettings):
             if len(token) < _MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH:
                 raise ValueError(
                     "first_admin_setup_token must be at least "
-                    f"{_MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH} characters when first-admin "
+                    f"{_MIN_FIRST_ADMIN_SETUP_TOKEN_LENGTH} characters when first-Provisioner "
                     "setup is enabled in production"
                 )
         return self

@@ -27,8 +27,14 @@ from app.modules.access_control.models import (
     CaseRole,
     CaseStatus,
     CaseStatusView,
+    CaseTeamMemberCreateRequest,
     CaseView,
+    ClearanceLevel,
+    SecurityAuditEventRecord,
+    UserRecord,
+    clearance_satisfies,
 )
+from app.modules.access_control.password import hash_password
 from app.modules.access_control.repository import AccessControlRepository
 
 
@@ -73,11 +79,6 @@ async def create_case(
         status=CaseStatus.OPEN,
         created_at=now,
     )
-    try:
-        await repository.create_case(case)
-    except sa.exc.IntegrityError as exc:
-        raise ValidationError("case reference already exists") from exc
-
     membership = CaseMembershipRecord(
         membership_id=uuid4(),
         case_id=case.case_id,
@@ -88,7 +89,10 @@ async def create_case(
         created_at=now,
         updated_at=now,
     )
-    await repository.create_membership(membership)
+    try:
+        await repository.create_case_with_owner(case, membership)
+    except sa.exc.IntegrityError as exc:
+        raise ValidationError("case reference already exists") from exc
 
     await record_audit_event(
         repository,
@@ -121,15 +125,21 @@ async def add_case_member(
     request: CaseMemberAddRequest,
     *,
     added_by_user_id: UUID,
+    actor_membership: CaseMembershipRecord,
     now: datetime,
     request_id: str | None,
 ) -> CaseMemberView:
     """Assign an active user with an explicit case role and clearance."""
+    _ensure_member_change_allowed(
+        actor_membership, requested_role=request.role, requested_clearance=request.clearance
+    )
     target_user = await repository.get_user_by_id(request.user_id)
     if target_user is None:
         raise ValidationError("target user does not exist")
     if not target_user.is_active:
         raise ValidationError("target user is inactive")
+    if target_user.system_role is not None:
+        raise ValidationError("organisation-role accounts cannot be assigned as team members")
 
     existing = await repository.get_active_membership(case_id, request.user_id)
     if existing is not None:
@@ -148,6 +158,12 @@ async def add_case_member(
         None,
     )
     if inactive is not None:
+        _ensure_member_change_allowed(
+            actor_membership,
+            requested_role=request.role,
+            requested_clearance=request.clearance,
+            target_role=inactive.role,
+        )
         restored = await repository.update_case_membership(
             case_id,
             request.user_id,
@@ -220,10 +236,25 @@ async def update_case_member(
     request: CaseMemberUpdateRequest,
     *,
     changed_by_user_id: UUID,
+    actor_membership: CaseMembershipRecord,
     now: datetime,
     request_id: str | None,
     is_active: bool = True,
 ) -> CaseMemberView:
+    current = await repository.get_active_membership(case_id, user_id)
+    if current is None:
+        raise ValidationError("active case membership not found")
+    target_user = await repository.get_user_by_id(user_id)
+    if target_user is None or (
+        target_user.system_role is not None and target_user.user_id != changed_by_user_id
+    ):
+        raise ValidationError("protected account cannot be managed through a case")
+    _ensure_member_change_allowed(
+        actor_membership,
+        requested_role=request.role,
+        requested_clearance=request.clearance,
+        target_role=current.role,
+    )
     try:
         membership = await repository.update_case_membership(
             case_id,
@@ -268,26 +299,149 @@ async def deactivate_case_member(
     user_id: UUID,
     *,
     changed_by_user_id: UUID,
+    actor_membership: CaseMembershipRecord,
     now: datetime,
     request_id: str | None,
 ) -> CaseMemberView:
     current = await repository.get_active_membership(case_id, user_id)
     if current is None:
         raise ValidationError("active case membership not found")
+    target_user = await repository.get_user_by_id(user_id)
+    if target_user is None or (
+        target_user.system_role is not None and target_user.user_id != changed_by_user_id
+    ):
+        raise ValidationError("protected account cannot be managed through a case")
+    _ensure_member_change_allowed(
+        actor_membership,
+        requested_role=current.role,
+        requested_clearance=current.clearance,
+        target_role=current.role,
+    )
     return await update_case_member(
         repository,
         case_id,
         user_id,
         CaseMemberUpdateRequest(role=current.role, clearance=current.clearance),
         changed_by_user_id=changed_by_user_id,
+        actor_membership=actor_membership,
         now=now,
         request_id=request_id,
         is_active=False,
     )
 
 
+def _ensure_member_change_allowed(
+    actor_membership: CaseMembershipRecord,
+    *,
+    requested_role: CaseRole,
+    requested_clearance: ClearanceLevel,
+    target_role: CaseRole | None = None,
+) -> None:
+    """Apply the deliberately narrow owner/manager delegation policy.
+
+    Owners and managers may never grant clearance above their own.  Managers
+    may manage only investigator/analyst/reviewer/viewer memberships; only
+    owners can create, alter, or deactivate owner/manager-level memberships.
+    This is enforced here as well as in the route dependency so crafted HTTP
+    input cannot promote a manager or bypass the UI.
+    """
+    if actor_membership.role not in {CaseRole.CASE_OWNER, CaseRole.CASE_MANAGER}:
+        raise ValidationError("case member management is not permitted")
+    if not clearance_satisfies(actor_membership.clearance, requested_clearance):
+        raise ValidationError("cannot grant clearance above your own")
+    privileged_roles = {CaseRole.CASE_OWNER, CaseRole.CASE_MANAGER}
+    if actor_membership.role == CaseRole.CASE_MANAGER and (
+        requested_role in privileged_roles or target_role in privileged_roles
+    ):
+        raise ValidationError("only a case owner can manage owner or manager memberships")
+
+
+async def create_case_team_member(
+    repository: AccessControlRepository,
+    case_id: UUID,
+    request: CaseTeamMemberCreateRequest,
+    *,
+    added_by_user_id: UUID,
+    actor_membership: CaseMembershipRecord,
+    now: datetime,
+    request_id: str | None,
+) -> CaseMemberView:
+    """Create an ordinary user and grant access only to the selected case."""
+    _ensure_member_change_allowed(
+        actor_membership, requested_role=request.role, requested_clearance=request.clearance
+    )
+    if request.role == CaseRole.CASE_OWNER:
+        raise ValidationError("create a team member with a non-owner case role")
+    if await repository.get_user_by_email(request.email) is not None:
+        raise ValidationError("email already registered")
+    user = UserRecord(
+        user_id=uuid4(),
+        email_normalized=request.email,
+        display_name=request.display_name,
+        password_hash=hash_password(request.password),
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+        system_role=None,
+        must_change_password=True,
+    )
+    membership = CaseMembershipRecord(
+        membership_id=uuid4(),
+        case_id=case_id,
+        user_id=user.user_id,
+        role=request.role,
+        clearance=request.clearance,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    audit_event = SecurityAuditEventRecord(
+        event_id=uuid4(),
+        occurred_at=now,
+        event_type="case.create_team_member",
+        outcome=AuditOutcome.SUCCESS,
+        request_id=request_id,
+        user_id_nullable=added_by_user_id,
+        case_id_nullable=case_id,
+        ip_hash_or_safe_network_marker=None,
+        metadata_safe_json={"created_user_id": str(user.user_id), "role": request.role.value},
+    )
+    try:
+        await repository.create_team_user_with_membership(user, membership, audit_event)
+    except sa.exc.IntegrityError as exc:
+        raise ValidationError("email already registered") from exc
+    return _member_view(membership)
+
+
+async def authorize_team_member_credential_reset(
+    repository: AccessControlRepository,
+    case_id: UUID,
+    user_id: UUID,
+    *,
+    actor_membership: CaseMembershipRecord,
+) -> None:
+    """Prove that a credential reset targets an ordinary member of this case.
+
+    The API calls this before changing a password or TOTP record.  Therefore
+    a crafted case route can never reset, deactivate, or inspect a
+    Provisioner (or any other organisation-level account).
+    """
+    membership = await repository.get_active_membership(case_id, user_id)
+    target_user = await repository.get_user_by_id(user_id)
+    if membership is None or target_user is None or target_user.system_role is not None:
+        raise ValidationError("team member not found")
+    _ensure_member_change_allowed(
+        actor_membership,
+        requested_role=membership.role,
+        requested_clearance=membership.clearance,
+        target_role=membership.role,
+    )
+
+
 __all__ = [
     "add_case_member",
+    "authorize_team_member_credential_reset",
+    "create_case_team_member",
     "create_case",
     "deactivate_case_member",
     "get_case_status",

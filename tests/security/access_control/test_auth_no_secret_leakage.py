@@ -60,29 +60,29 @@ async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
-async def test_admin_provision_response_and_logs_never_contain_the_password(
+async def test_case_head_provision_response_and_logs_never_contain_the_password(
     client: AsyncClient,
     fake_repository: FakeAccessControlRepository,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No public self-registration exists (G5) -- this now exercises the
-    only user-provisioning path, `POST /api/v1/admin/users`.
+    Provisioner-only Case Head creation path.
     """
     caplog.set_level(logging.DEBUG)
-    admin_email = "admin-secrettest@example.test"
+    provisioner_email = "provisioner-secrettest@example.test"
     await fake_repository.create_user(
-        make_user_record(email_normalized=admin_email, system_role=SystemRole.ADMIN)
+        make_user_record(email_normalized=provisioner_email, system_role=SystemRole.PROVISIONER)
     )
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": admin_email, "password": "correct-horse-battery-staple"},
+        json={"email": provisioner_email, "password": "correct-horse-battery-staple"},
     )
     assert login.status_code == 200
-    admin_token = login.json()["access_token"]
+    provisioner_token = login.json()["access_token"]
 
     response = await client.post(
-        "/api/v1/admin/users",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        "/api/v1/provisioning/case-heads",
+        headers={"Authorization": f"Bearer {provisioner_token}"},
         json={
             "email": "secrettest@example.test",
             "password": SECRET_PASSWORD,

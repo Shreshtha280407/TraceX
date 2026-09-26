@@ -19,7 +19,7 @@ from app.modules.access_control.dependencies import (
     get_login_rate_limiter,
     get_refresh_rate_limiter,
 )
-from app.modules.access_control.models import CaseRole, ClearanceLevel
+from app.modules.access_control.models import CaseRole, ClearanceLevel, SystemRole
 from app.modules.access_control.rate_limit import InMemoryRateLimiter
 from tests.fixtures.access_control.factories import DEFAULT_PASSWORD, make_user_record
 from tests.fixtures.access_control.fake_case_note_repository import FakeCaseNoteRepository
@@ -57,9 +57,16 @@ async def client(_override_dependencies: None) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
-async def _login(client: AsyncClient, fake_repository: FakeAccessControlRepository) -> str:
+async def _login(
+    client: AsyncClient,
+    fake_repository: FakeAccessControlRepository,
+    *,
+    system_role: SystemRole | None = SystemRole.CASE_HEAD,
+) -> str:
     email = f"agent-{uuid4().hex[:10]}@example.test"
-    await fake_repository.create_user(make_user_record(email_normalized=email))
+    await fake_repository.create_user(
+        make_user_record(email_normalized=email, system_role=system_role)
+    )
     response = await client.post(
         "/api/v1/auth/login", json={"email": email, "password": VALID_PASSWORD}
     )
@@ -67,7 +74,7 @@ async def _login(client: AsyncClient, fake_repository: FakeAccessControlReposito
     return response.json()["access_token"]
 
 
-async def test_any_authenticated_user_can_create_a_case_and_becomes_owner(
+async def test_case_head_can_create_a_case_and_becomes_owner(
     client: AsyncClient, fake_repository: FakeAccessControlRepository
 ) -> None:
     token = await _login(client, fake_repository)
@@ -89,6 +96,19 @@ async def test_any_authenticated_user_can_create_a_case_and_becomes_owner(
     status_response = await client.get(f"/api/v1/cases/{case_id}/status", headers=headers)
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "open"
+
+
+async def test_team_member_and_provisioner_cannot_create_cases(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    for role in (None, SystemRole.PROVISIONER):
+        token = await _login(client, fake_repository, system_role=role)
+        response = await client.post(
+            "/api/v1/cases",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"case_reference": f"DENIED-{uuid4().hex[:8]}", "classification": "restricted"},
+        )
+        assert response.status_code == 403
 
 
 async def test_case_creation_requires_authentication(client: AsyncClient) -> None:
@@ -517,3 +537,141 @@ async def test_me_returns_only_the_callers_assigned_cases(
     assert create_b.json()["case_id"] not in {
         item["case_id"] for item in me_a.json()["case_memberships"]
     }
+
+
+async def test_provisioner_has_no_implied_case_or_evidence_access(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    case_head_token = await _login(client, fake_repository)
+    created = await client.post(
+        "/api/v1/cases",
+        headers={"Authorization": f"Bearer {case_head_token}"},
+        json={"case_reference": f"PRIVATE-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    assert created.status_code == 201
+    provisioner_token = await _login(client, fake_repository, system_role=SystemRole.PROVISIONER)
+    case_id = created.json()["case_id"]
+    assert (
+        await client.get(
+            f"/api/v1/cases/{case_id}", headers={"Authorization": f"Bearer {provisioner_token}"}
+        )
+    ).status_code == 403
+    assert (
+        await client.get(
+            f"/api/v1/cases/{case_id}/evidence",
+            headers={"Authorization": f"Bearer {provisioner_token}"},
+        )
+    ).status_code == 403
+
+
+async def test_case_owner_creates_team_member_only_for_current_case(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    case_head_token = await _login(client, fake_repository)
+    headers = {"Authorization": f"Bearer {case_head_token}"}
+    case_a = await client.post(
+        "/api/v1/cases",
+        headers=headers,
+        json={"case_reference": f"TEAM-A-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    case_b = await client.post(
+        "/api/v1/cases",
+        headers=headers,
+        json={"case_reference": f"TEAM-B-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    created = await client.post(
+        f"/api/v1/cases/{case_a.json()['case_id']}/team-members",
+        headers=headers,
+        json={
+            "display_name": "Case A Team Member",
+            "email": "case-a-team@example.test",
+            "password": VALID_PASSWORD,
+            "role": "investigator",
+            "clearance": "restricted",
+        },
+    )
+    assert created.status_code == 201, created.text
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "case-a-team@example.test", "password": VALID_PASSWORD},
+    )
+    member_token = login.json()["access_token"]
+    me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {member_token}"})
+    assert me.json()["user"]["must_change_password"] is True
+    assert [membership["case_id"] for membership in me.json()["case_memberships"]] == [
+        case_a.json()["case_id"]
+    ]
+    assert (
+        await client.get(
+            f"/api/v1/cases/{case_b.json()['case_id']}",
+            headers={"Authorization": f"Bearer {member_token}"},
+        )
+    ).status_code == 403
+    candidates = await client.get(
+        f"/api/v1/cases/{case_b.json()['case_id']}/member-candidates", headers=headers
+    )
+    assert candidates.status_code == 200
+    assert all(
+        item["email_normalized"] != "case-a-team@example.test"
+        for item in candidates.json()["items"]
+    )
+
+
+async def test_case_manager_cannot_promote_or_manage_privileged_memberships(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    owner_token = await _login(client, fake_repository)
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    case = await client.post(
+        "/api/v1/cases",
+        headers=owner_headers,
+        json={"case_reference": f"MANAGER-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    manager = await client.post(
+        f"/api/v1/cases/{case.json()['case_id']}/team-members",
+        headers=owner_headers,
+        json={
+            "display_name": "Manager",
+            "email": "manager-policy@example.test",
+            "password": VALID_PASSWORD,
+            "role": "case_manager",
+            "clearance": "restricted",
+        },
+    )
+    assert manager.status_code == 201
+    manager_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "manager-policy@example.test", "password": VALID_PASSWORD},
+    )
+    candidate = make_user_record(email_normalized="candidate-policy@example.test")
+    await fake_repository.create_user(candidate)
+    denied = await client.post(
+        f"/api/v1/cases/{case.json()['case_id']}/members",
+        headers={"Authorization": f"Bearer {manager_login.json()['access_token']}"},
+        json={"user_id": str(candidate.user_id), "role": "case_manager", "clearance": "restricted"},
+    )
+    assert denied.status_code == 409
+    excessive_clearance = await client.post(
+        f"/api/v1/cases/{case.json()['case_id']}/members",
+        headers={"Authorization": f"Bearer {manager_login.json()['access_token']}"},
+        json={"user_id": str(candidate.user_id), "role": "investigator", "clearance": "secret"},
+    )
+    assert excessive_clearance.status_code == 409
+
+
+async def test_case_owner_cannot_reset_a_provisioner_via_case_endpoint(
+    client: AsyncClient, fake_repository: FakeAccessControlRepository
+) -> None:
+    owner_token = await _login(client, fake_repository)
+    case = await client.post(
+        "/api/v1/cases",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"case_reference": f"BOUNDARY-{uuid4().hex[:8]}", "classification": "restricted"},
+    )
+    provisioner = make_user_record(system_role=SystemRole.PROVISIONER)
+    await fake_repository.create_user(provisioner)
+    response = await client.post(
+        f"/api/v1/cases/{case.json()['case_id']}/members/{provisioner.user_id}/reset-credentials",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert response.status_code == 404

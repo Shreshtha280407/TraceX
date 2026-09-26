@@ -90,7 +90,7 @@ export function Login() {
           </span>
           <h1 className="text-lg font-semibold text-shell-text">Sign in to TraceX</h1>
           <p className="text-xs text-shell-text-dim">
-            Accounts are provisioned by an administrator. Two-factor authentication is required.
+            Accounts are provisioned by your organization. Two-factor authentication is required.
           </p>
         </div>
 

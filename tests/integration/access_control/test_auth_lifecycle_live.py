@@ -11,11 +11,11 @@ import pytest
 
 from app.modules.access_control.errors import AuthenticationError, RefreshReuseDetectedError
 from app.modules.access_control.models import (
-    AdminProvisionUserRequest,
     ChangePasswordRequest,
     LoginRequest,
     LogoutRequest,
     MfaLoginVerifyRequest,
+    ProvisionCaseHeadRequest,
     RefreshRequest,
 )
 from app.modules.access_control.password import MIN_PASSWORD_LENGTH
@@ -96,8 +96,8 @@ async def test_register_login_refresh_logout_round_trip_against_live_db(
     email = unique_email("live")
     provisioner_id = await _seed_provisioner(repository, cleanup_user_ids)
 
-    public_user = await service.provision_user(
-        AdminProvisionUserRequest(email=email, password=VALID_PASSWORD, display_name="Live Test"),
+    public_user = await service.provision_case_head(
+        ProvisionCaseHeadRequest(email=email, password=VALID_PASSWORD, display_name="Live Test"),
         _ctx(),
         provisioned_by=provisioner_id,
     )
@@ -125,8 +125,8 @@ async def test_wrong_password_denied_against_live_db(
     service = _make_service(repository)
     email = unique_email("wrongpw")
     provisioner_id = await _seed_provisioner(repository, cleanup_user_ids)
-    public_user = await service.provision_user(
-        AdminProvisionUserRequest(email=email, password=VALID_PASSWORD, display_name="X"),
+    public_user = await service.provision_case_head(
+        ProvisionCaseHeadRequest(email=email, password=VALID_PASSWORD, display_name="X"),
         _ctx(),
         provisioned_by=provisioner_id,
     )
@@ -146,8 +146,8 @@ async def test_refresh_token_is_stored_hashed_not_raw(
     email = unique_email("hashcheck")
     provisioner_id = await _seed_provisioner(repository, cleanup_user_ids)
 
-    public_user = await service.provision_user(
-        AdminProvisionUserRequest(email=email, password=VALID_PASSWORD, display_name="Hash Check"),
+    public_user = await service.provision_case_head(
+        ProvisionCaseHeadRequest(email=email, password=VALID_PASSWORD, display_name="Hash Check"),
         _ctx(),
         provisioned_by=provisioner_id,
     )
@@ -173,8 +173,8 @@ async def test_token_family_revocation_works_in_live_persistence(
     email = unique_email("family")
     provisioner_id = await _seed_provisioner(repository, cleanup_user_ids)
 
-    public_user = await service.provision_user(
-        AdminProvisionUserRequest(email=email, password=VALID_PASSWORD, display_name="Family Test"),
+    public_user = await service.provision_case_head(
+        ProvisionCaseHeadRequest(email=email, password=VALID_PASSWORD, display_name="Family Test"),
         _ctx(),
         provisioned_by=provisioner_id,
     )
@@ -212,8 +212,8 @@ async def test_forced_password_change_and_totp_mfa_round_trip_against_live_db(
     email = unique_email("mfa-live")
     provisioner_id = await _seed_provisioner(repository, cleanup_user_ids)
 
-    public_user = await service.provision_user(
-        AdminProvisionUserRequest(email=email, password=VALID_PASSWORD, display_name="MFA Live"),
+    public_user = await service.provision_case_head(
+        ProvisionCaseHeadRequest(email=email, password=VALID_PASSWORD, display_name="MFA Live"),
         _ctx(),
         provisioned_by=provisioner_id,
     )
@@ -252,9 +252,7 @@ async def test_forced_password_change_and_totp_mfa_round_trip_against_live_db(
     assert finished.mfa_required is False
     assert finished.access_token
 
-    reset = await service.admin_reset_credentials(
-        public_user.user_id, _ctx(), reset_by=provisioner_id
-    )
+    reset = await service.reset_credentials(public_user.user_id, _ctx(), reset_by=provisioner_id)
     reset_user = await repository.get_user_by_id(public_user.user_id)
     assert reset_user is not None
     assert reset_user.must_change_password is True

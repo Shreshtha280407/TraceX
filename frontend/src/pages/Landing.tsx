@@ -7,7 +7,7 @@ import { setupApi } from '../lib/api/client'
 /**
  * Page 0 -- public entry surface. The deployment-only setup affordance is
  * discovered from the backend rather than inferred in the browser, so it
- * disappears immediately after the first active administrator is created.
+ * disappears immediately after the first active Provisioner is created.
  */
 export function Landing() {
   const [setupRequired, setSetupRequired] = useState(false)
@@ -33,7 +33,7 @@ export function Landing() {
   }, [])
 
   const primaryPath = setupRequired ? '/setup/first-admin' : '/login'
-  const primaryLabel = setupRequired ? 'Set up first administrator' : 'Sign in'
+  const primaryLabel = setupRequired ? 'Set up first Provisioner' : 'Sign in'
 
   return (
     <div className="flex min-h-screen flex-col bg-shell-topbar text-shell-text">
@@ -83,8 +83,8 @@ export function Landing() {
 
       <footer className="px-8 py-6 text-center text-xs text-shell-text-dim">
         {setupRequired
-          ? 'First-administrator setup is a one-time private deployment ceremony, not public registration.'
-          : 'Access is provisioned by your organization&apos;s administrator. There is no public self-registration.'}
+          ? 'First-Provisioner setup is a one-time private deployment ceremony, not public registration.'
+          : 'Access is provisioned by your organization. There is no public self-registration.'}
       </footer>
     </div>
   )

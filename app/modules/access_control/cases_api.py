@@ -25,8 +25,9 @@ from app.core.pagination import (
 from app.modules.access_control import case_service, notes_service
 from app.modules.access_control.dependencies import (
     get_access_control_repository,
+    get_auth_service,
     get_case_note_repository,
-    require_authenticated_user,
+    require_case_head,
     require_case_note_write,
     require_case_read,
     require_member_manage,
@@ -44,7 +45,9 @@ from app.modules.access_control.models import (
     CaseMemberUpdateRequest,
     CaseMemberView,
     CaseStatusView,
+    CaseTeamMemberCreateRequest,
     CaseView,
+    CredentialResetResponse,
 )
 from app.modules.access_control.notes_models import (
     CaseNoteCreateRequest,
@@ -53,6 +56,7 @@ from app.modules.access_control.notes_models import (
 )
 from app.modules.access_control.notes_repository import CaseNoteRepository
 from app.modules.access_control.repository import AccessControlRepository
+from app.modules.access_control.service import AuthService, RequestContext
 from app.modules.integrity.dependencies import get_integrity_service
 from app.modules.integrity.service import IntegrityService
 
@@ -62,10 +66,10 @@ router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 @router.post("", response_model=CaseView, status_code=status.HTTP_201_CREATED)
 async def create_case(
     body: CaseCreateRequest,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_authenticated_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_case_head)],
     repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
 ) -> CaseView:
-    """Any authenticated, active user may create a case -- they become its `CASE_OWNER`.
+    """Only a Case Head may create a case and become its ``case_owner``.
 
     Not case-scoped (the case doesn't exist yet), so this does not go
     through `require_case_action` -- only `require_authenticated_user`.
@@ -115,13 +119,14 @@ async def add_case_member(
     principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
     repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
 ) -> CaseMemberView:
-    """Only `CASE_OWNER`/`CASE_MANAGER` reach here -- `require_member_manage` enforces it."""
+    """Only active owners/managers reach here; service enforces delegation limits."""
     try:
         return await case_service.add_case_member(
             repository,
             case_id,
             body,
             added_by_user_id=principal.principal.user_id,
+            actor_membership=principal.membership,
             now=datetime.now(UTC),
             request_id=get_request_id(),
         )
@@ -149,7 +154,7 @@ async def list_case_member_candidates(
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> CaseMemberCandidateListResponse:
     """The account picker exposes only active account name/email/ID after case authorization."""
-    users = await repository.list_active_user_candidates(limit=limit)
+    users = await repository.list_active_team_user_candidates(limit=limit)
     return CaseMemberCandidateListResponse(
         items=tuple(
             CaseMemberCandidateView(
@@ -177,6 +182,7 @@ async def update_case_member(
             user_id,
             body,
             changed_by_user_id=principal.principal.user_id,
+            actor_membership=principal.membership,
             now=datetime.now(UTC),
             request_id=get_request_id(),
         )
@@ -197,11 +203,64 @@ async def deactivate_case_member(
             case_id,
             user_id,
             changed_by_user_id=principal.principal.user_id,
+            actor_membership=principal.membership,
             now=datetime.now(UTC),
             request_id=get_request_id(),
         )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{case_id}/team-members", response_model=CaseMemberView, status_code=status.HTTP_201_CREATED
+)
+async def create_case_team_member(
+    case_id: UUID,
+    body: CaseTeamMemberCreateRequest,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+) -> CaseMemberView:
+    """Create an ordinary account and membership in this case only."""
+    try:
+        return await case_service.create_case_team_member(
+            repository,
+            case_id,
+            body,
+            added_by_user_id=principal.principal.user_id,
+            actor_membership=principal.membership,
+            now=datetime.now(UTC),
+            request_id=get_request_id(),
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{case_id}/members/{user_id}/reset-credentials", response_model=CredentialResetResponse
+)
+async def reset_team_member_credentials(
+    case_id: UUID,
+    user_id: UUID,
+    principal: Annotated[AuthorizedCasePrincipal, Depends(require_member_manage)],
+    repository: Annotated[AccessControlRepository, Depends(get_access_control_repository)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> CredentialResetResponse:
+    """Recover an ordinary team member of this exact case only."""
+    try:
+        await case_service.authorize_team_member_credential_reset(
+            repository, case_id, user_id, actor_membership=principal.membership
+        )
+        return await auth_service.reset_credentials(
+            user_id,
+            RequestContext(
+                now=datetime.now(UTC),
+                request_id=get_request_id(),
+                ip_marker=None,
+            ),
+            reset_by=principal.principal.user_id,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/{case_id}/notes", response_model=CaseNoteRecord, status_code=status.HTTP_201_CREATED)

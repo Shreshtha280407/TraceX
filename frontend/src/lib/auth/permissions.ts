@@ -95,8 +95,8 @@ export function roleHasCaseAction(role: CaseRole, action: CaseAction): boolean {
   return ROLE_ACTIONS[role].includes(action)
 }
 
-export function isSystemAdmin(): boolean {
-  return useAuthStore.getState().user?.system_role === 'admin'
+export function isProvisioner(): boolean {
+  return useAuthStore.getState().user?.system_role === 'provisioner'
 }
 
 export function activeCaseRole(): CaseRole | null {
@@ -112,8 +112,8 @@ export function hasCaseAction(action: CaseAction): boolean {
   return ROLE_ACTIONS[role].includes(action)
 }
 
-export function useIsSystemAdmin(): boolean {
-  return useAuthStore((state) => state.user?.system_role === 'admin')
+export function useIsProvisioner(): boolean {
+  return useAuthStore((state) => state.user?.system_role === 'provisioner')
 }
 
 export function useActiveCaseRole(): CaseRole | null {

@@ -219,7 +219,7 @@ export const PAGES: PageDef[] = [
     path: '/settings',
     label: 'Settings / Security',
     section: 'System',
-    role: 'MFA, roles, permissions, sessions, security config. Includes an Admin-only sub-section: create investigator accounts, issue/reset TOTP enrollment, view/revoke active sessions.',
+    role: 'MFA, profile, and account security. Provisioners can create and manage Case Head accounts.',
     icon: Settings,
     inShell: true,
   },

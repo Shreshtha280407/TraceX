@@ -1,4 +1,4 @@
-"""Private first-admin setup: one-time, rate-limited, and secret-safe."""
+"""Private first-Provisioner setup: one-time, rate-limited, and secret-safe."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ async def client(overrides: None) -> AsyncIterator[AsyncClient]:
 def _payload() -> dict[str, str]:
     return {
         "organization_name": "Private Investigations Unit",
-        "display_name": "Initial Administrator",
+        "display_name": "Initial Provisioner",
         "email": "first-admin@example.test",
         "password": "safe-first-admin-password",
     }
@@ -72,17 +72,28 @@ def test_production_rejects_enabled_setup_without_a_strong_token() -> None:
         )
 
 
-async def test_status_is_required_only_before_an_active_admin_exists(
+async def test_status_is_required_only_before_any_provisioner_exists(
     client: AsyncClient, repository: FakeAccessControlRepository
 ) -> None:
     before = await client.get("/api/v1/setup/first-admin/status")
     assert before.status_code == 200
     assert before.json() == {"setup_required": True}
 
-    await repository.create_user(make_user_record(system_role=SystemRole.ADMIN))
+    await repository.create_user(make_user_record(system_role=SystemRole.PROVISIONER))
     after = await client.get("/api/v1/setup/first-admin/status")
     assert after.status_code == 200
     assert after.json() == {"setup_required": False}
+
+
+async def test_setup_stays_closed_when_the_only_provisioner_is_deactivated(
+    client: AsyncClient, repository: FakeAccessControlRepository
+) -> None:
+    await repository.create_user(
+        make_user_record(system_role=SystemRole.PROVISIONER, is_active=False)
+    )
+    status_response = await client.get("/api/v1/setup/first-admin/status")
+    assert status_response.status_code == 200
+    assert status_response.json() == {"setup_required": False}
 
 
 async def test_setup_requires_header_token_and_never_echoes_secrets(client: AsyncClient) -> None:
@@ -99,7 +110,7 @@ async def test_setup_requires_header_token_and_never_echoes_secrets(client: Asyn
         assert response.headers["cache-control"] == "no-store"
 
 
-async def test_first_admin_creation_closes_setup_and_audits_without_secrets(
+async def test_first_provisioner_creation_closes_setup_and_audits_without_secrets(
     client: AsyncClient, repository: FakeAccessControlRepository
 ) -> None:
     response = await client.post(
@@ -108,12 +119,12 @@ async def test_first_admin_creation_closes_setup_and_audits_without_secrets(
         headers={"X-TraceX-First-Admin-Setup-Token": SETUP_TOKEN},
     )
     assert response.status_code == 201, response.text
-    assert response.json()["system_role"] == "admin"
+    assert response.json()["system_role"] == "provisioner"
     assert "password" not in response.json()
     assert "totp_secret" not in response.json()
     assert len(repository.audit_events) == 1
     audit = repository.audit_events[0]
-    assert audit.event_type == "admin.first_setup"
+    assert audit.event_type == "provisioner.first_setup"
     assert SETUP_TOKEN not in str(audit.metadata_safe_json)
     assert _payload()["password"] not in str(audit.metadata_safe_json)
 
@@ -139,4 +150,4 @@ async def test_concurrent_first_admin_requests_allow_exactly_one(
         )
     )
     assert sorted(response.status_code for response in responses) == [201, 409]
-    assert await repository.count_users_with_system_role("admin") == 1
+    assert await repository.count_users_with_system_role("provisioner") == 1

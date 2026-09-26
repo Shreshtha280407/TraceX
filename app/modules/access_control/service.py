@@ -23,18 +23,19 @@ from app.modules.access_control.errors import (
     ValidationError,
 )
 from app.modules.access_control.models import (
-    AdminProvisionUserRequest,
-    AdminResetCredentialsResponse,
     AuditOutcome,
     CaseMembershipView,
     ChangePasswordRequest,
+    CredentialResetResponse,
     LoginRequest,
     LogoutRequest,
     MeResponse,
     MfaEnrollResponse,
     MfaLoginVerifyRequest,
+    ProvisionCaseHeadRequest,
     PublicUser,
     RefreshRequest,
+    SystemRole,
     TokenPairResponse,
     UserRecord,
 )
@@ -53,7 +54,7 @@ from app.modules.access_control.tokens import (
 )
 from app.modules.access_control.totp import generate_totp_secret, totp_provisioning_uri, verify_totp
 
-#: Length of a generated one-time temporary password (`admin_reset_credentials`).
+#: Length of a generated one-time temporary password (`reset_credentials`).
 #: `secrets.token_urlsafe(n)` yields ~4n/3 characters -- comfortably inside
 #: `password.py`'s `MIN_PASSWORD_LENGTH`..`MAX_PASSWORD_LENGTH` bounds.
 _TEMPORARY_PASSWORD_BYTES = 16
@@ -163,22 +164,14 @@ class AuthService:
             expires_in=self._access_token_ttl_seconds,
         )
 
-    async def provision_user(
+    async def provision_case_head(
         self,
-        request: AdminProvisionUserRequest,
+        request: ProvisionCaseHeadRequest,
         ctx: RequestContext,
         *,
         provisioned_by: UUID,
     ) -> PublicUser:
-        """Admin-only user provisioning (G5). No public self-registration exists.
-
-        `provisioned_by` is the acting admin's `user_id` -- recorded on the
-        audit event so every account creation is traceable to the admin who
-        made it, never anonymous. Setting `request.system_role` mints
-        another admin; the HTTP layer already required the caller to be one
-        (see `dependencies.require_system_admin`), so this never escalates
-        an unprivileged caller.
-        """
+        """Provisioner-only Case Head provisioning; never public signup."""
         existing = await self._repository.get_user_by_email(request.email)
         if existing is not None:
             raise ValidationError("email already registered")
@@ -191,17 +184,17 @@ class AuthService:
             is_active=True,
             created_at=ctx.now,
             updated_at=ctx.now,
-            system_role=request.system_role,
-            # Every admin-provisioned account must change this password and
+            system_role=SystemRole.CASE_HEAD,
+            # Every provisioned account must change this password and
             # enroll MFA before it can be treated as fully onboarded (see
-            # ADR-033) -- never optional, never a request field the admin
-            # can turn off.
+            # ADR-033) -- never optional, never a request field the
+            # Provisioner can turn off.
             must_change_password=True,
         )
         await self._repository.create_user(user)
         await record_audit_event(
             self._repository,
-            event_type="admin.provision_user",
+            event_type="provisioner.create_case_head",
             outcome=AuditOutcome.SUCCESS,
             now=ctx.now,
             request_id=ctx.request_id,
@@ -209,7 +202,7 @@ class AuthService:
             ip_marker=ctx.ip_marker,
             metadata={
                 "provisioned_user_id": str(user.user_id),
-                "system_role": request.system_role.value if request.system_role else None,
+                "organization_role": SystemRole.CASE_HEAD.value,
             },
         )
         return _public_user(user)
@@ -567,10 +560,10 @@ class AuthService:
             ip_marker=ctx.ip_marker,
         )
 
-    async def admin_reset_credentials(
+    async def reset_credentials(
         self, user_id: UUID, ctx: RequestContext, *, reset_by: UUID
-    ) -> AdminResetCredentialsResponse:
-        """Lost-device / lost-password recovery (Section 6): admin-only.
+    ) -> CredentialResetResponse:
+        """Reissue temporary credentials after the caller was authorized.
 
         Reissues a fresh one-time temporary password, clears TOTP enrollment
         entirely (the investigator re-enrolls from scratch -- there is no
@@ -595,7 +588,7 @@ class AuthService:
         await self._repository.revoke_all_sessions_for_user(user_id, ctx.now)
         await record_audit_event(
             self._repository,
-            event_type="admin.reset_credentials",
+            event_type="account.reset_credentials",
             outcome=AuditOutcome.SUCCESS,
             now=ctx.now,
             request_id=ctx.request_id,
@@ -603,4 +596,4 @@ class AuthService:
             ip_marker=ctx.ip_marker,
             metadata={"reset_user_id": str(user_id)},
         )
-        return AdminResetCredentialsResponse(temporary_password=temporary_password)
+        return CredentialResetResponse(temporary_password=temporary_password)

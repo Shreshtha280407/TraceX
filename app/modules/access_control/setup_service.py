@@ -1,7 +1,7 @@
-"""One-time, private-deployment first-admin provisioning.
+"""One-time, private-deployment first-Provisioner provisioning.
 
 This is intentionally separate from normal user provisioning: it is usable
-only while no active system administrator exists and only with a deployment
+only while no active Provisioner exists and only with a deployment
 secret supplied out-of-band.  It is not a public registration mechanism.
 """
 
@@ -39,7 +39,7 @@ async def first_admin_setup_required(
     repository: AccessControlRepository, *, enabled: bool, token: str | None
 ) -> bool:
     return setup_is_available(enabled=enabled, token=token) and not bool(
-        await repository.count_users_with_system_role(SystemRole.ADMIN.value)
+        await repository.has_user_with_system_role(SystemRole.PROVISIONER.value)
     )
 
 
@@ -60,22 +60,22 @@ async def create_first_admin(
         is_active=True,
         created_at=now,
         updated_at=now,
-        system_role=SystemRole.ADMIN,
+        system_role=SystemRole.PROVISIONER,
     )
     # Do not record the organization label, setup secret, password, or hash.
     audit_event = SecurityAuditEventRecord(
         event_id=uuid4(),
         occurred_at=now,
-        event_type="admin.first_setup",
+        event_type="provisioner.first_setup",
         outcome=AuditOutcome.SUCCESS,
         request_id=request_id,
         user_id_nullable=user.user_id,
         case_id_nullable=None,
         ip_hash_or_safe_network_marker=ip_marker,
-        metadata_safe_json={"provisioning_path": "private_first_admin_setup"},
+        metadata_safe_json={"provisioning_path": "private_first_provisioner_setup"},
     )
     try:
-        created = await repository.create_first_admin_if_none(user, audit_event)
+        created = await repository.create_first_provisioner_if_none(user, audit_event)
     except sa.exc.IntegrityError:
         # Duplicate email/race details are deliberately not exposed on the
         # unauthenticated setup surface.

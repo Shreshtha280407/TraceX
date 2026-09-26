@@ -79,7 +79,7 @@ export function FirstAdminSetup() {
           <div>
             <h1 className="text-xl font-semibold text-text">Private deployment setup</h1>
             <p className="mt-1 text-sm text-text-dim">
-              Create TraceX’s first system administrator. This is a one-time organization setup,
+              Create TraceX’s first Provisioner. This is a one-time organization setup,
               not public account registration.
             </p>
           </div>
@@ -92,13 +92,13 @@ export function FirstAdminSetup() {
         ) : null}
         <form className="space-y-3" onSubmit={submit}>
           <SetupField label="Organization name" value={organizationName} setValue={setOrganizationName} />
-          <SetupField label="Administrator name" value={displayName} setValue={setDisplayName} />
-          <SetupField label="Administrator email" type="email" value={email} setValue={setEmail} />
+          <SetupField label="Provisioner name" value={displayName} setValue={setDisplayName} />
+          <SetupField label="Provisioner email" type="email" value={email} setValue={setEmail} />
           <SetupField label="Password (min. 10 characters)" type="password" value={password} setValue={setPassword} minLength={10} />
           <SetupField label="Confirm password" type="password" value={confirmation} setValue={setConfirmation} minLength={10} />
           <SetupField label="One-time deployment setup token" type="password" value={setupToken} setValue={setSetupToken} />
           <Button type="submit" disabled={submitting} className="w-full">
-            {submitting ? 'Creating administrator…' : 'Create first administrator'}
+            {submitting ? 'Creating Provisioner…' : 'Create first Provisioner'}
           </Button>
         </form>
       </Card>

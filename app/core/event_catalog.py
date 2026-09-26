@@ -229,7 +229,7 @@ SHARED_OR_STATE_BASED_EMISSIONS: dict[EventCatalogName, str] = {
         "A live classification, not a discrete past occurrence to log: "
         "computed at read time from worker_credentials.last_seen_at via "
         "access_control.models.worker_liveness_status ('stale'/"
-        "'never_seen'), surfaced in /readyz, /metrics, GET /api/v1/admin/"
-        "workers, and GET /api/v1/internal/workers."
+        "'never_seen'), surfaced in /readyz, /metrics, and the bounded "
+        "worker-credential-protected GET /api/v1/internal/workers route."
     ),
 }

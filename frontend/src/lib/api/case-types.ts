@@ -20,6 +20,14 @@ export interface CaseMemberAddRequest {
   clearance: ClearanceLevel
 }
 
+export interface CaseTeamMemberCreateRequest {
+  email: string
+  password: string
+  display_name: string
+  role: CaseRole
+  clearance: ClearanceLevel
+}
+
 export interface CaseMemberView {
   user_id: string
   role: CaseRole
