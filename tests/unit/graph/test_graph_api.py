@@ -895,6 +895,33 @@ async def test_evidence_observations_cross_case_is_denied(
     assert response.status_code == 403
 
 
+async def test_evidence_observations_above_clearance_are_denied(
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    graph_repository: _FakeGraphRepository,
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository)
+    evidence_id, observation_id = uuid4(), uuid4()
+    protected_evidence = _evidence_node_props(case_id, evidence_id)
+    protected_evidence["classification"] = "secret"
+    graph_repository._read_results = [
+        [
+            {
+                "evidence": protected_evidence,
+                "page": [_observation_props_with_locator(case_id, evidence_id, observation_id)],
+                "total": 1,
+            }
+        ],
+    ]
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}/evidence/{evidence_id}/observations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    assert str(evidence_id) not in response.text
+
+
 async def test_observation_provenance_resolves_evidence_without_object_uri(
     client: AsyncClient,
     ac_repository: FakeAccessControlRepository,

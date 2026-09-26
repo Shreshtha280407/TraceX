@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import sqlalchemy.exc
 
+from app.contracts.evidence import EvidenceClassification, EvidenceProcessingStatus, SourceType
 from app.contracts.worker import WorkerStatus
 from app.core.canonical import canonical_sha256
 from app.modules.evidence_lifecycle.media_orchestration import (
@@ -176,6 +177,83 @@ class FakeEvidenceLifecycleRepository:
         )
         return records[offset : offset + limit]
 
+    async def search_evidence(
+        self,
+        case_id: UUID,
+        *,
+        query: str | None = None,
+        source_type: str | None = None,
+        processing_status: str | None = None,
+        classification: str | None = None,
+        uploaded_by: UUID | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[EvidenceRecord]:
+        """In-memory counterpart of the repository's case-scoped library search."""
+        records = [record for record in self.evidence.values() if record.case_id == case_id]
+        if source_type is not None:
+            records = [record for record in records if record.source_type.value == source_type]
+        if processing_status is not None:
+            records = [
+                record for record in records if record.processing_status.value == processing_status
+            ]
+        if classification is not None:
+            records = [
+                record for record in records if record.classification.value == classification
+            ]
+        if uploaded_by is not None:
+            records = [record for record in records if record.uploaded_by == uploaded_by]
+        if query:
+            needle = query.lower()
+            matching_evidence_ids = {
+                observation.evidence_id
+                for observation in self.observations.values()
+                if observation.case_id == case_id
+                and needle in str(observation.canonical_payload).lower()
+            }
+            records = [
+                record
+                for record in records
+                if needle in record.original_filename.lower()
+                or needle in str(record.evidence_id).lower()
+                or needle in record.source_type.value
+                or record.evidence_id in matching_evidence_ids
+            ]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[offset : offset + limit]
+
+    async def update_evidence_classification(
+        self, case_id: UUID, evidence_id: UUID, *, classification: str, now: datetime
+    ) -> EvidenceRecord | None:
+        record = await self.get_evidence(case_id, evidence_id)
+        if record is None:
+            return None
+        updated = record.model_copy(
+            update={"classification": EvidenceClassification(classification), "updated_at": now}
+        )
+        self.evidence[evidence_id] = updated
+        return updated
+
+    async def update_evidence_route_with_job(
+        self,
+        *,
+        evidence: EvidenceRecord,
+        source_type: str,
+        parser_profile: str,
+        job: WorkerJobRecord,
+    ) -> EvidenceRecord:
+        updated = evidence.model_copy(
+            update={
+                "source_type": SourceType(source_type),
+                "parser_profile": parser_profile,
+                "processing_status": EvidenceProcessingStatus.QUEUED,
+                "updated_at": job.requested_at,
+            }
+        )
+        self.evidence[evidence.evidence_id] = updated
+        self.jobs[job.job_id] = job
+        return updated
+
     async def get_evidence_by_idempotency_key(
         self, case_id: UUID, upload_idempotency_key: str
     ) -> EvidenceRecord | None:
@@ -193,14 +271,25 @@ class FakeEvidenceLifecycleRepository:
         return job if job is not None and job.case_id == case_id else None
 
     async def get_job_by_evidence(self, case_id: UUID, evidence_id: UUID) -> WorkerJobRecord | None:
-        return next(
+        candidates = [
+            job
+            for job in self.jobs.values()
+            if job.case_id == case_id and job.evidence_id == evidence_id
+        ]
+        return max(candidates, key=lambda job: job.requested_at) if candidates else None
+
+    async def list_observation_payloads_for_evidence(
+        self, case_id: UUID, evidence_id: UUID, *, limit: int = 8
+    ) -> list[dict[str, object]]:
+        records = sorted(
             (
-                j
-                for j in self.jobs.values()
-                if j.case_id == case_id and j.evidence_id == evidence_id
+                observation
+                for observation in self.observations.values()
+                if observation.case_id == case_id and observation.evidence_id == evidence_id
             ),
-            None,
+            key=lambda observation: observation.created_at,
         )
+        return [dict(record.canonical_payload) for record in records[:limit]]
 
     async def mark_job_dispatched(self, job_id: UUID, dispatched_at: datetime) -> None:
         job = self.jobs.get(job_id)

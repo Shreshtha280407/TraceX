@@ -10,15 +10,17 @@ classification (e.g. choosing a FIR-report profile vs. a generic tabular
 fallback) remains each processing module's own job. See
 `docs/architecture/evidence-lifecycle.md`.
 
-`source_type` is always declared explicitly by the uploading client (a
-required form field), never inferred from `content_type` or file content --
-consistent with this codebase's "never guess ambiguous input" rule applied
-everywhere else (FIR extraction, CDR/financial normalization, audio
-routing).
+The public Evidence Library uses :func:`detect_source` to make the initial
+routing decision from inspected bytes.  A caller never gets to choose a
+processor.  The older explicit-source endpoint shape remains accepted only
+for backwards-compatible clients; it is checked against the detected result
+by the service and can never override it.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 
 from app.contracts.evidence import SourceType
@@ -56,10 +58,12 @@ SOURCE_TYPE_CONTENT_TYPES: dict[SourceType, frozenset[str]] = {
             "application/json",
         }
     ),
-    SourceType.AUDIO: frozenset({"audio/wav", "audio/x-wav", "audio/wave"}),
+    SourceType.AUDIO: frozenset({"audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg"}),
     SourceType.CHAT: frozenset({"application/json"}),
     SourceType.IMAGE: frozenset({"image/jpeg", "image/png"}),
-    SourceType.VIDEO: frozenset({"video/mp4", "video/quicktime", "video/x-matroska"}),
+    SourceType.VIDEO: frozenset(
+        {"video/mp4", "video/quicktime", "video/x-matroska", "video/x-msvideo"}
+    ),
     # Phase 2.3: general CSV/XLSX/JSON evidence that isn't specifically CDR
     # or financial shaped. Deliberately disjoint content-type sets from
     # each other (never both CSV/XLSX *and* JSON under one source type) so
@@ -129,3 +133,105 @@ def accepted_content_types(source_type: SourceType) -> frozenset[str]:
 
 def route_for(source_type: SourceType) -> ProcessorRoute | None:
     return ROUTING.get(source_type)
+
+
+@dataclass(frozen=True)
+class DetectedEvidenceType:
+    """A conservative byte-inspection result used before an object is stored.
+
+    This deliberately recognises only formats the worker registry can really
+    consume.  Unknown bytes are rejected before object storage and before a
+    durable job is created; a filename suffix or browser supplied MIME type
+    never makes an otherwise unsupported file acceptable.
+    """
+
+    source_type: SourceType
+    content_type: str
+
+
+def detect_source(
+    *, sample: bytes, filename: str, zip_members: set[str] | None = None
+) -> DetectedEvidenceType | None:
+    """Detect a supported evidence family from a bounded inspected prefix.
+
+    Text/CSV/JSON detection is intentionally deterministic and schema based.
+    Ambiguous tabular/JSON input uses the existing generic structured route,
+    rather than pretending it is a CDR, financial record, or chat export.
+    """
+    lower_name = filename.lower()
+    if sample.startswith(b"%PDF-"):
+        return DetectedEvidenceType(SourceType.DOCUMENT, "application/pdf")
+    if sample.startswith(b"\x89PNG\r\n\x1a\n"):
+        return DetectedEvidenceType(SourceType.IMAGE, "image/png")
+    if sample.startswith(b"\xff\xd8\xff"):
+        return DetectedEvidenceType(SourceType.IMAGE, "image/jpeg")
+    if sample.startswith(b"RIFF") and sample[8:12] == b"WAVE":
+        return DetectedEvidenceType(SourceType.AUDIO, "audio/wav")
+    if sample.startswith(b"RIFF") and sample[8:12] == b"AVI ":
+        return DetectedEvidenceType(SourceType.VIDEO, "video/x-msvideo")
+    if sample.startswith(b"ID3") or sample[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return DetectedEvidenceType(SourceType.AUDIO, "audio/mpeg")
+    if len(sample) >= 12 and sample[4:8] == b"ftyp":
+        return DetectedEvidenceType(SourceType.VIDEO, "video/mp4")
+    if sample.startswith(b"PK\x03\x04"):
+        members = zip_members or set()
+        if any(name.startswith("word/") for name in members):
+            return DetectedEvidenceType(
+                SourceType.DOCUMENT,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        if any(name.startswith("xl/") for name in members):
+            return DetectedEvidenceType(
+                SourceType.STRUCTURED_TABULAR,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        return None
+
+    try:
+        text = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    stripped = text.lstrip("\ufeff \t\r\n")
+    if not stripped:
+        return None
+    if stripped.startswith(("{", "[")):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            # A larger JSON file can be valid but not fit in the prefix. It
+            # remains a generic JSON document only when its opening shape is
+            # recognisable; malformed JSON is rejected by the worker later.
+            return DetectedEvidenceType(SourceType.STRUCTURED_JSON, "application/json")
+        if isinstance(payload, dict):
+            keys = {str(key).lower() for key in payload}
+            records = payload.get("records")
+            if "messages" in keys or "records" in keys and isinstance(records, list):
+                return DetectedEvidenceType(SourceType.CHAT, "application/json")
+            if {"caller_number", "callee_number"} <= keys or {"source_id", "target_id"} <= keys:
+                return DetectedEvidenceType(SourceType.CDR, "application/json")
+            if {"from_account", "to_account"} <= keys:
+                return DetectedEvidenceType(SourceType.FINANCIAL, "application/json")
+        return DetectedEvidenceType(SourceType.STRUCTURED_JSON, "application/json")
+
+    header = next((line.strip().lower() for line in text.splitlines() if line.strip()), "")
+    columns = {part.strip().strip('"') for part in header.split(",")}
+    if {"source_id", "target_id"} <= columns or {"caller_number", "callee_number"} <= columns:
+        return DetectedEvidenceType(SourceType.CDR, "text/csv")
+    if {"from_account", "to_account"} <= columns or {"amount", "currency"} <= columns:
+        return DetectedEvidenceType(SourceType.FINANCIAL, "text/csv")
+    if len(columns) > 1 and all(re.match(r"^[\w .-]+$", column) for column in columns):
+        return DetectedEvidenceType(SourceType.STRUCTURED_TABULAR, "text/csv")
+    # A WhatsApp text export has a stable, content-derived line shape.  This
+    # check intentionally precedes the generic plaintext-document fallback:
+    # it does not rely on a caller's MIME field or filename to select a
+    # communications processor.
+    if re.search(
+        r"(?m)^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4},\s+\d{1,2}:\d{2}\s+-\s+[^:]+:",
+        text,
+    ):
+        return DetectedEvidenceType(SourceType.WHATSAPP_CHAT, "text/plain")
+    # Plain UTF-8 text is a supported document input.  It is intentionally
+    # not reclassified as a chat export merely because its name says so.
+    if lower_name.endswith((".txt", ".md", ".log")) or len(stripped) > 0:
+        return DetectedEvidenceType(SourceType.DOCUMENT, "text/plain")
+    return None

@@ -67,7 +67,7 @@ export function EvidenceUpload() {
     setResult(null)
     setSubmitting(true)
     try {
-      const response = await evidenceApi.upload(caseId, file, sourceType, classification)
+      const response = await evidenceApi.upload(caseId, file)
       setResult({ evidenceId: response.evidence.evidence_id, jobId: response.job.job_id })
       setFile(null)
     } catch (err) {

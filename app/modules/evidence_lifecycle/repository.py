@@ -592,6 +592,121 @@ class EvidenceLifecycleRepository:
             )
         return [_evidence_from_row(row) for row in rows]
 
+    async def search_evidence(
+        self,
+        case_id: UUID,
+        *,
+        query: str | None = None,
+        source_type: str | None = None,
+        processing_status: str | None = None,
+        classification: str | None = None,
+        uploaded_by: UUID | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[EvidenceRecord]:
+        """Search only one case; observation text is never queried globally.
+
+        The JSONB cast deliberately stays inside this case/evidence EXISTS
+        predicate.  It is a bounded, safe fallback over existing canonical
+        observations rather than a second unscoped search index.
+        """
+        conditions: list[sa.ColumnElement[bool]] = [evidence_records_table.c.case_id == case_id]
+        if source_type is not None:
+            conditions.append(evidence_records_table.c.source_type == source_type)
+        if processing_status is not None:
+            conditions.append(evidence_records_table.c.processing_status == processing_status)
+        if classification is not None:
+            conditions.append(evidence_records_table.c.classification == classification)
+        if uploaded_by is not None:
+            conditions.append(evidence_records_table.c.uploaded_by == uploaded_by)
+        if query:
+            needle = f"%{query}%"
+            observation_match = sa.exists(
+                sa.select(sa.literal(1)).where(
+                    worker_observations_table.c.case_id == case_id,
+                    worker_observations_table.c.evidence_id == evidence_records_table.c.evidence_id,
+                    sa.cast(worker_observations_table.c.canonical_payload, sa.Text).ilike(needle),
+                )
+            )
+            conditions.append(
+                sa.or_(
+                    evidence_records_table.c.original_filename.ilike(needle),
+                    sa.cast(evidence_records_table.c.evidence_id, sa.Text).ilike(needle),
+                    sa.cast(evidence_records_table.c.source_type, sa.Text).ilike(needle),
+                    observation_match,
+                )
+            )
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(evidence_records_table)
+                        .where(*conditions)
+                        .order_by(evidence_records_table.c.created_at.desc())
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_evidence_from_row(row) for row in rows]
+
+    async def update_evidence_classification(
+        self, case_id: UUID, evidence_id: UUID, *, classification: str, now: datetime
+    ) -> EvidenceRecord | None:
+        async with self._engine.begin() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.update(evidence_records_table)
+                        .where(
+                            evidence_records_table.c.case_id == case_id,
+                            evidence_records_table.c.evidence_id == evidence_id,
+                        )
+                        .values(classification=classification, updated_at=now)
+                        .returning(evidence_records_table)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _evidence_from_row(row) if row is not None else None
+
+    async def update_evidence_route_with_job(
+        self,
+        *,
+        evidence: EvidenceRecord,
+        source_type: str,
+        parser_profile: str,
+        job: WorkerJobRecord,
+    ) -> EvidenceRecord:
+        """Atomically apply a human correction and queue its replacement job."""
+        job_values = _dump_for_insert(job, ("source_type", "status"))
+        async with self._engine.begin() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        sa.update(evidence_records_table)
+                        .where(
+                            evidence_records_table.c.case_id == evidence.case_id,
+                            evidence_records_table.c.evidence_id == evidence.evidence_id,
+                        )
+                        .values(
+                            source_type=source_type,
+                            parser_profile=parser_profile,
+                            processing_status=EvidenceProcessingStatus.QUEUED.value,
+                            updated_at=job.requested_at,
+                        )
+                        .returning(evidence_records_table)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await conn.execute(sa.insert(worker_jobs_table).values(**job_values))
+        return _evidence_from_row(row)
+
     async def get_evidence_by_idempotency_key(
         self, case_id: UUID, upload_idempotency_key: str
     ) -> EvidenceRecord | None:
@@ -634,16 +749,39 @@ class EvidenceLifecycleRepository:
             row = (
                 (
                     await conn.execute(
-                        sa.select(worker_jobs_table).where(
+                        sa.select(worker_jobs_table)
+                        .where(
                             worker_jobs_table.c.case_id == case_id,
                             worker_jobs_table.c.evidence_id == evidence_id,
                         )
+                        .order_by(worker_jobs_table.c.requested_at.desc())
                     )
                 )
                 .mappings()
                 .first()
             )
         return _job_from_row(row) if row is not None else None
+
+    async def list_observation_payloads_for_evidence(
+        self, case_id: UUID, evidence_id: UUID, *, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        sa.select(worker_observations_table.c.canonical_payload)
+                        .where(
+                            worker_observations_table.c.case_id == case_id,
+                            worker_observations_table.c.evidence_id == evidence_id,
+                        )
+                        .order_by(worker_observations_table.c.created_at.asc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [dict(row) for row in rows]
 
     async def mark_job_dispatched(self, job_id: UUID, dispatched_at: datetime) -> None:
         async with self._engine.begin() as conn:

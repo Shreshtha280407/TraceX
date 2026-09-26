@@ -41,6 +41,7 @@ from app.modules.evidence_lifecycle.models import (
     WorkerResultRecord,
 )
 from app.modules.evidence_lifecycle.storage import FakeObjectStorage
+from app.modules.integrity.dependencies import get_integrity_service
 from tests.fixtures.access_control.factories import (
     make_case_record,
     make_membership_record,
@@ -51,6 +52,13 @@ from tests.fixtures.evidence_lifecycle.fake_repository import FakeEvidenceLifecy
 
 VALID_PASSWORD = "correct-horse-battery-staple"
 assert len(VALID_PASSWORD) >= MIN_PASSWORD_LENGTH
+
+
+class _NoopIntegrityService:
+    """Keeps evidence HTTP tests fully in-memory instead of opening a real DB."""
+
+    async def record_integrity_event(self, *args: object, **kwargs: object) -> None:
+        return None
 
 
 @pytest.fixture
@@ -86,6 +94,7 @@ def _override_dependencies(
     app.dependency_overrides[get_evidence_lifecycle_repository] = lambda: evidence_repository
     app.dependency_overrides[get_object_storage] = lambda: object_storage
     app.dependency_overrides[get_job_producer] = lambda: job_producer
+    app.dependency_overrides[get_integrity_service] = _NoopIntegrityService
     yield
     app.dependency_overrides.clear()
 
@@ -132,6 +141,10 @@ def _upload_files(content: bytes = b"FIR No. 1/2026", filename: str = "fir.txt")
     return {"file": (filename, content, "text/plain")}
 
 
+def _pdf_upload_files() -> dict:
+    return {"file": ("case-source.pdf", b"%PDF-1.7\nsynthetic PDF", "application/pdf")}
+
+
 # --- End-to-end wiring: upload -> get evidence -> get job -> list ----------
 
 
@@ -168,6 +181,151 @@ async def test_full_upload_get_list_round_trip(
     listing = await client.get(f"/api/v1/cases/{case_id}/evidence", headers=headers)
     assert listing.status_code == 200
     assert len(listing.json()["items"]) == 1
+
+
+async def test_upload_detects_bytes_and_inherits_case_classification(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    """The normal upload body cannot pick a type or lower classification."""
+    token, case_id = await _authenticated_member(client, ac_repository)
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        headers={"Authorization": f"Bearer {token}"},
+        files=_pdf_upload_files(),
+        # Old clients may still send a type. It is deliberately ignored.
+        data={"source_type": "financial"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["evidence"]["source_type"] == "document"
+    assert body["evidence"]["content_type"] == "application/pdf"
+    assert body["evidence"]["classification"] == "confidential"
+    assert body["job"]["processor_name"] == "fir_report_text_v1"
+
+
+async def test_library_and_content_are_case_scoped_and_use_safe_inline_source_delivery(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    token_a, case_a = await _authenticated_member(client, ac_repository)
+    token_b, case_b = await _authenticated_member(client, ac_repository)
+    upload = await client.post(
+        f"/api/v1/cases/{case_b}/evidence",
+        headers={"Authorization": f"Bearer {token_b}"},
+        files=_pdf_upload_files(),
+    )
+    assert upload.status_code == 201, upload.text
+    evidence_id = upload.json()["evidence"]["evidence_id"]
+
+    own_library = await client.get(
+        f"/api/v1/cases/{case_b}/evidence/library?query=case-source",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert own_library.status_code == 200, own_library.text
+    assert [item["evidence"]["evidence_id"] for item in own_library.json()["items"]] == [
+        evidence_id
+    ]
+
+    cross_case = await client.get(
+        f"/api/v1/cases/{case_b}/evidence/{evidence_id}/content",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert cross_case.status_code == 403
+    assert str(case_a) not in cross_case.text
+
+    source = await client.get(
+        f"/api/v1/cases/{case_b}/evidence/{evidence_id}/content",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert source.status_code == 200
+    assert source.content.startswith(b"%PDF-")
+    assert source.headers["content-type"].startswith("application/pdf")
+    assert source.headers["content-disposition"].startswith("inline;")
+    assert "minio" not in source.text.lower()
+
+
+async def test_case_owner_cannot_lower_evidence_below_case_classification(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    token, case_id = await _authenticated_member(client, ac_repository, role=CaseRole.CASE_OWNER)
+    upload = await client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        headers={"Authorization": f"Bearer {token}"},
+        files=_upload_files(),
+    )
+    evidence_id = upload.json()["evidence"]["evidence_id"]
+    response = await client.patch(
+        f"/api/v1/cases/{case_id}/evidence/{evidence_id}/classification",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"classification": "restricted"},
+    )
+    assert response.status_code == 409
+
+
+async def test_only_case_owner_can_raise_evidence_classification_during_upload(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    owner_token, owner_case_id = await _authenticated_member(
+        client, ac_repository, role=CaseRole.CASE_OWNER
+    )
+    raised = await client.post(
+        f"/api/v1/cases/{owner_case_id}/evidence",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files=_upload_files(),
+        data={"classification": "secret"},
+    )
+    assert raised.status_code == 201, raised.text
+    assert raised.json()["evidence"]["classification"] == "secret"
+
+    member_token, member_case_id = await _authenticated_member(client, ac_repository)
+    denied = await client.post(
+        f"/api/v1/cases/{member_case_id}/evidence",
+        headers={"Authorization": f"Bearer {member_token}"},
+        files=_upload_files(),
+        data={"classification": "secret"},
+    )
+    assert denied.status_code == 403
+
+
+async def test_highly_sensitive_evidence_is_hidden_from_lower_clearance_case_members(
+    client: AsyncClient, ac_repository: FakeAccessControlRepository
+) -> None:
+    owner_token, case_id = await _authenticated_member(
+        client, ac_repository, role=CaseRole.CASE_OWNER
+    )
+    member_email = f"confidential-member-{uuid4().hex[:10]}@example.test"
+    member = make_user_record(email_normalized=member_email)
+    await ac_repository.create_user(member)
+    await ac_repository.create_membership(
+        make_membership_record(
+            case_id=case_id,
+            user_id=member.user_id,
+            role=CaseRole.INVESTIGATOR,
+            clearance=ClearanceLevel.CONFIDENTIAL,
+        )
+    )
+    member_login = await client.post(
+        "/api/v1/auth/login", json={"email": member_email, "password": VALID_PASSWORD}
+    )
+    assert member_login.status_code == 200
+    member_headers = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+
+    upload = await client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files=_upload_files(filename="restricted-to-secret.txt"),
+        data={"classification": "secret"},
+    )
+    assert upload.status_code == 201, upload.text
+    evidence_id = upload.json()["evidence"]["evidence_id"]
+
+    listing = await client.get(f"/api/v1/cases/{case_id}/evidence/library", headers=member_headers)
+    assert listing.status_code == 200
+    assert listing.json()["items"] == []
+    stream = await client.get(
+        f"/api/v1/cases/{case_id}/evidence/{evidence_id}/content", headers=member_headers
+    )
+    assert stream.status_code == 403
+    assert evidence_id not in stream.text
 
 
 # --- Scenario 13: user-facing job status is case-scoped and leaks nothing ---
@@ -414,7 +572,7 @@ async def test_unsupported_content_type_is_422(
     response = await client.post(
         f"/api/v1/cases/{case_id}/evidence",
         headers=headers,
-        files={"file": ("video.mp4", b"not really a document", "video/mp4")},
+        files={"file": ("unsupported.bin", b"\x00\xff\x00\xfe", "video/mp4")},
         data={"source_type": "document", "classification": "unclassified"},
     )
     assert response.status_code == 422
@@ -507,7 +665,9 @@ async def test_case_a_member_cannot_read_case_b_evidence(
 
 
 async def test_evidence_above_member_clearance_is_hidden_and_denied(
-    client: AsyncClient, ac_repository: FakeAccessControlRepository
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
 ) -> None:
     """G6 per-evidence classification hook: a CONFIDENTIAL-clearance member
     can see an `unclassified` item but not a `secret`-classified one -- 403
@@ -530,10 +690,15 @@ async def test_evidence_above_member_clearance_is_hidden_and_denied(
         f"/api/v1/cases/{case_id}/evidence",
         headers=headers,
         files=_upload_files(filename="hidden.txt"),
-        data={"source_type": "document", "classification": "secret"},
     )
     assert hidden_upload.status_code == 201
     hidden_id = hidden_upload.json()["evidence"]["evidence_id"]
+    # An owner-only classification increase is tested separately.  Seed the
+    # resulting protected state here to exercise the read/list ABAC boundary.
+    hidden_record = evidence_repository.evidence[UUID(hidden_id)]
+    evidence_repository.evidence[UUID(hidden_id)] = hidden_record.model_copy(
+        update={"classification": "secret"}
+    )
 
     get_hidden = await client.get(f"/api/v1/cases/{case_id}/evidence/{hidden_id}", headers=headers)
     assert get_hidden.status_code == 403
@@ -645,16 +810,21 @@ async def test_integrity_check_is_503_when_object_is_unreadable(
 
 
 async def test_integrity_check_is_403_above_member_clearance(
-    client: AsyncClient, ac_repository: FakeAccessControlRepository
+    client: AsyncClient,
+    ac_repository: FakeAccessControlRepository,
+    evidence_repository: FakeEvidenceLifecycleRepository,
 ) -> None:
     token, case_id = await _authenticated_member(client, ac_repository)
     upload = await client.post(
         f"/api/v1/cases/{case_id}/evidence",
         headers={"Authorization": f"Bearer {token}"},
         files=_upload_files(),
-        data={"source_type": "document", "classification": "secret"},
     )
     evidence_id = upload.json()["evidence"]["evidence_id"]
+    protected_record = evidence_repository.evidence[UUID(evidence_id)]
+    evidence_repository.evidence[UUID(evidence_id)] = protected_record.model_copy(
+        update={"classification": "secret"}
+    )
 
     response = await client.get(
         f"/api/v1/cases/{case_id}/evidence/{evidence_id}/integrity",

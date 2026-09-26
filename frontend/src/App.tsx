@@ -8,7 +8,7 @@ import { CaseManagement } from './pages/CaseManagement'
 import { CreateCase } from './pages/CreateCase'
 import { Dashboard } from './pages/Dashboard'
 import { EntityIntelligence } from './pages/EntityIntelligence'
-import { EvidenceUpload } from './pages/EvidenceUpload'
+import { EvidenceLibrary } from './pages/EvidenceLibrary'
 import { EvidenceViewer } from './pages/EvidenceViewer'
 import { ForcePasswordChange } from './pages/ForcePasswordChange'
 import { FirstAdminSetup } from './pages/FirstAdminSetup'
@@ -21,7 +21,6 @@ import { Login } from './pages/Login'
 import { MfaEnroll } from './pages/MfaEnroll'
 import { MotifsCorrelations } from './pages/MotifsCorrelations'
 import { PlaceholderPage } from './pages/PlaceholderPage'
-import { ProcessingPipeline } from './pages/ProcessingPipeline'
 import { SettingsSecurity } from './pages/SettingsSecurity'
 import { TimelineMap } from './pages/TimelineMap'
 
@@ -31,8 +30,7 @@ const SHELL_PAGE_ELEMENTS: Record<string, ReactNode> = {
   '/dashboard': <Dashboard />,
   '/cases': <CaseManagement />,
   '/cases/new': <CreateCase />,
-  '/evidence/upload': <EvidenceUpload />,
-  '/pipeline': <ProcessingPipeline />,
+  '/evidence-library': <EvidenceLibrary />,
   '/workspace': <InvestigationWorkspace />,
   '/timeline': <TimelineMap />,
   '/entities': <EntityIntelligence />,
@@ -70,6 +68,10 @@ function App() {
           </Route>
         </Route>
       </Route>
+
+      {/* Legacy normal-user routes deliberately converge on the one case-scoped library. */}
+      <Route path="/evidence/upload" element={<Navigate to="/evidence-library" replace />} />
+      <Route path="/pipeline" element={<Navigate to="/evidence-library" replace />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

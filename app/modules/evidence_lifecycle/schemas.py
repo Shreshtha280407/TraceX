@@ -64,6 +64,11 @@ class JobView(_ResponseModel):
     #: (Phase 3) -- `None` for a job that never received a progress-bearing
     #: `ObservationBatchSubmissionV1`. Never a raw human-readable message.
     latest_progress: ObservationBatchProgressV1 | None = None
+    #: Computed from a persisted worker checkpoint. ``None`` is intentional
+    #: for queued work where the worker does not yet know a real denominator.
+    progress_percent: int | None = None
+    current_stage: str
+    started_at: datetime | None
 
 
 class EvidenceIntegrityCheck(_ResponseModel):
@@ -82,6 +87,33 @@ class EvidenceUploadResponse(_ResponseModel):
 
 class EvidenceListResponse(_ResponseModel):
     items: tuple[EvidenceView, ...]
+
+
+class EvidenceLibraryItem(_ResponseModel):
+    """One authorized, case-scoped library row.
+
+    Preview text is derived from already-authorized observation payloads and
+    is bounded. It is never an object-storage URL or raw unrestricted file.
+    """
+
+    evidence: EvidenceView
+    job: JobView | None
+    preview: str | None
+    searchable: bool
+    uploader_display_name: str | None
+
+
+class EvidenceLibraryResponse(_ResponseModel):
+    items: tuple[EvidenceLibraryItem, ...]
+    next_offset: int | None
+
+
+class EvidenceClassificationUpdateRequest(_ResponseModel):
+    classification: EvidenceClassification
+
+
+class EvidenceTypeOverrideRequest(_ResponseModel):
+    source_type: SourceType
 
 
 # --- Internal worker-lifecycle shapes (never returned from a user-facing endpoint) ---
