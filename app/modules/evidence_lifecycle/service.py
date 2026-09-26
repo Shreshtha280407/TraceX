@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -76,9 +77,14 @@ from app.modules.evidence_lifecycle.models import (
     WorkerResultRecord,
 )
 from app.modules.evidence_lifecycle.repository import EvidenceLifecycleRepository
-from app.modules.evidence_lifecycle.routing import accepted_content_types, route_for
+from app.modules.evidence_lifecycle.routing import (
+    DetectedEvidenceType,
+    accepted_content_types,
+    detect_source,
+    route_for,
+)
 from app.modules.evidence_lifecycle.schemas import EvidenceIntegrityCheck
-from app.modules.evidence_lifecycle.storage import ObjectStorage, object_key_for
+from app.modules.evidence_lifecycle.storage import ObjectStorage, ObjectStream, object_key_for
 from app.modules.integrity.modality_provenance import (
     build_communication_observation_provenance,
     build_visual_observation_provenance,
@@ -530,7 +536,7 @@ class EvidenceLifecycleService:
         *,
         case_id: UUID,
         uploaded_by: UUID,
-        source_type: SourceType,
+        source_type: SourceType | None,
         classification: EvidenceClassification,
         parser_profile: str | None,
         upload: UploadFile,
@@ -538,17 +544,30 @@ class EvidenceLifecycleService:
         context: UploadContext,
     ) -> UploadOutcome:
         filename = _safe_filename(upload.filename)
-        route = route_for(source_type)
-        if route is None:
-            raise UnsupportedSourceTypeError(
-                f"source_type '{source_type.value}' has no registered processor yet"
-            )
-        content_type = (upload.content_type or "").lower()
-        if content_type not in accepted_content_types(source_type):
-            raise UnsupportedContentTypeError(
-                f"content_type '{content_type}' is not accepted for source_type "
-                f"'{source_type.value}'"
-            )
+        # Direct service callers from the earlier worker tests still provide
+        # a source type.  The public API always passes ``None`` and therefore
+        # cannot use this compatibility path to select a processor.
+        if source_type is not None:
+            route = route_for(source_type)
+            if route is None:
+                raise UnsupportedSourceTypeError(
+                    f"source_type '{source_type.value}' has no registered processor yet"
+                )
+            content_type = (upload.content_type or "").lower()
+            if content_type not in accepted_content_types(source_type):
+                raise UnsupportedContentTypeError(
+                    f"content_type '{content_type}' is not accepted for source_type "
+                    f"'{source_type.value}'"
+                )
+        else:
+            detected = await _detect_upload(upload, filename)
+            if detected is None:
+                raise UnsupportedContentTypeError("file content is not a supported evidence format")
+            source_type = detected.source_type
+            route = route_for(source_type)
+            if route is None:
+                raise UnsupportedSourceTypeError("detected file format has no registered processor")
+            content_type = detected.content_type
 
         sha256, size = await _hash_and_rewind(upload, self._max_evidence_bytes)
         if size == 0:
@@ -723,6 +742,132 @@ class EvidenceLifecycleService:
 
     async def list_evidence(self, case_id: UUID) -> list[EvidenceRecord]:
         return await self._repository.list_evidence(case_id)
+
+    async def search_evidence(
+        self,
+        case_id: UUID,
+        *,
+        query: str | None = None,
+        source_type: str | None = None,
+        processing_status: str | None = None,
+        classification: str | None = None,
+        uploaded_by: UUID | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[EvidenceRecord]:
+        return await self._repository.search_evidence(
+            case_id,
+            query=query,
+            source_type=source_type,
+            processing_status=processing_status,
+            classification=classification,
+            uploaded_by=uploaded_by,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_evidence_preview(self, case_id: UUID, evidence_id: UUID) -> str | None:
+        """Return a small, source-derived preview from persisted observations.
+
+        Search and preview use the same durable worker output.  There is no
+        browser-side OCR/transcription or invented placeholder text.
+        """
+        payloads = await self._repository.list_observation_payloads_for_evidence(
+            case_id, evidence_id
+        )
+        values: list[str] = []
+        for payload in payloads:
+            _collect_preview_text(payload, values)
+            if sum(len(value) for value in values) >= 320:
+                break
+        preview = " ".join(values).strip()
+        return preview[:320] + ("…" if len(preview) > 320 else "") if preview else None
+
+    async def get_job_for_evidence(
+        self, case_id: UUID, evidence_id: UUID
+    ) -> WorkerJobRecord | None:
+        return await self._repository.get_job_by_evidence(case_id, evidence_id)
+
+    async def update_evidence_classification(
+        self,
+        case_id: UUID,
+        evidence_id: UUID,
+        *,
+        classification: EvidenceClassification,
+        now: datetime,
+    ) -> EvidenceRecord:
+        updated = await self._repository.update_evidence_classification(
+            case_id, evidence_id, classification=classification.value, now=now
+        )
+        if updated is None:
+            raise EvidenceNotFoundError("evidence not found")
+        return updated
+
+    async def open_evidence_stream(
+        self, case_id: UUID, evidence_id: UUID
+    ) -> tuple[EvidenceRecord, ObjectStream]:
+        evidence = await self.get_evidence(case_id, evidence_id)
+        return evidence, await self._storage.open_stream(evidence.object_uri)
+
+    async def override_evidence_type(
+        self,
+        case_id: UUID,
+        evidence_id: UUID,
+        *,
+        source_type: SourceType,
+        now: datetime,
+    ) -> tuple[EvidenceRecord, WorkerJobRecord]:
+        """Re-validate stored bytes before a Case Owner corrects routing.
+
+        The override only moves within a compatible, inspected content
+        family.  It cannot turn arbitrary bytes into a worker job or change
+        an evidence classification/access decision.
+        """
+        evidence = await self.get_evidence(case_id, evidence_id)
+        stream = await self._storage.open_stream(evidence.object_uri)
+        sample = bytearray()
+        async for chunk in stream.chunks:
+            sample.extend(chunk[: 64 * 1024 - len(sample)])
+            if len(sample) >= 64 * 1024:
+                break
+        detected = detect_source(sample=bytes(sample), filename=evidence.original_filename)
+        if detected is None or not _compatible_override(detected, source_type):
+            raise UnsupportedContentTypeError(
+                "requested type is not compatible with inspected file content"
+            )
+        route = route_for(source_type)
+        if route is None:
+            raise UnsupportedSourceTypeError("requested type has no registered processor")
+        # Every compatible family shares this already-inspected content type.
+        if detected.content_type not in accepted_content_types(source_type):
+            raise UnsupportedContentTypeError(
+                "requested type is not compatible with inspected file content"
+            )
+        job = _build_job(
+            evidence_id=evidence.evidence_id,
+            case_id=case_id,
+            source_type=source_type,
+            processor_name=route.processor_name,
+            processor_version=route.processor_version,
+            input_object_uri=evidence.object_uri,
+            now=now,
+            max_attempts=self._worker_job_max_attempts,
+        ).model_copy(
+            update={
+                "idempotency_key": (
+                    f"{case_id}:{evidence_id}:{route.processor_name}:{route.processor_version}:"
+                    f"type-override:{uuid4()}"
+                )
+            }
+        )
+        updated = await self._repository.update_evidence_route_with_job(
+            evidence=evidence,
+            source_type=source_type.value,
+            parser_profile=route.processor_name,
+            job=job,
+        )
+        dispatched = await self._dispatch(job, UploadContext(now=now, request_id=None))
+        return updated, dispatched
 
     async def reprocess_evidence(
         self, case_id: UUID, evidence_id: UUID, *, idempotency_key: str, now: datetime
@@ -1846,6 +1991,28 @@ async def _hash_and_rewind(upload: UploadFile, max_bytes: int) -> tuple[str, int
     return hasher.hexdigest(), total
 
 
+async def _detect_upload(upload: UploadFile, filename: str) -> DetectedEvidenceType | None:
+    """Inspect a bounded prefix (and ZIP central directory when applicable).
+
+    The temporary upload stream is rewound before returning, so validation
+    and storage still use the normal bounded streaming path.  ZIP archives
+    are never extracted: their member names are used solely to distinguish
+    DOCX from XLSX, which prevents an extension-only classification.
+    """
+    sample = await upload.read(64 * 1024)
+    await upload.seek(0)
+    members: set[str] | None = None
+    if sample.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(upload.file) as archive:
+                members = set(archive.namelist())
+        except (OSError, zipfile.BadZipFile):
+            members = set()
+        finally:
+            await upload.seek(0)
+    return detect_source(sample=sample, filename=filename, zip_members=members)
+
+
 async def _safe_delete(storage: ObjectStorage, object_key: str, request_id: str | None) -> None:
     try:
         await storage.delete_object(object_key)
@@ -1855,6 +2022,53 @@ async def _safe_delete(storage: ObjectStorage, object_key: str, request_id: str 
             request_id=request_id,
             object_key=object_key,
         )
+
+
+def _collect_preview_text(value: object, values: list[str]) -> None:
+    """Collect only bounded string values from a canonical observation."""
+    if len(values) >= 20:
+        return
+    if isinstance(value, str):
+        compact = " ".join(value.split())
+        if len(compact) >= 3:
+            values.append(compact[:160])
+    elif isinstance(value, dict):
+        for child in value.values():
+            _collect_preview_text(child, values)
+            if len(values) >= 20:
+                break
+    elif isinstance(value, list):
+        for child in value:
+            _collect_preview_text(child, values)
+            if len(values) >= 20:
+                break
+
+
+def _compatible_override(detected: DetectedEvidenceType, requested: SourceType) -> bool:
+    if requested is detected.source_type:
+        return True
+    # These are format-compatible choices whose schema is deliberately
+    # resolved by the existing workers.  The bytes have still been inspected
+    # first and the target must be present in the route allow-list.
+    if detected.content_type == "application/json":
+        return requested in {
+            SourceType.STRUCTURED_JSON,
+            SourceType.CDR,
+            SourceType.FINANCIAL,
+            SourceType.CHAT,
+            SourceType.TELEGRAM_CHAT,
+            SourceType.INSTAGRAM_CHAT,
+            SourceType.AUDIO_TRANSCRIPT,
+            SourceType.AUDIO_DIARIZATION,
+        }
+    if detected.content_type in {
+        "text/csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }:
+        return requested in {SourceType.STRUCTURED_TABULAR, SourceType.CDR, SourceType.FINANCIAL}
+    if detected.content_type == "text/plain":
+        return requested in {SourceType.DOCUMENT, SourceType.WHATSAPP_CHAT}
+    return False
 
 
 def _hash_claim_token(claim_token: str) -> str:

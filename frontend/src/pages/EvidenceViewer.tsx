@@ -8,7 +8,13 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../components/DataState'
 import { ApiError, evidenceApi, graphApi } from '../lib/api/client'
-import type { EvidenceIntegrityCheck, EvidenceProcessingStatus, EvidenceView } from '../lib/api/case-types'
+import type {
+  EvidenceClassification,
+  EvidenceIntegrityCheck,
+  EvidenceProcessingStatus,
+  EvidenceView,
+  SourceType,
+} from '../lib/api/case-types'
 import type { EvidenceObservationView } from '../lib/api/graph-types'
 import { useActiveCaseWorkspace } from '../lib/cases'
 import { formatRelativeTime, formatSourceLocator } from '../lib/format'
@@ -21,8 +27,110 @@ const STATUS_TONE: Record<EvidenceProcessingStatus, BadgeTone> = {
   failed: 'crimson',
 }
 
+const CLASSIFICATION_LABEL: Record<EvidenceClassification, string> = {
+  unclassified: 'Standard',
+  restricted: 'Standard',
+  confidential: 'Sensitive',
+  secret: 'Highly Sensitive',
+}
+
+const CLASSIFICATION_RANK: Record<EvidenceClassification, number> = {
+  unclassified: -1,
+  restricted: 0,
+  confidential: 1,
+  secret: 2,
+}
+
+const EVIDENCE_CLASSIFICATIONS: EvidenceClassification[] = [
+  'restricted',
+  'confidential',
+  'secret',
+]
+
+const SOURCE_LABEL: Record<SourceType, string> = {
+  document: 'Document', cdr: 'CDR', financial: 'Financial', video: 'Video', image: 'Image',
+  audio: 'Audio', chat: 'Chat', structured_tabular: 'Spreadsheet', structured_json: 'Structured JSON',
+  audio_transcript: 'Audio transcript', audio_diarization: 'Audio diarization', whatsapp_chat: 'WhatsApp',
+  telegram_chat: 'Telegram', instagram_chat: 'Instagram', other: 'Other',
+}
+
+function compatibleTypeCorrections(contentType: string, detected: SourceType): SourceType[] {
+  const mediaType = contentType.split(';', 1)[0].toLowerCase()
+  const candidates: SourceType[] = mediaType === 'application/json'
+    ? ['structured_json', 'cdr', 'financial', 'chat', 'audio_transcript', 'audio_diarization', 'telegram_chat', 'instagram_chat']
+    : mediaType === 'text/csv' || mediaType.includes('spreadsheetml.sheet')
+      ? ['structured_tabular', 'cdr', 'financial']
+      : mediaType === 'text/plain'
+        ? ['document', 'whatsapp_chat']
+        : [detected]
+  return Array.from(new Set([detected, ...candidates]))
+}
+
 interface NavState {
   observationId?: string
+  evidenceId?: string
+}
+
+const MAX_CLIENT_STRUCTURED_PREVIEW_BYTES = 25 * 1024 * 1024
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
+
+function csvPreview(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let value = ''
+  let quoted = false
+
+  for (let index = 0; index < text.length && rows.length < 200; index += 1) {
+    const character = text[index]
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') {
+        value += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (character === ',' && !quoted) {
+      row.push(value)
+      value = ''
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && text[index + 1] === '\n') index += 1
+      row.push(value)
+      rows.push(row.slice(0, 30))
+      row = []
+      value = ''
+    } else {
+      value += character
+    }
+  }
+  if (rows.length < 200 && (value || row.length)) rows.push([...row, value].slice(0, 30))
+  return rows.length ? rows : [['No CSV rows found.']]
+}
+
+async function spreadsheetPreview(blob: Blob): Promise<string[][]> {
+  if (blob.size > MAX_CLIENT_STRUCTURED_PREVIEW_BYTES) {
+    return [['Preview is too large for the browser', 'Use the extracted observations below for a secure summary.']]
+  }
+  const { default: JSZip } = await import('jszip')
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer())
+  const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('text')
+  const sharedStrings = sharedStringsXml
+    ? Array.from(new DOMParser().parseFromString(sharedStringsXml, 'application/xml').querySelectorAll('si')).map((node) => node.textContent ?? '')
+    : []
+  const sheetName = Object.keys(zip.files).find((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
+  if (!sheetName) return [['No worksheet data found.']]
+  const xml = await zip.file(sheetName)?.async('text')
+  if (!xml) return [['No worksheet data found.']]
+  const rows: string[][] = []
+  for (const row of Array.from(new DOMParser().parseFromString(xml, 'application/xml').querySelectorAll('sheetData > row')).slice(0, 200)) {
+    const values: string[] = []
+    for (const cell of Array.from(row.querySelectorAll('c')).slice(0, 30)) {
+      const type = cell.getAttribute('t')
+      const raw = cell.querySelector('v')?.textContent ?? cell.querySelector('is')?.textContent ?? ''
+      values.push(type === 's' ? (sharedStrings[Number(raw)] ?? '') : raw)
+    }
+    rows.push(values)
+  }
+  return rows.length ? rows : [['No worksheet rows found.']]
 }
 
 /**
@@ -45,7 +153,7 @@ export function EvidenceViewer() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
-  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null)
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(navState?.evidenceId ?? null)
   const [highlightObservationId] = useState<string | null>(navState?.observationId ?? null)
 
   const [observations, setObservations] = useState<EvidenceObservationView[]>([])
@@ -56,6 +164,15 @@ export function EvidenceViewer() {
   const [integrity, setIntegrity] = useState<EvidenceIntegrityCheck | null>(null)
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityError, setIntegrityError] = useState<string | null>(null)
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceText, setSourceText] = useState<string | null>(null)
+  const [spreadsheetRows, setSpreadsheetRows] = useState<string[][] | null>(null)
+  const [classificationSaving, setClassificationSaving] = useState(false)
+  const [classificationError, setClassificationError] = useState<string | null>(null)
+  const [typeCorrection, setTypeCorrection] = useState<SourceType | null>(null)
+  const [typeCorrectionSaving, setTypeCorrectionSaving] = useState(false)
+  const [typeCorrectionError, setTypeCorrectionError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!activeCaseId) return
@@ -127,6 +244,55 @@ export function EvidenceViewer() {
     }
   }, [activeCaseId, selectedEvidenceId])
 
+  useEffect(() => {
+    if (!activeCaseId || !selectedEvidenceId) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setSourceUrl(null)
+      setSourceText(null)
+      setSpreadsheetRows(null)
+      return
+    }
+    let cancelled = false
+    let objectUrl: string | null = null
+    setSourceUrl(null)
+    setSourceText(null)
+    setSpreadsheetRows(null)
+    setTypeCorrection(null)
+    setTypeCorrectionError(null)
+    setSourceLoading(true)
+    evidenceApi.content(activeCaseId, selectedEvidenceId).then(async ({ blob, contentType }) => {
+      if (cancelled) return
+      const mediaType = contentType.split(';', 1)[0].toLowerCase()
+      if (mediaType === 'text/csv') {
+        const text = await blob.slice(0, MAX_TEXT_PREVIEW_BYTES).text()
+        if (!cancelled) setSpreadsheetRows(csvPreview(text))
+      } else if (mediaType.startsWith('text/') || mediaType === 'application/json') {
+        const text = await blob.slice(0, MAX_TEXT_PREVIEW_BYTES).text()
+        if (!cancelled) setSourceText(text.slice(0, 400_000))
+      } else if (contentType.includes('wordprocessingml.document')) {
+        const mammoth = await import('mammoth')
+        const text = blob.size > MAX_CLIENT_STRUCTURED_PREVIEW_BYTES
+          ? 'This document is too large for an in-browser Office preview. Its authorized extracted observations remain available below.'
+          : (await mammoth.extractRawText({ arrayBuffer: await blob.arrayBuffer() })).value
+        if (!cancelled) setSourceText(text.slice(0, 400_000))
+      } else if (contentType.includes('spreadsheetml.sheet')) {
+        const rows = await spreadsheetPreview(blob)
+        if (!cancelled) setSpreadsheetRows(rows)
+      } else {
+        objectUrl = URL.createObjectURL(blob)
+        setSourceUrl(objectUrl)
+      }
+    }).catch(() => {
+      if (!cancelled) setSourceUrl(null)
+    }).finally(() => {
+      if (!cancelled) setSourceLoading(false)
+    })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [activeCaseId, selectedEvidenceId])
+
   function verifyIntegrity() {
     if (!activeCaseId || !selectedEvidenceId) return
     setIntegrityLoading(true)
@@ -140,7 +306,72 @@ export function EvidenceViewer() {
       .finally(() => setIntegrityLoading(false))
   }
 
+  async function downloadSelected() {
+    if (!activeCaseId || !selectedEvidence) return
+    try {
+      const { blob } = await evidenceApi.content(activeCaseId, selectedEvidence.evidence_id, true)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = selectedEvidence.original_filename
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setIntegrityError(err instanceof Error ? err.message : 'Unable to download this evidence.')
+    }
+  }
+
+  async function updateClassification(classification: EvidenceClassification) {
+    if (!activeCaseId || !selectedEvidence) return
+    setClassificationSaving(true)
+    setClassificationError(null)
+    try {
+      const updated = await evidenceApi.updateClassification(
+        activeCaseId,
+        selectedEvidence.evidence_id,
+        classification,
+      )
+      setItems((current) => current.map((item) => (
+        item.evidence_id === updated.evidence_id ? updated : item
+      )))
+    } catch (err) {
+      setClassificationError(err instanceof Error ? err.message : 'Unable to update classification.')
+    } finally {
+      setClassificationSaving(false)
+    }
+  }
+
+  async function correctDetectedType() {
+    if (!activeCaseId || !selectedEvidence || !typeCorrection || typeCorrection === selectedEvidence.source_type) return
+    setTypeCorrectionSaving(true)
+    setTypeCorrectionError(null)
+    try {
+      const updated = await evidenceApi.correctDetectedType(
+        activeCaseId,
+        selectedEvidence.evidence_id,
+        typeCorrection,
+      )
+      setItems((current) => current.map((item) => (
+        item.evidence_id === updated.evidence.evidence_id ? updated.evidence : item
+      )))
+      setTypeCorrection(updated.evidence.source_type)
+    } catch (err) {
+      setTypeCorrectionError(err instanceof Error ? err.message : 'Unable to correct detected type.')
+    } finally {
+      setTypeCorrectionSaving(false)
+    }
+  }
+
   const selectedEvidence = items.find((item) => item.evidence_id === selectedEvidenceId) ?? null
+  const isCaseOwner = activeCase?.role === 'case_owner'
+  const permittedClassifications = activeCase
+    ? EVIDENCE_CLASSIFICATIONS.filter(
+      (classification) => CLASSIFICATION_RANK[classification] >= CLASSIFICATION_RANK[activeCase.classification as EvidenceClassification],
+    )
+    : []
+  const typeCorrectionOptions = selectedEvidence
+    ? compatibleTypeCorrections(selectedEvidence.content_type, selectedEvidence.source_type)
+    : []
 
   return (
     <div className="flex flex-col gap-6">
@@ -224,7 +455,7 @@ export function EvidenceViewer() {
                   </div>
                   <div>
                     <dt className="text-text-faint">Classification</dt>
-                    <dd className="capitalize text-text-dim">{selectedEvidence.classification}</dd>
+                    <dd className="text-text-dim">{CLASSIFICATION_LABEL[selectedEvidence.classification]}</dd>
                   </div>
                   <div>
                     <dt className="text-text-faint">Uploaded</dt>
@@ -237,10 +468,49 @@ export function EvidenceViewer() {
                     </dd>
                   </div>
                 </dl>
+                {isCaseOwner ? (
+                  <label className="flex max-w-sm flex-col gap-1.5 border-t border-card-border pt-3 text-xs">
+                    <span className="font-medium text-text">Evidence classification</span>
+                    <span className="text-text-faint">Raise protection for this source when fewer members should be able to view it. It can never fall below the case classification.</span>
+                    <select
+                      aria-label="Evidence classification"
+                      value={selectedEvidence.classification === 'unclassified' ? activeCase?.classification : selectedEvidence.classification}
+                      disabled={classificationSaving}
+                      onChange={(event) => void updateClassification(event.target.value as EvidenceClassification)}
+                      className="rounded-control border border-card-border bg-card px-3 py-2 text-sm text-text disabled:opacity-60"
+                    >
+                      {permittedClassifications.map((classification) => (
+                        <option key={classification} value={classification}>{CLASSIFICATION_LABEL[classification]}</option>
+                      ))}
+                    </select>
+                    {classificationError ? <span className="text-crimson">{classificationError}</span> : null}
+                  </label>
+                ) : null}
+                {isCaseOwner && typeCorrectionOptions.length > 1 ? (
+                  <div className="flex max-w-sm flex-col gap-1.5 border-t border-card-border pt-3 text-xs">
+                    <span className="font-medium text-text">Correct detected type</span>
+                    <div className="flex gap-2">
+                      <select
+                        aria-label="Correct detected type"
+                        value={typeCorrection ?? selectedEvidence.source_type}
+                        disabled={typeCorrectionSaving}
+                        onChange={(event) => setTypeCorrection(event.target.value as SourceType)}
+                        className="min-w-0 flex-1 rounded-control border border-card-border bg-card px-3 py-2 text-sm text-text disabled:opacity-60"
+                      >
+                        {typeCorrectionOptions.map((sourceType) => (
+                          <option key={sourceType} value={sourceType}>{SOURCE_LABEL[sourceType]}</option>
+                        ))}
+                      </select>
+                      <Button variant="secondary" disabled={typeCorrectionSaving || (typeCorrection ?? selectedEvidence.source_type) === selectedEvidence.source_type} onClick={() => void correctDetectedType()}>{typeCorrectionSaving ? 'Saving…' : 'Apply'}</Button>
+                    </div>
+                    {typeCorrectionError ? <span className="text-crimson">{typeCorrectionError}</span> : null}
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-3 border-t border-card-border pt-3">
                   <Button variant="secondary" onClick={verifyIntegrity} disabled={integrityLoading}>
                     {integrityLoading ? 'Verifying...' : 'Verify hash integrity'}
                   </Button>
+                  <Button variant="secondary" onClick={downloadSelected}>Download authorized source</Button>
                   {integrityError ? <span className="text-xs text-crimson">{integrityError}</span> : null}
                   {integrity ? (
                     integrity.matches ? (
@@ -256,6 +526,18 @@ export function EvidenceViewer() {
                     )
                   ) : null}
                 </div>
+              </Card>
+
+              <Card className="p-4">
+                <h2 className="text-sm font-semibold text-text">Secure source preview</h2>
+                {sourceLoading ? <p className="mt-2 text-xs text-text-faint">Loading authorized source…</p> : null}
+                {!sourceLoading && !sourceUrl && !sourceText && !spreadsheetRows ? <p className="mt-2 text-xs text-text-faint">The authorized source could not be previewed. Its extracted observations remain available below.</p> : null}
+                {sourceUrl && selectedEvidence.content_type.startsWith('image/') ? <img src={sourceUrl} alt={selectedEvidence.original_filename} className="mt-3 max-h-96 max-w-full rounded-control" /> : null}
+                {sourceUrl && selectedEvidence.content_type.startsWith('audio/') ? <audio controls src={sourceUrl} className="mt-3 w-full" /> : null}
+                {sourceUrl && selectedEvidence.content_type.startsWith('video/') ? <video controls src={sourceUrl} className="mt-3 max-h-96 w-full rounded-control" /> : null}
+                {sourceUrl && selectedEvidence.content_type.split(';', 1)[0].toLowerCase() === 'application/pdf' ? <object aria-label="Authorized PDF evidence source" data={sourceUrl} type="application/pdf" className="mt-3 h-[640px] w-full rounded-control border border-card-border" /> : null}
+                {sourceText ? <pre className="mt-3 max-h-[640px] overflow-auto whitespace-pre-wrap rounded-control border border-card-border bg-canvas p-3 font-mono text-xs text-text">{sourceText}</pre> : null}
+                {spreadsheetRows ? <div className="mt-3 max-h-[640px] overflow-auto rounded-control border border-card-border"><table className="min-w-full border-collapse text-left text-xs"><tbody>{spreadsheetRows.map((row, rowIndex) => <tr key={rowIndex} className="border-b border-card-border last:border-0">{row.map((cell, cellIndex) => <td key={cellIndex} className="whitespace-nowrap px-3 py-2 text-text-dim">{cell}</td>)}</tr>)}</tbody></table></div> : null}
               </Card>
 
               <div>

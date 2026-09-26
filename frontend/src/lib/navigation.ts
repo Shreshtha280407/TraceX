@@ -1,7 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import type { CaseAction } from './auth/permissions'
 import {
-  Activity,
   FileSearch,
   FileStack,
   Fingerprint,
@@ -14,7 +13,6 @@ import {
   ShieldCheck,
   Settings,
   Share2,
-  UploadCloud,
   Waypoints,
 } from 'lucide-react'
 
@@ -102,26 +100,22 @@ export const PAGES: PageDef[] = [
   },
   {
     id: 5,
-    path: '/evidence/upload',
-    label: 'Evidence Upload',
+    path: '/evidence-library',
+    label: 'Evidence Library',
     section: 'Case',
-    role: 'Upload FIR / CDR / finance / video / audio / images / chat.',
-    icon: UploadCloud,
+    role: 'Secure case-scoped upload, processing status, search, and source access.',
+    icon: FileSearch,
     inShell: true,
     requiresCaseAction: 'evidence_write',
   },
   {
-    id: 6,
-    path: '/pipeline',
-    label: 'Processing Pipeline',
+    id: 13,
+    path: '/evidence',
+    label: 'Evidence Viewer',
     section: 'Case',
-    role: 'Ingestion, extraction, entity detection, graph projection status.',
-    icon: Activity,
+    role: 'Inspect the authorized source and its exact page, row, frame, or timestamp.',
+    icon: FileSearch,
     inShell: true,
-    // Real page (Phase 2) lists evidence via GET /cases/{id}/evidence, which
-    // requires evidence_read -- case_read alone (which every role including
-    // viewer has) is not enough and would 403. Was case_read as a Phase 0/1
-    // placeholder before this page had a real backing call.
     requiresCaseAction: 'evidence_read',
   },
   {
@@ -183,16 +177,6 @@ export const PAGES: PageDef[] = [
     icon: Lightbulb,
     inShell: true,
     requiresCaseAction: 'hypothesis_propose',
-  },
-  {
-    id: 13,
-    path: '/evidence',
-    label: 'Evidence Viewer',
-    section: 'Evidence',
-    role: 'Exact source inspection -- page/row/frame/timestamp drill-down.',
-    icon: FileSearch,
-    inShell: true,
-    requiresCaseAction: 'evidence_read',
   },
   {
     id: 14,

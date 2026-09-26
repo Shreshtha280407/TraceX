@@ -12,11 +12,13 @@ import type {
   CaseNoteListResponse,
   CaseNoteRecord,
   EvidenceClassification,
+  EvidenceLibraryFilters,
+  EvidenceLibraryResponse,
   EvidenceIntegrityCheck,
   EvidenceListResponse,
   EvidenceUploadResponse,
+  EvidenceView,
   JobView,
-  SourceType,
 } from './case-types'
 import type {
   CandidateListResponse,
@@ -303,23 +305,18 @@ export const casesApi = {
 
 export const evidenceApi = {
   /**
-   * Real multipart upload against `POST /cases/{id}/evidence` -- `source_type`/
-   * `classification` are real backend enum values (Section 5, page 5), never
-   * client-invented labels. `idempotencyKey` lets a retried upload of the
-   * same file return the original result instead of a duplicate.
+   * Evidence Library upload. The server inspects bytes, inherits the case
+   * classification, and chooses the processor; the browser supplies only
+   * the file and never chooses its own security/routing fields.
    */
   upload: (
     caseId: string,
     file: File,
-    sourceType: SourceType,
-    classification: EvidenceClassification,
-    options: { parserProfile?: string; idempotencyKey?: string } = {},
+    options: { idempotencyKey?: string; classification?: EvidenceClassification } = {},
   ) => {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('source_type', sourceType)
-    formData.append('classification', classification)
-    if (options.parserProfile) formData.append('parser_profile', options.parserProfile)
+    if (options.classification) formData.append('classification', options.classification)
     return apiRequest<EvidenceUploadResponse>(`/api/v1/cases/${caseId}/evidence`, {
       method: 'POST',
       body: formData,
@@ -328,6 +325,43 @@ export const evidenceApi = {
   },
 
   list: (caseId: string) => apiRequest<EvidenceListResponse>(`/api/v1/cases/${caseId}/evidence`),
+
+  library: (caseId: string, filters: EvidenceLibraryFilters = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    })
+    const suffix = params.size ? `?${params.toString()}` : ''
+    return apiRequest<EvidenceLibraryResponse>(`/api/v1/cases/${caseId}/evidence/library${suffix}`)
+  },
+
+  updateClassification: (caseId: string, evidenceId: string, classification: EvidenceClassification) =>
+    apiRequest<EvidenceView>(`/api/v1/cases/${caseId}/evidence/${evidenceId}/classification`, {
+      method: 'PATCH',
+      body: { classification },
+    }),
+
+  correctDetectedType: (caseId: string, evidenceId: string, sourceType: import('./case-types').SourceType) =>
+    apiRequest<EvidenceUploadResponse>(`/api/v1/cases/${caseId}/evidence/${evidenceId}/detected-type`, {
+      method: 'PATCH',
+      body: { source_type: sourceType },
+    }),
+
+  reprocess: (caseId: string, evidenceId: string, idempotencyKey: string) =>
+    apiRequest<EvidenceUploadResponse>(`/api/v1/cases/${caseId}/evidence/${evidenceId}/reprocess`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+
+  content: async (caseId: string, evidenceId: string, download = false) => {
+    const token = useAuthStore.getState().accessToken
+    const response = await fetch(
+      `${API_BASE_URL}/api/v1/cases/${caseId}/evidence/${evidenceId}/content${download ? '?download=true' : ''}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    )
+    if (!response.ok) throw new ApiError(response.status, await parseErrorBody(response))
+    return { blob: await response.blob(), contentType: response.headers.get('Content-Type') ?? 'application/octet-stream' }
+  },
 
   getJob: (caseId: string, jobId: string) =>
     apiRequest<JobView>(`/api/v1/cases/${caseId}/jobs/${jobId}`),

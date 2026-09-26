@@ -23,6 +23,11 @@ const MANAGER_ROLES: CaseRole[] = ['case_owner', 'case_manager']
 const OWNER_ASSIGNABLE_ROLES: CaseRole[] = ['case_manager', 'investigator', 'analyst', 'reviewer', 'viewer']
 const MANAGER_ASSIGNABLE_ROLES: CaseRole[] = ['investigator', 'analyst', 'reviewer', 'viewer']
 const CLEARANCES: ClearanceLevel[] = ['restricted', 'confidential', 'secret']
+const CLEARANCE_LABEL: Record<ClearanceLevel, string> = {
+  restricted: 'Standard',
+  confidential: 'Sensitive',
+  secret: 'Highly Sensitive',
+}
 
 /**
  * Page 3 -- Case Management. No backend endpoint lists "every case visible
@@ -126,7 +131,7 @@ export function CaseManagement() {
               cells={{
                 status: <Badge tone="steel-neutral">{c.status}</Badge>,
                 role: <span className="text-sm text-text-dim">{c.role.replace(/_/g, ' ')}</span>,
-                classification: <Badge tone="steel-neutral">{c.classification}</Badge>,
+                classification: <Badge tone="steel-neutral">{CLEARANCE_LABEL[c.classification]}</Badge>,
                 access: MANAGER_ROLES.includes(c.role) ? (
                   <Button
                     type="button"
@@ -325,6 +330,7 @@ function CaseAccessPanel({
               <label className="flex flex-col gap-1.5 text-sm font-medium text-text">
                 Clearance
                 <ClearanceSelect value={newClearance} onChange={setNewClearance} />
+                <span className="text-xs font-normal text-text-faint">Standard: normal investigation data. Sensitive: limited-access case data. Highly Sensitive: highest protection.</span>
               </label>
             </div>
             <Button type="submit" disabled={submitting}>Create Team Member</Button>
@@ -358,7 +364,7 @@ function RoleSelect({ value, roles, onChange }: { value: CaseRole; roles: CaseRo
 }
 
 function ClearanceSelect({ value, onChange }: { value: ClearanceLevel; onChange: (value: ClearanceLevel) => void }) {
-  return <select value={value} onChange={(event) => onChange(event.target.value as ClearanceLevel)} className="rounded-control border border-card-border bg-canvas px-3 py-2 text-sm text-text">{CLEARANCES.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+  return <select aria-label="Clearance" value={value} onChange={(event) => onChange(event.target.value as ClearanceLevel)} className="rounded-control border border-card-border bg-canvas px-3 py-2 text-sm text-text">{CLEARANCES.map((item) => <option key={item} value={item}>{CLEARANCE_LABEL[item]}</option>)}</select>
 }
 
 function MemberRow({ member, isCurrentUser, roles, disabled, onSave, onDeactivate }: { member: CaseMemberDetailView; isCurrentUser: boolean; roles: CaseRole[]; disabled: boolean; onSave: (member: CaseMemberDetailView, role: CaseRole, clearance: ClearanceLevel) => Promise<void>; onDeactivate: (member: CaseMemberDetailView) => Promise<void> }) {

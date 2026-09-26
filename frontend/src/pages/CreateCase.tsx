@@ -9,9 +9,9 @@ import type { ClearanceLevel } from '../lib/api/types'
 import { useAuthStore } from '../lib/auth/store'
 
 const CLASSIFICATIONS: { value: ClearanceLevel; label: string; description: string }[] = [
-  { value: 'restricted', label: 'Restricted', description: 'Lowest clearance requirement.' },
-  { value: 'confidential', label: 'Confidential', description: 'Standard case-sensitive material.' },
-  { value: 'secret', label: 'Secret', description: 'Highest clearance requirement.' },
+  { value: 'restricted', label: 'Standard', description: 'Normal investigation data.' },
+  { value: 'confidential', label: 'Sensitive', description: 'Limited-access case data.' },
+  { value: 'secret', label: 'Highly Sensitive', description: 'Highest-protection case data.' },
 ]
 
 /**

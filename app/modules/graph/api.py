@@ -22,6 +22,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.contracts.evidence import EvidenceClassification
 from app.core.config import Settings, get_settings
 from app.core.pagination import (
     CursorError,
@@ -37,7 +38,11 @@ from app.modules.access_control.dependencies import (
     require_hypothesis_propose,
     require_review_decision,
 )
-from app.modules.access_control.models import AuthorizedCasePrincipal
+from app.modules.access_control.models import (
+    AuthorizedCasePrincipal,
+    ClearanceLevel,
+    clearance_satisfies,
+)
 from app.modules.access_control.notes_repository import CaseNoteRepository
 from app.modules.graph.dependencies import (
     get_candidate_review_repository,
@@ -121,6 +126,29 @@ router = APIRouter(prefix="/api/v1/cases", tags=["graph"])
 DEFAULT_INTEGRATION_LIMIT = 50
 MAX_INTEGRATION_LIMIT = 200
 
+_EVIDENCE_CLEARANCE: dict[EvidenceClassification, ClearanceLevel | None] = {
+    EvidenceClassification.UNCLASSIFIED: None,
+    EvidenceClassification.RESTRICTED: ClearanceLevel.RESTRICTED,
+    EvidenceClassification.CONFIDENTIAL: ClearanceLevel.CONFIDENTIAL,
+    EvidenceClassification.SECRET: ClearanceLevel.SECRET,
+}
+
+
+def _can_view_evidence_classification(
+    principal: AuthorizedCasePrincipal, classification: str
+) -> bool:
+    """Apply the same per-evidence clearance boundary to graph provenance.
+
+    These source-specific graph routes can otherwise reveal an OCR span,
+    transcript timestamp, or extracted entity even when the underlying
+    evidence stream is correctly denied.
+    """
+    try:
+        required = _EVIDENCE_CLEARANCE[EvidenceClassification(classification)]
+    except (KeyError, ValueError):
+        return False
+    return required is None or clearance_satisfies(principal.membership.clearance, required)
+
 
 def _integration_unavailable() -> HTTPException:
     """A fixed public failure for PostgreSQL-backed graph reads.
@@ -194,6 +222,8 @@ async def get_evidence_observations(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="graph service temporarily unavailable",
         ) from exc
+    if not _can_view_evidence_classification(principal, provenance.evidence.classification):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
     return evidence_observations_response(provenance)
 
 
@@ -221,6 +251,10 @@ async def get_observation_provenance_view(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="graph service temporarily unavailable",
         ) from exc
+    if provenance.evidence is None or not _can_view_evidence_classification(
+        principal, provenance.evidence.classification
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
     return observation_provenance_response(provenance)
 
 

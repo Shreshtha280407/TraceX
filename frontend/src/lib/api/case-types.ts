@@ -138,6 +138,41 @@ export interface JobView {
   observation_count: number
   last_error_code: string | null
   last_error_message: string | null
+  latest_progress: {
+    stage: string
+    units_total: number | null
+    units_completed: number
+    observations_emitted: number
+    batch_sequence: number
+    message_code: string | null
+    occurred_at: string
+  } | null
+  progress_percent: number | null
+  current_stage: string
+  started_at: string | null
+}
+
+export interface EvidenceLibraryItem {
+  evidence: EvidenceView
+  job: JobView | null
+  preview: string | null
+  searchable: boolean
+  uploader_display_name: string | null
+}
+
+export interface EvidenceLibraryResponse {
+  items: EvidenceLibraryItem[]
+  next_offset: number | null
+}
+
+export interface EvidenceLibraryFilters {
+  query?: string
+  source_type?: SourceType
+  processing_status?: EvidenceProcessingStatus
+  classification?: EvidenceClassification
+  uploaded_by?: string
+  limit?: number
+  offset?: number
 }
 
 export interface EvidenceUploadResponse {
