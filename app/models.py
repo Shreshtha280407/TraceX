@@ -149,6 +149,42 @@ class GraphSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SyntheticReviewSeed(Base):
+    """Explicitly synthetic evaluation context; never an attribution record."""
+
+    __tablename__ = "synthetic_review_seeds"
+    __table_args__ = (UniqueConstraint("snapshot_id", "seed_entity_ref", "seed_reason", name="uq_snapshot_seed"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    seed_entity_ref: Mapped[str] = mapped_column(String(512), index=True)
+    seed_reason: Mapped[str] = mapped_column(Text)
+    synthetic: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeatureRecord(Base):
+    """Frozen, case/snapshot-scoped address-time-window feature row."""
+
+    __tablename__ = "feature_records"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "entity_ref", "window_start", "window_end", name="uq_snapshot_feature_window"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    graph_snapshot_id: Mapped[str] = mapped_column(ForeignKey("graph_snapshots.id", ondelete="CASCADE"), index=True)
+    entity_ref: Mapped[str] = mapped_column(String(512), index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    feature_schema_version: Mapped[str] = mapped_column(String(64))
+    feature_vector: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class FindingRecord(Base):
     __tablename__ = "findings"
     __table_args__ = (

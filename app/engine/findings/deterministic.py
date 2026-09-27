@@ -14,15 +14,86 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.graph.builder import _facts
+from app.engine.motifs.deterministic import (
+    detect_coinjoin_like_transactions,
+    detect_peeling_chains,
+    propagate_synthetic_review_seeds,
+)
 from app.events import append_event
-from app.models import FindingRecord, GraphSnapshot, Snapshot
+from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed
 
 RULE_VERSION = "deterministic-v1"
+FEATURE_SCHEMA_VERSION = "phase4.1-feature-v1"
 WINDOW_SECONDS = (15 * 60, 60 * 60, 24 * 60 * 60)
 COLLECTION_MIN_SOURCE_TRANSACTIONS = 3
 HUB_MIN_SOURCE_TRANSACTIONS = 4
 RAPID_MIN_INBOUND_TRANSACTIONS = 3
 RAPID_MAX_DELAY_SECONDS = 60 * 60
+
+
+def _phase41_defaults() -> dict[str, Any]:
+    """All frozen Phase 4.1 fields appear on every address-window row."""
+    return {
+        "peeling_chain_score": 0.0,
+        "peeling_chain_length": 0,
+        "peeling_chain_total_duration_sec": 0.0,
+        "peeling_chain_evidence_count": 0,
+        "coinjoin_like_score": 0.0,
+        "equal_output_count": 0,
+        "equal_output_value_sats": None,
+        "coinjoin_like_evidence_count": 0,
+        "risk_propagation_score": 0.0,
+        "risk_seed_distance": None,
+        "risk_path_evidence_count": 0,
+        "risk_seed_count": 0,
+    }
+
+
+def _signal_feature(signal: dict[str, Any]) -> dict[str, Any]:
+    """Translate a detector result into the eight frozen flat features."""
+    values = _phase41_defaults()
+    if signal["finding_type"] == "peeling_chain_candidate":
+        values.update(
+            {
+                "peeling_chain_score": signal["score"],
+                "peeling_chain_length": signal["hop_count"],
+                "peeling_chain_total_duration_sec": signal["total_duration_sec"],
+                "peeling_chain_evidence_count": len(signal["evidence_refs"]),
+            }
+        )
+    elif signal["finding_type"] == "coinjoin_like_structure":
+        values.update(
+            {
+                "coinjoin_like_score": signal["score"],
+                "equal_output_count": signal["equal_output_count"],
+                "equal_output_value_sats": signal["equal_output_value_sats"],
+                "coinjoin_like_evidence_count": len(signal["evidence_refs"]),
+            }
+        )
+    elif signal["finding_type"] == "synthetic_seed_proximity":
+        values.update(
+            {
+                "risk_propagation_score": signal["score"],
+                "risk_seed_distance": signal["risk_seed_distance"],
+                "risk_path_evidence_count": len(signal["evidence_refs"]),
+                "risk_seed_count": signal["risk_seed_count"],
+            }
+        )
+    return values
+
+
+def _merge_signal_features(current: dict[str, Any], signal: dict[str, Any]) -> None:
+    """Use the strongest transparent result per detector family for a row."""
+    incoming = _signal_feature(signal)
+    if incoming["peeling_chain_score"] >= current["peeling_chain_score"]:
+        for key in ("peeling_chain_score", "peeling_chain_length", "peeling_chain_total_duration_sec", "peeling_chain_evidence_count"):
+            current[key] = incoming[key]
+    if incoming["coinjoin_like_score"] >= current["coinjoin_like_score"]:
+        for key in ("coinjoin_like_score", "equal_output_count", "equal_output_value_sats", "coinjoin_like_evidence_count"):
+            current[key] = incoming[key]
+    if incoming["risk_propagation_score"] >= current["risk_propagation_score"]:
+        for key in ("risk_propagation_score", "risk_seed_distance", "risk_path_evidence_count", "risk_seed_count"):
+            current[key] = incoming[key]
 
 
 def _time(value: str | None) -> datetime | None:
@@ -150,7 +221,7 @@ def _window_features(
 
 def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot, graph: GraphSnapshot) -> int:
     """Store deterministic address/window observations exactly once for a snapshot."""
-    if session.scalar(select(FindingRecord.id).where(FindingRecord.snapshot_id == snapshot.id).limit(1)):
+    if session.scalar(select(FeatureRecord.id).where(FeatureRecord.snapshot_id == snapshot.id).limit(1)):
         return 0
     records = _facts(session, evidence_root, snapshot.id)
     transactions = {fact["txid"]: fact for fact in records["transactions"]}
@@ -187,6 +258,53 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                 rapid_events[(str(address), seconds, start)].append((tx_input, previous, delay))
     candidates: list[dict[str, Any]] = []
     coverage = _coverage(graph, transactions)
+    signal_by_key: dict[tuple[str, int, datetime], list[dict[str, Any]]] = defaultdict(list)
+
+    def add_signal(address: str | None, observed: datetime | None, signal: dict[str, Any], output: dict[str, Any] | None = None) -> None:
+        if not address or not observed:
+            return
+        for seconds in WINDOW_SECONDS:
+            start, _ = _window(observed, seconds)
+            key = (str(address), seconds, start)
+            if output is not None and output not in output_events[key]:
+                # A detector can key a row to the verified spend time; preserve
+                # the actual output fact rather than inventing a transfer.
+                output_events[key].append(output)
+            signal_by_key[key].append(signal)
+
+    peeling = detect_peeling_chains(transactions=transactions, inputs=records["inputs"], outputs=records["outputs"])
+    coinjoin = detect_coinjoin_like_transactions(
+        transactions=transactions, inputs=records["inputs"], outputs=records["outputs"]
+    )
+    seed_rows = list(
+        session.scalars(
+            select(SyntheticReviewSeed).where(
+                SyntheticReviewSeed.case_id == snapshot.case_id, SyntheticReviewSeed.snapshot_id == snapshot.id
+            )
+        )
+    )
+    propagation = propagate_synthetic_review_seeds(
+        seeds=[
+            {"id": seed.id, "seed_entity_ref": seed.seed_entity_ref, "seed_reason": seed.seed_reason, "synthetic": seed.synthetic}
+            for seed in seed_rows
+        ],
+        transactions=transactions,
+        inputs=records["inputs"],
+        outputs=records["outputs"],
+    )
+    for signal in peeling:
+        origin = signal["output_ids"][0].removeprefix("out:").rsplit(":", 1)
+        output = outputs_by_outpoint[(origin[0], int(origin[1]))]
+        add_signal(output.get("address") or output.get("script_id"), transaction_times.get(signal["transaction_ids"][0]), signal, output)
+    for signal in coinjoin:
+        for output in outputs_by_tx.get(signal["transaction_id"], []):
+            add_signal(output.get("address") or output.get("script_id"), transaction_times.get(signal["transaction_id"]), signal, output)
+    for signal in propagation:
+        address = signal["entity_ref"].removeprefix("address:")
+        for output in [item for item in records["outputs"] if (item.get("address") or item.get("script_id")) == address]:
+            add_signal(address, transaction_times.get(output["txid"]), signal, output)
+
+    features_by_key: dict[tuple[str, int, datetime], dict[str, Any]] = {}
     for (address, seconds, start), outputs in output_events.items():
         distinct_transactions = {output["txid"] for output in outputs}
         rapid = rapid_events.get((address, seconds, start), [])
@@ -204,6 +322,10 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             "rapid_redistribution_min_inbound_transactions": RAPID_MIN_INBOUND_TRANSACTIONS,
             "rapid_redistribution_max_delay_seconds": RAPID_MAX_DELAY_SECONDS,
         }
+        feature.update(_phase41_defaults())
+        for signal in signal_by_key.get((address, seconds, start), []):
+            _merge_signal_features(feature, signal)
+        features_by_key[(address, seconds, start)] = feature
         if len(distinct_transactions) >= COLLECTION_MIN_SOURCE_TRANSACTIONS:
             candidates.append(
                 {
@@ -283,6 +405,50 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                 "facts": [fact for event in events for fact in event[:2]],
             }
         )
+    # Detector finding records are separate from the address-window export but
+    # share its snapshot, graph, source locators, coverage, and explanation.
+    for signal in [*peeling, *coinjoin, *propagation]:
+        if signal["finding_type"] == "peeling_chain_candidate":
+            txid = signal["transaction_ids"][0]
+            observed = transaction_times.get(txid)
+            address = signal["entity_ref"].removeprefix("address:")
+            key = (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
+        elif signal["finding_type"] == "coinjoin_like_structure":
+            txid = signal["transaction_id"]
+            observed = transaction_times.get(txid)
+            key = None
+            address = None
+        else:
+            address = signal["entity_ref"].removeprefix("address:")
+            matching = [key for key in features_by_key if key[0] == address]
+            key = min(matching, key=lambda item: item[2]) if matching else None
+            observed = key[2] if key else None
+        start = key[2] if key else (_window(observed, WINDOW_SECONDS[0])[0] if observed else datetime(1970, 1, 1, tzinfo=UTC))
+        feature = dict(features_by_key[key]) if key in features_by_key else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
+        feature.update(_signal_feature(signal))
+        feature["detector_result"] = {
+            "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
+            "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal.get("graph_path"),
+        }
+        candidates.append(
+            {
+                "entity_ref": signal["entity_ref"], "start": start, "end": start + timedelta(seconds=WINDOW_SECONDS[0]),
+                "rule_id": signal["finding_type"], "score": signal["score"], "feature": feature,
+                "explanations": [signal["explanation"]],
+                "alternatives": ["This deterministic review signal has benign explanations and does not establish ownership, origin, or wrongdoing."],
+                "facts": [], "source_refs": signal["evidence_refs"], "coverage": {**coverage, **signal["coverage"]},
+            }
+        )
+    for (address, seconds, start), feature in features_by_key.items():
+        facts = output_events[(address, seconds, start)]
+        session.add(
+            FeatureRecord(
+                case_id=snapshot.case_id, snapshot_id=snapshot.id, graph_snapshot_id=graph.id,
+                entity_ref=f"address:{address}", window_start=start, window_end=start + timedelta(seconds=seconds),
+                feature_schema_version=FEATURE_SCHEMA_VERSION, feature_vector=feature, coverage=coverage,
+                source_refs=_dedupe_refs(facts),
+            )
+        )
     candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
     for rank, candidate in enumerate(candidates, 1):
         feature_hash = _hash(candidate["feature"])
@@ -298,11 +464,11 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                 rule_version=RULE_VERSION,
                 claim=(
                     f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
-                    f"{candidate['feature']['window_seconds']}-second window; prioritize it for reviewer assessment."
+                    f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
                 ),
                 raw_score=candidate["score"],
                 rank=rank,
-                coverage=coverage,
+                coverage=candidate.get("coverage", coverage),
                 feature_vector=candidate["feature"],
                 feature_vector_hash=feature_hash,
                 explanations=candidate["explanations"],
@@ -317,7 +483,7 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                         "source_refs": [],
                     }
                 ],
-                source_refs=_dedupe_refs(candidate["facts"]),
+                source_refs=candidate.get("source_refs", _dedupe_refs(candidate["facts"])),
                 status="open",
             )
         )
@@ -335,3 +501,70 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             },
         )
     return len(candidates)
+
+
+def refresh_synthetic_seed_proximity(
+    session: Session, *, evidence_root, snapshot: Snapshot, graph: GraphSnapshot
+) -> int:
+    """Materialize synthetic-seed context after an authorised seed is added.
+
+    Seeds are intentionally supplied after a completed snapshot is available,
+    so this updates only the frozen snapshot's feature rows and adds missing
+    review findings. Existing score paths are never used to create graph edges.
+    """
+    records = _facts(session, evidence_root, snapshot.id)
+    transactions = {fact["txid"]: fact for fact in records["transactions"]}
+    seeds = list(
+        session.scalars(
+            select(SyntheticReviewSeed).where(
+                SyntheticReviewSeed.case_id == snapshot.case_id, SyntheticReviewSeed.snapshot_id == snapshot.id
+            )
+        )
+    )
+    signals = propagate_synthetic_review_seeds(
+        seeds=[{"id": item.id, "seed_entity_ref": item.seed_entity_ref, "seed_reason": item.seed_reason, "synthetic": item.synthetic} for item in seeds],
+        transactions=transactions, inputs=records["inputs"], outputs=records["outputs"],
+    )
+    rows = list(session.scalars(select(FeatureRecord).where(FeatureRecord.snapshot_id == snapshot.id)))
+    updated = 0
+    for signal in signals:
+        for row in rows:
+            if row.entity_ref != signal["entity_ref"]:
+                continue
+            vector = dict(row.feature_vector)
+            _merge_signal_features(vector, signal)
+            vector["synthetic_seed_proximity"] = {
+                "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"], "explanation": signal["explanation"],
+                "evidence_refs": signal["evidence_refs"], "graph_path": signal["graph_path"],
+            }
+            row.feature_vector = vector
+            updated += 1
+        existing = session.scalar(
+            select(FindingRecord.id).where(
+                FindingRecord.snapshot_id == snapshot.id,
+                FindingRecord.entity_ref == signal["entity_ref"],
+                FindingRecord.rule_id == signal["finding_type"],
+            ).limit(1)
+        )
+        if existing is not None:
+            continue
+        start = min((row.window_start for row in rows if row.entity_ref == signal["entity_ref"]), default=datetime(1970, 1, 1, tzinfo=UTC))
+        feature = {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_signal_feature(signal), "detector_result": {
+            "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
+            "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal["graph_path"],
+        }}
+        session.add(
+            FindingRecord(
+                case_id=snapshot.case_id, snapshot_id=snapshot.id, graph_snapshot_id=graph.id, entity_ref=signal["entity_ref"],
+                window_start=start, window_end=start + timedelta(seconds=WINDOW_SECONDS[0]), rule_id=signal["finding_type"],
+                rule_version=RULE_VERSION, claim="Observed synthetic evaluation seed proximity through verified UTXO relationships; requires review.",
+                raw_score=signal["score"], rank=None, coverage={**_coverage(graph, transactions), **signal["coverage"]}, feature_vector=feature,
+                feature_vector_hash=_hash(feature), explanations=[signal["explanation"]],
+                benign_alternatives=["Synthetic review context is evaluation-only and is not an ownership or illicit-attribution claim."],
+                opposing_evidence=[{"kind": "synthetic_context", "statement": "This score is produced only from an explicitly synthetic review seed.", "source_refs": []}],
+                source_refs=signal["evidence_refs"], status="open",
+            )
+        )
+    if signals:
+        append_event(session, case_id=snapshot.case_id, event_type="finding.updated", stage="findings_ready", payload={"snapshot_id": snapshot.id, "finding_count": len(signals), "method": RULE_VERSION, "ml_enabled": False, "synthetic_seed_context": True})
+    return updated

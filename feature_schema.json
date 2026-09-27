@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX Phase 4.1 frozen address-time-window feature schema",
+  "type": "object",
+  "required": [
+    "peeling_chain_score", "peeling_chain_length", "peeling_chain_total_duration_sec", "peeling_chain_evidence_count",
+    "coinjoin_like_score", "equal_output_count", "equal_output_value_sats", "coinjoin_like_evidence_count",
+    "risk_propagation_score", "risk_seed_distance", "risk_path_evidence_count", "risk_seed_count"
+  ],
+  "properties": {
+    "peeling_chain_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "peeling_chain_length": {"type": "integer", "minimum": 0},
+    "peeling_chain_total_duration_sec": {"type": "number", "minimum": 0},
+    "peeling_chain_evidence_count": {"type": "integer", "minimum": 0},
+    "coinjoin_like_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "equal_output_count": {"type": "integer", "minimum": 0},
+    "equal_output_value_sats": {"type": ["integer", "null"], "minimum": 0},
+    "coinjoin_like_evidence_count": {"type": "integer", "minimum": 0},
+    "risk_propagation_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "risk_seed_distance": {"type": ["integer", "null"], "minimum": 0},
+    "risk_path_evidence_count": {"type": "integer", "minimum": 0},
+    "risk_seed_count": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

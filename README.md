@@ -1,6 +1,6 @@
 # TraceX
 
-Offline, case-scoped Bitcoin-intelligence backend. **Phases 0–4** are implemented: frozen contract/fixture, case-scoped upload/jobs, receipt-approved bulk ingestion, a correct UTXO graph, and deterministic reviewable findings. ML has not started.
+Offline, case-scoped Bitcoin-intelligence backend. **Phases 0–4.1** are implemented: frozen contract/fixture, case-scoped upload/jobs, receipt-approved bulk ingestion, a correct UTXO graph, and deterministic reviewable findings including bounded peeling-chain, CoinJoin-like structure, and synthetic-review-seed context. ML has not started.
 
 ## Phase 0 quick check
 

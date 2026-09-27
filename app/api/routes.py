@@ -18,6 +18,7 @@ from app.auth.dependencies import current_user, require_case_member
 from app.config import settings
 from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
+from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphQueryError, query_neighbourhood
 from app.events import append_event, event_envelope
 from app.jobs.service import create_or_reuse_job, job_view
@@ -27,10 +28,13 @@ from app.models import (
     CaseEvent,
     CaseMembership,
     EvidenceSource,
+    FeatureRecord,
     FindingRecord,
     GraphSnapshot,
     ImportJob,
     ReviewDecisionRecord,
+    Snapshot,
+    SyntheticReviewSeed,
     User,
     WorkerHeartbeat,
 )
@@ -54,6 +58,21 @@ class ReviewCreate(BaseModel):
     disposition: str = Field(pattern="^(open|triaged|dismissed|escalated|needs_data_review)$")
     reason: str = Field(min_length=1, max_length=2000)
     counterevidence_refs: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class SyntheticReviewSeedCreate(BaseModel):
+    """Synthetic-only context for deterministic evaluation, never attribution."""
+
+    seed_snapshot_id: str = Field(min_length=1, max_length=128)
+    seed_entity_id: str | None = Field(default=None, min_length=1, max_length=512)
+    seed_address_id: str | None = Field(default=None, min_length=1, max_length=512)
+    seed_reason: str = Field(min_length=1, max_length=2000)
+
+    def entity_ref(self) -> str:
+        value = self.seed_entity_id or self.seed_address_id
+        if not value or (self.seed_entity_id and self.seed_address_id):
+            raise ValueError("provide exactly one of seed_entity_id or seed_address_id")
+        return value if value.startswith("address:") else f"address:{value}"
 
 
 def case_view(case: Case) -> dict:
@@ -277,12 +296,65 @@ def get_graph(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/cases/{case_id}/synthetic-review-seeds", status_code=status.HTTP_201_CREATED)
+def create_synthetic_review_seed(
+    case_id: str,
+    body: SyntheticReviewSeedCreate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Add explicit synthetic evaluation context to one completed case snapshot."""
+    case = require_case_member(case_id, user, session)
+    if not case.synthetic:
+        raise HTTPException(status_code=422, detail="Synthetic review seeds are allowed only in synthetic evaluation/demo cases")
+    snapshot = session.get(Snapshot, body.seed_snapshot_id)
+    if snapshot is None or snapshot.case_id != case_id or snapshot.state != "complete":
+        raise HTTPException(status_code=422, detail="seed_snapshot_id must name a completed snapshot in this case")
+    graph = session.scalar(select(GraphSnapshot).where(GraphSnapshot.snapshot_id == snapshot.id, GraphSnapshot.state == "complete"))
+    if graph is None:
+        raise HTTPException(status_code=409, detail="No completed graph snapshot is available for this seed snapshot")
+    try:
+        entity_ref = body.entity_ref()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    seed = session.scalar(
+        select(SyntheticReviewSeed).where(
+            SyntheticReviewSeed.snapshot_id == snapshot.id,
+            SyntheticReviewSeed.seed_entity_ref == entity_ref,
+            SyntheticReviewSeed.seed_reason == body.seed_reason,
+        )
+    )
+    if seed is None:
+        seed = SyntheticReviewSeed(
+            case_id=case_id, snapshot_id=snapshot.id, seed_entity_ref=entity_ref, seed_reason=body.seed_reason,
+            synthetic=True, created_by=user.id,
+        )
+        session.add(seed)
+        session.flush()
+        refresh_synthetic_seed_proximity(session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph)
+        session.add(
+            AuditRecord(
+                case_id=case_id, actor_id=user.id, action="synthetic_review_seed.created", target_type="synthetic_review_seed",
+                target_id=seed.id, detail={"snapshot_id": snapshot.id, "seed_entity_ref": entity_ref, "synthetic": True},
+            )
+        )
+        session.commit()
+    return {
+        "synthetic_review_seed_id": seed.id, "seed_entity_id": seed.seed_entity_ref, "seed_reason": seed.seed_reason,
+        "seed_snapshot_id": seed.snapshot_id, "synthetic": True,
+    }
+
+
 def finding_view(finding: FindingRecord) -> dict:
+    detector = (finding.feature_vector or {}).get("detector_result", {})
     return {
         "finding_id": finding.id,
+        "finding_type": finding.rule_id,
         "finding_version": finding.finding_version,
         "case_id": finding.case_id,
         "snapshot_id": finding.snapshot_id,
+        "graph_snapshot_id": finding.graph_snapshot_id,
+        "entity_or_transaction_id": finding.entity_ref,
         "entity_ref": finding.entity_ref,
         "window_start": finding.window_start.isoformat(),
         "window_end": finding.window_end.isoformat(),
@@ -290,12 +362,19 @@ def finding_view(finding: FindingRecord) -> dict:
         "rule_version": finding.rule_version,
         "claim": finding.claim,
         "raw_score": finding.raw_score,
+        "score": finding.raw_score,
         "rank": finding.rank,
         "coverage": finding.coverage,
+        "uncertainty": detector.get("uncertainty", {"scope": "See coverage and source evidence."}),
+        "reason_codes": detector.get("reason_codes", []),
+        "explanation": detector.get("explanation", finding.explanations[0] if finding.explanations else finding.claim),
+        "evidence_refs": detector.get("evidence_refs", finding.source_refs),
+        "graph_path": detector.get("graph_path"),
         "feature_vector_hash": finding.feature_vector_hash,
         "explanations": finding.explanations,
         "benign_alternatives": finding.benign_alternatives,
         "opposing_evidence": finding.opposing_evidence,
+        "source_refs": finding.source_refs,
         "status": finding.status,
     }
 
@@ -418,6 +497,36 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
                 "audit_history": finding_audit_history(session, finding.id),
             }
             for finding in findings
+        ],
+    }
+
+
+@router.get("/cases/{case_id}/features/export")
+def export_features(
+    case_id: str,
+    snapshot_id: str | None = Query(default=None, min_length=1, max_length=128),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Export every persisted address-plus-time-window feature row for Phase 5A handoff."""
+    require_case_member(case_id, user, session)
+    statement = select(FeatureRecord).where(FeatureRecord.case_id == case_id)
+    if snapshot_id:
+        statement = statement.where(FeatureRecord.snapshot_id == snapshot_id)
+    rows = list(session.scalars(statement.order_by(FeatureRecord.snapshot_id, FeatureRecord.window_start, FeatureRecord.entity_ref)))
+    return {
+        "case_id": case_id,
+        "snapshot_id": snapshot_id,
+        "feature_schema_version": "phase4.1-feature-v1",
+        "ml_enabled": False,
+        "rows": [
+            {
+                "feature_row_id": row.id, "entity_ref": row.entity_ref, "snapshot_id": row.snapshot_id,
+                "graph_snapshot_id": row.graph_snapshot_id, "window_start": row.window_start.isoformat(),
+                "window_end": row.window_end.isoformat(), "coverage": row.coverage, "source_refs": row.source_refs,
+                "features": row.feature_vector,
+            }
+            for row in rows
         ],
     }
 

@@ -31,3 +31,13 @@ make phase-four
 ```
 
 This runs Phase 1–4 unit/integration coverage. `make phase-two-100k` remains the synthetic 100,000-transaction ingestion and graph scale check; it can also be run after Phase 4 because findings are derived in the same background completion path.
+
+## Phase 4.1 graph-intelligence extension
+
+Phase 4.1 adds three bounded deterministic review signals to the same receipt-approved snapshot:
+
+- `peeling_chain_candidate` follows only `output -> SPENT_BY -> transaction -> CREATES_OUTPUT` chains. A continuation must be a real output that is later uniquely spent; default maximum depth is eight and default minimum chain is three verified spends. Its normalized score averages bounded verified-hop extent, strict value reduction regularity, timestamp continuity, and evidence coverage.
+- `coinjoin_like_structure` is an observable shape only: by default at least three inputs, three outputs, and three equal-valued output candidates, with configurable satoshi tolerance. It does not call a transaction CoinJoin or mixing activity.
+- `synthetic_seed_proximity` is available only from an explicit synthetic-case seed and traverses verified UTXO relationships downstream at most two transaction hops with `0.60` decay per hop. It never traverses IP/endpoint observation edges, never creates an ownership link, and distinguishes the direct seed from propagated context.
+
+Each result exposes `finding_id`, `finding_type`, `entity_or_transaction_id`, `snapshot_id`, `graph_snapshot_id`, `score`, coverage, uncertainty, reason codes, explanation, evidence references, and a graph path where applicable. The feature dataset is exported through `GET /v1/cases/{case_id}/features/export`; its Phase 5A contract is [phase5a_handoff.md](phase5a_handoff.md). No dashboard exists in this backend-only repository, so the API returns an empty `findings`/`rows` list when no result is present.
