@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "generator_version": "1.0.0",
+  "seed": "tracex-demo-100k-v1",
+  "case_id": "case-demo-100k-v1",
+  "network": "bitcoin-regtest",
+  "transaction_count": 100000,
+  "funding_outpoint_count": 256,
+  "duplicate_record_count": 100,
+  "network_observation_count": 500,
+  "description": "Synthetic deterministic UTXO fixture. It is not official SIH data and contains no real attribution labels."
+}

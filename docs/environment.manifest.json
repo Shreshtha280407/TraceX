@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "captured_at": "2026-09-27",
+  "offline_runtime_contract": {
+    "network_required_at_runtime": false,
+    "dependency_policy": "Dependencies and compatible wheels/images must be pinned and made available before an offline replay.",
+    "phase_zero_dependencies": ["python>=3.11 standard library only"]
+  },
+  "observed_host": {
+    "os": "Arch Linux",
+    "kernel": "7.2.4-arch1-2",
+    "architecture": "x86_64",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13420H",
+    "physical_cores": 8,
+    "logical_cpus": 12,
+    "memory_gib": 15,
+    "swap_gib": 15,
+    "workspace_free_gib_observed": 24,
+    "gpu_detected": "NVIDIA AD107M [GeForce RTX 4050 Max-Q / Mobile]",
+    "gpu_runtime_status": "unavailable: nvidia-smi could not communicate with the driver",
+    "python": "3.14.7"
+  },
+  "limits": {
+    "mac_36_gib_profile_verified_on_this_host": false,
+    "cuda_enabled": false,
+    "maximum_supported_bulk_scale_claim": "unmeasured"
+  }
+}

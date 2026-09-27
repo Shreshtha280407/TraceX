@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "name", "created_at", "synthetic"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "synthetic": {"type": "boolean"},
+    "authority_note": {"type": ["string", "null"]},
+    "retention_policy_ref": {"type": ["string", "null"]}
+  }
+}

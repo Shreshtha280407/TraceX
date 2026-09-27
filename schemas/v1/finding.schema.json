@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX finding v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "case_id", "finding_id", "finding_version", "entity_ref", "window_start", "window_end", "snapshot_id", "feature_vector_hash", "method_digest", "raw_score", "rank", "coverage", "explanations", "source_refs"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "finding_id": {"type": "string", "minLength": 1}, "finding_version": {"type": "integer", "minimum": 1},
+    "entity_ref": {"type": "string", "minLength": 1}, "window_start": {"type": "string", "format": "date-time"}, "window_end": {"type": "string", "format": "date-time"}, "snapshot_id": {"type": "string", "minLength": 1},
+    "feature_vector_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "method_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "raw_score": {"type": ["number", "null"]}, "rank": {"type": ["integer", "null"], "minimum": 1},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["complete", "notes"], "properties": {"complete": {"type": "boolean"}, "notes": {"type": "array", "items": {"type": "string"}}}},
+    "explanations": {"type": "array", "items": {"type": "string"}}, "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "common.schema.json#/$defs/source_ref"}}
+  },
+  "description": "A review priority/finding. Its score is never a probability of illegality."
+}

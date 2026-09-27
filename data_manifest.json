@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-09-27",
+  "sources": [
+    {
+      "source_id": "src-demo-100k-config",
+      "kind": "synthetic_fixture_specification",
+      "path": "fixtures/demo_100k/fixture_config.json",
+      "sha256": "4e72c3ef3405316987a109d0eca448ee0278058d1248f8df755113cf0420103c",
+      "bytes": 423,
+      "format": "json",
+      "authority_or_licence": "TraceX synthetic demonstration specification; not official SIH material.",
+      "labels": "Evaluation-only truth is stored separately and must not enter an import.",
+      "time_meanings": "Synthetic transaction block_time and synthetic observer_received_at are distinct UTC values.",
+      "outpoint_availability": "Generated inputs include known prev_txid/prev_vout except the intentional unresolved-outpoint scenario."
+    },
+    {
+      "source_id": "src-sih-ps-linked-material",
+      "kind": "official_dataset_or_specification",
+      "status": "public_minimum_field_list_reviewed_dataset_bytes_pending",
+      "path": "https://drive.google.com/file/d/1J7cAKc0i7KPQRjmMU9uvR1yJb7BVgiMs/view",
+      "sha256": null,
+      "bytes": null,
+      "format": "csv/json/xml expected; exact delivery unverified",
+      "authority_or_licence": null,
+      "labels": "Synthetic dataset model is publicly described; actual labels and their provenance are unverified.",
+      "time_meanings": "Publicly listed timestamp exists; exact meaning/timezone are unverified.",
+      "outpoint_availability": null,
+      "public_minimum_fields": ["timestamp", "src_ip", "dst_ip", "src_port", "dst_port", "txid", "input_addresses[]", "output_addresses[]", "input_amounts[]", "output_amounts[]", "geo_country", "asn"],
+      "required_before_adapter_freeze": ["original bytes and SHA-256", "licence/authority", "actual schema/field meanings", "row count and sizes", "labels and their provenance", "network values", "time semantics/timezone", "outpoint availability"]
+    }
+  ],
+  "fixture_artifact_manifest": "fixtures/demo_100k/fixture_manifest.json"
+}

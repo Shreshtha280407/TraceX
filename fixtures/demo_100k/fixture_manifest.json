@@ -1,0 +1,62 @@
+{
+  "case_id": "case-demo-100k-v1",
+  "config_sha256": "4e72c3ef3405316987a109d0eca448ee0278058d1248f8df755113cf0420103c",
+  "counts": {
+    "duplicate_candidates": 100,
+    "funding_outpoints": 256,
+    "ingestion_rows": 100000,
+    "inputs": 100099,
+    "network_observations": 500,
+    "outputs": 201089,
+    "transactions": 100000
+  },
+  "generated_files": {
+    "duplicate_candidates.ndjson": {
+      "bytes": 45067,
+      "sha256": "eabd1988f7223f6948f214137693d3cd30c9b3419ec4357dd6d10a3d3a8723aa"
+    },
+    "evaluation_truth.json": {
+      "bytes": 39418,
+      "sha256": "ba5ba9e4cecec56c6650f6ed74259a1ed2fa5c27685e7a470f3dd85df48fc336"
+    },
+    "funding_outpoints.ndjson": {
+      "bytes": 133723,
+      "sha256": "45c27994efd5cbfda33861aa9f83ec59e0aed92603a47642b481e676a65c21a9"
+    },
+    "ingestion_rows.ndjson": {
+      "bytes": 43965480,
+      "sha256": "31d049f45a207e6a30a8f31d2c4522f229dd0c4ce6d0058180200711b5656734"
+    },
+    "inputs.ndjson": {
+      "bytes": 58317956,
+      "sha256": "de9957976d2afd165595e847e02057142bd8cf99e93f957fcf125d8361b7174b"
+    },
+    "network_observations.ndjson": {
+      "bytes": 418473,
+      "sha256": "20133c88a621110842b7d41b85692802d94c25a588e46a0e59d30d0bc239d806"
+    },
+    "outputs.ndjson": {
+      "bytes": 112271777,
+      "sha256": "8f352e478d78469b0c51017a30c7ac54e5515239aca3bcfb4a1220d1cd12b2d6"
+    },
+    "transactions.ndjson": {
+      "bytes": 58188890,
+      "sha256": "f8f07f16784fb282a23660e3956db62c301f667dcde6edbe437c40348a113867"
+    }
+  },
+  "generator_version": "1.0.0",
+  "invariants": {
+    "all_fully_known_transactions_conserve_value": true,
+    "canonical_transaction_count": 100000,
+    "duplicate_candidate_count": 100,
+    "exchange_batch_transaction_count": 99,
+    "full_coverage_transaction_count": 99900,
+    "hidden_evaluation_address_count": 491,
+    "hidden_evaluation_transaction_count": 240,
+    "ownership_labels_present_in_public_fixture": false,
+    "unresolved_outpoint_transaction_count": 100
+  },
+  "network": "bitcoin-regtest",
+  "schema_version": "1.0.0",
+  "seed": "tracex-demo-100k-v1"
+}

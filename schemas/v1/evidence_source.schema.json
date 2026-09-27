@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX immutable evidence source v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "evidence_id", "sha256", "byte_size", "original_filename", "format", "parser_version", "acquisition_note", "licence_authority_note", "synthetic"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "evidence_id": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "byte_size": {"type": "integer", "minimum": 0},
+    "original_filename": {"type": "string", "minLength": 1}, "format": {"enum": ["csv", "json", "ndjson", "xml", "parquet", "other"]},
+    "parser_version": {"type": "string", "minLength": 1}, "acquisition_note": {"type": "string", "minLength": 1},
+    "licence_authority_note": {"type": "string", "minLength": 1}, "synthetic": {"type": "boolean"}
+  }
+}

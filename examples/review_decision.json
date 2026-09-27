@@ -1,0 +1,1 @@
+{"schema_version":"1.0.0","case_id":"case-demo-20260927","review_id":"review-demo-001","finding_id":"finding-demo-001","expected_finding_version":1,"actor_id":"reviewer-demo","disposition":"needs_data_review","reason":"Example record: score/model integration is out of scope for Phase 0.","decided_at":"2026-01-01T01:00:00Z","prior_review_id":null,"audit_ref":"audit:demo:001"}

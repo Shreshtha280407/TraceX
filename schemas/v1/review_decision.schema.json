@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX review decision v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "case_id", "review_id", "finding_id", "expected_finding_version", "actor_id", "disposition", "reason", "decided_at", "prior_review_id", "audit_ref"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "review_id": {"type": "string", "minLength": 1}, "finding_id": {"type": "string", "minLength": 1},
+    "expected_finding_version": {"type": "integer", "minimum": 1}, "actor_id": {"type": "string", "minLength": 1}, "disposition": {"enum": ["open", "triaged", "dismissed", "escalated", "needs_data_review"]},
+    "reason": {"type": "string", "minLength": 1}, "decided_at": {"type": "string", "format": "date-time"}, "prior_review_id": {"type": ["string", "null"]}, "audit_ref": {"type": "string", "minLength": 1}
+  }
+}

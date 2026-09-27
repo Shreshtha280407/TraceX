@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+var/
+*.egg-info/
+
+# Reproducible 100K fixture artifacts are generated locally from the pinned config.
+/fixtures/demo_100k/*.ndjson
+/fixtures/demo_100k/evaluation_truth.json

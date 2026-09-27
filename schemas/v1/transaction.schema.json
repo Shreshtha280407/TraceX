@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX transaction v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "network", "txid", "record_variant", "block_hash", "block_height", "block_time", "block_time_original", "fee_sats", "confirmation_status", "source_refs"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "network": {"enum": ["bitcoin-mainnet", "bitcoin-testnet", "bitcoin-regtest", "unknown"]},
+    "txid": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "record_variant": {"type": "string", "minLength": 1},
+    "block_hash": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}, "block_height": {"type": ["integer", "null"], "minimum": 0},
+    "block_time": {"type": ["string", "null"], "format": "date-time"}, "block_time_original": {"type": ["string", "null"]}, "fee_sats": {"type": ["integer", "null"], "minimum": 0},
+    "source_timestamp": {"type": ["string", "null"], "format": "date-time"}, "source_timestamp_original": {"type": ["string", "null"]}, "source_timestamp_meaning": {"enum": ["block_time", "observer_receive", "unknown"]},
+    "confirmation_status": {"enum": ["confirmed", "unconfirmed", "unknown"]},
+    "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "common.schema.json#/$defs/source_ref"}}
+  }
+}

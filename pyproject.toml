@@ -1,0 +1,38 @@
+[project]
+name = "tracex"
+version = "0.1.0"
+description = "Offline, evidence-first Bitcoin intelligence backend"
+requires-python = ">=3.11"
+dependencies = [
+  "defusedxml>=0.7,<1",
+  "duckdb>=1.2,<2",
+  "fastapi>=0.116,<1",
+  "ijson>=3.3,<4",
+  "pyarrow>=18,<24",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy>=2.0.43,<3",
+  "psycopg[binary]>=3.2,<4",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "ruff>=0.12,<1"]
+
+[project.scripts]
+tracex-init-db = "app.db:init_database"
+tracex-worker = "workers.runner:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*", "workers*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

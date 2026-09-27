@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX off-chain network observation v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "case_id", "network", "observation_id", "txid", "observer_id", "src_ip", "dst_ip", "src_port", "dst_port", "endpoint_ip", "endpoint_port", "direction", "geo_country", "asn", "observer_received_at", "observer_time_original", "clock_quality", "capture_scope", "source_refs"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "network": {"type": "string", "minLength": 1}, "observation_id": {"type": "string", "minLength": 1},
+    "txid": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}, "observer_id": {"type": "string", "minLength": 1},
+    "src_ip": {"type": ["string", "null"]}, "dst_ip": {"type": ["string", "null"]}, "src_port": {"type": ["integer", "null"], "minimum": 0, "maximum": 65535}, "dst_port": {"type": ["integer", "null"], "minimum": 0, "maximum": 65535}, "endpoint_ip": {"type": ["string", "null"]}, "endpoint_port": {"type": ["integer", "null"], "minimum": 0, "maximum": 65535}, "geo_country": {"type": ["string", "null"]}, "asn": {"type": ["string", "integer", "null"]},
+    "direction": {"enum": ["seen_from", "seen_to", "unknown"]}, "observer_received_at": {"type": ["string", "null"], "format": "date-time"}, "observer_time_original": {"type": ["string", "null"]},
+    "clock_quality": {"enum": ["trusted", "estimated", "unknown"]}, "capture_scope": {"type": "string", "minLength": 1},
+    "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "common.schema.json#/$defs/source_ref"}}
+  },
+  "description": "A relay/capture observation. It does not prove wallet ownership or transaction origin."
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX reversible candidate link v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "case_id", "candidate_link_id", "left_entity_ref", "right_entity_ref", "proposition", "supporting_refs", "opposing_refs", "method_version", "uncertainty", "review_status"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "case_id": {"type": "string", "minLength": 1}, "candidate_link_id": {"type": "string", "minLength": 1},
+    "left_entity_ref": {"type": "string", "minLength": 1}, "right_entity_ref": {"type": "string", "minLength": 1},
+    "proposition": {"enum": ["possible_common_control", "data_association", "other_reviewable_proposition"]},
+    "supporting_refs": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/source_ref"}}, "opposing_refs": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/source_ref"}},
+    "method_version": {"type": "string", "minLength": 1}, "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+    "review_status": {"enum": ["unreviewed", "supported", "rejected", "needs_more_evidence"]}
+  }
+}

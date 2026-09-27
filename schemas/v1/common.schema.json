@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tracex.local/schemas/v1/common.schema.json",
+  "title": "TraceX v1 common definitions",
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:@/-]+$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "rfc3339": {"type": "string", "format": "date-time"},
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "source_sha256", "locator_type", "locator"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "locator_type": {"enum": ["csv_logical_record", "json_pointer", "xml_element_path", "synthetic"]},
+        "locator": {"type": "string", "minLength": 1},
+        "byte_start": {"type": ["integer", "null"], "minimum": 0},
+        "byte_end": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source_ref"}}
+  }
+}
