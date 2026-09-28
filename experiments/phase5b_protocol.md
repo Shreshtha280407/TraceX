@@ -8,7 +8,7 @@ Status: comparison and selection only. Nothing in this phase touches the product
 - Training seed: `42`, fixed, used for every candidate fit and every stability rerun.
 - Training budget: `600` seconds CPU wall-clock per candidate fit. A candidate that cannot fit within this budget on the reference snapshot is recorded ineligible, not granted more time.
 - Threads: `TRACEX_ML_THREADS` env var, default `min(4, os.cpu_count() or 1)` — a safe bound, not "use every core." Applied to `OMP_NUM_THREADS`/`OPENBLAS_NUM_THREADS` before numpy/sklearn import and passed as `n_jobs=` to both estimators.
-- Memory: peak RSS measured via `resource.getrusage(RUSAGE_SELF).ru_maxrss` (POSIX stdlib, no new dependency), normalized to MB. A run exceeding ~26624MB (26GB) is flagged in its report, not aborted — sized for Aditya's 36GB MacBook leaving ~8GB for macOS itself.
+- Memory: peak RSS measured via `resource.getrusage(RUSAGE_SELF).ru_maxrss` (POSIX stdlib, no new dependency), normalized to MB. The warning threshold is configurable per runner via `TRACEX_ML_RSS_WARNING_MB`; default `24576` (24GB) for Aditya's 32GB MacBook, leaving ~8GB free for macOS itself. A run exceeding the threshold is flagged in its report, not aborted.
 - Hardware: CPU-only. No CUDA, no GPU, no Docker, no cloud/online model server, no Claude Code/Codex dependency at run time. The selected artifact must remain loadable on a 16GB Linux/Arch laptop — recorded python/scikit-learn/numpy versions in the artifact manifest are what a receiving machine checks compatibility against (see `scripts/phase5b_validate_artifact.py`).
 
 ## Frozen feature population
@@ -53,7 +53,7 @@ Evaluate on validation only for comparison/selection; evaluate the final holdout
 
 Select the simplest eligible candidate that:
 1. completed its fit within the 600s budget;
-2. stayed under the ~26GB RSS warning threshold;
+2. stayed under the RSS warning threshold (`TRACEX_ML_RSS_WARNING_MB`, configurable per runner; 24GB default for Aditya's 32GB MacBook);
 3. did not increase benign-FP/1,000 windows over the rule baseline by more than the predeclared margin (2×, or +5 per 1,000 windows, whichever is larger — a fixed rule stated here before any candidate is scored, not chosen after seeing results);
 4. has the best validation Precision@20 among the candidates clearing 1–3, **if** the evaluation join produced a non-empty usable positive set for that metric.
 

@@ -33,7 +33,7 @@ if str(REPO / "scripts") not in sys.path:
 
 import phase5b_prepare_features as prepare
 
-RSS_WARNING_MB = 26624  # ~26GB, leaving ~8GB for macOS on Aditya's 36GB MacBook
+RSS_WARNING_MB = int(os.environ.get("TRACEX_ML_RSS_WARNING_MB", "24576"))  # configurable per runner; 24GB default for Aditya's 32GB MacBook, leaving ~8GB free for macOS
 FIT_BUDGET_SECONDS = 600
 REVIEW_BUDGET = 50
 # Predeclared before any candidate is scored: a candidate must not raise benign FP/1,000
