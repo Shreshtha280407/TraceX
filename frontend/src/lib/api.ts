@@ -1,6 +1,6 @@
 /** Single typed client for the TraceX backend. Every page imports from here — no inline fetch() elsewhere. */
 
-const API_BASE = "http://localhost:8000/v1";
+const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"}/v1`;
 
 export class ApiError extends Error {
   status: number;

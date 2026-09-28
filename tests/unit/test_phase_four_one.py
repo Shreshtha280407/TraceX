@@ -114,6 +114,12 @@ def test_phase41_api_response_shape_feature_export_and_synthetic_seed_isolation(
         motif = next(item for item in listed if item["finding_type"] == "peeling_chain_candidate")
         assert {"finding_id", "finding_type", "entity_or_transaction_id", "snapshot_id", "score", "coverage", "uncertainty", "reason_codes", "explanation", "evidence_refs", "graph_path"} <= set(motif)
         assert 0 <= motif["score"] <= 1
+        coinjoin_motif = next(item for item in listed if item["finding_type"] == "coinjoin_like_structure")
+        coinjoin_evidence = client.get(f"/v1/findings/{coinjoin_motif['finding_id']}/evidence", headers=headers).json()
+        # A coinjoin finding has no single owning address, but it must still borrow the real
+        # address-window feature vector for one of its own outputs, not an near-empty stub.
+        assert {"window_seconds", "in_event_count", "received_output_count"} <= set(coinjoin_evidence["feature_vector"])
+        assert coinjoin_evidence["feature_vector"]["coinjoin_like_score"] > 0
         exported = client.get(f"/v1/cases/{case['case_id']}/features/export", headers=headers).json()
         assert exported["rows"]
         feature = exported["rows"][0]["features"]

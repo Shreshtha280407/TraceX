@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api import routes
 from app.config import Settings
 from app.db import Base, get_session, make_engine
+from app.engine.findings.deterministic import _history_features
 from app.main import app
 from workers import runner
 
@@ -38,6 +40,40 @@ def _client(tmp_path: Path, monkeypatch):
 
 def _tx(number: int) -> str:
     return f"{number:064x}"
+
+
+def test_history_features_surge_and_first_observed_activity() -> None:
+    hour = 3600
+    t1 = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 1, 1, 1, 0, tzinfo=UTC)
+    t3 = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+    output_events = {
+        ("addr-a", hour, t1): [{"txid": _tx(1), "amount_sats": 1000}],
+        ("addr-a", hour, t2): [{"txid": _tx(2), "amount_sats": 1000}, {"txid": _tx(3), "amount_sats": 9000}],
+        ("addr-a", hour, t3): [{"txid": _tx(4), "amount_sats": 500}],
+        ("addr-b", hour, t1): [{"txid": _tx(5), "amount_sats": 5000}],
+    }
+    history = _history_features(output_events)
+
+    first = history[("addr-a", hour, t1)]
+    assert first["first_observed_activity"] is True
+    assert first["prior_window_gap_seconds"] is None
+    assert first["activity_surge_ratio"] is None and first["value_surge_ratio"] is None
+
+    second = history[("addr-a", hour, t2)]
+    assert second["first_observed_activity"] is False
+    assert second["prior_window_gap_seconds"] == 3600
+    assert second["baseline_in_event_count_mean"] == 1
+    assert second["activity_surge_ratio"] == 2  # two distinct txids this window vs baseline of 1
+    assert second["baseline_value_sats_mean"] == 1000
+    assert second["value_surge_ratio"] == 10  # 10,000 sats this window vs baseline of 1,000
+
+    third = history[("addr-a", hour, t3)]
+    assert third["baseline_in_event_count_mean"] == 1.5  # running mean of [1, 2]
+    assert third["activity_surge_ratio"] == 1 / 1.5
+
+    # addr-b's single window is independent of addr-a's history.
+    assert history[("addr-b", hour, t1)]["first_observed_activity"] is True
 
 
 def test_deterministic_findings_are_replayable_and_reviews_are_versioned(tmp_path: Path, monkeypatch) -> None:

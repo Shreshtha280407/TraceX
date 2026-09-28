@@ -177,6 +177,53 @@ def _inter_event_gaps(times: list[datetime]) -> dict[str, float | int | None]:
     }
 
 
+def _history_features(
+    output_events: dict[tuple[str, int, datetime], list[dict]],
+) -> dict[tuple[str, int, datetime], dict[str, Any]]:
+    """Per-address, per-window-size baseline/surge features computed only from that
+    address's own strictly-earlier observed windows in this committed snapshot.
+
+    Never claims "dormancy" — the snapshot has no visibility before its own committed
+    coverage, so a window with no earlier observed activity is `first_observed_activity`,
+    not an assertion the address was previously inactive.
+    """
+    grouped: dict[tuple[str, int], list[datetime]] = defaultdict(list)
+    for address, seconds, start in output_events:
+        grouped[(address, seconds)].append(start)
+    history: dict[tuple[str, int, datetime], dict[str, Any]] = {}
+    for (address, seconds), starts in grouped.items():
+        ordered = sorted(set(starts))
+        running_count_total = 0
+        running_value_total = 0
+        for index, start in enumerate(ordered):
+            key = (address, seconds, start)
+            current_events = len({output["txid"] for output in output_events[key]})
+            current_value = sum(output["amount_sats"] for output in output_events[key])
+            if index == 0:
+                history[key] = {
+                    "first_observed_activity": True,
+                    "prior_window_gap_seconds": None,
+                    "baseline_in_event_count_mean": None,
+                    "activity_surge_ratio": None,
+                    "baseline_value_sats_mean": None,
+                    "value_surge_ratio": None,
+                }
+            else:
+                baseline_count = running_count_total / index
+                baseline_value = running_value_total / index
+                history[key] = {
+                    "first_observed_activity": False,
+                    "prior_window_gap_seconds": (start - ordered[index - 1]).total_seconds(),
+                    "baseline_in_event_count_mean": baseline_count,
+                    "activity_surge_ratio": (current_events / baseline_count) if baseline_count else None,
+                    "baseline_value_sats_mean": baseline_value,
+                    "value_surge_ratio": (current_value / baseline_value) if baseline_value else None,
+                }
+            running_count_total += current_events
+            running_value_total += current_value
+    return history
+
+
 def _window_features(
     *,
     address: str,
@@ -304,6 +351,7 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
         for output in [item for item in records["outputs"] if (item.get("address") or item.get("script_id")) == address]:
             add_signal(address, transaction_times.get(output["txid"]), signal, output)
 
+    history = _history_features(output_events)
     features_by_key: dict[tuple[str, int, datetime], dict[str, Any]] = {}
     for (address, seconds, start), outputs in output_events.items():
         distinct_transactions = {output["txid"] for output in outputs}
@@ -316,6 +364,7 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             rapid_events=rapid,
             outputs_by_tx=outputs_by_tx,
         )
+        feature.update(history[(address, seconds, start)])
         feature["rule_thresholds"] = {
             "concentrated_collection_min_source_transactions": COLLECTION_MIN_SOURCE_TRANSACTIONS,
             "emerging_hub_min_source_transactions": HUB_MIN_SOURCE_TRANSACTIONS,
@@ -414,10 +463,22 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             address = signal["entity_ref"].removeprefix("address:")
             key = (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
         elif signal["finding_type"] == "coinjoin_like_structure":
+            # coinjoin has no single owning address (that's the point of the shape) — its
+            # entity_ref stays transaction-scoped, but the finding still borrows the real
+            # address-window feature vector already computed for one of its own outputs
+            # (via add_signal above) instead of falling back to an near-empty stub.
             txid = signal["transaction_id"]
             observed = transaction_times.get(txid)
             key = None
             address = None
+            if observed:
+                window_start = _window(observed, WINDOW_SECONDS[0])[0]
+                for output in outputs_by_tx.get(txid, []):
+                    candidate_address = output.get("address") or output.get("script_id")
+                    candidate_key = (str(candidate_address), WINDOW_SECONDS[0], window_start) if candidate_address else None
+                    if candidate_key in features_by_key:
+                        key, address = candidate_key, str(candidate_address)
+                        break
         else:
             address = signal["entity_ref"].removeprefix("address:")
             matching = [key for key in features_by_key if key[0] == address]
