@@ -19,3 +19,8 @@ var/
 
 # Locally generated Phase 5A 100K dataset artifacts.
 /datasets/phase5a_100k/
+
+# Phase 5B run outputs: feature packages, fitted model artifacts, candidate logs.
+# Comparison/selection is reproducible from source + the fixture; nothing here is
+# committed.
+/experiments/runs/
