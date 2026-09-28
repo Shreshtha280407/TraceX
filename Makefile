@@ -1,4 +1,4 @@
-.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four verify-fixture test
+.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke verify-fixture test
 
 phase-zero: verify-fixture test
 
@@ -26,3 +26,6 @@ phase-three:
 phase-four:
 	uv run ruff check app workers tests/unit/test_phase_one.py tests/unit/test_phase_two.py tests/unit/test_phase_three.py tests/unit/test_phase_four.py scripts/phase2_100k_smoke.py
 	uv run pytest -q tests/unit/test_phase_one.py tests/unit/test_phase_two.py tests/unit/test_phase_three.py tests/unit/test_phase_four.py
+
+phase-five-a-smoke:
+	UV_CACHE_DIR=/tmp/tracex-uv-cache uv run python scripts/phase5a_smoke.py

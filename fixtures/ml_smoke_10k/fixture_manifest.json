@@ -1,0 +1,59 @@
+{
+  "config_sha256": "f13097d5a31f4d45ae37af99556241e87fff2ae529c3cae2a8d7fe1f420dba7b",
+  "counts": {
+    "duplicate_candidates": 7,
+    "funding_outpoints": 10000,
+    "ingestion_rows": 10007,
+    "inputs": 10015,
+    "network_observations": 360,
+    "outputs": 20068,
+    "transactions": 10000
+  },
+  "generated_files": {
+    "duplicate_candidates.ndjson": {
+      "bytes": 2723,
+      "sha256": "5df07d1fbe3e1ed264ce69177b83857360764af1f4cbdc9906cb56076b2cf23d"
+    },
+    "evaluation_truth.json": {
+      "bytes": 1175,
+      "sha256": "aa3cc897b784e7999b78eab14b7dbdba18450f067f5b1e149bcc627d4735d692"
+    },
+    "funding_outpoints.ndjson": {
+      "bytes": 5573800,
+      "sha256": "2f4be41ec25af31083c145d9689123a02c44ed3429930df62c2d2255bb50ccae"
+    },
+    "ingestion_rows.ndjson": {
+      "bytes": 9787317,
+      "sha256": "79215fab4dffa1efecfbe5d54f3bd7e7334975c133c3f058d775e27ea0434cc8"
+    },
+    "inputs.ndjson": {
+      "bytes": 5836153,
+      "sha256": "078567b8637623c920366b7efd896543ec81a784b69db95fca2a3cf6f856c6f0"
+    },
+    "network_observations.ndjson": {
+      "bytes": 306155,
+      "sha256": "0bcff0f469d7a1cc31428ced0a39fd9c2276b297f2246e15f845a326e8098b72"
+    },
+    "outputs.ndjson": {
+      "bytes": 11187264,
+      "sha256": "3e3b8dfb87e27e4311dcd64023d8e30527a90a089be3dc7f79ccc2e3b604c3dd"
+    },
+    "transactions.ndjson": {
+      "bytes": 5800892,
+      "sha256": "818842bbe74d86f679899f494757c0b58edcd901533a4e349ba7c4ccdaef3635"
+    }
+  },
+  "generator_version": "1.0.0",
+  "invariants": {
+    "all_fully_known_transactions_conserve_value": true,
+    "canonical_transaction_count": 10000,
+    "duplicate_candidate_count": 7,
+    "ingestion_row_count": 10007,
+    "no_double_spends": true,
+    "ownership_labels_present_in_raw_fixture": false,
+    "unresolved_outpoint_transaction_count": 100
+  },
+  "network": "bitcoin-regtest",
+  "schema_version": "1.0.0",
+  "seed": "tracex-phase5a-smoke-v1"
+}

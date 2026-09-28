@@ -14,6 +14,14 @@ The generated demonstration fixture is synthetic, deterministic, and must never 
 For Phase 1 setup, routes, security boundary, and smoke-test evidence, see `docs/phase1.md`.
 For ingestion/snapshots, graph behavior, and deterministic findings, see `docs/phase2.md`, `docs/phase3.md`, and `docs/phase4.md`.
 
+## Phase 5A development smoke gate
+
+```bash
+make phase-five-a-smoke
+```
+
+This regenerates and exercises the separate synthetic 10K fixture through ingestion, UTXO graph construction, deterministic findings, Phase 4.1 signals, feature export, and the Phase 5A input contract. It does not train or select a model.
+
 ## Contract layout
 
 - `docs/requirements.md` — requirement, authority, uncertainty, and acceptance register.

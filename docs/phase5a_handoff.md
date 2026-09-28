@@ -26,3 +26,7 @@ The existing aggregate/time-window features can be considered separately under t
 Actual wallet/address/script values, raw IP addresses or endpoints, TXIDs, case IDs, source locators, synthetic scenario labels, synthetic review seed identities/reasons, finding IDs, and reviewer decisions must **not** be model input features. Synthetic seed proximity exists only for deterministic evaluation/demo graph context and must not be used as a target, feature, or attribution signal.
 
 No ML model, dependency, training, selection, download, or inference is part of Phase 4.1.
+
+## Development smoke gate
+
+Run `make phase-five-a-smoke` to regenerate the separate deterministic 10K synthetic fixture and prove the frozen input contract through upload, ingestion, graph construction, deterministic findings, Phase 4.1 detector output, and feature export. The fixture's evaluation truth is never ingested and no model work begins at this gate.

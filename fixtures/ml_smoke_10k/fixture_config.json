@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "generator_version": "1.0.0",
+  "seed": "tracex-phase5a-smoke-v1",
+  "network": "bitcoin-regtest",
+  "transaction_count": 10000,
+  "bootstrap_transaction_count": 100,
+  "bootstrap_outputs_per_transaction": 100,
+  "duplicate_record_count": 7,
+  "network_observation_count": 360,
+  "description": "Deterministic synthetic 10K development smoke fixture. It is not real blockchain data or a training corpus."
+}

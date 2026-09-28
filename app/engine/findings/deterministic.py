@@ -533,10 +533,9 @@ def refresh_synthetic_seed_proximity(
                 continue
             vector = dict(row.feature_vector)
             _merge_signal_features(vector, signal)
-            vector["synthetic_seed_proximity"] = {
-                "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"], "explanation": signal["explanation"],
-                "evidence_refs": signal["evidence_refs"], "graph_path": signal["graph_path"],
-            }
+            # Keep seed identity/path evidence on the case finding, not in the
+            # Phase 5A address-window feature vector. The four flat risk fields
+            # are evaluation metadata only and cannot carry a seed identity.
             row.feature_vector = vector
             updated += 1
         existing = session.scalar(

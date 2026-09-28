@@ -8,3 +8,11 @@ var/
 # Reproducible 100K fixture artifacts are generated locally from the pinned config.
 /fixtures/demo_100k/*.ndjson
 /fixtures/demo_100k/evaluation_truth.json
+
+# Phase 5A's 10K development fixture is regenerated locally. Its compact
+# manifest and evaluation-only truth are reviewed fixtures and remain tracked.
+/fixtures/ml_smoke_10k/*.ndjson
+/fixtures/ml_smoke_10k/evaluation_truth.json
+/fixtures/ml_smoke_10k/fixture_manifest.json
+!/fixtures/ml_smoke_10k/evaluation_truth.json
+!/fixtures/ml_smoke_10k/fixture_manifest.json
