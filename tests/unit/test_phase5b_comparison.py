@@ -15,6 +15,11 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _load(name: str) -> ModuleType:
+    # Reuse an already-loaded module rather than re-executing it — see the matching
+    # comment in test_phase5b_feature_package.py for why a second independent load
+    # of the same module name breaks multiprocessing's spawn pickling.
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, REPO / "scripts" / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

@@ -250,8 +250,14 @@ def resolve_label_positives(*, records: dict[str, list[dict]], truth: dict[str, 
     from app.engine.motifs.deterministic import detect_coinjoin_like_transactions, detect_peeling_chains
 
     transactions = {t["txid"]: t for t in records["transactions"]}
+    # Same canonical time rule materialize_findings uses (app/engine/findings/deterministic.py):
+    # the real ingestion pipeline commonly carries a fact's time as source_timestamp rather
+    # than block_time. Reading block_time only silently drops every label whose transaction
+    # lacks it — not "labels are sparse", a label-join bug that looked like sparsity.
     transaction_times = {
-        txid: _parse_utc(t["block_time"]) for txid, t in transactions.items() if t.get("block_time")
+        txid: _parse_utc(t.get("block_time") or t.get("source_timestamp"))
+        for txid, t in transactions.items()
+        if t.get("block_time") or t.get("source_timestamp")
     }
     outputs_by_tx: dict[str, list[dict]] = defaultdict(list)
     for output in records["outputs"]:
