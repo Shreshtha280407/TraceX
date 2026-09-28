@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -41,34 +42,50 @@ def _synthetic_matrix(n_rows: int = 60, n_anomalies: int = 5) -> tuple[prepare.B
     return matrix, raw
 
 
-def test_sequential_execution_no_threading_or_multiprocessing_used() -> None:
+def test_sequential_execution_no_pool_or_thread_based_concurrency_used() -> None:
+    # Candidates fit inside a subprocess now (so a runaway fit can be killed on a real
+    # wall-clock budget — see test_fit_in_subprocess_actually_terminates_a_runaway_fit
+    # below), so plain `multiprocessing` is expected. What must never appear is a pool
+    # or thread primitive that could run two candidates' fits at the same time.
     source = (REPO / "scripts" / "phase5b_compare.py").read_text(encoding="utf-8")
-    for forbidden in ("import threading", "import multiprocessing", "concurrent.futures", "ThreadPoolExecutor", "ProcessPoolExecutor"):
+    for forbidden in ("import threading", "concurrent.futures", "ThreadPoolExecutor", "ProcessPoolExecutor", "Pool("):
         assert forbidden not in source, f"{forbidden!r} found — candidates must run one at a time, not concurrently"
 
 
 def test_candidates_run_sequentially_and_produce_valid_results() -> None:
-    from sklearn.ensemble import IsolationForest
-    from sklearn.neighbors import LocalOutlierFactor
-
     _matrix, raw = _synthetic_matrix()
     train = raw[:40]
 
     order: list[str] = []
-    for name, factory in (
-        ("isolation_forest", lambda seed: IsolationForest(random_state=seed, n_estimators=20)),
-        ("local_outlier_factor_novelty", lambda _seed: LocalOutlierFactor(novelty=True, n_neighbors=5)),
-    ):
+    for name in ("isolation_forest", "local_outlier_factor_novelty"):
         order.append(name)  # a real orchestrator appends here only after the previous candidate fully returns
-        result, scores = compare.run_sklearn_candidate(
-            name=name, version="test", parameters={}, estimator_factory=factory, x_train=train, x_all=raw, seed=42
+        result, scores, model = compare.run_sklearn_candidate(
+            name=name, version="test", parameters={}, x_train=train, x_all=raw, seed=42, n_jobs=1
         )
         assert result.eligible
         assert result.fit_seconds is not None and result.fit_seconds >= 0
         assert result.score_seconds is not None
         assert result.peak_rss_mb is not None and result.peak_rss_mb > 0
         assert scores is not None and len(scores) == len(raw)
+        assert model is not None  # the same fitted model the caller saves as the artifact — never refit to save it
     assert order == ["isolation_forest", "local_outlier_factor_novelty"]
+
+
+def test_fit_in_subprocess_actually_terminates_a_runaway_fit_within_budget() -> None:
+    """The whole point of running fit in a subprocess: a fit that would otherwise
+    block for a very long time (a real .sleep(3600) here, standing in for a
+    pathological real fit) must be killed close to the budget, not waited out."""
+    began = time.perf_counter()
+    model, _fit_seconds, peak_rss_mb, reason = compare.fit_in_subprocess(
+        name="_test_slow_sleep", seed=42, n_jobs=1, x_train=np.zeros((5, 3)), budget_seconds=2, progress_interval_seconds=1,
+    )
+    wall_elapsed = time.perf_counter() - began
+    assert model is None
+    assert peak_rss_mb is None
+    assert reason is not None and "exceeded the 2s budget" in reason
+    # Generous margin for spawn overhead / a loaded CI box — the property being
+    # proven is "killed close to budget", not "waited out the full 3600s sleep".
+    assert wall_elapsed < 30
 
 
 def test_rule_baseline_scores_flagged_rows_higher_than_unflagged() -> None:
@@ -165,8 +182,6 @@ def test_full_synthetic_run_writes_the_required_output_files(tmp_path: Path) -> 
     """Exercises the same sequence scripts/phase5b_compare.py::main() performs
     (baseline + 2 candidates -> metrics -> selection -> report files), on a small
     synthetic package, and checks every required output file/key gets created."""
-    from sklearn.ensemble import IsolationForest
-    from sklearn.neighbors import LocalOutlierFactor
     from sklearn.preprocessing import StandardScaler
 
     matrix, raw = _synthetic_matrix()
@@ -188,13 +203,10 @@ def test_full_synthetic_run_writes_the_required_output_files(tmp_path: Path) -> 
     baseline_result.benign_fp_per_1000 = baseline_metrics["benign_fp_per_1000"]
     results.append(baseline_result)
 
-    for name, factory in (
-        ("isolation_forest", lambda seed: IsolationForest(random_state=seed, n_estimators=20)),
-        ("local_outlier_factor_novelty", lambda _seed: LocalOutlierFactor(novelty=True, n_neighbors=5)),
-    ):
-        result, scores = compare.run_sklearn_candidate(
-            name=name, version="test", parameters={}, estimator_factory=factory,
-            x_train=scaled[train_mask], x_all=scaled, seed=42,
+    for name in ("isolation_forest", "local_outlier_factor_novelty"):
+        result, scores, _model = compare.run_sklearn_candidate(
+            name=name, version="test", parameters={},
+            x_train=scaled[train_mask], x_all=scaled, seed=42, n_jobs=1,
         )
         metrics = compare.evaluate_ranking(
             scores=scores, keys=keys, split_mask=validation_mask, review_positive_keys=set(),

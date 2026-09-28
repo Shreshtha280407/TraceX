@@ -18,7 +18,9 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import hashlib
 import json
+import multiprocessing as mp
 import platform
+import queue
 import resource
 import sys
 import time
@@ -51,6 +53,113 @@ def peak_rss_mb() -> float:
 
 def thread_count() -> int:
     return int(_THREADS)
+
+
+class _SleepForeverEstimator:
+    """Test-only stand-in for a pathologically slow real estimator — lets
+    tests/unit/test_phase5b_comparison.py prove fit_in_subprocess() genuinely
+    terminates a runaway fit within budget, instead of only asserting that from
+    reading the source. Never selected by name outside that one test."""
+
+    def fit(self, x_train):
+        time.sleep(3600)
+        return self
+
+    def score_samples(self, x):
+        import numpy as np
+
+        return np.zeros(len(x))
+
+
+def _build_estimator(name: str, seed: int, n_jobs: int):
+    """The single, picklable-by-name constructor — used both here and inside the
+    subprocess worker below, so a candidate is defined in exactly one place."""
+    if name == "isolation_forest":
+        from sklearn.ensemble import IsolationForest
+
+        return IsolationForest(random_state=seed, n_jobs=n_jobs, n_estimators=100)
+    if name == "local_outlier_factor_novelty":
+        from sklearn.neighbors import LocalOutlierFactor
+
+        return LocalOutlierFactor(novelty=True, n_jobs=n_jobs, n_neighbors=20)
+    if name == "_test_slow_sleep":
+        return _SleepForeverEstimator()
+    raise ValueError(f"unknown candidate name {name!r}")
+
+
+def _fit_worker(name: str, seed: int, n_jobs: int, x_train, result_queue: mp.Queue) -> None:
+    """Runs in a separate spawned process, never a thread — only a process can be
+    forcibly killed if a candidate (LOF in particular) runs far longer than expected.
+    Always puts a result, success or failure, so the parent's queue.get() never blocks
+    on a child that crashed instead of timing out."""
+    try:
+        model = _build_estimator(name, seed, n_jobs)
+        model.fit(x_train)
+        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        child_peak_rss_mb = raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+        result_queue.put({"ok": True, "model": model, "peak_rss_mb": child_peak_rss_mb})
+    except Exception as exc:  # noqa: BLE001 — every child-side failure must reach the parent, not vanish silently
+        result_queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+def fit_in_subprocess(
+    *,
+    name: str,
+    seed: int,
+    n_jobs: int,
+    x_train,
+    budget_seconds: int = FIT_BUDGET_SECONDS,
+    label: str = "fit",
+    progress_interval_seconds: float = 15.0,
+) -> tuple[Any, float, float | None, str | None]:
+    """Real, enforced wall-clock budget: fits `name` in a child process and terminates
+    it if still running after `budget_seconds`, rather than only measuring elapsed time
+    after an unbounded in-process .fit() call has already returned on its own.
+
+    Polls in progress_interval_seconds slices (instead of one blocking wait for the
+    whole budget) and prints a heartbeat each slice — on a laptop with no other
+    output, a silent 600s wait is indistinguishable from a hang; Aditya needs to see
+    it's still working and roughly how much budget is left.
+
+    Returns (model_or_None, fit_seconds, peak_rss_mb_or_None, ineligible_reason_or_None).
+    """
+    ctx = mp.get_context("spawn")  # matches macOS's default; explicit so Linux runs are identical
+    result_queue: mp.Queue = ctx.Queue()
+    process = ctx.Process(target=_fit_worker, args=(name, seed, n_jobs, x_train, result_queue))
+    began = time.perf_counter()
+    process.start()
+    payload = None
+    timed_out = False
+    while True:
+        elapsed = time.perf_counter() - began
+        remaining = budget_seconds - elapsed
+        if remaining <= 0:
+            timed_out = True
+            break
+        # Reading the queue in short slices (not one blocking wait for the full
+        # budget) is what lets us print progress — it's also what actually waits,
+        # since joining the process first risks a deadlock if the child's put() is
+        # blocked on pipe buffer space the parent hasn't drained yet.
+        try:
+            payload = result_queue.get(timeout=min(progress_interval_seconds, remaining))
+            break
+        except queue.Empty:
+            print(f"[phase5b]   ... {name} {label} still running ({elapsed:.0f}s / {budget_seconds}s budget)", flush=True)
+    fit_seconds = time.perf_counter() - began
+
+    if timed_out:
+        process.terminate()
+        process.join(timeout=10)
+        if process.is_alive():
+            process.kill()
+        process.join()
+        return None, fit_seconds, None, f"fit exceeded the {budget_seconds}s budget; process terminated"
+
+    process.join(timeout=30)
+    if payload is None or not payload.get("ok"):
+        reason = payload.get("error") if payload else f"worker exited without a result (exitcode={process.exitcode})"
+        return None, fit_seconds, None, reason
+    return payload["model"], fit_seconds, payload["peak_rss_mb"], None
 
 
 @dataclass
@@ -191,40 +300,56 @@ def run_rule_baseline(package: prepare.FeaturePackage) -> tuple[CandidateResult,
 
 
 def run_sklearn_candidate(
-    *, name: str, version: str, parameters: dict[str, Any], estimator_factory, x_train, x_all, seed: int, stability_check: bool = True
-) -> tuple[CandidateResult, list[float]] | tuple[CandidateResult, None]:
+    *,
+    name: str,
+    version: str,
+    parameters: dict[str, Any],
+    x_train,
+    x_all,
+    seed: int,
+    n_jobs: int,
+    stability_check: bool = True,
+    budget_seconds: int = FIT_BUDGET_SECONDS,
+) -> tuple[CandidateResult, list[float] | None, Any]:
+    """Returns (result, scores_or_None, fitted_model_or_None). The caller saves
+    `fitted_model` directly as the artifact — this function never fits more than
+    twice (main fit + one stability rerun), never a third time for saving."""
     result = CandidateResult(name=name, version=version, parameters=parameters, eligible=True)
-    try:
-        began = time.perf_counter()
-        model = estimator_factory(seed)
-        model.fit(x_train)
-        fit_seconds = time.perf_counter() - began
-        if fit_seconds > FIT_BUDGET_SECONDS:
-            result.eligible = False
-            result.ineligible_reason = f"fit took {fit_seconds:.1f}s, exceeding the {FIT_BUDGET_SECONDS}s budget"
-            return result, None
-
-        began = time.perf_counter()
-        raw_scores = -model.score_samples(x_all)
-        score_seconds = time.perf_counter() - began
-
-        result.fit_seconds = fit_seconds
-        result.score_seconds = score_seconds
-        result.batch_inference_p95_ms = batch_inference_p95_ms(lambda batch: model.score_samples(batch), x_all)
-        result.peak_rss_mb = peak_rss_mb()
-        result.rss_warning = result.peak_rss_mb > RSS_WARNING_MB
-
-        if stability_check:
-            rerun = estimator_factory(seed)
-            rerun.fit(x_train)
-            rerun_scores = -rerun.score_samples(x_all)
-            result.rank_stability_spearman = spearman(list(raw_scores), list(rerun_scores))
-
-        return result, list(raw_scores)
-    except MemoryError as exc:
+    print(f"[phase5b]   {name}: starting main fit on {len(x_train)} training rows (budget {budget_seconds}s)...", flush=True)
+    model, fit_seconds, child_peak_rss_mb, reason = fit_in_subprocess(
+        name=name, seed=seed, n_jobs=n_jobs, x_train=x_train, budget_seconds=budget_seconds, label="main fit"
+    )
+    result.fit_seconds = fit_seconds
+    if model is None:
+        print(f"[phase5b]   {name}: ineligible after {fit_seconds:.1f}s — {reason}", flush=True)
         result.eligible = False
-        result.ineligible_reason = f"MemoryError during fit/score: {exc}"
-        return result, None
+        result.ineligible_reason = reason
+        return result, None, None
+    print(f"[phase5b]   {name}: main fit done in {fit_seconds:.1f}s, scoring {len(x_all)} rows...", flush=True)
+
+    began = time.perf_counter()
+    raw_scores = -model.score_samples(x_all)
+    score_seconds = time.perf_counter() - began
+    print(f"[phase5b]   {name}: scoring done in {score_seconds:.1f}s", flush=True)
+
+    result.score_seconds = score_seconds
+    result.batch_inference_p95_ms = batch_inference_p95_ms(lambda batch: model.score_samples(batch), x_all)
+    result.peak_rss_mb = child_peak_rss_mb
+    result.rss_warning = child_peak_rss_mb is not None and child_peak_rss_mb > RSS_WARNING_MB
+
+    if stability_check:
+        print(f"[phase5b]   {name}: starting stability rerun (budget {budget_seconds}s)...", flush=True)
+        rerun_model, rerun_fit_seconds, _rerun_rss, rerun_reason = fit_in_subprocess(
+            name=name, seed=seed, n_jobs=n_jobs, x_train=x_train, budget_seconds=budget_seconds, label="stability rerun"
+        )
+        print(f"[phase5b]   {name}: stability rerun {'done' if rerun_model is not None else 'skipped'} in {rerun_fit_seconds:.1f}s", flush=True)
+        if rerun_model is not None:
+            rerun_scores = -rerun_model.score_samples(x_all)
+            result.rank_stability_spearman = spearman(list(raw_scores), list(rerun_scores))
+        else:
+            result.limitations.append(f"stability rerun unavailable: {rerun_reason}")
+
+    return result, list(raw_scores), model
 
 
 def apply_selection_rule(results: list[CandidateResult], baseline_benign_fp: Any) -> dict[str, Any]:
@@ -331,8 +456,6 @@ def main() -> None:
     print(f"[phase5b] prepared {package.manifest['row_count']} rows, splits={package.manifest['split_counts']}")
 
     import numpy as np
-    from sklearn.ensemble import IsolationForest
-    from sklearn.neighbors import LocalOutlierFactor
     from sklearn.preprocessing import StandardScaler
 
     columns = package.matrix.columns
@@ -387,20 +510,18 @@ def main() -> None:
             "isolation_forest",
             f"scikit-learn {__import__('sklearn').__version__}",
             {"random_state": 42, "n_jobs": thread_count(), "n_estimators": 100},
-            lambda seed: IsolationForest(random_state=seed, n_jobs=thread_count(), n_estimators=100),
         ),
         (
             "local_outlier_factor_novelty",
             f"scikit-learn {__import__('sklearn').__version__}",
             {"novelty": True, "n_jobs": thread_count(), "n_neighbors": 20},
-            lambda _seed: LocalOutlierFactor(novelty=True, n_jobs=thread_count(), n_neighbors=20),
         ),
     ]
-    for index, (name, version, parameters, factory) in enumerate(candidate_specs, start=2):
+    for index, (name, version, parameters) in enumerate(candidate_specs, start=2):
         print(f"[phase5b] running candidate {index}/3: {name}")
-        result, scores = run_sklearn_candidate(
-            name=name, version=version, parameters=parameters, estimator_factory=factory,
-            x_train=scaled[train_mask], x_all=scaled, seed=42,
+        result, scores, model = run_sklearn_candidate(
+            name=name, version=version, parameters=parameters,
+            x_train=scaled[train_mask], x_all=scaled, seed=42, n_jobs=thread_count(),
         )
         result.row_counts = row_counts()
         if scores is not None:
@@ -417,7 +538,9 @@ def main() -> None:
 
             import joblib
 
-            joblib.dump(candidate_specs[index - 2][3](42).fit(scaled[train_mask]), run_dir / "artifacts" / f"{name}.joblib")
+            # The already-fitted model from run_sklearn_candidate's main fit — never
+            # refit a third time just to produce the artifact.
+            joblib.dump(model, run_dir / "artifacts" / f"{name}.joblib")
             (run_dir / "artifacts" / f"{name}.manifest.json").write_text(
                 json.dumps(
                     {
