@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "generator_version": "1.0.0",
+  "seed": "tracex-phase5a-prep-100k-v1",
+  "network": "bitcoin-regtest",
+  "transaction_count": 100000,
+  "bootstrap_transaction_count": 1000,
+  "bootstrap_outputs_per_transaction": 100,
+  "duplicate_record_count": 25,
+  "network_observation_count": 2400,
+  "split_groups": [
+    {"group_id": "g-001", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
+    {"group_id": "g-002", "split": "train_reference", "count": 10000, "scenario": "benign_exchange_batch", "review_pattern": false},
+    {"group_id": "g-003", "split": "train_reference", "count": 10000, "scenario": "benign_treasury_transfer", "review_pattern": false},
+    {"group_id": "g-004", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
+    {"group_id": "g-005", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
+    {"group_id": "g-006", "split": "train_reference", "count": 10000, "scenario": "benign_exchange_batch", "review_pattern": false},
+    {"group_id": "g-007", "split": "train_reference", "count": 10000, "scenario": "review_structure", "review_pattern": true},
+    {"group_id": "g-008", "split": "validation", "count": 7500, "scenario": "normal_low_activity", "review_pattern": false},
+    {"group_id": "g-009", "split": "validation", "count": 7500, "scenario": "review_structure", "review_pattern": true},
+    {"group_id": "g-010", "split": "final_holdout", "count": 5000, "scenario": "benign_exchange_batch", "review_pattern": false},
+    {"group_id": "g-011", "split": "final_holdout", "count": 5000, "scenario": "benign_treasury_transfer", "review_pattern": false},
+    {"group_id": "g-012", "split": "final_holdout", "count": 5000, "scenario": "normal_low_activity", "review_pattern": false}
+  ],
+  "description": "Deterministic synthetic Phase 5A preparation fixture; not real blockchain data or a training corpus."
+}

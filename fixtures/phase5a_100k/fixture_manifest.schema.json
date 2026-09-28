@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceX Phase 5A 100K local fixture manifest",
+  "type": "object",
+  "required": ["schema_version", "generator_version", "config_sha256", "seed", "counts", "generated_files", "invariants", "provenance"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "generator_version": {"type": "string"},
+    "config_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "seed": {"type": "string"},
+    "counts": {"type": "object"},
+    "generated_files": {"type": "object"},
+    "invariants": {"type": "object"},
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,28 @@
+.drop-zone {
+  padding: 32px 20px; text-align: center; cursor: pointer; border: 1.5px dashed var(--line);
+  background: var(--surface-3); border-radius: 16px; color: var(--ink-dim);
+}
+.drop-zone.dragging { border-color: var(--mustard); color: var(--ink); }
+.drop-zone input { display: none; }
+.drop-zone .drop-icon { margin: 0 auto 10px; width: 44px; height: 44px; border-radius: 13px; background: var(--surface); display: flex; align-items: center; justify-content: center; }
+
+.source-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.source-row:last-child { border-bottom: none; }
+.source-row .name { font-weight: 600; color: var(--ink); }
+.source-row .meta { color: var(--ink-mute); font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
+
+.stage-track { display: flex; align-items: center; margin: 6px 0 20px; }
+.stage-node { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
+.stage-node .dot-ring { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--surface-3); border: 2px solid var(--line); font-size: 11px; color: var(--ink-mute); }
+.stage-node.done .dot-ring { background: var(--success); border-color: var(--success); color: #0d1a0a; }
+.stage-node.active .dot-ring { background: var(--mustard); border-color: var(--mustard); color: #161409; animation: pulse 1.4s ease-in-out infinite; }
+.stage-node.failed .dot-ring { background: var(--danger); border-color: var(--danger); color: #1a0705; }
+.stage-node .label { font-size: 10px; color: var(--ink-mute); text-align: center; }
+.stage-connector { flex: 0 0 auto; width: 100%; height: 2px; background: var(--line); margin-top: -20px; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+.quarantine-row { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.quarantine-row:last-child { border-bottom: none; }
+.quarantine-row .reason { color: var(--danger); font-weight: 600; }
+.quarantine-row .locator { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-mute); }

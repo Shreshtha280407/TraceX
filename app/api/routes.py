@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_case_member
+from app.auth.security import hash_password, issue_session_token, verify_password
 from app.config import settings
 from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
@@ -41,6 +42,16 @@ from app.models import (
 from app.storage.raw import UploadRejected, store_upload
 
 router = APIRouter(prefix="/v1")
+
+
+class SignupRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class LoginRequest(BaseModel):
+    display_name: str
+    password: str
 
 
 class CaseCreate(BaseModel):
@@ -81,6 +92,71 @@ def case_view(case: Case) -> dict:
         "name": case.name,
         "synthetic": case.synthetic,
         "created_at": case.created_at.isoformat() if case.created_at else None,
+    }
+
+
+@router.post("/auth/signup", status_code=status.HTTP_201_CREATED)
+def signup(body: SignupRequest, session: Session = Depends(get_session)) -> dict:
+    existing = session.scalar(select(User).where(User.external_subject == body.display_name))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="That name is taken")
+    user = User(external_subject=body.display_name, password_hash=hash_password(body.password))
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    token = issue_session_token(user.external_subject)
+    return {"token": token, "actor": user.external_subject}
+
+
+@router.post("/auth/login")
+def login(body: LoginRequest, session: Session = Depends(get_session)) -> dict:
+    user = session.scalar(select(User).where(User.external_subject == body.display_name))
+    if user is None or not user.password_hash or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = issue_session_token(user.external_subject)
+    return {"token": token, "actor": user.external_subject}
+
+
+@router.get("/cases")
+def list_my_cases(user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
+    """Cases the caller is a member of — powers Case Dashboard / Overview / post-auth redirect."""
+    memberships = session.scalars(select(CaseMembership).where(CaseMembership.user_id == user.id))
+    membership_rows = list(memberships)
+    role_by_case = {membership.case_id: membership.role for membership in membership_rows}
+    case_ids = list(role_by_case)
+    cases = session.scalars(select(Case).where(Case.id.in_(case_ids))) if case_ids else []
+    return {"cases": [{**case_view(case), "role": role_by_case[case.id]} for case in cases]}
+
+
+@router.get("/cases/{case_id}")
+def get_case(case_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
+    """Case detail — powers Case Settings header/metadata panel and Access & Roles list."""
+    case = require_case_member(case_id, user, session)
+    memberships = session.scalars(select(CaseMembership).where(CaseMembership.case_id == case_id))
+    members = [
+        {"actor": member.external_subject, "role": membership.role}
+        for membership, member in (
+            (membership, session.get(User, membership.user_id)) for membership in memberships
+        )
+    ]
+    return {**case_view(case), "members": members}
+
+
+@router.get("/cases/{case_id}/sources")
+def list_case_sources(
+    case_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> dict:
+    """Evidence sources for a case — powers Case Settings "Data Sources" panel."""
+    require_case_member(case_id, user, session)
+    sources = session.scalars(select(EvidenceSource).where(EvidenceSource.case_id == case_id).order_by(EvidenceSource.id))
+    return {
+        "sources": [
+            {
+                "source_id": s.id, "filename": s.original_filename, "sha256": s.sha256,
+                "byte_size": s.byte_size, "source_format": s.source_format, "synthetic": s.synthetic,
+            }
+            for s in sources
+        ]
     }
 
 

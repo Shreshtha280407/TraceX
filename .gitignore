@@ -16,3 +16,6 @@ var/
 /fixtures/ml_smoke_10k/fixture_manifest.json
 !/fixtures/ml_smoke_10k/evaluation_truth.json
 !/fixtures/ml_smoke_10k/fixture_manifest.json
+
+# Locally generated Phase 5A 100K dataset artifacts.
+/datasets/phase5a_100k/

@@ -16,6 +16,8 @@ class Settings:
     event_heartbeat_seconds: int
     worker_health_seconds: int = 60
     ingestion_batch_records: int = 32768
+    secret_key: str = "tracex-dev-only-secret"
+    token_ttl_seconds: int = 86400
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -29,6 +31,8 @@ class Settings:
             event_heartbeat_seconds=int(os.environ.get("TRACEX_EVENT_HEARTBEAT_SECONDS", "15")),
             worker_health_seconds=int(os.environ.get("TRACEX_WORKER_HEALTH_SECONDS", "60")),
             ingestion_batch_records=int(os.environ.get("TRACEX_INGESTION_BATCH_RECORDS", "32768")),
+            secret_key=os.environ.get("TRACEX_SECRET_KEY", "tracex-dev-only-secret"),
+            token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
         )
 
 

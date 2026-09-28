@@ -1,0 +1,16 @@
+{
+  "evaluation_only": true,
+  "do_not_ingest": true,
+  "template_only": true,
+  "description": "The locally generated evaluation_truth.json contains opaque split/group membership and expected controls. It must never be uploaded, ingested, or used as a model input.",
+  "required_sections": [
+    "split_groups",
+    "scenario_groups",
+    "expected_peeling_chain_transaction_ids",
+    "expected_coinjoin_like_transaction_ids",
+    "synthetic_review_seed_address",
+    "expected_two_hop_target_address",
+    "disconnected_address",
+    "expected_benign_controls"
+  ]
+}

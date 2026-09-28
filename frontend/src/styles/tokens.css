@@ -1,0 +1,44 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#121210; --surface:#1c1b17; --surface-2:#201f19; --surface-3:#17160f;
+  --shadow-d:rgba(0,0,0,0.7); --shadow-l:rgba(255,255,255,0.035);
+  --mustard:#e3a62f; --mustard-2:#c98a1f; --mustard-glow:rgba(227,166,47,0.28);
+  --amber:#f4c766; --ink:#f3efe4; --ink-dim:#a8a08c; --ink-mute:#6e6a5c;
+  --line:rgba(255,255,255,0.07); --danger:#e3572f; --info:#4fa0c9; --success:#7fae63;
+}
+body{ margin:0; background:var(--bg); font-family:'IBM Plex Sans',sans-serif; color:var(--ink); }
+h1,h2,h3,.display{ font-family:'Space Grotesk',sans-serif; }
+.mono{ font-family:'IBM Plex Mono',monospace; }
+a{ color:var(--mustard); text-decoration:none; } a:hover{ color:var(--amber); }
+
+/* Neumorphism — the entire visual identity is these three classes */
+.neo{
+  background:var(--surface); border-radius:22px; border:1px solid var(--line);
+  box-shadow:12px 12px 22px var(--shadow-d), -9px -9px 18px var(--shadow-l);
+}
+.neo-sm{
+  background:var(--surface); border-radius:14px; border:1px solid var(--line);
+  box-shadow:6px 6px 12px var(--shadow-d), -5px -5px 11px var(--shadow-l);
+}
+.neo-inset{
+  background:var(--surface-3); border-radius:12px; border:1px solid var(--line);
+  box-shadow:inset 5px 5px 10px var(--shadow-d), inset -4px -4px 9px var(--shadow-l);
+}
+.btn-mustard{
+  background:linear-gradient(160deg,#eab63c,#c98a1f); color:#161409; font-weight:700; border:none;
+  border-radius:14px; cursor:pointer;
+  box-shadow:7px 7px 16px var(--shadow-d), -5px -5px 12px var(--shadow-l), inset 0 1px 0 rgba(255,255,255,0.28);
+}
+.btn-mustard:disabled{ opacity:0.45; cursor:not-allowed; }
+.badge{ border-radius:999px; font-size:10px; font-weight:700; letter-spacing:0.04em; padding:4px 10px;
+display:inline-flex; align-items:center; gap:5px; }
+.dot{ width:7px; height:7px; border-radius:50%; display:inline-block; }
+/* Page canvas: source artboards are a fixed 1440x900 design surface — build the real
+   app as a fluid layout that preserves these exact proportions/spacing at common
+   desktop widths (1280–1920px); do not hard-code 1440px in the shipped app. */
+
+* { box-sizing: border-box; }
+button, input, textarea, select { font-family: inherit; color: inherit; }
+
+.content-area { background: radial-gradient(circle at 18% -8%, #221f17 0%, #121210 55%); }
