@@ -5,16 +5,11 @@ import { ApiError } from "../lib/api";
 import { ErrorBanner } from "../components/primitives";
 import "./AccessGate.css";
 
-const FEATURES = [
-  { title: "Case-isolated workspaces", body: "Every record, key and export is scoped to case_id — no cross-case leakage." },
-  { title: "Chain-of-custody evidence", body: "Hash-verified sources, immutable snapshots, append-only audit chain." },
-  { title: "Deterministic + ML detection", body: "Explainable rule motifs, Isolation Forest anomaly ranking, benign controls." },
-  { title: "Offline-capable deployment", body: "Linux CPU and Mac-native profiles, air-gapped, no external calls." },
-];
+type AccessMode = "login" | "signup";
 
 export function AccessGate() {
   const { token, signup, login } = useAuth();
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [mode, setMode] = useState<AccessMode | null>(null);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -22,8 +17,14 @@ export function AccessGate() {
 
   if (token) return <Navigate to="/dashboard" replace />;
 
+  function openAccess(nextMode: AccessMode | null) {
+    setError(null);
+    setMode(nextMode);
+  }
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    if (!mode) return;
     setError(null);
     setBusy(true);
     try {
@@ -36,72 +37,76 @@ export function AccessGate() {
     }
   }
 
+  if (!mode) {
+    return (
+      <main className="access-gate landing-page">
+        <section className="landing-hero" aria-labelledby="landing-title">
+          <h1 id="landing-title" className="landing-title" aria-label="TraceX">
+            TraceX
+          </h1>
+          <p className="landing-subtitle">Trace Bitcoin. Preserve the evidence.</p>
+          <p className="landing-lede">
+            Review case-scoped UTXO evidence, transparent findings, and analyst decisions without turning an observation into a conclusion.
+          </p>
+          <div className="landing-actions" aria-label="Access TraceX">
+            <button type="button" className="btn-mustard landing-primary" onClick={() => openAccess("login")}>
+              Sign in
+            </button>
+            <button type="button" className="landing-secondary" onClick={() => openAccess("signup")}>
+              Create workspace
+            </button>
+          </div>
+          <ul className="landing-trust" aria-label="TraceX capabilities">
+            <li>Case-scoped</li>
+            <li>Evidence-linked</li>
+            <li>Offline-capable</li>
+          </ul>
+          <p className="landing-footnote">Analytical leads are prioritised observations for review, not ownership or wrongdoing claims.</p>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <div className="access-gate">
-      <div className="brand-panel">
-        <div className="brand-mark">
-          <div className="rail-logo">V</div>
-          <div>
-            <div className="brand-name">TraceX</div>
-            <div className="brand-sub">UTXO INTELLIGENCE PLATFORM</div>
-          </div>
-        </div>
-        <h1 className="display">
-          Trace the flow.
-          <br />
-          Prove the network.
-        </h1>
-        <p className="brand-lede">
-          Deterministic and ML-assisted Bitcoin UTXO graph analysis for criminal network investigation — built for
-          NCRB, Smart India Hackathon PS 26146.
+    <main className="access-gate auth-stage">
+      <form className="neo auth-card" onSubmit={onSubmit}>
+        <button type="button" className="auth-back" onClick={() => openAccess(null)}>
+          ← Back to TraceX
+        </button>
+        <p className="auth-eyebrow">TRACE X / SECURE ACCESS</p>
+        <h1 className="display">{mode === "signup" ? "Create your account" : "Welcome back"}</h1>
+        <p className="subtitle">
+          {mode === "signup" ? "Set up your investigator account, then create your first case workspace." : "Sign in to continue to your case workspace."}
         </p>
-        <ul className="feature-list">
-          {FEATURES.map((feature) => (
-            <li key={feature.title}>
-              <span className="dot tone-warning" />
-              <div>
-                <div className="feature-title">{feature.title}</div>
-                <div className="feature-body">{feature.body}</div>
-              </div>
-            </li>
-          ))}
-        </ul>
-        <p className="brand-footnote">Synthetic demo case available for evaluation — no production credential required.</p>
-      </div>
-      <div className="auth-panel">
-        <form className="neo auth-card" onSubmit={onSubmit}>
-          <h2 className="display">Secure Access</h2>
-          <p className="subtitle">Authenticate into a provisioned case workspace</p>
-          {error && <ErrorBanner>{error}</ErrorBanner>}
-          <div className="form-field">
-            <label htmlFor="name">Name</label>
-            <input id="name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="username" required />
-          </div>
-          <div className="form-field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              minLength={8}
-              required
-            />
-          </div>
-          <button type="submit" className="btn-mustard auth-submit" disabled={busy}>
-            {busy ? "Please wait…" : mode === "signup" ? "Create Account" : "Access Case Workspace"}
-          </button>
-          <button type="button" className="mode-toggle" onClick={() => setMode(mode === "signup" ? "login" : "signup")}>
-            {mode === "signup" ? "Already have an account? Sign in" : "New to TraceX? Create an account"}
-          </button>
-          <div className="trust-badges">
-            <span className="badge tone-muted">TLS / mTLS</span>
-            <span className="badge tone-muted">AUDIT-LOGGED</span>
-            <span className="badge tone-muted">CASE-SCOPED RBAC</span>
-          </div>
-        </form>
-      </div>
-    </div>
+        {error && <ErrorBanner>{error}</ErrorBanner>}
+        <div className="form-field">
+          <label htmlFor="name">Name</label>
+          <input id="name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="username" required autoFocus />
+        </div>
+        <div className="form-field">
+          <label htmlFor="password">Password</label>
+          <input
+            id="password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete={mode === "signup" ? "new-password" : "current-password"}
+            minLength={8}
+            required
+          />
+        </div>
+        <button type="submit" className="btn-mustard auth-submit" disabled={busy}>
+          {busy ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
+        </button>
+        <button type="button" className="mode-toggle" onClick={() => openAccess(mode === "signup" ? "login" : "signup")}>
+          {mode === "signup" ? "Already have an account? Sign in" : "New to TraceX? Create a workspace"}
+        </button>
+        <div className="trust-badges">
+          <span className="badge tone-muted">CASE-SCOPED</span>
+          <span className="badge tone-muted">AUDIT-LOGGED</span>
+          <span className="badge tone-muted">EVIDENCE-FIRST</span>
+        </div>
+      </form>
+    </main>
   );
 }
