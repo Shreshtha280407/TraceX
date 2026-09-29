@@ -36,9 +36,9 @@ from app.events import append_event
 from app.ml import grains, layers
 from app.ml.facts import facts_from_records
 from app.ml.fusion import stouffer_fuse
+from app.ml_release_constants import ML_RULE_VERSION
 from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot
 
-ML_RULE_VERSION = "anomaly-stack-v1"
 WINDOW_SECONDS = 900
 #: The combination the ablation selected on the fixture, using unsupervised layers
 #: only. Recorded here rather than tuned at call time so a stored finding always

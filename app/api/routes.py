@@ -23,6 +23,7 @@ from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphQueryError, query_neighbourhood
 from app.events import append_event, event_envelope
 from app.jobs.service import create_or_reuse_job, job_view
+from app.ml_release_constants import ML_RULE_VERSION
 from app.models import (
     AuditRecord,
     Case,
@@ -518,14 +519,10 @@ def list_findings(
     # "always deterministic-v1, ml_enabled always False" was simply wrong the
     # moment an ML finding existed. `methods` lists every rule_version present.
     #
-    # The ML rule-version string is duplicated here rather than imported from
-    # `app.ml.findings` on purpose: that module (and the `app.ml` package it
-    # lives in) imports numpy/scikit-learn at module load, and this route must
-    # keep working -- cases, deterministic findings, everything -- on a
-    # deployment that never installed the optional `ml` extra. Keep this literal
-    # in sync with `app.ml.findings.ML_RULE_VERSION`; a mismatch only ever makes
-    # ML findings under-reported here, never mis-scoped or mis-cased.
-    ML_RULE_VERSION = "anomaly-stack-v1"
+    # `ML_RULE_VERSION` comes from `app.ml_release_constants`, not `app.ml.findings`:
+    # that package's `__init__.py` imports numpy/scikit-learn at module load, and
+    # this route must keep working -- cases, deterministic findings, everything --
+    # on a deployment that never installed the optional `ml` extra.
     methods = sorted({record.rule_version for record in records})
     ml_present = any(record.rule_version == ML_RULE_VERSION for record in records)
     return {

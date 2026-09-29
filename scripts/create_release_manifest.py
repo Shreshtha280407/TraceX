@@ -7,24 +7,33 @@ refit on each snapshot's own reference period at scoring time -- so there is no
 **scoring release manifest**: a committed, reviewable record of the exact frozen
 procedure (`app.ml.findings.release_identity()`), the fixture identity it was
 measured against, the dependency/interpreter constraints it requires, the
-frozen holdout numbers a human supplied from an independent verification run,
-and the git commit the manifest was cut at.
+already-generated final-holdout report this release is backed by, and the git
+commit the manifest was cut at.
 
-Frozen-holdout numbers are passed in as literal constants below, not computed by
-this script and not read from a live run -- Phase 5B's holdout has already been
-consumed once and must stay that way. Validation numbers, by contrast, ARE read
-from a real `make anomaly-stack` run, because re-running validation is exactly
-what that target is for.
+Final-holdout evidence is *read*, never recomputed: Phase 5B's holdout has
+already been consumed once and must stay that way. This script never invokes
+`scripts/run_anomaly_stack.py` itself -- `--holdout-run` must point at a JSON
+file `make anomaly-stack-holdout` already wrote (default:
+`experiments/runs/anomaly_stack_holdout.json`, gitignored). It reads that file,
+checks every task's non-baseline winner still matches the frozen release layers
+(`app.ml.findings.DEFAULT_LAYERS`), and records the file's own SHA-256 in the
+manifest -- so the committed evidence stays traceable to one exact artifact
+instead of a hand-transcribed copy of its numbers that can drift from it.
+Validation numbers, by contrast, ARE read from a real `make anomaly-stack` run,
+because re-running validation is exactly what that target is for.
 
     uv run --extra ml python scripts/create_release_manifest.py \\
+        --holdout-run experiments/runs/anomaly_stack_holdout.json \\
         --validation-run experiments/runs/anomaly_stack_validation.json
 
-Never run this against `--split final_holdout`.
+Never pass a validation-split file as --holdout-run, or a final_holdout-split
+file as --validation-run -- both are rejected below.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import subprocess
@@ -35,62 +44,16 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-# --------------------------------------------------------------------------- #
-# Frozen holdout evidence, supplied by the reviewer, not recomputed here.
-#
-# Source: 100K synthetic fixture, final_holdout split, run on Aditya's 32GB
-# MacBook Pro, Python 3.11.16. Recorded verbatim from that run's console output.
-# Phase 5C must not rerun this split -- see the module docstring above and
-# experiments/model_decision.md's "Do not rerun the holdout" note.
-# --------------------------------------------------------------------------- #
-FROZEN_HOLDOUT_EVIDENCE = {
-    "source": "100K synthetic fixture, final_holdout split, Aditya's 32GB MacBook Pro",
-    "python_version": "3.11.16",
-    "run_seconds": 50,
-    "peak_rss_mb": 871,
-    "selected_candidate": "A_global + D_burst",
-    "tasks": {
-        "motif_triage": {
-            "average_precision": 0.6282307964,
-            "precision_at_20": 0.95,
-            "precision_at_50": 0.94,
-            "precision_at_100": 0.89,
-            "precision_at_1pct": 0.8444444444,
-            "recall_at_1pct": 0.2425531915,
-            "rule_only_average_precision": 0.3798909635,
-        },
-        "surge_detection": {
-            "average_precision": 0.5926655743,
-            "precision_at_20": 0.90,
-            "precision_at_50": 0.86,
-            "precision_at_100": 0.75,
-            "precision_at_1pct": 0.6962962963,
-            "recall_at_1pct": 0.3381294964,
-            "rule_only_average_precision": 0.2388266171,
-        },
-        "discrimination": {
-            "description": "true motif vs. benign rule-positive payroll",
-            "rule_only_average_precision": 0.9568959651,
-            "note": "rule-only remains best; no unsupervised combination beat it on this task",
-        },
-    },
-    "validation_run_evidence": {
-        "run_seconds": 49,
-        "peak_rss_mb": 896,
-        "note": "runtime/RSS only, from the same MacBook session; AP/precision numbers for "
-        "validation are read fresh below from --validation-run, not hardcoded, because "
-        "re-running validation (unlike holdout) is exactly what make anomaly-stack is for",
-    },
-    "limitations": [
-        "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
-        ("No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere "
-         "in this stack."),
-        ("Unsupervised scoring cannot reliably separate a structurally identical benign payroll "
-         "run from a real CoinJoin (see the discrimination task above: rule-only wins). "
-         "Analyst-labelled reviews are required before any supervised model may score production "
-         "cases; see app.ml.findings.review_decision_labels."),
-    ],
-}
+# General, non-numeric caveats about the whole stack -- not run-specific evidence,
+# so there's nothing here that could drift from a real run and nothing to hash.
+KNOWN_LIMITATIONS = [
+    "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
+    "No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere in this stack.",
+    ("Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a "
+     "real CoinJoin (see the holdout report's discrimination task: rule-only wins). Analyst-labelled "
+     "reviews are required before any supervised model may score production cases; see "
+     "app.ml.findings.review_decision_labels."),
+]
 
 
 def _git_commit() -> dict[str, object]:
@@ -158,6 +121,53 @@ def _dependency_constraints() -> dict[str, object]:
     }
 
 
+def _holdout_evidence(run_path: Path, *, expected_layers: tuple[str, ...]) -> dict[str, object]:
+    """Read (never recompute) the already-generated final-holdout report.
+
+    Phase 5B's holdout has already been consumed once and must stay that way (see
+    the module docstring), so this only reads the JSON `make anomaly-stack-holdout`
+    already wrote: it checks every task's non-baseline winner still matches the
+    frozen release layers, and hashes the file so the manifest is traceable to the
+    exact artifact instead of a hand-transcribed copy of its numbers.
+    """
+    if not run_path.is_file():
+        raise SystemExit(
+            f"no holdout report at {run_path}. This script reads an already-generated report; "
+            "it does not rerun the holdout. Generate it once with:\n  make anomaly-stack-holdout"
+        )
+    raw = run_path.read_bytes()
+    payload = json.loads(raw)
+    if payload.get("split") != "final_holdout":
+        raise SystemExit(
+            f"{run_path} has split={payload.get('split')!r}, not 'final_holdout'. Pass the report "
+            "`make anomaly-stack-holdout` wrote as --holdout-run, not a validation run."
+        )
+
+    expected_candidate = "+".join(expected_layers)
+    winners = payload.get("winners", {})
+    for task, winner in winners.items():
+        candidate = winner.get("candidate")
+        if candidate not in ("rule_baseline", expected_candidate):
+            raise SystemExit(
+                f"{run_path} task {task!r} winner is {candidate!r}, not {expected_candidate!r} or "
+                "'rule_baseline'. The frozen release decision (app.ml.findings.DEFAULT_LAYERS) no "
+                "longer matches what this holdout report measured -- resolve that as a human "
+                "decision (experiments/model_decision.md), not by editing this check."
+            )
+
+    return {
+        "source_file": str(run_path.relative_to(REPO)) if run_path.is_relative_to(REPO) else str(run_path),
+        "report_sha256": hashlib.sha256(raw).hexdigest(),
+        "split": payload["split"],
+        "budget": payload.get("budget"),
+        "deployable_configuration": payload.get("deployable_configuration"),
+        "peak_rss_mb": payload.get("peak_rss_mb"),
+        "label_counts": payload.get("label_counts"),
+        "winners_by_task": winners,
+        "run_limitations": payload.get("limitations"),
+    }
+
+
 def _validation_metrics(run_path: Path | None) -> dict[str, object]:
     """Validation-split metrics read from a real `make anomaly-stack` output.
 
@@ -175,8 +185,7 @@ def _validation_metrics(run_path: Path | None) -> dict[str, object]:
     if payload.get("split") == "final_holdout":
         raise SystemExit(
             f"{run_path} is a final_holdout run. This script only accepts validation-split "
-            "evidence; the frozen holdout numbers are the hardcoded constants above, not a "
-            "file this script reads."
+            "evidence here; pass a final_holdout run as --holdout-run instead."
         )
     winners = payload.get("winners", {})
     return {
@@ -189,7 +198,7 @@ def _validation_metrics(run_path: Path | None) -> dict[str, object]:
     }
 
 
-def build_manifest(*, validation_run: Path | None) -> dict[str, object]:
+def build_manifest(*, validation_run: Path | None, holdout_run: Path) -> dict[str, object]:
     from app.ml.findings import DEFAULT_BUDGET, DEFAULT_LAYERS, RELEASE_ID, release_identity, release_manifest_sha256
 
     identity = release_identity()
@@ -208,7 +217,7 @@ def build_manifest(*, validation_run: Path | None) -> dict[str, object]:
         "git": _git_commit(),
         "fixture_identity": _fixture_identity(),
         "dependency_constraints": _dependency_constraints(),
-        "frozen_holdout_evidence": FROZEN_HOLDOUT_EVIDENCE,
+        "frozen_holdout_evidence": _holdout_evidence(holdout_run, expected_layers=DEFAULT_LAYERS),
         "validation_evidence": _validation_metrics(validation_run),
         "model_run_id_strategy": (
             "app.ml.findings.model_run_id(snapshot_id, budget) -- sha256(release_id + "
@@ -228,12 +237,17 @@ def build_manifest(*, validation_run: Path | None) -> dict[str, object]:
             "successful score, nothing clears the budget": "ml_status=no_rows_flagged.",
             "successful score": "ml_status=written; ml_finding_count>0; ml_model_run_id set.",
         },
-        "known_limitations": FROZEN_HOLDOUT_EVIDENCE["limitations"],
+        "known_limitations": KNOWN_LIMITATIONS,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--holdout-run", type=Path, default=REPO / "experiments" / "runs" / "anomaly_stack_holdout.json",
+        help="path to the already-generated `make anomaly-stack-holdout` (final_holdout split) output "
+        "JSON; read and hashed, never regenerated by this script",
+    )
     parser.add_argument(
         "--validation-run", type=Path, default=REPO / "experiments" / "runs" / "anomaly_stack_validation.json",
         help="path to a `make anomaly-stack` (validation split) output JSON",
@@ -243,7 +257,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    manifest = build_manifest(validation_run=args.validation_run if args.validation_run.is_file() else None)
+    manifest = build_manifest(
+        validation_run=args.validation_run if args.validation_run.is_file() else None,
+        holdout_run=args.holdout_run,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     print(f"wrote {args.output}")

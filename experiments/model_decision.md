@@ -104,14 +104,18 @@ committed tree so `dirty: false` and the commit SHA are trustworthy together.
 
 ## Validation and final-holdout metrics
 
-**Final holdout — do not rerun.** These numbers were supplied by the reviewer
-from an independent run on Aditya's 32 GB MacBook Pro (Python 3.11.16, the 100K
-synthetic fixture, `final_holdout` split) and are recorded verbatim as literal
-constants in `scripts/create_release_manifest.py::FROZEN_HOLDOUT_EVIDENCE`. This
-script does not compute them, does not read them from a live run, and Phase 5C
-did not re-execute `make anomaly-stack-holdout` at any point while producing this
-release. See `experiments/releases/anomaly-stack-v1.json`'s
-`frozen_holdout_evidence` key for the full values.
+**Final holdout — do not rerun.** These numbers come from one independent run
+on Aditya's 32 GB MacBook Pro (Python 3.11.16, the 100K synthetic fixture,
+`final_holdout` split), executed once via `make anomaly-stack-holdout`. Its
+output (`experiments/runs/anomaly_stack_holdout.json`, gitignored) is not
+hand-transcribed: `scripts/create_release_manifest.py::_holdout_evidence()`
+reads that file, checks every task's non-baseline winner still matches the
+frozen release layers (`app.ml.findings.DEFAULT_LAYERS`), and records the
+file's own SHA-256 in the manifest. The script never invokes
+`scripts/run_anomaly_stack.py` itself, so Phase 5C cannot re-execute the
+holdout by running it. See `experiments/releases/anomaly-stack-v1.json`'s
+`frozen_holdout_evidence` key for the recorded winners, hash, and metadata;
+the per-task table below is reproduced from that same run for readability.
 
 | Task | AP | Rule-only AP | Lift |
 | --- | ---: | ---: | ---: |
