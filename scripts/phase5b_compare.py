@@ -352,7 +352,9 @@ def run_sklearn_candidate(
     return result, list(raw_scores), model
 
 
-def apply_selection_rule(results: list[CandidateResult], baseline_benign_fp: Any) -> dict[str, Any]:
+def apply_selection_rule(
+    results: list[CandidateResult], baseline_benign_fp: Any, baseline_precision_at_20: Any
+) -> dict[str, Any]:
     eligible = [r for r in results if r.eligible and r.name != "phase4_rule_only_baseline"]
     gated: list[CandidateResult] = []
     gate_notes: dict[str, str] = {}
@@ -375,11 +377,33 @@ def apply_selection_rule(results: list[CandidateResult], baseline_benign_fp: Any
             "gate_notes": gate_notes,
         }
 
-    has_labels = any(isinstance(c.precision_at_20, (int, float)) for c in gated)
+    has_labels = any(isinstance(c.precision_at_20, (int, float)) for c in gated) and isinstance(
+        baseline_precision_at_20, (int, float)
+    )
     if has_labels:
-        ranked = sorted(gated, key=lambda c: (c.precision_at_20 if isinstance(c.precision_at_20, (int, float)) else -1), reverse=True)
+        # A candidate must strictly beat the rule-only baseline's own validation
+        # Precision@20 to be selected — a tie (including the degenerate 0.0 == 0.0
+        # case when the label join finds nothing) means the model adds no
+        # demonstrated value over the deterministic rules, so no model is selected.
+        # Ties never win.
+        beating_baseline = [
+            c
+            for c in gated
+            if isinstance(c.precision_at_20, (int, float)) and c.precision_at_20 > baseline_precision_at_20
+        ]
+        if not beating_baseline:
+            return {
+                "selected_candidate": None,
+                "status": "no_model_selected",
+                "reason": (
+                    f"no candidate's validation Precision@20 exceeded the rule-only baseline "
+                    f"({baseline_precision_at_20:.4f}); ties never win"
+                ),
+                "gate_notes": gate_notes,
+            }
+        ranked = sorted(beating_baseline, key=lambda c: c.precision_at_20, reverse=True)
         chosen = ranked[0]
-        basis = "best validation Precision@20 among gated candidates"
+        basis = "best validation Precision@20 among candidates that strictly beat the rule-only baseline (ties never win)"
     else:
         ranked = sorted(
             gated,
@@ -563,7 +587,7 @@ def main() -> None:
         json.dumps(asdict(baseline_result), indent=2, default=str), encoding="utf-8"
     )
 
-    selection = apply_selection_rule(results, baseline_result.benign_fp_per_1000)
+    selection = apply_selection_rule(results, baseline_result.benign_fp_per_1000, baseline_result.precision_at_20)
 
     if selection["status"] in ("selected", "selected_provisional") and selection["selected_candidate"] in all_scores:
         chosen_name = selection["selected_candidate"]

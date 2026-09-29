@@ -137,7 +137,7 @@ def test_selection_records_no_model_selected_when_nothing_clears_gates() -> None
         compare.CandidateResult(name="isolation_forest", version="t", parameters={}, eligible=False, ineligible_reason="fit too slow"),
         compare.CandidateResult(name="local_outlier_factor_novelty", version="t", parameters={}, eligible=False, ineligible_reason="OOM"),
     ]
-    selection = compare.apply_selection_rule(candidates, baseline_benign_fp=5.0)
+    selection = compare.apply_selection_rule(candidates, baseline_benign_fp=5.0, baseline_precision_at_20=0.0)
     assert selection["status"] == "no_model_selected"
     assert selection["selected_candidate"] is None
 
@@ -151,9 +151,30 @@ def test_selection_chooses_best_validation_precision_when_labels_available() -> 
         name="isolation_forest", version="t", parameters={}, eligible=True,
         peak_rss_mb=100, benign_fp_per_1000=4.0, precision_at_20=0.4,
     )
-    selection = compare.apply_selection_rule([weaker, stronger], baseline_benign_fp=5.0)
+    # Baseline strictly below both candidates, so this exercises "pick the best
+    # candidate that beat the baseline", not the no-model-selected path.
+    selection = compare.apply_selection_rule([weaker, stronger], baseline_benign_fp=5.0, baseline_precision_at_20=0.05)
     assert selection["status"] == "selected"
     assert selection["selected_candidate"] == "isolation_forest"
+
+
+def test_selection_records_no_model_selected_when_every_candidate_ties_the_baseline() -> None:
+    """Regression test: baseline 0.0, Isolation Forest 0.0, LOF 0.0 -> no_model_selected.
+    A tie — including the degenerate 0.0 == 0.0 case when the label join finds
+    nothing to score against — must never be treated as "beating" the baseline.
+    Ties never win."""
+    isolation_forest = compare.CandidateResult(
+        name="isolation_forest", version="t", parameters={}, eligible=True,
+        peak_rss_mb=100, benign_fp_per_1000=4.0, precision_at_20=0.0,
+    )
+    lof = compare.CandidateResult(
+        name="local_outlier_factor_novelty", version="t", parameters={}, eligible=True,
+        peak_rss_mb=100, benign_fp_per_1000=4.0, precision_at_20=0.0,
+    )
+    selection = compare.apply_selection_rule([isolation_forest, lof], baseline_benign_fp=5.0, baseline_precision_at_20=0.0)
+    assert selection["status"] == "no_model_selected"
+    assert selection["selected_candidate"] is None
+    assert "ties never win" in selection["reason"]
 
 
 def test_selection_falls_back_to_stability_when_labels_unavailable_and_flags_unknown_accuracy() -> None:
@@ -165,7 +186,9 @@ def test_selection_falls_back_to_stability_when_labels_unavailable_and_flags_unk
         name="isolation_forest", version="t", parameters={}, eligible=True,
         peak_rss_mb=100, benign_fp_per_1000=4.0, precision_at_20="unavailable", score_seconds=1.0, rank_stability_spearman=0.99,
     )
-    selection = compare.apply_selection_rule([less_stable, more_stable], baseline_benign_fp=5.0)
+    selection = compare.apply_selection_rule(
+        [less_stable, more_stable], baseline_benign_fp=5.0, baseline_precision_at_20="unavailable"
+    )
     # "selected_provisional", not "selected" — labels were unavailable, so this must be
     # visibly distinct from a real label-based pick, not the same status under one name.
     assert selection["status"] == "selected_provisional"
@@ -178,7 +201,7 @@ def test_selection_gates_out_excessive_benign_false_positive_rate() -> None:
         name="isolation_forest", version="t", parameters={}, eligible=True,
         peak_rss_mb=100, benign_fp_per_1000=100.0, precision_at_20=0.9,
     )
-    selection = compare.apply_selection_rule([excessive], baseline_benign_fp=5.0)
+    selection = compare.apply_selection_rule([excessive], baseline_benign_fp=5.0, baseline_precision_at_20=0.1)
     assert selection["status"] == "no_model_selected"
     assert "isolation_forest" in selection["gate_notes"]
 
@@ -221,7 +244,7 @@ def test_full_synthetic_run_writes_the_required_output_files(tmp_path: Path) -> 
         result.benign_fp_per_1000 = metrics["benign_fp_per_1000"]
         results.append(result)
 
-    selection = compare.apply_selection_rule(results, baseline_result.benign_fp_per_1000)
+    selection = compare.apply_selection_rule(results, baseline_result.benign_fp_per_1000, baseline_result.precision_at_20)
 
     run_dir = tmp_path / "run"
     (run_dir / "candidate_logs").mkdir(parents=True)

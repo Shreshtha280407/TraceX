@@ -55,13 +55,13 @@ Select the simplest eligible candidate that:
 1. completed its fit within the 600s budget;
 2. stayed under the RSS warning threshold (`TRACEX_ML_RSS_WARNING_MB`, configurable per runner; 24GB default for Aditya's 32GB MacBook);
 3. did not increase benign-FP/1,000 windows over the rule baseline by more than the predeclared margin (2×, or +5 per 1,000 windows, whichever is larger — a fixed rule stated here before any candidate is scored, not chosen after seeing results);
-4. has the best validation Precision@20 among the candidates clearing 1–3, **if** the evaluation join produced a non-empty usable positive set for that metric.
+4. has the best validation Precision@20 among the candidates clearing 1–3, **if** the evaluation join produced a non-empty usable positive set for that metric — and that Precision@20 must be **strictly greater than** the rule-only baseline's own validation Precision@20 on the same records. **Ties never win**, including the degenerate `0.0 == 0.0` case where the label join finds nothing for either the baseline or any candidate to score against — a tie is not evidence a model adds value, so no model is selected on a tie.
 
 `status` in the machine-readable result is one of three values, never conflated:
 
-- **`"selected"`** — gates 1–3 passed and step 4's real, label-based Precision@20 comparison decided the winner.
+- **`"selected"`** — gates 1–3 passed and step 4's real, label-based Precision@20 comparison found at least one candidate that strictly beat the baseline; the winner is the best among those.
 - **`"selected_provisional"`** — gates 1–3 passed, but the join's usable positive set was empty (the realistic case at this label density), so selection instead used only stability, benign-FP rate, latency, and memory among the gated candidates. `real_world_accuracy` is recorded as `"unknown"` in this case, not merely unproven — and callers must treat `selected_provisional` as a materially weaker claim than `selected`, not the same outcome under a different label.
-- **`"no_model_selected"`** — no candidate cleared gates 1–3; `selected_candidate` is `null`. Never a silent default to whichever candidate happened to run.
+- **`"no_model_selected"`** — no candidate cleared gates 1–3, or every candidate that did clear them tied (or lost to) the baseline's Precision@20; `selected_candidate` is `null`. Never a silent default to whichever candidate happened to run.
 
 ## Leakage checklist
 
