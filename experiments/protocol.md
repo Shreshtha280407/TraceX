@@ -5,10 +5,10 @@ Status: **No candidate has won yet.** This protocol is written before any model 
 ## Reproducibility identity
 
 - Fixture source: `fixtures/phase5a_100k/`
-- Generator version: `1.0.0`
-- Fixed seed: `tracex-phase5a-prep-100k-v1`
-- Config SHA-256: `1adf1a3a41e7dee43ce54fed55b833092bf0a8c0985bd7698fd4a045adb522b3`
-- Generator SHA-256: `8c16c6d9dd785c5f890182cf7d8ef8c641dda342f89b875b80a739e2fc085fa1`
+- Generator version: `2.0.0`
+- Fixed seed: `tracex-phase5a-prep-100k-v2`
+- Config SHA-256: `4e62b06ce31d63aff942a5631e21d0c1b113d2f4e82874746817494b9d76dee7`
+- Generator SHA-256: `a0f2cce94c8e19c3d94c8de0eb4125accdfd8c74e4de2309278685600bea1cf1`
 - Fixture hash source: generated `datasets/phase5a_100k/fixture_manifest.json`; it records an exact SHA-256 and byte count for every generated artifact. Regenerate it with the documented command before any run and record its manifest hash in the run log.
 - Feature-contract version: `Phase 5A additive feature contract v1`; frozen response schema remains `phase4.1-feature-v1`.
 
@@ -22,7 +22,7 @@ The generated evaluation truth (never ingested) defines time-contiguous, group-d
 | validation | `g-008`, `g-009` | 15,000 |
 | final holdout | `g-010`, `g-011`, `g-012` | 15,000 |
 
-No group appears in more than one split. All validation times follow train/reference, and all final-holdout times follow validation. The fixture contains 82.5% benign-control rows and 17.5% review-pattern rows; this is an engineering scenario mix, not a real prevalence estimate. Missing prior history is explicit null prevout coverage, not an inferred relationship. Repeated endpoint observations model relays/NAT only and cannot yield wallet ownership, propagation, labels, or model features.
+No group appears in more than one split. All validation times follow train/reference, and all final-holdout times follow validation. The fixture contains 77.5% benign-control rows and 22.5% review-pattern rows — v2 marks a review-pattern group in every split so validation and final holdout each carry real positives. This is an engineering scenario mix, not a real prevalence estimate. Missing prior history is explicit null prevout coverage, not an inferred relationship. Repeated endpoint observations model relays/NAT only and cannot yield wallet ownership, propagation, labels, or model features.
 
 Leakage checklist:
 

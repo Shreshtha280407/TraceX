@@ -80,7 +80,8 @@ def test_csv_ndjson_raw_contract_utxo_and_duplicates(generated) -> None:
     for row in generator.ndjson_rows(output / "inputs.ndjson"):
         unresolved += row["prev_txid"] is None and row["prev_vout"] is None
         assert (row["prev_txid"] is None) == (row["prev_vout"] is None)
-    assert unresolved == 1000
+    config, _ = generator.load_config()
+    assert unresolved == config["bootstrap_transaction_count"]
     assert sum(1 for _ in generator.ndjson_rows(output / "duplicate_candidates.ndjson")) == 25
 
 
@@ -99,8 +100,10 @@ def test_split_truth_controls_and_network_observation_non_ownership(generated) -
         group["transaction_index_end_exclusive"] - group["transaction_index_start"]
         for group in groups if group["review_pattern"]
     )
-    assert 0.05 <= review_rows / 100_000 <= 0.20
-    assert 100_000 - review_rows >= 80_000
+    # v2 marks a review-pattern group in every split, so validation and final
+    # holdout each carry real positives.  That raises the mix above v1's 17.5%.
+    assert 0.05 <= review_rows / 100_000 <= 0.25
+    assert 100_000 - review_rows >= 75_000
     observations = list(generator.ndjson_rows(output / "network_observations.ndjson"))
     assert observations and all("ownership" in row["capture_scope"] and row["txid"] for row in observations)
     assert all("address" not in row for row in observations)
@@ -114,8 +117,9 @@ def test_phase41_positive_negative_controls_and_seed_path(generated) -> None:
     relevant.update(truth["expected_coinjoin_like_transaction_ids"])
     relevant.update(truth["expected_benign_controls"]["ordinary_sequence_transaction_ids"])
     relevant.update(truth["expected_benign_controls"]["ordinary_multi_output_transaction_ids"])
-    seed_indexes = (1000, 1020, 1021, 1022, 1040)
     config, _ = generator.load_config()
+    anchors = generator.anchor_indexes(config)
+    seed_indexes = (anchors["peel_chain_start"], *anchors["seed_path"], anchors["disconnected"])
     relevant.update(generator.txid(config["seed"], index) for index in seed_indexes)
     transactions, inputs, outputs = _selected_facts(generator, output, relevant)
     peeling = detect_peeling_chains(transactions=transactions, inputs=inputs, outputs=outputs)

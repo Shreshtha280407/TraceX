@@ -1,26 +1,217 @@
 {
   "schema_version": "1.0.0",
-  "generator_version": "1.0.0",
-  "seed": "tracex-phase5a-prep-100k-v1",
+  "generator_version": "2.0.0",
+  "seed": "tracex-phase5a-prep-100k-v2",
   "network": "bitcoin-regtest",
   "transaction_count": 100000,
-  "bootstrap_transaction_count": 1000,
-  "bootstrap_outputs_per_transaction": 100,
+  "bootstrap_transaction_count": 900,
+  "bootstrap_outputs_per_transaction": 36,
   "duplicate_record_count": 25,
   "network_observation_count": 2400,
+  "arrival": {
+    "mean_interarrival_seconds": 42.0,
+    "diurnal_amplitude": 0.55,
+    "_note": "Non-homogeneous Poisson. v1 used index*47 + index%13, an arithmetic ladder with zero burstiness, so no activity surge existed anywhere in the fixture."
+  },
+  "addresses": {
+    "hot_address_count": 18000,
+    "reuse_probability": 0.58,
+    "reuse_zipf_exponent": 0.62,
+    "_note": "Heavy-tailed reuse so the strictly-earlier history features (surge, recurrence, reactivation, baseline deviation) have something to measure. v1 left 96.88% of rows with first_observed_activity=1."
+  },
+  "spend_latency": {
+    "fast_fraction": 0.34,
+    "fast_log_mean": 7.0,
+    "fast_log_sigma": 1.15,
+    "slow_log_mean": 12.6,
+    "slow_log_sigma": 1.25,
+    "unspent_fraction": 0.45,
+    "_note": "Bimodal, scheduled at creation time. fast ~ exp(N(7.0,1.15)) s (median ~18 min); slow ~ exp(N(12.6,1.25)) s (median ~3.4 days). unspent_fraction is deliberate right-censoring for the survival layer, and is tuned so scheduled spends are consumed at roughly the rate they are created -- an unbalanced queue builds a backlog and every realised latency becomes queue wait instead of the drawn delay."
+  },
+  "motifs": {
+    "baseline_rate": 0.004,
+    "review_group_multiplier": 2.5,
+    "nearmiss_rate": 0.012,
+    "motif_fast_fraction": 0.72,
+    "min_equal_outputs": 3,
+    "max_equal_outputs": 8,
+    "min_chain_hops": 2,
+    "max_chain_hops": 8,
+    "min_peel_fraction": 0.005,
+    "max_peel_fraction": 0.09,
+    "minimum_labelled_positives": 2000,
+    "minimum_surge_episodes": 14,
+    "surge_windows": [
+      {
+        "family": "coinjoin_like",
+        "split": "train_reference",
+        "start_index": 3000,
+        "end_index": 68000,
+        "episode_count": 7,
+        "min_transactions": 260,
+        "max_transactions": 900,
+        "motif_rate_multiplier": 14.0,
+        "arrival_rate_multiplier": 2.2
+      },
+      {
+        "family": "peel_step",
+        "split": "train_reference",
+        "start_index": 3000,
+        "end_index": 68000,
+        "episode_count": 5,
+        "min_transactions": 220,
+        "max_transactions": 700,
+        "motif_rate_multiplier": 11.0,
+        "arrival_rate_multiplier": 1.8
+      },
+      {
+        "family": "coinjoin_like",
+        "split": "validation",
+        "start_index": 70500,
+        "end_index": 84000,
+        "episode_count": 3,
+        "min_transactions": 240,
+        "max_transactions": 700,
+        "motif_rate_multiplier": 14.0,
+        "arrival_rate_multiplier": 2.2
+      },
+      {
+        "family": "peel_step",
+        "split": "validation",
+        "start_index": 70500,
+        "end_index": 84000,
+        "episode_count": 2,
+        "min_transactions": 200,
+        "max_transactions": 600,
+        "motif_rate_multiplier": 11.0,
+        "arrival_rate_multiplier": 1.8
+      },
+      {
+        "family": "coinjoin_like",
+        "split": "final_holdout",
+        "start_index": 85500,
+        "end_index": 99000,
+        "episode_count": 3,
+        "min_transactions": 240,
+        "max_transactions": 700,
+        "motif_rate_multiplier": 14.0,
+        "arrival_rate_multiplier": 2.2
+      },
+      {
+        "family": "peel_step",
+        "split": "final_holdout",
+        "start_index": 85500,
+        "end_index": 99000,
+        "episode_count": 2,
+        "min_transactions": 200,
+        "max_transactions": 600,
+        "motif_rate_multiplier": 11.0,
+        "arrival_rate_multiplier": 1.8
+      }
+    ],
+    "_note": "Baseline motif rate plus labelled surge episodes at a multiple of it. v1 emitted CoinJoin on a metronome (one per 6.6 h, max 1 per hour), so the primary requirement -- detecting a sudden surge -- had zero positive instances.",
+    "rule_positive_benign_rate": 0.009
+  },
+  "network_context": {
+    "asn_pool_size": 180,
+    "asn_zipf_exponent": 1.05,
+    "endpoint_pool_size": 480,
+    "endpoint_zipf_exponent": 0.9,
+    "surge_asn_count": 6,
+    "surge_countries": [
+      "SC",
+      "PA",
+      "VG"
+    ],
+    "surge_affinity": 0.42,
+    "_note": "Skewed, with a correlated (not deterministic) relay tendency during motif surges. Surge ASNs are taken from the tail of the Zipf pool so their baseline share is small. v1's geo_country was uniform and src_ip/asn were index%29 / index%19 -- pure functions of row order, carrying zero information.",
+    "surge_asn_offset": 120
+  },
   "split_groups": [
-    {"group_id": "g-001", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
-    {"group_id": "g-002", "split": "train_reference", "count": 10000, "scenario": "benign_exchange_batch", "review_pattern": false},
-    {"group_id": "g-003", "split": "train_reference", "count": 10000, "scenario": "benign_treasury_transfer", "review_pattern": false},
-    {"group_id": "g-004", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
-    {"group_id": "g-005", "split": "train_reference", "count": 10000, "scenario": "normal_low_activity", "review_pattern": false},
-    {"group_id": "g-006", "split": "train_reference", "count": 10000, "scenario": "benign_exchange_batch", "review_pattern": false},
-    {"group_id": "g-007", "split": "train_reference", "count": 10000, "scenario": "review_structure", "review_pattern": true},
-    {"group_id": "g-008", "split": "validation", "count": 7500, "scenario": "normal_low_activity", "review_pattern": false},
-    {"group_id": "g-009", "split": "validation", "count": 7500, "scenario": "review_structure", "review_pattern": true},
-    {"group_id": "g-010", "split": "final_holdout", "count": 5000, "scenario": "benign_exchange_batch", "review_pattern": false},
-    {"group_id": "g-011", "split": "final_holdout", "count": 5000, "scenario": "benign_treasury_transfer", "review_pattern": false},
-    {"group_id": "g-012", "split": "final_holdout", "count": 5000, "scenario": "normal_low_activity", "review_pattern": false}
+    {
+      "group_id": "g-001",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "normal_low_activity",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-002",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "benign_exchange_batch",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-003",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "benign_treasury_transfer",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-004",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "normal_low_activity",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-005",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "normal_low_activity",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-006",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "benign_exchange_batch",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-007",
+      "split": "train_reference",
+      "count": 10000,
+      "scenario": "review_structure",
+      "review_pattern": true
+    },
+    {
+      "group_id": "g-008",
+      "split": "validation",
+      "count": 7500,
+      "scenario": "normal_low_activity",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-009",
+      "split": "validation",
+      "count": 7500,
+      "scenario": "review_structure",
+      "review_pattern": true
+    },
+    {
+      "group_id": "g-010",
+      "split": "final_holdout",
+      "count": 5000,
+      "scenario": "benign_exchange_batch",
+      "review_pattern": false
+    },
+    {
+      "group_id": "g-011",
+      "split": "final_holdout",
+      "count": 5000,
+      "scenario": "review_structure",
+      "review_pattern": true
+    },
+    {
+      "group_id": "g-012",
+      "split": "final_holdout",
+      "count": 5000,
+      "scenario": "normal_low_activity",
+      "review_pattern": false
+    }
   ],
-  "description": "Deterministic synthetic Phase 5A preparation fixture; not real blockchain data or a training corpus."
+  "description": "Deterministic synthetic Phase 5A preparation fixture v2; not real blockchain data or a training corpus. v2 fixes the measured defects that made v1 unable to falsify a model: address-namespace collision, arithmetic timestamps, metronome motifs, a constant CoinJoin remainder, near-absent rapid spends, uniform network context, and 36 usable labels."
 }
