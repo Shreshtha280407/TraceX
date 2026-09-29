@@ -1,4 +1,4 @@
-.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-holdout anomaly-stack-test
+.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test
 
 phase-zero: verify-fixture test
 
@@ -48,13 +48,20 @@ dataset:
 	python3 fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify
 
 # Run every layer alone, every combination, and the deterministic rule baseline
-# on the validation split, for all three tasks.  This is the command that answers
-# "which combination predicts best".
+# on the validation split, for all three tasks.  Unsupervised only -- this is the
+# configuration intended for deployment, and the one whose numbers are quotable.
 anomaly-stack: | datasets/phase5a_100k
 	uv run --extra ml python scripts/run_anomaly_stack.py \
 		--dataset datasets/phase5a_100k \
-		--with-supervised \
 		--output experiments/runs/anomaly_stack_validation.json
+
+# Adds the supervised comparator. Demo/research only: on this fixture layer S
+# trains on generator truth, which is close to circular for the motif task.
+anomaly-stack-demo: | datasets/phase5a_100k
+	uv run --extra ml python scripts/run_anomaly_stack.py \
+		--dataset datasets/phase5a_100k \
+		--with-supervised \
+		--output experiments/runs/anomaly_stack_demo.json
 
 # The final holdout is evaluated exactly once, after every setting is frozen.
 # Running this before `anomaly-stack` defeats the point of having a holdout.
@@ -62,12 +69,12 @@ anomaly-stack-holdout: | datasets/phase5a_100k
 	uv run --extra ml python scripts/run_anomaly_stack.py \
 		--dataset datasets/phase5a_100k \
 		--split final_holdout \
-		--with-supervised \
 		--output experiments/runs/anomaly_stack_holdout.json
 
 anomaly-stack-test:
-	uv run --extra ml ruff check app/ml scripts/run_anomaly_stack.py fixtures/phase5a_100k/generate.py
-	uv run --extra ml pytest -q tests/unit/test_anomaly_stack.py tests/unit/test_phase5a_fixture_v2.py tests/unit/test_phase5a_100k_dataset.py
+	uv run --extra ml ruff check app/ml scripts/run_anomaly_stack.py fixtures/phase5a_100k/generate.py tests/unit/test_ml_pipeline_integration.py
+	uv run --extra ml pytest -q tests/unit/test_anomaly_stack.py tests/unit/test_ml_pipeline_integration.py \
+		tests/unit/test_phase5a_fixture_v2.py tests/unit/test_phase5a_100k_dataset.py
 
 datasets/phase5a_100k:
 	@echo "No fixture at datasets/phase5a_100k. Run: make dataset"

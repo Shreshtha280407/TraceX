@@ -24,6 +24,20 @@ The generated evaluation truth (never ingested) defines time-contiguous, group-d
 
 No group appears in more than one split. All validation times follow train/reference, and all final-holdout times follow validation. The fixture contains 77.5% benign-control rows and 22.5% review-pattern rows — v2 marks a review-pattern group in every split so validation and final holdout each carry real positives. This is an engineering scenario mix, not a real prevalence estimate. Missing prior history is explicit null prevout coverage, not an inferred relationship. Repeated endpoint observations model relays/NAT only and cannot yield wallet ownership, propagation, labels, or model features.
 
+Causality requirement (added after an audit found future-reading features):
+
+Every model input must be computable from facts timestamped at or before its own
+row's timestamp. Outcome features (was this output later spent, how far does the
+chain continue forward), whole-dataset statistics, and containing-bucket
+aggregates all violate this and are excluded. `app.ml.facts.truncate_facts` plus
+the property tests in `tests/unit/test_anomaly_stack.py` verify it by rebuilding
+every feature table on a snapshot truncated at time T and requiring bit-identical
+values for rows at or before T.
+
+Deployment posture: the ranking that reaches a case is unsupervised. A supervised
+layer may be reported as a research comparator, but it may only be deployed once
+it trains on analyst review decisions rather than on fixture truth.
+
 Leakage checklist:
 
 - [ ] Do not ingest `evaluation_truth.json`.

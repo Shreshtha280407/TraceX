@@ -144,7 +144,13 @@ def run_stack(
     if "B" in config.layers:
         start = time.perf_counter()
         latency = grains.build_latency_table(facts)
-        layer_objects["B_latency"] = layers.layer_b_latency(latency, facts, train_mask)
+        # A second table censored at the last reference-split transaction: the
+        # survival curve must not be shaped by spends that happen after training.
+        reference_horizon = int(facts.tx_time[train_mask].max()) if train_mask.any() else None
+        reference_latency = grains.build_latency_table(facts, horizon=reference_horizon)
+        layer_objects["B_latency"] = layers.layer_b_latency(
+            latency, facts, train_mask, reference_latency=reference_latency
+        )
         timings["layer_b"] = time.perf_counter() - start
 
     if "C" in config.layers:
@@ -159,7 +165,8 @@ def run_stack(
     if "D" in config.layers:
         start = time.perf_counter()
         layer_objects["D_burst"] = layers.layer_d_burst(
-            facts, family_flags, bucket_seconds=config.bucket_seconds, with_bocpd=config.with_bocpd
+            facts, family_flags, bucket_seconds=config.bucket_seconds,
+            with_bocpd=config.with_bocpd, reference=train_mask,
         )
         timings["layer_d"] = time.perf_counter() - start
 

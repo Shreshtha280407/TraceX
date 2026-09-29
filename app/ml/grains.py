@@ -7,8 +7,28 @@ and motif bursts of the *population over time*.  Collapsing four questions onto
 one key is why a 4-output CoinJoin becomes four rows that each look like an
 ordinary single receipt.
 
-Every table below is built strictly causally: a row may only use facts committed
-at or before its own timestamp.
+Every table below is built **strictly causally**: a feature for transaction `t` may
+only use facts whose timestamp is at or before `tx_time[t]`.  That is not a style
+preference — a feature you cannot compute at observation time cannot be deployed,
+so a model trained on one is unshippable no matter how well it scores offline.
+
+Three classes of future leak were found and removed here, each of which had
+inflated the reported precision:
+
+* **outcome features** — "was this output later spent", "how many transactions
+  later spent it", "how deep does the chain continue forward".  There is no causal
+  version of these; they are gone.
+* **whole-dataset statistics** — address reuse totals and country frequencies
+  counted over the entire file, so an early transaction saw the whole future
+  distribution.  These are now expanding-window counts over strictly-earlier rows.
+* **containing-bucket aggregates** — endpoint/ASN co-occurrence counted inside the
+  bucket holding the transaction, so a transaction early in the bucket saw
+  transactions later in it.  These are now trailing windows, `[t - W, t)`.
+
+`app.ml.facts.truncate_facts` plus `tests/unit/test_anomaly_stack.py` prove this by
+property rather than by inspection: rebuild every table on a view of the snapshot
+truncated at time T and assert the rows for transactions at or before T are
+bit-identical to the full run.
 """
 
 from __future__ import annotations
@@ -87,8 +107,11 @@ TRANSACTION_COLUMNS = (
     "log_fee", "fee_share", "peel_ratio", "one_big_one_small",
     "round_output_count", "round_output_share", "script_type_count",
     "input_value_concentration", "log_input_total", "value_throughput_ratio",
-    "spent_output_share", "input_age_min_log", "input_age_median_log", "rapid_input_share",
+    "input_age_min_log", "input_age_median_log", "rapid_input_share",
 )
+# NOTE: `spent_output_share` was removed. Whether a transaction's outputs are later
+# spent is not knowable when the transaction is observed, and no causal substitute
+# exists. Input *ages* below are the causal counterpart: they look backwards.
 
 
 def build_transaction_table(facts: Facts) -> Table:
@@ -104,7 +127,6 @@ def build_transaction_table(facts: Facts) -> Table:
 
     value = facts.out_value
     script = facts.out_script
-    spent = facts.out_spent_by >= 0
     tx_time = facts.tx_time
     prev_of_input = facts.in_prev
 
@@ -165,10 +187,9 @@ def build_transaction_table(facts: Facts) -> Table:
         row[26] = float(input_values.max() / input_total) if input_total > 0 else 0.0
         row[27] = np.log1p(input_total)
         row[28] = total / input_total if input_total > 0 else 0.0
-        row[29] = float(spent[outs].mean()) if n_out else 0.0
-        row[30] = np.log1p(float(ages.min())) if ages.size else 0.0
-        row[31] = np.log1p(float(np.median(ages))) if ages.size else 0.0
-        row[32] = float((ages <= 3600).mean()) if ages.size else 0.0
+        row[29] = np.log1p(float(ages.min())) if ages.size else 0.0
+        row[30] = np.log1p(float(np.median(ages))) if ages.size else 0.0
+        row[31] = float((ages <= 3600).mean()) if ages.size else 0.0
     return Table(TRANSACTION_COLUMNS, matrix)
 
 
@@ -191,19 +212,28 @@ class LatencyTable:
     spending_tx: np.ndarray   # int32 spending transaction, -1 when censored
 
 
-def build_latency_table(facts: Facts) -> LatencyTable:
+def build_latency_table(facts: Facts, *, horizon: int | None = None) -> LatencyTable:
+    """Spend durations, censored at `horizon` (default: the snapshot's last time).
+
+    Passing an earlier horizon yields the table *as it looked then*: a spend that
+    happens after it is censored rather than observed.  Layer B fits on the
+    reference period's horizon for exactly that reason — fitting on durations that
+    run past the training period means the survival curve is shaped by events the
+    model would not have seen yet.
+    """
     created_at = facts.tx_time[facts.out_tx]
     spending = facts.out_spent_by
-    observed = spending >= 0
-    horizon = int(facts.tx_time.max())
-    spent_at = np.where(observed, facts.tx_time[np.maximum(spending, 0)], horizon)
+    horizon = int(facts.tx_time.max()) if horizon is None else int(horizon)
+    spend_time = np.where(spending >= 0, facts.tx_time[np.maximum(spending, 0)], horizon + 1)
+    observed = (spending >= 0) & (spend_time <= horizon)
+    spent_at = np.where(observed, spend_time, horizon)
     duration = np.maximum(spent_at - created_at, 0).astype(np.float64)
     return LatencyTable(
         values=facts.out_value.astype(np.float64),
         duration=duration,
         observed=observed,
         created_tx=facts.out_tx,
-        spending_tx=spending,
+        spending_tx=np.where(observed, spending, -1).astype(np.int32),
     )
 
 
@@ -328,89 +358,136 @@ def build_motif_series(
 # Grain E — bounded graph neighbourhood
 # --------------------------------------------------------------------------- #
 GRAPH_COLUMNS = (
-    "in_degree", "out_degree", "degree_asymmetry", "distinct_prev_tx", "distinct_next_tx",
-    "chain_depth_back", "chain_depth_forward", "neighbour_value_in", "neighbour_value_out",
-    "recipient_reuse_share", "endpoint_cooccurrence", "asn_cooccurrence", "country_rarity",
+    "in_degree", "out_degree", "degree_asymmetry", "distinct_prev_tx",
+    "chain_depth_back", "neighbour_value_in", "neighbour_value_out",
+    "prior_recipient_reuse_mean", "prior_recipient_reuse_max", "prior_recipient_seen_share",
+    "endpoint_cooccurrence_trailing", "asn_cooccurrence_trailing", "country_rarity_prior",
 )
+# Removed as non-causal: `distinct_next_tx` and `chain_depth_forward` both read
+# `out_spent_by`, which records spends that had not happened yet, and
+# `recipient_reuse_share`/`country_rarity` were counted over the whole dataset.
+
+
+def _prior_occurrence_index(key: np.ndarray, order_time: np.ndarray, tiebreak: np.ndarray) -> np.ndarray:
+    """For each row, how many earlier rows shared its key.
+
+    Ordering is `(time, tiebreak)` so rows sharing a timestamp still get a total
+    order, and the count is strictly *earlier* — a row never counts itself or a
+    simultaneous sibling twice.
+    """
+    order = np.lexsort((tiebreak, order_time, key))
+    sorted_key = key[order]
+    position = np.arange(key.shape[0], dtype=np.int64)
+    # Index of the first row of each key block, broadcast back over the block.
+    starts = np.flatnonzero(np.append(True, sorted_key[1:] != sorted_key[:-1]))
+    block_start = np.repeat(starts, np.diff(np.append(starts, key.shape[0])))
+    prior_sorted = position - block_start
+    prior = np.empty(key.shape[0], dtype=np.int64)
+    prior[order] = prior_sorted
+    return prior
+
+
+def _trailing_cooccurrence(key: np.ndarray, time: np.ndarray, window: int) -> np.ndarray:
+    """Count of strictly-earlier transactions sharing `key` within `[t - window, t)`.
+
+    The previous implementation counted everything inside the fixed bucket holding
+    the transaction, which let a transaction see its own bucket's future.
+    """
+    result = np.zeros(key.shape[0], dtype=np.float64)
+    valid = np.flatnonzero(key >= 0)
+    if valid.size == 0:
+        return result
+    order = valid[np.lexsort((time[valid], key[valid]))]
+    sorted_key, sorted_time = key[order], time[order]
+    starts = np.flatnonzero(np.append(True, sorted_key[1:] != sorted_key[:-1]))
+    ends = np.append(starts[1:], order.shape[0])
+    for start, stop in zip(starts, ends, strict=True):
+        block_time = sorted_time[start:stop]
+        # Rows strictly before t, minus rows before (t - window).
+        before = np.searchsorted(block_time, block_time, side="left")
+        outside = np.searchsorted(block_time, block_time - window, side="left")
+        result[order[start:stop]] = before - outside
+    return np.log1p(result)
+
+
+def _expanding_rarity(key: np.ndarray, time: np.ndarray, tiebreak: np.ndarray, classes: int) -> np.ndarray:
+    """-log of this key's share among strictly-earlier rows, Laplace-smoothed.
+
+    Smoothing keeps the first rows defined instead of dividing by zero, and keeps
+    the statistic comparable as the denominator grows.
+    """
+    prior_key = _prior_occurrence_index(key, time, tiebreak).astype(np.float64)
+    order = np.lexsort((tiebreak, time))
+    rank = np.empty(key.shape[0], dtype=np.float64)
+    rank[order] = np.arange(key.shape[0], dtype=np.float64)
+    share = (prior_key + 1.0) / (rank + max(classes, 1))
+    rarity = -np.log(np.clip(share, 1e-9, 1.0))
+    rarity[key < 0] = 0.0
+    return rarity
 
 
 def build_graph_table(facts: Facts, *, window_seconds: int = 3600) -> Table:
-    """Bounded k<=2 UTXO-graph features plus the PS network-context aggregates.
+    """Bounded backward-only UTXO-graph features plus causal network context.
 
-    The exporter's `bounded_component_change` proxy for this is perfectly
-    collinear with `received_output_count`, so it adds nothing.  Real degree,
-    chain depth and endpoint co-occurrence are all cheap and all currently unused.
+    Everything here looks backwards from the transaction: which prior outputs it
+    consumed, how deep the verified chain behind it runs, how often its recipient
+    addresses had already been seen, and how busy its relay endpoint had been in
+    the preceding hour.  Nothing reads a spend that had not happened yet.
 
-    Endpoint and ASN co-occurrence stay *observations*: how many distinct
-    transactions shared a relay endpoint in the same hour.  They never create an
-    ownership edge and never assert origin.
+    Endpoint and ASN counts stay *observations* of a relay.  They never create an
+    ownership edge and never assert transaction origin.
     """
     count = facts.transaction_count
     out_starts, out_order = facts.outputs_of()
     in_starts, in_order = facts.inputs_of()
     matrix = np.zeros((count, len(GRAPH_COLUMNS)), dtype=np.float32)
-
     prev_tx_of_output = facts.out_tx
-    # Backward depth: longest verified spend chain ending at this transaction,
-    # capped at 2 hops so this stays a bounded neighbourhood, not a traversal.
+
+    # Backward chain depth, capped at two hops so this stays a bounded
+    # neighbourhood.  Transactions are processed in time order, so a parent's
+    # depth is always final before its child reads it.
     back_depth = np.zeros(count, dtype=np.float32)
-    forward_depth = np.zeros(count, dtype=np.float32)
+    time_order = np.argsort(facts.tx_time, kind="stable")
 
-    address_use = np.bincount(facts.out_addr[facts.out_addr >= 0], minlength=len(facts.addresses))
+    # How many times each output address had already been seen, strictly earlier.
+    out_addr = facts.out_addr
+    prior_use = np.zeros(out_addr.shape[0], dtype=np.float64)
+    known = out_addr >= 0
+    if known.any():
+        prior_use[known] = _prior_occurrence_index(
+            out_addr[known], facts.tx_time[facts.out_tx[known]], facts.out_tx[known].astype(np.int64)
+        )
 
-    for transaction in range(count):
+    for transaction in time_order:
         outs = out_order[out_starts[transaction]:out_starts[transaction + 1]]
         ins = in_order[in_starts[transaction]:in_starts[transaction + 1]]
         resolved = facts.in_prev[ins]
         resolved = resolved[resolved >= 0]
         parents = np.unique(prev_tx_of_output[resolved]) if resolved.size else np.zeros(0, dtype=np.int32)
-        children = facts.out_spent_by[outs]
-        children = np.unique(children[children >= 0])
 
         row = matrix[transaction]
         row[0] = resolved.size
         row[1] = outs.size
         row[2] = (outs.size - resolved.size) / max(outs.size + resolved.size, 1)
         row[3] = parents.size
-        row[4] = children.size
         if parents.size:
             back_depth[transaction] = min(2.0, 1.0 + float(back_depth[parents].max()))
-        row[5] = back_depth[transaction]
-        row[7] = np.log1p(float(facts.out_value[resolved].sum())) if resolved.size else 0.0
-        row[8] = np.log1p(float(facts.out_value[outs].sum())) if outs.size else 0.0
-        addresses = facts.out_addr[outs]
-        addresses = addresses[addresses >= 0]
-        row[9] = float((address_use[addresses] > 1).mean()) if addresses.size else 0.0
+        row[4] = back_depth[transaction]
+        row[5] = np.log1p(float(facts.out_value[resolved].sum())) if resolved.size else 0.0
+        row[6] = np.log1p(float(facts.out_value[outs].sum())) if outs.size else 0.0
 
-    # Forward depth needs a reverse pass, so it is filled after back_depth exists.
-    for transaction in range(count - 1, -1, -1):
-        outs = out_order[out_starts[transaction]:out_starts[transaction + 1]]
-        children = facts.out_spent_by[outs]
-        children = children[children >= 0]
-        if children.size:
-            forward_depth[transaction] = min(2.0, 1.0 + float(forward_depth[np.unique(children)].max()))
-        matrix[transaction, 6] = forward_depth[transaction]
+        recipients = prior_use[outs] if outs.size else np.zeros(0)
+        row[7] = float(recipients.mean()) if recipients.size else 0.0
+        row[8] = float(recipients.max()) if recipients.size else 0.0
+        row[9] = float((recipients > 0).mean()) if recipients.size else 0.0
 
     if facts.tx_asn is not None and facts.tx_src_ip is not None and facts.tx_country is not None:
-        bucket = (facts.tx_time // window_seconds).astype(np.int64)
-        matrix[:, 10] = _cooccurrence(facts.tx_src_ip, bucket)
-        matrix[:, 11] = _cooccurrence(facts.tx_asn, bucket)
-        frequency = np.bincount(facts.tx_country[facts.tx_country >= 0])
-        share = frequency / max(frequency.sum(), 1)
-        rarity = np.zeros(count, dtype=np.float32)
-        known = facts.tx_country >= 0
-        rarity[known] = -np.log(np.clip(share[facts.tx_country[known]], 1e-9, 1.0))
-        matrix[:, 12] = rarity
+        tiebreak = np.arange(count, dtype=np.int64)
+        matrix[:, 10] = _trailing_cooccurrence(facts.tx_src_ip, facts.tx_time, window_seconds)
+        matrix[:, 11] = _trailing_cooccurrence(facts.tx_asn, facts.tx_time, window_seconds)
+        matrix[:, 12] = _expanding_rarity(
+            facts.tx_country, facts.tx_time, tiebreak, len(facts.countries or []) or 1
+        )
     return Table(GRAPH_COLUMNS, matrix)
 
 
-def _cooccurrence(key: np.ndarray, bucket: np.ndarray) -> np.ndarray:
-    """How many transactions shared this key inside this time bucket."""
-    valid = key >= 0
-    pair = np.where(valid, key.astype(np.int64) * (bucket.max() + 1) + bucket, -1)
-    unique, inverse, counts = np.unique(pair, return_inverse=True, return_counts=True)
-    result = counts[inverse].astype(np.float32)
-    result[~valid] = 0.0
-    if unique.size and unique[0] == -1:
-        result[pair == -1] = 0.0
-    return np.log1p(result)

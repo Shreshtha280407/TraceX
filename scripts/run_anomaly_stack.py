@@ -71,7 +71,22 @@ def main() -> int:
     )
     print(f"TraceX anomaly stack — dataset={args.dataset}  layers={','.join(config.layers)}  "
           f"budget={args.budget:.3%}  threads={config.threads}")
-    print(f"host: {platform.platform()} | python {platform.python_version()}\n")
+    print(f"host: {platform.platform()} | python {platform.python_version()}")
+    if args.with_supervised:
+        print(
+            "\n" + "!" * 100 + "\n"
+            "  DEMO / RESEARCH MODE: layer S is trained on the fixture's generator truth.\n"
+            "  Those labels are the generator's own shape families, and the deterministic rule's\n"
+            "  predicate is nearly the same predicate, so the `motif` result is close to circular\n"
+            "  and is NOT evidence of real-world accuracy. Read `discrimination` instead: its\n"
+            "  negatives satisfy the rule exactly, so a gain there is one the rule cannot have.\n"
+            "  What ships is the unsupervised ranking. Layer S becomes legitimate only once it\n"
+            "  trains on analyst review decisions (app/ml/findings.py::review_decision_labels).\n"
+            + "!" * 100
+        )
+    else:
+        print("mode: unsupervised only — this is the configuration intended for deployment.")
+    print()
 
     config.with_supervised = args.with_supervised
     started = time.perf_counter()
@@ -172,6 +187,14 @@ def main() -> int:
             "timings_seconds": result.timings,
             "peak_rss_mb": result.peak_rss_mb,
             "notes": {k: v for k, v in result.notes.items() if isinstance(v, (int, float, str, list, dict))},
+            "supervised_enabled": args.with_supervised,
+            "label_provenance": (
+                "fixture evaluation truth (generator shape families) — DEMO/RESEARCH ONLY; "
+                "not analyst review decisions, not evidence of real-world accuracy"
+                if args.with_supervised else
+                "none — unsupervised ranking only; no label reached any fit()"
+            ),
+            "deployable_configuration": not args.with_supervised,
             "label_counts": {
                 "positive": int(labels.positive.sum()),
                 "near_miss": int(labels.near_miss.sum()),
@@ -188,7 +211,12 @@ def main() -> int:
             "limitations": (
                 "Synthetic-fixture evaluation only. These numbers do not prove real-world "
                 "detection accuracy; they show which layer combination separates the "
-                "fixture's labelled motifs from its labelled near-miss negatives."
+                "fixture's labelled motifs from its labelled near-miss negatives. "
+                "Every feature is strictly causal (only facts at or before its own "
+                "transaction's timestamp), proved by the truncation property tests in "
+                "tests/unit/test_anomaly_stack.py. The `motif` task's labels are close to "
+                "the deterministic rule's own predicate, so its margin overstates what a "
+                "model adds; `discrimination` is the honest comparison."
             ),
         }, indent=2), encoding="utf-8")
         print(f"\nwrote {args.output}")

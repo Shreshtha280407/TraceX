@@ -258,3 +258,138 @@ def assign_splits(tx_time: np.ndarray, boundaries: tuple[int, int]) -> np.ndarra
 
 
 SPLIT_NAMES = ("train_reference", "validation", "final_holdout")
+
+
+def facts_from_records(records: dict[str, list[dict]]) -> Facts:
+    """Build `Facts` from committed canonical fragments.
+
+    `records` is exactly what `app.engine.graph.builder._facts` returns for a
+    receipt-approved snapshot, so the stack can run on the same evidence the
+    graph and the deterministic findings run on — case-scoped, source-located and
+    coverage-bounded — instead of on files read off disk.
+
+    Transactions are ordered by `(block_time, txid)` so the ordering is a property
+    of the evidence rather than of fragment read order.
+    """
+    transactions = []
+    for fact in records.get("transactions", []):
+        stamp = fact.get("block_time") or fact.get("source_timestamp")
+        if not stamp:
+            continue  # no usable time: it cannot be placed in any causal window
+        transactions.append((_epoch(stamp), str(fact["txid"]), int(fact.get("fee_sats") or 0)))
+    transactions.sort()
+
+    txids = [txid for _, txid, _ in transactions]
+    tx_index = {txid: slot for slot, txid in enumerate(txids)}
+    tx_time = np.asarray([stamp for stamp, _, _ in transactions], dtype=np.int64)
+    tx_fee = np.asarray([fee for _, _, fee in transactions], dtype=np.int64)
+
+    addresses: list[str] = []
+    addr_index: dict[str, int] = {}
+    script_index: dict[str, int] = {}
+    out_tx: list[int] = []
+    out_vout: list[int] = []
+    out_value: list[int] = []
+    out_addr: list[int] = []
+    out_script: list[int] = []
+    outpoint_index: dict[tuple[int, int], int] = {}
+    for fact in records.get("outputs", []):
+        transaction = tx_index.get(str(fact["txid"]), -1)
+        if transaction < 0:
+            continue
+        # `script_id` is the fallback the deterministic engine already uses when an
+        # output carries no address; keeping the same precedence keeps the two
+        # views of the snapshot consistent.
+        label = fact.get("address") or fact.get("script_id")
+        if label is None:
+            slot = -1
+        else:
+            slot = addr_index.setdefault(str(label), len(addresses))
+            if slot == len(addresses):
+                addresses.append(str(label))
+        script = str(fact.get("script_type") or "")
+        script_slot = script_index.setdefault(script, len(script_index))
+        outpoint_index[(transaction, int(fact["vout"]))] = len(out_tx)
+        out_tx.append(transaction)
+        out_vout.append(int(fact["vout"]))
+        out_value.append(int(fact["amount_sats"]))
+        out_addr.append(slot)
+        out_script.append(script_slot)
+
+    in_tx: list[int] = []
+    in_prev: list[int] = []
+    spent_by = np.full(len(out_tx), -1, dtype=np.int32)
+    for fact in records.get("inputs", []):
+        transaction = tx_index.get(str(fact["txid"]), -1)
+        if transaction < 0:
+            continue
+        in_tx.append(transaction)
+        previous_txid, previous_vout = fact.get("prev_txid"), fact.get("prev_vout")
+        previous = tx_index.get(str(previous_txid), -1) if previous_txid is not None else -1
+        if previous < 0 or previous_vout is None:
+            in_prev.append(-1)
+            continue
+        slot = outpoint_index.get((previous, int(previous_vout)), -1)
+        in_prev.append(slot)
+        if slot >= 0:
+            spent_by[slot] = transaction
+
+    return Facts(
+        txids=txids, tx_index=tx_index, tx_time=tx_time, tx_fee=tx_fee,
+        out_tx=np.asarray(out_tx, dtype=np.int32), out_vout=np.asarray(out_vout, dtype=np.int32),
+        out_value=np.asarray(out_value, dtype=np.int64), out_addr=np.asarray(out_addr, dtype=np.int32),
+        out_script=np.asarray(out_script, dtype=np.int8), out_spent_by=spent_by,
+        in_tx=np.asarray(in_tx, dtype=np.int32), in_prev=np.asarray(in_prev, dtype=np.int32),
+        addresses=addresses, addr_index=addr_index,
+    )
+
+
+def load_facts_from_snapshot(session, evidence_root, snapshot_id: str) -> Facts:
+    """Read one receipt-approved snapshot's committed facts through the real path."""
+    from app.engine.graph.builder import _facts
+
+    return facts_from_records(_facts(session, evidence_root, snapshot_id))
+
+
+def truncate_facts(facts: Facts, as_of: int) -> Facts:
+    """A view of the snapshot as it looked at `as_of`, used to prove causality.
+
+    Transactions after `as_of` are removed, and every spend edge they carried is
+    removed with them — so an output spent only in the future becomes unspent,
+    exactly as it would have looked at the time.  Recomputing features on this
+    view and comparing against the full run is a property test that catches any
+    future dependence by construction, rather than by reading the code.
+    """
+    keep = facts.tx_time <= as_of
+    old_to_new = np.full(facts.transaction_count, -1, dtype=np.int32)
+    old_to_new[keep] = np.arange(int(keep.sum()), dtype=np.int32)
+
+    out_keep = keep[facts.out_tx]
+    out_old_to_new = np.full(facts.out_tx.shape[0], -1, dtype=np.int32)
+    out_old_to_new[out_keep] = np.arange(int(out_keep.sum()), dtype=np.int32)
+
+    spent = facts.out_spent_by[out_keep]
+    spent = np.where(spent >= 0, old_to_new[np.maximum(spent, 0)], -1).astype(np.int32)
+    spent[facts.out_spent_by[out_keep] < 0] = -1
+
+    in_keep = keep[facts.in_tx]
+    previous = facts.in_prev[in_keep]
+    previous = np.where(previous >= 0, out_old_to_new[np.maximum(previous, 0)], -1).astype(np.int32)
+
+    kept_txids = [txid for txid, flag in zip(facts.txids, keep, strict=True) if flag]
+    truncated = Facts(
+        txids=kept_txids,
+        tx_index={txid: slot for slot, txid in enumerate(kept_txids)},
+        tx_time=facts.tx_time[keep], tx_fee=facts.tx_fee[keep],
+        out_tx=old_to_new[facts.out_tx[out_keep]], out_vout=facts.out_vout[out_keep],
+        out_value=facts.out_value[out_keep], out_addr=facts.out_addr[out_keep],
+        out_script=facts.out_script[out_keep], out_spent_by=spent,
+        in_tx=old_to_new[facts.in_tx[in_keep]], in_prev=previous,
+        addresses=facts.addresses, addr_index=facts.addr_index,
+    )
+    for field in ("tx_asn", "tx_country", "tx_src_ip"):
+        value = getattr(facts, field)
+        if value is not None:
+            setattr(truncated, field, value[keep])
+    truncated.asns, truncated.countries, truncated.src_ips = facts.asns, facts.countries, facts.src_ips
+    return truncated

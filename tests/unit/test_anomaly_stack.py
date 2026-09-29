@@ -18,6 +18,7 @@ import pytest
 
 from app.ml import detectors, evaluate, fusion, grains, layers
 from app.ml.facts import Facts, assign_splits
+from app.ml.facts import truncate_facts as facts_truncate
 
 
 # --------------------------------------------------------------------------- #
@@ -328,3 +329,126 @@ def test_rule_baseline_implements_the_documented_predicate() -> None:
     assert 0 < baseline.score[2] < 1.0
     # tx3: a single output, flagged by neither.
     assert baseline.score[3] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Causality, proved by truncation rather than by inspection
+# --------------------------------------------------------------------------- #
+def _causal_facts() -> Facts:
+    """Eight transactions over four distinct timestamps, with real spend chains.
+
+    Deliberately includes an output created early and spent late, which is the
+    exact shape every removed leak depended on.
+    """
+    txids = [f"tx{index}" for index in range(8)]
+    out_tx = np.array([0, 0, 1, 1, 2, 3, 3, 4, 5, 6, 7], dtype=np.int32)
+    out_vout = np.array([0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0], dtype=np.int32)
+    out_value = np.array([900, 100, 500, 500, 700, 300, 300, 250, 640, 610, 580], dtype=np.int64)
+    # Addresses repeat so the prior-reuse features have something to count.
+    out_addr = np.array([0, 1, 2, 2, 3, 0, 4, 5, 1, 2, 0], dtype=np.int32)
+    # tx2 spends tx0:0 early; tx6 spends tx1:0 much later; tx0:1 is never spent.
+    out_spent_by = np.array([2, -1, 6, -1, 5, 7, -1, -1, -1, -1, -1], dtype=np.int32)
+    return Facts(
+        txids=txids,
+        tx_index={txid: index for index, txid in enumerate(txids)},
+        tx_time=np.array([0, 100, 200, 300, 1000, 1100, 5000, 5100], dtype=np.int64),
+        tx_fee=np.array([10, 10, 10, 10, 10, 10, 10, 10], dtype=np.int64),
+        out_tx=out_tx, out_vout=out_vout, out_value=out_value, out_addr=out_addr,
+        out_script=np.zeros(11, dtype=np.int8), out_spent_by=out_spent_by,
+        in_tx=np.array([0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int32),
+        in_prev=np.array([-1, -1, 0, -1, -1, 4, 2, 5], dtype=np.int32),
+        addresses=[f"addr{index}" for index in range(6)],
+        addr_index={f"addr{index}": index for index in range(6)},
+        tx_asn=np.array([0, 0, 1, 0, 1, 1, 0, 0], dtype=np.int32),
+        tx_country=np.array([0, 1, 0, 0, 1, 2, 0, 1], dtype=np.int32),
+        tx_src_ip=np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int32),
+        asns=["AS1", "AS2"], countries=["US", "DE", "SG"], src_ips=["1.1.1.1", "2.2.2.2"],
+    )
+
+
+@pytest.mark.parametrize("as_of", [100, 300, 1100])
+def test_transaction_features_are_identical_on_a_truncated_snapshot(as_of: int) -> None:
+    """The property test that makes causality checkable instead of arguable.
+
+    Rebuild grain A on a view of the snapshot as it looked at `as_of`. Every
+    transaction at or before `as_of` must get bit-identical features, because none
+    of them may depend on anything that happened later. A single future-reading
+    column makes this fail.
+    """
+    facts = _causal_facts()
+    full = grains.build_transaction_table(facts).matrix
+    truncated = grains.build_transaction_table(facts_truncate(facts, as_of)).matrix
+    kept = int((facts.tx_time <= as_of).sum())
+    assert truncated.shape[0] == kept
+    np.testing.assert_array_equal(full[:kept], truncated)
+
+
+@pytest.mark.parametrize("as_of", [100, 300, 1100])
+def test_graph_features_are_identical_on_a_truncated_snapshot(as_of: int) -> None:
+    """Same property for the graph grain, which is where the worst leaks were:
+    `distinct_next_tx`, `chain_depth_forward` and whole-dataset reuse totals."""
+    facts = _causal_facts()
+    full = grains.build_graph_table(facts).matrix
+    truncated = grains.build_graph_table(facts_truncate(facts, as_of)).matrix
+    kept = int((facts.tx_time <= as_of).sum())
+    np.testing.assert_array_equal(full[:kept], truncated)
+
+
+def test_no_feature_column_reads_a_future_outcome() -> None:
+    """A name-level guard for the class of feature that has no causal version."""
+    forbidden = ("spent_output_share", "distinct_next_tx", "chain_depth_forward", "next_", "future_")
+    for name in grains.TRANSACTION_COLUMNS + grains.GRAPH_COLUMNS:
+        for token in forbidden:
+            assert token not in name, f"{name!r} names a future outcome"
+
+
+def test_latency_horizon_censors_spends_after_it() -> None:
+    """An output spent after the horizon must be censored, not observed.
+
+    Fitting the survival curve on uncensored durations that run past the training
+    period is a leak into the baseline every later row is scored against.
+    """
+    facts = _causal_facts()
+    full = grains.build_latency_table(facts)
+    early = grains.build_latency_table(facts, horizon=300)
+
+    # tx1:0 (output index 2) is spent by tx6 at t=5000.
+    assert full.observed[2] and full.spending_tx[2] == 6
+    assert not early.observed[2], "a spend after the horizon must be right-censored"
+    assert early.spending_tx[2] == -1
+    assert early.duration[2] == 300 - facts.tx_time[1]
+    # tx0:0 (output index 0) is spent by tx2 at t=200, before the horizon.
+    assert early.observed[0] and early.spending_tx[0] == 2
+
+
+def test_trailing_cooccurrence_excludes_the_present_and_the_future() -> None:
+    key = np.array([0, 0, 0, 0], dtype=np.int32)
+    time = np.array([0, 10, 20, 5000], dtype=np.int64)
+    counts = np.expm1(grains._trailing_cooccurrence(key, time, window=100))
+    # First row sees nothing; each later row sees only earlier rows inside the
+    # window; the far-future row has fallen out of it entirely.
+    np.testing.assert_allclose(counts, [0.0, 1.0, 2.0, 0.0])
+
+
+def test_prior_occurrence_index_counts_only_earlier_rows() -> None:
+    key = np.array([7, 7, 9, 7], dtype=np.int32)
+    time = np.array([0, 10, 5, 20], dtype=np.int64)
+    tiebreak = np.arange(4, dtype=np.int64)
+    prior = grains._prior_occurrence_index(key, time, tiebreak)
+    np.testing.assert_array_equal(prior, [0, 1, 0, 2])
+
+
+def test_rank_normalisation_fitted_on_reference_is_applicable_row_by_row() -> None:
+    """Scoring must not need the whole dataset in hand.
+
+    With a reference mask the transform is the reference ECDF, so scoring one
+    transaction gives the same number as scoring it inside a batch.
+    """
+    values = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    reference = np.array([True, True, True, False, False])
+    batch = layers._rank_normalise(values, reference)
+    single = np.array([layers._rank_normalise(np.array([v]), None) * 0 + layers._rank_normalise(
+        np.concatenate([values[reference], [v]]),
+        np.append(reference[reference], False),
+    )[-1] for v in values]).ravel()
+    np.testing.assert_allclose(batch, single)

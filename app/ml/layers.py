@@ -54,12 +54,24 @@ class LayerScore:
     notes: dict[str, object] = field(default_factory=dict)
 
 
-def _rank_normalise(values: np.ndarray) -> np.ndarray:
-    """Map to [0, 1] by rank so layers on different scales can be averaged."""
-    order = np.argsort(values, kind="stable")
-    ranks = np.empty(values.shape[0], dtype=np.float64)
-    ranks[order] = np.arange(values.shape[0], dtype=np.float64)
-    return ranks / max(values.shape[0] - 1, 1)
+def _rank_normalise(values: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
+    """Map to [0, 1] against the reference distribution, so layers can be averaged.
+
+    With `reference`, this is the reference split's ECDF applied to every row —
+    the same transform a deployed scorer can apply to one transaction at a time.
+    Ranking the full array against itself is monotone and so does not change any
+    within-split ordering, but it is transductive: it needs the whole dataset in
+    hand. Fitting on reference rows keeps the operational and offline paths
+    identical.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if reference is None or not reference.any():
+        order = np.argsort(values, kind="stable")
+        ranks = np.empty(values.shape[0], dtype=np.float64)
+        ranks[order] = np.arange(values.shape[0], dtype=np.float64)
+        return ranks / max(values.shape[0] - 1, 1)
+    baseline = np.sort(values[reference])
+    return np.searchsorted(baseline, values, side="right") / max(baseline.shape[0], 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -118,7 +130,9 @@ def layer_a_structure(
         ecod_score[members] = contributions.sum(axis=1)
         attribution[members] = contributions.astype(np.float32)
 
-    combined = 0.5 * (_rank_normalise(forest_score) + _rank_normalise(ecod_score))
+    combined = 0.5 * (
+        _rank_normalise(forest_score, train_mask) + _rank_normalise(ecod_score, train_mask)
+    )
     return LayerScore(
         name="A_structure",
         score=combined,
@@ -135,22 +149,36 @@ def layer_a_hbos(table: Table, train_mask: np.ndarray) -> LayerScore:
     scaler = StandardScaler().fit(matrix[train_mask])
     scaled = scaler.transform(matrix)
     score = HBOS().fit(scaled[train_mask]).score(scaled)
-    return LayerScore(name="A_hbos", score=_rank_normalise(score))
+    return LayerScore(name="A_hbos", score=_rank_normalise(score, train_mask))
 
 
 # --------------------------------------------------------------------------- #
 # Layer B — spend latency as survival
 # --------------------------------------------------------------------------- #
-def layer_b_latency(latency: LatencyTable, facts: Facts, train_mask_tx: np.ndarray) -> LayerScore:
+def layer_b_latency(
+    latency: LatencyTable,
+    facts: Facts,
+    train_mask_tx: np.ndarray,
+    *,
+    reference_latency: LatencyTable | None = None,
+) -> LayerScore:
     """Score each spend by how fast it was for an output of its value.
 
-    Fitted on outputs *created* in the reference split only.  Censored outputs
-    contribute to the risk set but never to an event, which is what keeps the
-    baseline honest at the end of the snapshot.
+    Two separate causality controls:
+
+    * the curve is fitted on outputs **created** in the reference split, and
+    * on a `reference_latency` table built with the reference period's end as its
+      censoring horizon, so a spend that happened after training ends is censored
+      rather than observed.  Without that second control the survival curve is
+      shaped by events from validation and holdout, which is a direct leak into
+      the baseline every later row is scored against.
+
+    Censored outputs contribute to the risk set but never to an event.
     """
-    fit_rows = train_mask_tx[latency.created_tx]
+    source = reference_latency if reference_latency is not None else latency
+    fit_rows = train_mask_tx[source.created_tx]
     model = LatencySurvival(strata=10).fit(
-        latency.values[fit_rows], latency.duration[fit_rows], latency.observed[fit_rows]
+        source.values[fit_rows], source.duration[fit_rows], source.observed[fit_rows]
     )
     surprisal = np.zeros(latency.duration.shape[0], dtype=np.float64)
     observed = latency.observed
@@ -163,11 +191,13 @@ def layer_b_latency(latency: LatencyTable, facts: Facts, train_mask_tx: np.ndarr
     np.maximum.at(per_tx, spending, surprisal[observed])
     return LayerScore(
         name="B_latency",
-        score=_rank_normalise(per_tx),
+        score=_rank_normalise(per_tx, train_mask_tx),
         detail={"outpoint_surprisal": surprisal},
         notes={
             "observed_spends": int(observed.sum()),
             "censored_outputs": int((~observed).sum()),
+            "fitted_on_reference_horizon": reference_latency is not None,
+            "fit_events": int(source.observed[fit_rows].sum()),
         },
     )
 
@@ -227,10 +257,10 @@ def layer_c_history(
     recurrence = np.log1p(history.prior_motif)
 
     row_score = (
-        _rank_normalise(activity)
-        + _rank_normalise(value_surge)
-        + 0.5 * _rank_normalise(reactivation)
-        + 0.5 * _rank_normalise(recurrence)
+        _rank_normalise(activity, train_rows)
+        + _rank_normalise(value_surge, train_rows)
+        + 0.5 * _rank_normalise(reactivation, train_rows)
+        + 0.5 * _rank_normalise(recurrence, train_rows)
     ) / 3.0
 
     # Project onto transactions: a transaction inherits the strongest history
@@ -242,7 +272,7 @@ def layer_c_history(
             np.maximum.at(per_tx, block, row_score[slot])
     return LayerScore(
         name="C_history",
-        score=_rank_normalise(per_tx),
+        score=_rank_normalise(per_tx, train_mask_tx),
         detail={
             "activity_surprisal": activity,
             "value_surge": value_surge,
@@ -268,6 +298,7 @@ def layer_d_burst(
     bucket_seconds: int = 900,
     half_life: float = 96.0,
     with_bocpd: bool = True,
+    reference: np.ndarray | None = None,
 ) -> LayerScore:
     """Is there more of this motif right now than there should be?
 
@@ -293,7 +324,7 @@ def layer_d_burst(
         # transaction inside a CoinJoin surge is not itself a CoinJoin.
         members = flag > 0
         per_tx[members] = np.maximum(per_tx[members], burst[bucket_of_tx[members]])
-    return LayerScore(name="D_burst", score=_rank_normalise(per_tx), detail=detail, notes=notes)
+    return LayerScore(name="D_burst", score=_rank_normalise(per_tx, reference), detail=detail, notes=notes)
 
 
 # --------------------------------------------------------------------------- #
@@ -310,7 +341,9 @@ def layer_e_graph(table: Table, train_mask: np.ndarray, *, n_jobs: int = 1) -> L
     score = -forest.score_samples(scaled)
     ecod = ECOD().fit(scaled[train_mask])
     contributions = ecod.contributions(scaled)
-    combined = 0.5 * (_rank_normalise(score) + _rank_normalise(contributions.sum(axis=1)))
+    combined = 0.5 * (
+        _rank_normalise(score, train_mask) + _rank_normalise(contributions.sum(axis=1), train_mask)
+    )
     return LayerScore(
         name="E_graph",
         score=combined,

@@ -6,10 +6,28 @@ deterministic Phase 4.1 rule so the best combination is chosen from measurements
 rather than asserted.
 
 ```bash
-make dataset          # regenerate the 100K fixture (all four ingestion formats)
-make anomaly-stack    # every layer, every combination, all three tasks
+make dataset               # regenerate the 100K fixture (all four ingestion formats)
+make anomaly-stack         # unsupervised only — the deployable configuration
+make anomaly-stack-demo    # adds the supervised comparator (demo/research)
+make anomaly-stack-holdout # the final holdout, once
 make anomaly-stack-test
 ```
+
+## Two configurations, and only one of them ships
+
+| | `make anomaly-stack` | `make anomaly-stack-demo` |
+| --- | --- | --- |
+| Layers | A–E, unsupervised | A–E plus supervised layer S |
+| Labels used in any `fit()` | none | the fixture's generator truth |
+| Deployable | **yes** | no — research comparator |
+| What its numbers prove | the ranking a case actually gets | an upper bound if real labels existed |
+
+Layer S trains on the generator's own shape families, which are close to the
+deterministic rule's predicate. It is reported because it bounds the headroom, not
+because it is shippable. It becomes legitimate the moment it trains on analyst
+review decisions instead — `app/ml/findings.py::review_decision_labels` reads them,
+and deliberately returns `None` until enough exist, so the deployed ranking cannot
+silently start depending on a model that has nothing real to learn from.
 
 ## Why the layers exist
 
@@ -58,33 +76,40 @@ all for free, and no measurement can separate a threshold from a model.
 
 ## Measured results
 
-Generator v2 fixture, seed `tracex-phase5a-prep-100k-v2`, 100,000 transactions,
-1% review budget, validation split used for selection and the final holdout
-evaluated once afterwards. Ranked by average precision (tie-aware).
+Generator v2 fixture, 100,000 transactions, 1% review budget, strictly causal
+features. Validation used for selection; final holdout evaluated once afterwards.
+Average precision, tie-aware.
 
-| Task | Best candidate | AP | Rule baseline AP | Lift |
+**Deployable configuration — unsupervised, final holdout:**
+
+| Task | Best candidate | AP | Rule | Lift | P@100 | P@budget | Recall |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| surge | `A_global+D_burst` | 0.5927 | 0.2388 | **2.48x** | 0.750 | 0.696 | 33.8% |
+| motif | `A_global+D_burst` | 0.6282 | 0.3799 | 1.65x | 0.890 | 0.844 | 24.3% |
+| discrimination | *rule baseline wins* | 0.9569 | 0.9569 | 1.00x | 0.880 | 1.000 | 4.0% |
+
+**Demo configuration — with the supervised comparator, final holdout:**
+
+| Task | Best candidate | AP | Rule | Lift |
 | --- | --- | ---: | ---: | ---: |
-| motif | `S_supervised` | 0.8253 | 0.3799 | 2.17× |
-| surge | `D_burst+S_supervised` | 0.7283 | 0.2388 | **3.05×** |
-| discrimination | `D_burst+S_supervised` | 0.9852 | 0.9569 | 1.03× |
+| surge | `D_burst+S_supervised` | 0.7371 | 0.2388 | 3.09x |
+| motif | `S_supervised` | 0.8239 | 0.3799 | 2.17x |
+| discrimination | `S_supervised` | 0.9961 | 0.9569 | 1.04x |
 
-Best **unsupervised** combination on validation: `A_global+D_burst` — surge AP
-0.7165 vs the rule's 0.3479 (2.06×), AUC 0.971. At a 1% budget it flags 250 of
-15,000 transactions and catches 65.4% of surge positives at 70.4% precision, where
-the rule needs 2,221 flags to reach the same recall.
+### The result that matters most
 
-Read those numbers with three caveats:
+**No unsupervised combination beats the rule on discrimination.** That is not a
+tuning failure, it is the structure of the problem: both classes are anomalous. A
+real CoinJoin and a benign payroll run that satisfies the same predicate are *both*
+unusual against ordinary traffic, so an outlier detector has no reason to prefer
+one. Separating them needs supervision, and the only honest supervision is analyst
+feedback.
 
-1. **Synthetic-fixture evaluation only.** It shows which combination separates the
-   fixture's labelled motifs from its labelled near-misses. It does not prove
-   real-world detection accuracy.
-2. **The motif task is close to circular.** Its labels are the generator's shape
-   families and the rule's predicate is nearly the same predicate. `discrimination`
-   is the honest test, and there the margin over the rule is small (1.03×) — real
-   but modest.
-3. **Layer D consumes layer A's family assignment**, so `D_burst` is not evidence
-   independent of the structure predicate. It is the rule plus timing, which is
-   exactly the intended design, not an accidental leak.
+So the deployable ranking earns its place on **surge detection and triage
+ordering**, where it is 2.5x the rule and cuts the queue from 2,221 flags to a few
+hundred at far higher precision — not on deciding which equal-output transaction is
+really a mixer. That decision stays with the reviewer until reviewer decisions
+exist to learn from.
 
 ## What the ablation showed that a guess would not
 
@@ -98,6 +123,58 @@ Read those numbers with three caveats:
   task. The ablation exists precisely to catch this.
 - **Layer B and E add little on their own** and mostly help by widening recall at
   the budget. Keep them only if that trade is worth it for your queue.
+
+## Strict causality
+
+Every feature for transaction `t` uses only facts timestamped at or before
+`tx_time[t]`. This is a deployability constraint before it is a correctness one:
+when a case is scored, the transaction has just been observed, and a feature that
+needs the future cannot be computed at all.
+
+An audit found three classes of future leak and removed them:
+
+| Class | What leaked | Fix |
+| --- | --- | --- |
+| Outcome features | `spent_output_share`, `distinct_next_tx`, `chain_depth_forward` — all read whether and how outputs were later spent | removed; no causal version exists. Input *ages* are the backward-looking counterpart |
+| Whole-dataset statistics | `recipient_reuse_share` and `country_rarity` counted over the entire file, so an early transaction saw the whole future distribution | expanding-window counts over strictly-earlier rows (`prior_recipient_reuse_*`, `country_rarity_prior`) |
+| Containing-bucket aggregates | endpoint/ASN co-occurrence counted inside the bucket holding the transaction, so a transaction early in a bucket saw later ones | trailing windows, `[t - W, t)` (`*_cooccurrence_trailing`) |
+
+Layer B had a fourth: the survival curve was fitted on durations that ran past the
+end of the training period, so spends from validation and holdout shaped the
+baseline every later row was scored against. It now fits on a latency table
+censored at the last reference-split transaction. Rank normalisation is likewise
+fitted on reference rows, so scoring one transaction gives the same number as
+scoring it inside a batch — a transductive whole-dataset rank could not be
+reproduced by a deployed scorer.
+
+**This is proved, not asserted.** `app.ml.facts.truncate_facts` rebuilds the
+snapshot as it looked at time T, and the property tests assert that every feature
+for transactions at or before T is bit-identical to the full run. One
+future-reading column makes them fail.
+
+Measured effect of the fix on the final holdout: the leaks were *noise*, not
+signal. Removing them left the supervised result unchanged (-0.001 AP) and
+**improved** the unsupervised combination substantially (+0.17 AP on motif, +0.10
+on surge, +0.19 on discrimination). The leak was real and had to go for the stack
+to be deployable at all; on this fixture it happened not to be inflating anything.
+
+## Running inside TraceX
+
+`app/ml/findings.py::materialize_ml_findings` runs the stack on a committed,
+receipt-approved snapshot — reading the same canonical fragments the graph builder
+and the deterministic detectors read, through `app.engine.graph.builder._facts` —
+and writes `FindingRecord` rows that the existing
+`GET /v1/cases/{case_id}/findings` endpoint already serves.
+
+Phase 4's boundaries are kept exactly where they were: every stored finding carries
+its source locators so a reviewer can reopen the raw record, benign alternatives,
+an explicit coverage limitation, and a claim worded as triage priority rather than
+a verdict. Writing is idempotent per snapshot. Only unsupervised layers run there.
+
+`tests/unit/test_ml_pipeline_integration.py` ingests a small source through the
+real worker, builds the graph, and asserts the equal-output shape and both peel
+steps are recovered from snapshot facts — so the offline harness and the product
+path are provably reading the same evidence.
 
 ## Leakage and causality controls
 
@@ -128,7 +205,7 @@ Enforced by `tests/unit/test_anomaly_stack.py`, not by convention:
 | layer A (×2 variants) | 6.1 | Isolation Forest + ECOD, 100 trees, `max_samples=256` |
 | layers B/C/D | 1.9 | survival, causal baselines, burst detection |
 | layer E | 3.0 | bounded graph + network context |
-| **total** | **~19** | **peak RSS 575 MB** |
+| **total** | **~19** | **peak RSS 565 MB** (unsupervised) |
 
 For comparison, the existing `prepare_feature_package` path peaks at ~5.7 GB over
 ~9 minutes for the same 100K transactions. The integer-indexed array layout is

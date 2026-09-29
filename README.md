@@ -2,11 +2,12 @@
 
 Offline, case-scoped Bitcoin-intelligence backend. **Phases 0–4.1** are implemented: frozen contract/fixture, case-scoped upload/jobs, receipt-approved bulk ingestion, a correct UTXO graph, and deterministic reviewable findings including bounded peeling-chain, CoinJoin-like structure, and synthetic-review-seed context.
 
-**The anomaly stack is implemented and measurable.** Six scoring layers over four grains — transaction shape, spend latency as survival, causal per-entity baselines, population motif-burst detection, bounded graph context, and p-value fusion — plus an ablation harness that runs every layer alone and every combination against the deterministic rule baseline. See [docs/anomaly_stack.md](docs/anomaly_stack.md).
+**The anomaly stack is implemented, causal, and wired into the case path.** Six scoring layers over four grains — transaction shape, spend latency as survival, causal per-entity baselines, population motif-burst detection, bounded graph context, and p-value fusion — plus an ablation harness that runs every layer alone and every combination against the deterministic rule baseline. Every feature uses only facts at or before its own transaction's timestamp, proved by truncation property tests. `app/ml/findings.py` runs it on a committed snapshot and writes findings the existing findings endpoint serves. See [docs/anomaly_stack.md](docs/anomaly_stack.md).
 
 ```bash
 make dataset        # regenerate the 100K fixture (generator v2), all four formats
-make anomaly-stack  # every layer, every combination, all three evaluation tasks
+make anomaly-stack  # unsupervised ranking — the deployable configuration
+make anomaly-stack-demo  # adds the supervised comparator (demo/research only)
 ```
 
 ## Phase 0 quick check
