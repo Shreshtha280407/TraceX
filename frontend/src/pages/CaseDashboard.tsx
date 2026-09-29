@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, type CaseWithRole } from "../lib/api";
+import { api, type CaseDetail } from "../lib/api";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
-import { setLastCaseId } from "../lib/lastCase";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
 const EVENT_TONE: Record<string, "success" | "danger" | "warning" | "info" | "muted"> = {
@@ -18,94 +17,101 @@ const EVENT_TONE: Record<string, "success" | "danger" | "warning" | "info" | "mu
   "export.ready": "warning",
 };
 
+/** The dashboard for one case, reached by clicking that case anywhere in the app.
+ * Everything here is scoped to :caseId — no cross-case selector. */
 export function CaseDashboard() {
+  const { caseId } = useParams<{ caseId: string }>();
   const { token } = useAuth();
   const navigate = useNavigate();
-  const [cases, setCases] = useState<CaseWithRole[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [caseDetail, setCaseDetail] = useState<CaseDetail | null>(null);
   const [events, setEvents] = useState<CaseEvent[]>([]);
 
   useEffect(() => {
-    api.listCases().then((result) => {
-      setCases(result.cases);
-      if (result.cases.length === 0) navigate("/onboarding", { replace: true });
-      else setSelected((current) => current ?? result.cases[0].case_id);
-    });
-  }, [navigate]);
+    if (!caseId) return;
+    setCaseDetail(null);
+    api.getCase(caseId).then(setCaseDetail);
+  }, [caseId]);
 
   useEffect(() => {
-    if (selected) setLastCaseId(selected);
-  }, [selected]);
-
-  useEffect(() => {
-    if (!selected) return;
+    if (!caseId) return;
     setEvents([]);
-    const stop = streamCaseEvents(selected, token, (event) => setEvents((prev) => [event, ...prev].slice(0, 8)));
+    const stop = streamCaseEvents(caseId, token, (event) => setEvents((prev) => [event, ...prev].slice(0, 8)));
     return stop;
-  }, [selected, token]);
+  }, [caseId, token]);
 
-  const { findings } = useFindings(selected);
-  const trackedJobs = useTrackedJobs(selected);
+  const { findings, mlEnabled } = useFindings(caseId);
+  const trackedJobs = useTrackedJobs(caseId);
   const activeJobs = trackedJobs.filter((job) => ["queued", "running", "checkpointed"].includes(job.state));
   const transactionsIngested = trackedJobs.length > 0 ? trackedJobs.reduce((sum, job) => sum + job.rows_accepted, 0) : null;
   const openFindings = findings?.filter((f) => f.status === "open").length ?? null;
-  const reviewBacklog = findings?.filter((f) => f.status === "open" || f.status === "needs_data_review").length ?? null;
+  const pendingReview = findings?.filter((f) => f.status === "open" || f.status === "needs_data_review") ?? null;
 
-  const selectedCase = cases?.find((c) => c.case_id === selected);
+  if (!caseId) return null;
 
   return (
     <Shell>
       <div className="page-header">
         <div>
-          <h1>Case Dashboard</h1>
-          <p className="subtitle">Overview across all case-isolated workspaces you can access</p>
+          <h1>{caseDetail?.name ?? "Case dashboard"}</h1>
+          <p className="subtitle">
+            {caseDetail
+              ? `Created ${caseDetail.created_at ? new Date(caseDetail.created_at).toLocaleDateString() : "—"} · ${caseDetail.members.length} member${caseDetail.members.length === 1 ? "" : "s"}`
+              : "Loading case details…"}
+          </p>
         </div>
         <div className="pill-row">
-          {selectedCase && <span className="badge tone-muted mono-id">{selectedCase.case_id}</span>}
-          {selectedCase && <Badge tone="ml">{selectedCase.role.toUpperCase().replace("_", " ")}</Badge>}
+          <span className="badge tone-muted mono-id">{caseId}</span>
+          {caseDetail?.synthetic && <Badge tone="muted">SYNTHETIC</Badge>}
+          <button type="button" className="btn-mustard" onClick={() => navigate(`/cases/${caseId}/graph`)}>
+            View Graph →
+          </button>
         </div>
       </div>
 
       <div className="stat-grid">
-        <StatTile label="Transactions ingested" value={transactionsIngested ?? "—"} sub={trackedJobs.length ? `${trackedJobs.length} tracked job(s)` : "no imports tracked yet"} />
-        <StatTile label="Active import jobs" value={activeJobs.length || (trackedJobs.length ? 0 : "—")} sub={activeJobs.length ? "in progress" : "backpressure clear"} />
+        <StatTile
+          label="Transactions ingested"
+          value={transactionsIngested ?? "—"}
+          sub={trackedJobs.length ? `${trackedJobs.length} tracked job(s)` : "no imports tracked yet"}
+        />
+        <StatTile
+          label="Active import jobs"
+          value={activeJobs.length || (trackedJobs.length ? 0 : "—")}
+          sub={activeJobs.length ? "in progress" : "backpressure clear"}
+        />
         <StatTile label="Open findings" value={openFindings ?? "—"} sub={findings ? `of ${findings.length} listed` : "loading…"} />
-        <StatTile label="Review backlog" value={reviewBacklog ?? "—"} sub="open + needs data review" />
-        <StatTile label="Model status" value="Not started" sub="Phase 5" />
+        <StatTile label="Pending human review" value={pendingReview?.length ?? "—"} sub="open + needs data review" />
+        <StatTile
+          label="Model status"
+          value={findings === null ? "—" : mlEnabled ? "Active" : "No ML findings yet"}
+          sub={mlEnabled ? "anomaly-stack-v1" : "unsupervised layer runs automatically on ingest"}
+        />
       </div>
 
       <div className="two-col">
         <NeoCard>
-          <h2>Case Workspaces</h2>
-          {cases === null ? (
+          <h2>Pending Review</h2>
+          {pendingReview === null ? (
             <p className="coverage-note">Loading…</p>
+          ) : pendingReview.length === 0 ? (
+            <p className="coverage-note">Nothing awaiting human review for this case.</p>
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Case ID</th>
-                  <th>Records</th>
-                  <th>Last activity</th>
-                  <th>Isolation</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cases.map((c) => (
-                  <tr key={c.case_id} className={`clickable ${selected === c.case_id ? "selected" : ""}`} onClick={() => setSelected(c.case_id)}>
-                    <td>{c.name}</td>
-                    <td>—</td>
-                    <td>—</td>
-                    <td>
-                      <Badge tone="success">
-                        <span className="dot tone-success" /> Isolated
-                      </Badge>
-                    </td>
-                    <td>Active</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+              {pendingReview.slice(0, 10).map((item) => (
+                <li key={item.finding_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Badge tone="deterministic">{item.finding_type}</Badge>
+                    <span className="mono-id">{item.entity_ref}</span>
+                    <span className="coverage-note">
+                      window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}
+                    </span>
+                  </div>
+                  <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
+                    Review
+                  </a>
+                </li>
+              ))}
+            </ul>
           )}
         </NeoCard>
 

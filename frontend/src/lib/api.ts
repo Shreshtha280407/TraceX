@@ -104,7 +104,18 @@ export type Finding = {
   status: "open" | "triaged" | "dismissed" | "escalated" | "needs_data_review";
 };
 
-export type FindingsListResponse = { findings: Finding[]; limit: number; offset: number; method: string; ml_enabled: boolean };
+export type FindingsListResponse = {
+  findings: Finding[];
+  limit: number;
+  offset: number;
+  method: string;
+  methods: string[];
+  ml_enabled: boolean;
+};
+
+/** Must match `ML_RULE_VERSION` in app/ml_release_constants.py — the anomaly
+ * stack's frozen release identity, not a value either side computes. */
+export const ML_RULE_VERSION = "anomaly-stack-v1";
 
 export type ReviewRecord = {
   review_id: string;
@@ -127,12 +138,21 @@ export type FindingEvidence = {
   opposing_evidence: unknown[];
   review_history: ReviewRecord[];
   audit_history: AuditEntry[];
-  replay_contract: { snapshot_id: string; graph_snapshot_id: string; rule_id: string; rule_version: string; ml_enabled: boolean };
+  replay_contract: {
+    snapshot_id: string;
+    graph_snapshot_id: string;
+    rule_id: string;
+    rule_version: string;
+    ml_enabled: boolean;
+    release_id: string | null;
+    model_run_id: string | null;
+  };
 };
 
 export type FindingsExportBundle = {
   case_id: string;
   method: string;
+  methods: string[];
   ml_enabled: boolean;
   limitations: string[];
   findings: { finding: Finding; feature_vector: Record<string, unknown>; source_refs: unknown[]; opposing_evidence: unknown[]; review_history: ReviewRecord[]; audit_history: AuditEntry[] }[];
@@ -171,14 +191,7 @@ export type GraphResponse = {
   cursor: string | null;
 };
 
-// ---- Auth ----
-
 export const api = {
-  signup: (display_name: string, password: string) =>
-    request<{ token: string; actor: string }>("/auth/signup", { method: "POST", body: JSON.stringify({ display_name, password }) }),
-  login: (display_name: string, password: string) =>
-    request<{ token: string; actor: string }>("/auth/login", { method: "POST", body: JSON.stringify({ display_name, password }) }),
-
   // ---- Cases ----
   listCases: () => request<{ cases: CaseWithRole[] }>("/cases"),
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${caseId}`),

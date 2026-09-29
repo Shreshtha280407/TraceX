@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from app.api import routes
+from app.auth import dependencies
 from app.config import Settings
 from app.db import Base, get_session, make_engine
 from app.main import app
@@ -26,28 +27,37 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def test_signup_login_and_token_reuse(tmp_path: Path, monkeypatch) -> None:
+def _fake_verifier(emails_by_token: dict[str, str]):
+    """A real Firebase ID token is a signed JWT verified against Google's public
+    keys -- exercising that here would need a live Firebase project and network
+    access. `current_user` only ever calls `verify_firebase_token(token) -> dict
+    | None`, so patching that one function is enough to test the identity and
+    authorization logic around it without touching the real SDK."""
+
+    def verify(token: str) -> dict | None:
+        email = emails_by_token.get(token)
+        return {"uid": f"uid-for-{email}", "email": email} if email else None
+
+    return verify
+
+
+def test_firebase_bearer_token_creates_and_reuses_a_user(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(dependencies, "verify_firebase_token", _fake_verifier({"good-token": "analyst@example.com"}))
     try:
-        signup = client.post("/v1/auth/signup", json={"display_name": "shreshtha", "password": "correct-horse"})
-        assert signup.status_code == 201, signup.text
-        token = signup.json()["token"]
+        headers = {"Authorization": "Bearer good-token"}
+        empty = client.get("/v1/cases", headers=headers)
+        assert empty.status_code == 200
+        assert empty.json() == {"cases": []}
 
-        duplicate = client.post("/v1/auth/signup", json={"display_name": "shreshtha", "password": "another-pass"})
-        assert duplicate.status_code == 409
+        created = client.post("/v1/cases", headers=headers, json={"name": "case", "synthetic": True})
+        assert created.status_code == 201, created.text
 
-        wrong = client.post("/v1/auth/login", json={"display_name": "shreshtha", "password": "wrong"})
-        assert wrong.status_code == 401
-
-        login = client.post("/v1/auth/login", json={"display_name": "shreshtha", "password": "correct-horse"})
-        assert login.status_code == 200
-        login_token = login.json()["token"]
-
-        for use_token in (token, login_token):
-            headers = {"Authorization": f"Bearer {use_token}"}
-            listed = client.get("/v1/cases", headers=headers)
-            assert listed.status_code == 200
-            assert listed.json() == {"cases": []}
+        # Same Firebase uid on a second request reuses the same User row rather
+        # than provisioning a duplicate -- the case created above is still visible.
+        listed = client.get("/v1/cases", headers=headers)
+        assert listed.status_code == 200
+        assert listed.json()["cases"] == [{**created.json(), "role": "case_lead"}]
 
         bad_token = client.get("/v1/cases", headers={"Authorization": "Bearer not-a-real-token"})
         assert bad_token.status_code == 401
@@ -68,9 +78,13 @@ def test_legacy_header_auth_still_works_unchanged(tmp_path: Path, monkeypatch) -
 
 def test_new_read_endpoints_and_404_not_403_for_non_members(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        dependencies,
+        "verify_firebase_token",
+        _fake_verifier({"lead-token": "lead@example.com", "outsider-token": "outsider@example.com"}),
+    )
     try:
-        signup = client.post("/v1/auth/signup", json={"display_name": "case-lead", "password": "correct-horse"})
-        headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+        headers = {"Authorization": "Bearer lead-token"}
 
         empty = client.get("/v1/cases", headers=headers)
         assert empty.json() == {"cases": []}
@@ -84,14 +98,13 @@ def test_new_read_endpoints_and_404_not_403_for_non_members(tmp_path: Path, monk
 
         detail = client.get(f"/v1/cases/{case_id}", headers=headers)
         assert detail.status_code == 200
-        assert detail.json() == {**created.json(), "members": [{"actor": "case-lead", "role": "case_lead"}]}
+        assert detail.json() == {**created.json(), "members": [{"actor": "lead@example.com", "role": "case_lead"}]}
 
         sources = client.get(f"/v1/cases/{case_id}/sources", headers=headers)
         assert sources.status_code == 200
         assert sources.json() == {"sources": []}
 
-        other = client.post("/v1/auth/signup", json={"display_name": "outsider", "password": "correct-horse"})
-        other_headers = {"Authorization": f"Bearer {other.json()['token']}"}
+        other_headers = {"Authorization": "Bearer outsider-token"}
         not_member = client.get(f"/v1/cases/{case_id}", headers=other_headers)
         not_found = client.get("/v1/cases/does-not-exist", headers=other_headers)
         assert not_member.status_code == not_found.status_code == 404

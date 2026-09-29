@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, FilterPills, relativeTime } from "../components/primitives";
-import { api, type Finding, type FindingsListResponse } from "../lib/api";
+import { api, ML_RULE_VERSION, type Finding, type FindingsListResponse } from "../lib/api";
 import "./FindingsFeed.css";
+
+type MlReleaseInfo = { releaseId: string; modelRunId: string; layers: string[] };
 
 type FilterId = "all" | "deterministic" | "ml" | "reviewed";
 
@@ -21,6 +23,7 @@ export function FindingsFeed() {
   const [response, setResponse] = useState<FindingsListResponse | null>(null);
   const [filter, setFilter] = useState<FilterId>("all");
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
+  const [mlInfo, setMlInfo] = useState<MlReleaseInfo | null>(null);
 
   useEffect(() => {
     if (!caseId) return;
@@ -33,11 +36,21 @@ export function FindingsFeed() {
     for (const finding of response.findings) if (!uniqueByRule.has(finding.rule_id)) uniqueByRule.set(finding.rule_id, finding);
     Promise.all([...uniqueByRule.values()].map((f) => api.getFindingEvidence(f.finding_id).catch(() => null))).then((results) => {
       const merged: Record<string, number> = {};
+      let ml: MlReleaseInfo | null = null;
       for (const result of results) {
         const raw = (result?.feature_vector as Record<string, unknown> | undefined)?.rule_thresholds;
         if (raw && typeof raw === "object") Object.assign(merged, raw as Record<string, number>);
+        if (result?.replay_contract.ml_enabled && !ml) {
+          const layers = (result.feature_vector as Record<string, unknown>).layers;
+          ml = {
+            releaseId: result.replay_contract.release_id ?? "—",
+            modelRunId: result.replay_contract.model_run_id ?? "—",
+            layers: layers && typeof layers === "object" ? Object.keys(layers) : [],
+          };
+        }
       }
       setThresholds(merged);
+      setMlInfo(ml);
     });
   }, [response]);
 
@@ -47,7 +60,9 @@ export function FindingsFeed() {
   const filtered = useMemo(() => {
     switch (filter) {
       case "deterministic":
-        return findings.filter((f) => f.status === "open");
+        return findings.filter((f) => f.rule_version !== ML_RULE_VERSION);
+      case "ml":
+        return findings.filter((f) => f.rule_version === ML_RULE_VERSION);
       case "reviewed":
         return findings.filter((f) => f.status !== "open");
       default:
@@ -60,7 +75,7 @@ export function FindingsFeed() {
       <div className="page-header">
         <div>
           <h1>Findings Feed</h1>
-          <p className="subtitle">Deterministic motifs — rule-based priority is the baseline, always available</p>
+          <p className="subtitle">Deterministic motifs plus the unsupervised anomaly ranking — the rule-based baseline is always available; ML runs automatically on ingest</p>
         </div>
       </div>
 
@@ -73,7 +88,7 @@ export function FindingsFeed() {
               options={[
                 { id: "all", label: "All" },
                 { id: "deterministic", label: "Deterministic" },
-                { id: "ml", label: "ML-Flagged", disabled: true, tooltip: "Phase 5 not started" },
+                { id: "ml", label: "ML-Flagged" },
                 { id: "reviewed", label: "Reviewed" },
               ]}
             />
@@ -91,7 +106,9 @@ export function FindingsFeed() {
                     <div className="finding-card-top">
                       <div className="finding-card-left">
                         <strong>{finding.finding_type.replace(/_/g, " ")}</strong>
-                        <Badge tone="deterministic">deterministic</Badge>
+                        <Badge tone={finding.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>
+                          {finding.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}
+                        </Badge>
                       </div>
                       <Badge tone={priority.tone}>{priority.label}</Badge>
                     </div>
@@ -117,8 +134,20 @@ export function FindingsFeed() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <NeoCard variant="neo-sm">
             <h2>Model Status</h2>
-            <div className="kv-row"><span className="k">Method</span><span>{response?.method ?? "deterministic-v1"}</span></div>
-            <div className="kv-row"><span className="k">ML</span><span>Not started (Phase 5)</span></div>
+            <div className="kv-row"><span className="k">Methods present</span><span>{response?.methods.join(", ") ?? "—"}</span></div>
+            <div className="kv-row"><span className="k">ML enabled</span><span>{response ? String(response.ml_enabled) : "—"}</span></div>
+            {mlInfo && (
+              <>
+                <div className="kv-row"><span className="k">Release</span><span className="mono-id">{mlInfo.releaseId}</span></div>
+                <div className="kv-row"><span className="k">Model run</span><span className="mono-id">{mlInfo.modelRunId}</span></div>
+                <div className="kv-row"><span className="k">Layers</span><span>{mlInfo.layers.join(" + ") || "—"}</span></div>
+              </>
+            )}
+            <p className="coverage-note" style={{ marginTop: 8 }}>
+              {response?.ml_enabled
+                ? "Six-layer unsupervised anomaly stack, deployed automatically on ingest. Triage priority only — never a verdict."
+                : "No ML-scored finding in this case yet — either too few transactions, or none cleared the review budget."}
+            </p>
           </NeoCard>
           <NeoCard variant="neo-sm">
             <h2>Detector Thresholds</h2>

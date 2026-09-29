@@ -5,6 +5,18 @@ __pycache__/
 var/
 *.egg-info/
 
+# Firebase service-account private key (Admin SDK). Full-admin credential for
+# the Firebase project -- never commit, never print, never share outside a
+# secrets manager in production.
+/secrets/
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+
+# Playwright MCP browser-automation snapshots/screenshots.
+.playwright-mcp/
+
 # Reproducible 100K fixture artifacts are generated locally from the pinned config.
 /fixtures/demo_100k/*.ndjson
 /fixtures/demo_100k/evaluation_truth.json

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, StatTile, Badge, NoticeBanner } from "../components/primitives";
+import { Modal } from "../components/Modal";
+import { NeoCard, StatTile, Badge, NoticeBanner, ErrorBanner } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, type CaseWithRole, type Finding } from "../lib/api";
+import { api, ApiError, type CaseWithRole, type Finding } from "../lib/api";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 import { getSessionStats } from "../lib/sessionStats";
 
@@ -15,6 +16,9 @@ export function InvestigatorOverview() {
   const [cases, setCases] = useState<CaseWithRole[] | null>(null);
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
   const [activity, setActivity] = useState<(CaseEvent & { caseName: string })[]>([]);
+  const [showNewCase, setShowNewCase] = useState(false);
+  const [newCaseName, setNewCaseName] = useState("");
+  const [newCaseError, setNewCaseError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const stats = getSessionStats();
 
@@ -45,13 +49,24 @@ export function InvestigatorOverview() {
     return () => stops.forEach((stop) => stop());
   }, [cases, token]);
 
-  async function createCase() {
-    const name = prompt("New case name");
-    if (!name) return;
+  function openNewCase() {
+    setNewCaseName("");
+    setNewCaseError(null);
+    setShowNewCase(true);
+  }
+
+  async function onCreateCase(event: FormEvent) {
+    event.preventDefault();
+    setNewCaseError(null);
     setCreating(true);
     try {
-      const created = await api.createCase(name, true);
-      navigate(`/cases/${created.case_id}/ingestion`);
+      const created = await api.createCase(newCaseName, true);
+      // Show it immediately, on the same page the case lead just created it from --
+      // no navigation away, no separate click needed to confirm it exists.
+      setCases((prev) => [...(prev ?? []), { ...created, role: "case_lead" }]);
+      setShowNewCase(false);
+    } catch (err) {
+      setNewCaseError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend.");
     } finally {
       setCreating(false);
     }
@@ -69,10 +84,40 @@ export function InvestigatorOverview() {
             {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} findings awaiting your review
           </p>
         </div>
-        <button type="button" className="btn-mustard" onClick={createCase} disabled={creating}>
+        <button type="button" className="btn-mustard" onClick={openNewCase}>
           + New Case
         </button>
       </div>
+
+      <Modal open={showNewCase} onClose={() => setShowNewCase(false)} title="Create a new case">
+        <p className="modal-subtitle">
+          Set up an isolated, case-scoped workspace. Evidence, findings, and access are never shared across cases.
+        </p>
+        <form onSubmit={onCreateCase}>
+          {newCaseError && <ErrorBanner>{newCaseError}</ErrorBanner>}
+          <div className="form-field">
+            <label htmlFor="new-case-name">Case name</label>
+            <input
+              id="new-case-name"
+              value={newCaseName}
+              onChange={(event) => setNewCaseName(event.target.value)}
+              required
+              autoFocus
+              placeholder="PS26146-CASE-004"
+            />
+            <p className="form-hint">Use a clear, unique identifier — you can rename it later from Case Settings.</p>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn-ghost" onClick={() => setShowNewCase(false)} disabled={creating}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-mustard" disabled={creating || !newCaseName.trim()}>
+              {creating ? "Creating…" : "Create case"}
+            </button>
+          </div>
+          <p className="modal-footnote">You're added automatically as case lead and can invite teammates afterward.</p>
+        </form>
+      </Modal>
 
       <div className="stat-grid">
         <StatTile label="Assigned cases" value={cases?.length ?? "—"} sub={cases ? `${cases.filter((c) => c.role === "case_lead").length} as case lead` : ""} />
@@ -95,7 +140,7 @@ export function InvestigatorOverview() {
               </thead>
               <tbody>
                 {(cases ?? []).map((c) => (
-                  <tr key={c.case_id} className="clickable" onClick={() => navigate(`/cases/${c.case_id}/findings`)}>
+                  <tr key={c.case_id} className="clickable" onClick={() => navigate(`/cases/${c.case_id}/dashboard`)}>
                     <td>{c.name}</td>
                     <td>{queue?.filter((f) => f.caseName === c.name).length ?? "—"}</td>
                     <td>

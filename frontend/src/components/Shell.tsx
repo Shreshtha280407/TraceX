@@ -4,12 +4,13 @@ import { useAuth, initials } from "../lib/auth";
 import { setLastCaseId, useLastCaseId } from "../lib/lastCase";
 import { ExportIcon, FlagIcon, GearIcon, GraphIcon, GridIcon, HomeIcon, ShieldIcon, UploadIcon } from "./icons";
 
-/** 88px icon rail + avatar badge, present on every authenticated page. Nav order per spec:
- * Dashboard → Overview → Evidence Intake → Graph Explorer → Findings Feed → Model & Rules → Case Settings → Export & Deployment.
- *
- * Case-scoped items fall back to the last case visited (or /dashboard if none is known yet),
- * since /dashboard and /overview carry no case in the URL. "Active" is always matched against
- * the real URL pattern for each destination, never against the (possibly-collapsed) href. */
+/** 88px icon rail + avatar badge, present on every authenticated page. Nav order:
+ * Home → Dashboard → Evidence Intake → Graph Explorer → Findings Feed → Model & Rules → Case Settings → Export & Deployment.
+ * Home (/overview) is the first icon, unscoped, and the post-login landing page.
+ * Dashboard and every item after it are case-scoped (/cases/:caseId/...), falling
+ * back to the last case visited, or to /overview if none is known yet. "Active" is
+ * always matched against the real URL pattern for each destination, never against
+ * the (possibly-collapsed) href. */
 export function Shell({ children }: { children: ReactNode }) {
   const { actor, logout } = useAuth();
   const { caseId } = useParams();
@@ -21,12 +22,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const lastCaseId = useLastCaseId();
   const fallbackCaseId = caseId ?? lastCaseId;
-  const scoped = (suffix: string) => (fallbackCaseId ? `/cases/${fallbackCaseId}${suffix}` : "/dashboard");
+  const scoped = (suffix: string) => (fallbackCaseId ? `/cases/${fallbackCaseId}${suffix}` : "/overview");
   const caseScoped = (suffix: string) => new RegExp(`^/cases/[^/]+${suffix}`).test(pathname);
 
   const items = [
-    { to: "/dashboard", icon: <GridIcon />, label: "Dashboard", active: pathname === "/dashboard" },
-    { to: "/overview", icon: <HomeIcon />, label: "Investigator Overview", active: pathname === "/overview" },
+    { to: "/overview", icon: <HomeIcon />, label: "Home", active: pathname === "/overview" },
+    { to: scoped("/dashboard"), icon: <GridIcon />, label: "Dashboard", active: caseScoped("/dashboard") },
     { to: scoped("/ingestion"), icon: <UploadIcon />, label: "Evidence Intake", active: caseScoped("/ingestion") },
     { to: scoped("/graph"), icon: <GraphIcon />, label: "UTXO Graph Explorer", active: caseScoped("/graph") },
     { to: scoped("/findings"), icon: <FlagIcon />, label: "Findings Feed", active: caseScoped("/findings") },

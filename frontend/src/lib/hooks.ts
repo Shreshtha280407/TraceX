@@ -4,6 +4,8 @@ import { jobsForCase } from "./jobRegistry";
 
 export function useFindings(caseId: string | null | undefined) {
   const [findings, setFindings] = useState<Finding[] | null>(null);
+  const [methods, setMethods] = useState<string[]>([]);
+  const [mlEnabled, setMlEnabled] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
@@ -12,14 +14,19 @@ export function useFindings(caseId: string | null | undefined) {
     setFindings(null);
     api
       .listFindings(caseId, 200, 0)
-      .then((result) => !cancelled && setFindings(result.findings))
+      .then((result) => {
+        if (cancelled) return;
+        setFindings(result.findings);
+        setMethods(result.methods);
+        setMlEnabled(result.ml_enabled);
+      })
       .catch((err) => !cancelled && setError(err));
     return () => {
       cancelled = true;
     };
   }, [caseId]);
 
-  return { findings, error };
+  return { findings, methods, mlEnabled, error };
 }
 
 const ACTIVE_JOB_STATES = new Set(["queued", "running", "checkpointed"]);

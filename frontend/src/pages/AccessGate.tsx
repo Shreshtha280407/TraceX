@@ -1,21 +1,30 @@
 import { useState, type FormEvent } from "react";
 import { Navigate } from "react-router-dom";
-import { useAuth } from "../lib/auth";
-import { ApiError } from "../lib/api";
+import { authErrorMessage, useAuth } from "../lib/auth";
 import { ErrorBanner } from "../components/primitives";
+import { CheckIcon } from "../components/icons";
 import "./AccessGate.css";
 
 type AccessMode = "login" | "signup";
 
+const FEATURES = [
+  "Case-scoped evidence vault — every upload hashed and isolated per case",
+  "Bounded UTXO graph explorer, not a wall of raw transactions",
+  "Deterministic, reviewable findings — no black-box scores",
+  "Unsupervised anomaly ranking layered on top of the rules",
+  "Full audit trail and analyst review history on every finding",
+  "Offline-capable, with verifiable evidence export",
+];
+
 export function AccessGate() {
-  const { token, signup, login } = useAuth();
+  const { token, signup, login, loginWithGoogle } = useAuth();
   const [mode, setMode] = useState<AccessMode | null>(null);
-  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (token) return <Navigate to="/dashboard" replace />;
+  if (token) return <Navigate to="/overview" replace />;
 
   function openAccess(nextMode: AccessMode | null) {
     setError(null);
@@ -28,10 +37,22 @@ export function AccessGate() {
     setError(null);
     setBusy(true);
     try {
-      if (mode === "signup") await signup(name, password);
-      else await login(name, password);
+      if (mode === "signup") await signup(email, password);
+      else await login(email, password);
     } catch (err) {
-      setError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend.");
+      setError(authErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onGoogle() {
+    setError(null);
+    setBusy(true);
+    try {
+      await loginWithGoogle();
+    } catch (err) {
+      setError(authErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -69,44 +90,75 @@ export function AccessGate() {
 
   return (
     <main className="access-gate auth-stage">
-      <form className="neo auth-card" onSubmit={onSubmit}>
-        <button type="button" className="auth-back" onClick={() => openAccess(null)}>
-          ← Back to TraceX
-        </button>
-        <p className="auth-eyebrow">TRACE X / SECURE ACCESS</p>
-        <h1 className="display">{mode === "signup" ? "Create your account" : "Welcome back"}</h1>
-        <p className="subtitle">
-          {mode === "signup" ? "Set up your investigator account, then create your first case workspace." : "Sign in to continue to your case workspace."}
-        </p>
-        {error && <ErrorBanner>{error}</ErrorBanner>}
-        <div className="form-field">
-          <label htmlFor="name">Name</label>
-          <input id="name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="username" required autoFocus />
-        </div>
-        <div className="form-field">
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete={mode === "signup" ? "new-password" : "current-password"}
-            minLength={8}
-            required
-          />
-        </div>
-        <button type="submit" className="btn-mustard auth-submit" disabled={busy}>
-          {busy ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
-        </button>
-        <button type="button" className="mode-toggle" onClick={() => openAccess(mode === "signup" ? "login" : "signup")}>
-          {mode === "signup" ? "Already have an account? Sign in" : "New to TraceX? Create a workspace"}
-        </button>
-        <div className="trust-badges">
-          <span className="badge tone-muted">CASE-SCOPED</span>
-          <span className="badge tone-muted">AUDIT-LOGGED</span>
-          <span className="badge tone-muted">EVIDENCE-FIRST</span>
-        </div>
-      </form>
+      <div className="auth-layout">
+        <aside className="auth-sidebar">
+          <p className="auth-sidebar-eyebrow">TRACEX</p>
+          <h2 className="auth-sidebar-title">Trace Bitcoin. Preserve the evidence.</h2>
+          <ul className="auth-feature-list">
+            {FEATURES.map((feature) => (
+              <li key={feature}>
+                <span className="auth-feature-icon">
+                  <CheckIcon />
+                </span>
+                <span>{feature}</span>
+              </li>
+            ))}
+          </ul>
+        </aside>
+
+        <form className="neo auth-card" onSubmit={onSubmit}>
+          <button type="button" className="auth-back" onClick={() => openAccess(null)}>
+            ← Back to TraceX
+          </button>
+          <p className="auth-eyebrow">TRACE X / SECURE ACCESS</p>
+          <h1 className="display">{mode === "signup" ? "Create your account" : "Welcome back"}</h1>
+          <p className="subtitle">
+            {mode === "signup" ? "Set up your investigator account, then create your first case workspace." : "Sign in to continue to your case workspace."}
+          </p>
+          {error && <ErrorBanner>{error}</ErrorBanner>}
+          <button type="button" className="auth-google" onClick={onGoogle} disabled={busy}>
+            Continue with Google
+          </button>
+          <div className="auth-divider" role="separator">
+            or
+          </div>
+          <div className="form-field">
+            <label htmlFor="email">Email</label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="email"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              minLength={8}
+              required
+            />
+          </div>
+          <button type="submit" className="btn-mustard auth-submit" disabled={busy}>
+            {busy ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
+          </button>
+          <button type="button" className="mode-toggle" onClick={() => openAccess(mode === "signup" ? "login" : "signup")}>
+            {mode === "signup" ? "Already have an account? Sign in" : "New to TraceX? Create a workspace"}
+          </button>
+          <div className="trust-badges">
+            <span className="badge tone-muted">CASE-SCOPED</span>
+            <span className="badge tone-muted">AUDIT-LOGGED</span>
+            <span className="badge tone-muted">EVIDENCE-FIRST</span>
+          </div>
+        </form>
+      </div>
     </main>
   );
 }

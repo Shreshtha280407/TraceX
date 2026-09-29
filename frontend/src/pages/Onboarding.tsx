@@ -18,7 +18,7 @@ export function Onboarding() {
     api
       .listCases()
       .then((result) => {
-        if (result.cases.length > 0) navigate("/dashboard", { replace: true });
+        if (result.cases.length > 0) navigate("/overview", { replace: true });
         else setChecking(false);
       })
       .catch(() => setChecking(false));

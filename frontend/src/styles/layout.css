@@ -96,6 +96,29 @@
 .mono-id { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-dim); }
 .coverage-note { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
 
+.modal-overlay { position: fixed; inset: 0; background: rgba(8, 8, 7, 0.4); backdrop-filter: blur(1px); display: grid;
+  place-items: center; padding: 24px; z-index: 100; }
+.modal-card { width: 460px; max-width: 100%; padding: 28px; }
+.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.modal-header h2 { margin: 0; font-size: 18px; }
+.modal-close { background: none; border: 0; color: var(--ink-dim); cursor: pointer; font-size: 22px; line-height: 1;
+  padding: 0; }
+.modal-close:hover { color: var(--ink); }
+.modal-subtitle { color: var(--ink-dim); font-size: 13px; line-height: 1.5; margin: -8px 0 20px; }
+.form-hint { color: var(--ink-mute); font-size: 11px; line-height: 1.4; margin: 6px 0 0; }
+
+.option-card { align-items: center; background: var(--surface-3); border: 1px solid var(--line); border-radius: 12px;
+  cursor: pointer; display: flex; gap: 14px; justify-content: space-between; margin-bottom: 20px; padding: 14px 16px;
+  transition: border-color 0.15s; }
+.option-card:has(input:checked) { border-color: var(--mustard-glow); }
+.option-card-title { color: var(--ink); display: block; font-size: 13px; font-weight: 600; }
+.option-card-desc { color: var(--ink-dim); display: block; font-size: 11px; line-height: 1.4; margin-top: 3px; }
+.option-card input[type="checkbox"] { accent-color: var(--mustard); flex: 0 0 auto; height: 18px; width: 18px; }
+
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.modal-actions .btn-mustard, .modal-actions .btn-ghost { padding: 11px 20px; }
+.modal-footnote { color: var(--ink-mute); font-size: 11px; line-height: 1.5; margin: 14px 0 0; text-align: center; }
+
 .onboarding-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px; }
 .onboarding-card { width: 460px; max-width: 100%; padding: 36px 32px; }
 .onboarding-card h1 { font-size: 22px; margin: 0 0 4px; }

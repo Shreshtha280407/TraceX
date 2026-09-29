@@ -17,8 +17,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<AccessGate />} />
       <Route path="/onboarding" element={<RequireAuth><Onboarding /></RequireAuth>} />
-      <Route path="/dashboard" element={<RequireAuth><CaseDashboard /></RequireAuth>} />
       <Route path="/overview" element={<RequireAuth><InvestigatorOverview /></RequireAuth>} />
+      <Route path="/cases/:caseId/dashboard" element={<RequireAuth><CaseDashboard /></RequireAuth>} />
       <Route path="/cases/:caseId/ingestion" element={<RequireAuth><EvidenceIntake /></RequireAuth>} />
       <Route path="/cases/:caseId/graph" element={<RequireAuth><GraphExplorer /></RequireAuth>} />
       <Route path="/cases/:caseId/findings" element={<RequireAuth><FindingsFeed /></RequireAuth>} />
