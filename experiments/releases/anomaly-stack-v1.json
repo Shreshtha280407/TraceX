@@ -16,8 +16,8 @@
     "fitting_strategy": "dynamic: refit on each snapshot's own earliest reference_fraction of transactions at scoring time; no static model artifact is loaded or shipped"
   },
   "git": {
-    "commit": "2c1b59ea5b3cb7deac41e038a85817bd5d790bdf",
-    "dirty": true,
+    "commit": "46f2a527ae298bc14beb4c0118504cbcd61d12d7",
+    "dirty": false,
     "branch": "main"
   },
   "fixture_identity": {
@@ -40,46 +40,38 @@
     "interpreter_at_manifest_creation": "3.12.13"
   },
   "frozen_holdout_evidence": {
-    "source": "100K synthetic fixture, final_holdout split, Aditya's 32GB MacBook Pro",
-    "python_version": "3.11.16",
-    "run_seconds": 50,
-    "peak_rss_mb": 871,
-    "selected_candidate": "A_global + D_burst",
-    "tasks": {
-      "motif_triage": {
-        "average_precision": 0.6282307964,
-        "precision_at_20": 0.95,
-        "precision_at_50": 0.94,
-        "precision_at_100": 0.89,
-        "precision_at_1pct": 0.8444444444,
-        "recall_at_1pct": 0.2425531915,
-        "rule_only_average_precision": 0.3798909635
+    "source_file": "experiments/runs/anomaly_stack_holdout.json",
+    "report_sha256": "84e9c111c00fe22d9124954bd7df4f1212378a7ff6f5898a99c79b5b40fab17e",
+    "split": "final_holdout",
+    "budget": 0.01,
+    "deployable_configuration": true,
+    "peak_rss_mb": 870.51171875,
+    "label_counts": {
+      "positive": 2779,
+      "near_miss": 3125,
+      "in_surge": 1375
+    },
+    "winners_by_task": {
+      "motif": {
+        "candidate": "A_global+D_burst",
+        "average_precision": 0.6282307964244803,
+        "roc_auc": 0.977961371190933,
+        "baseline_average_precision": 0.3798909634523207
       },
-      "surge_detection": {
-        "average_precision": 0.5926655743,
-        "precision_at_20": 0.9,
-        "precision_at_50": 0.86,
-        "precision_at_100": 0.75,
-        "precision_at_1pct": 0.6962962963,
-        "recall_at_1pct": 0.3381294964,
-        "rule_only_average_precision": 0.2388266171
+      "surge": {
+        "candidate": "A_global+D_burst",
+        "average_precision": 0.592665574273748,
+        "roc_auc": 0.9820539710060507,
+        "baseline_average_precision": 0.2388266170603705
       },
       "discrimination": {
-        "description": "true motif vs. benign rule-positive payroll",
-        "rule_only_average_precision": 0.9568959651,
-        "note": "rule-only remains best; no unsupervised combination beat it on this task"
+        "candidate": "rule_baseline",
+        "average_precision": 0.9568959651090208,
+        "roc_auc": 0.9593976384689977,
+        "baseline_average_precision": 0.9568959651090208
       }
     },
-    "validation_run_evidence": {
-      "run_seconds": 49,
-      "peak_rss_mb": 896,
-      "note": "runtime/RSS only, from the same MacBook session; AP/precision numbers for validation are read fresh below from --validation-run, not hardcoded, because re-running validation (unlike holdout) is exactly what make anomaly-stack is for"
-    },
-    "limitations": [
-      "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
-      "No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere in this stack.",
-      "Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a real CoinJoin (see the discrimination task above: rule-only wins). Analyst-labelled reviews are required before any supervised model may score production cases; see app.ml.findings.review_decision_labels."
-    ]
+    "run_limitations": "Synthetic-fixture evaluation only. These numbers do not prove real-world detection accuracy; they show which layer combination separates the fixture's labelled motifs from its labelled near-miss negatives. Every feature is strictly causal (only facts at or before its own transaction's timestamp), proved by the truncation property tests in tests/unit/test_anomaly_stack.py. The `motif` task's labels are close to the deterministic rule's own predicate, so its margin overstates what a model adds; `discrimination` is the honest comparison."
   },
   "validation_evidence": {
     "available": true,
@@ -120,6 +112,6 @@
   "known_limitations": [
     "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
     "No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere in this stack.",
-    "Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a real CoinJoin (see the discrimination task above: rule-only wins). Analyst-labelled reviews are required before any supervised model may score production cases; see app.ml.findings.review_decision_labels."
+    "Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a real CoinJoin (see the holdout report's discrimination task: rule-only wins). Analyst-labelled reviews are required before any supervised model may score production cases; see app.ml.findings.review_decision_labels."
   ]
 }
