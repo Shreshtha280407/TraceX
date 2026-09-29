@@ -1,0 +1,4905 @@
+{
+  "dataset": "datasets/phase5a_100k",
+  "layers": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "budget": 0.01,
+  "split": "final_holdout",
+  "fusion": "stouffer",
+  "ranked_by": "average_precision",
+  "threads": 4,
+  "timings_seconds": {
+    "load_facts": 4.776467025999409,
+    "grain_a": 25.30039857599968,
+    "layer_a": 3.748033812000358,
+    "layer_a_global": 2.1819527610005025,
+    "layer_b": 0.3750291179994747,
+    "layer_c": 3.717276101000607,
+    "layer_d": 1.5615971409997655,
+    "layer_e": 7.734825947999525
+  },
+  "peak_rss_mb": 870.51171875,
+  "notes": {
+    "threads": 4,
+    "seed": 42,
+    "split_counts": {
+      "train_reference": 70000,
+      "validation": 15000,
+      "final_holdout": 15000
+    },
+    "family_flag_counts": {
+      "coinjoin_like": 1516,
+      "peel_step": 13460
+    },
+    "rule_baseline_notes": {
+      "coinjoin_like_flagged": 1228,
+      "peel_like_flagged": 13460
+    },
+    "A_structure_notes": {
+      "stratified": true,
+      "clusters": 8
+    },
+    "A_global_notes": {
+      "stratified": false,
+      "clusters": 1
+    },
+    "B_latency_notes": {
+      "observed_spends": 145584,
+      "censored_outputs": 116754,
+      "fitted_on_reference_horizon": true,
+      "fit_events": 101787
+    },
+    "C_history_notes": {
+      "rows": 260700,
+      "rows_with_prior_history": 134011,
+      "shrinkage": 4.0
+    },
+    "D_burst_notes": {
+      "families": [
+        "coinjoin_like",
+        "peel_step"
+      ],
+      "bucket_seconds": 900,
+      "coinjoin_like_changepoints": 0,
+      "peel_step_changepoints": 0
+    }
+  },
+  "supervised_enabled": false,
+  "label_provenance": "none \u2014 unsupervised ranking only; no label reached any fit()",
+  "deployable_configuration": true,
+  "label_counts": {
+    "positive": 2779,
+    "near_miss": 3125,
+    "in_surge": 1375
+  },
+  "results_by_task": {
+    "motif": [
+      {
+        "candidate": "A_global+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.89,
+        "precision_at_500": 0.562,
+        "recall_at_budget": 0.2425531914893617,
+        "precision_at_budget": 0.8444444444444444,
+        "near_miss_rate_at_budget": 0.037037037037037035,
+        "average_precision": 0.6282307964244803,
+        "roc_auc": 0.977961371190933,
+        "flagged_at_budget": 135,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.7,
+        "precision_at_100": 0.74,
+        "precision_at_500": 0.492,
+        "recall_at_budget": 0.1574468085106383,
+        "precision_at_budget": 0.8131868131868132,
+        "near_miss_rate_at_budget": 0.01098901098901099,
+        "average_precision": 0.5024179982400232,
+        "roc_auc": 0.9687689446632792,
+        "flagged_at_budget": 91,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.85,
+        "precision_at_500": 0.438,
+        "recall_at_budget": 0.1829787234042553,
+        "precision_at_budget": 0.8514851485148515,
+        "near_miss_rate_at_budget": 0.0594059405940594,
+        "average_precision": 0.49356272106322846,
+        "roc_auc": 0.965322077579769,
+        "flagged_at_budget": 101,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.82,
+        "precision_at_100": 0.72,
+        "precision_at_500": 0.41,
+        "recall_at_budget": 0.31063829787234043,
+        "precision_at_budget": 0.5177304964539007,
+        "near_miss_rate_at_budget": 0.07446808510638298,
+        "average_precision": 0.44740148349255016,
+        "roc_auc": 0.9613906664128509,
+        "flagged_at_budget": 282,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.92,
+        "precision_at_100": 0.77,
+        "precision_at_500": 0.37,
+        "recall_at_budget": 0.21914893617021278,
+        "precision_at_budget": 0.5988372093023255,
+        "near_miss_rate_at_budget": 0.12790697674418605,
+        "average_precision": 0.430559018121356,
+        "roc_auc": 0.9585318709639631,
+        "flagged_at_budget": 172,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.66,
+        "precision_at_100": 0.64,
+        "precision_at_500": 0.41,
+        "recall_at_budget": 0.15531914893617021,
+        "precision_at_budget": 0.6239316239316239,
+        "near_miss_rate_at_budget": 0.03418803418803419,
+        "average_precision": 0.4216720896403615,
+        "roc_auc": 0.9612607810692477,
+        "flagged_at_budget": 117,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "rule_baseline",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.96,
+        "precision_at_100": 0.88,
+        "precision_at_500": 0.24,
+        "recall_at_budget": 0.1851063829787234,
+        "precision_at_budget": 0.8787878787878788,
+        "near_miss_rate_at_budget": 0.12121212121212122,
+        "average_precision": 0.3798909634523207,
+        "roc_auc": 0.9521540173668566,
+        "flagged_at_budget": 99,
+        "notes": {
+          "kind": "deterministic rule",
+          "layers": []
+        }
+      },
+      {
+        "candidate": "C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.6,
+        "precision_at_100": 0.54,
+        "precision_at_500": 0.356,
+        "recall_at_budget": 0.20638297872340425,
+        "precision_at_budget": 0.5078534031413613,
+        "near_miss_rate_at_budget": 0.07853403141361257,
+        "average_precision": 0.36021699268203833,
+        "roc_auc": 0.954906503053111,
+        "flagged_at_budget": 191,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.86,
+        "precision_at_100": 0.63,
+        "precision_at_500": 0.262,
+        "recall_at_budget": 0.4808510638297872,
+        "precision_at_budget": 0.25565610859728505,
+        "near_miss_rate_at_budget": 0.04411764705882353,
+        "average_precision": 0.3581403654510554,
+        "roc_auc": 0.9526088357177374,
+        "flagged_at_budget": 884,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.82,
+        "precision_at_100": 0.59,
+        "precision_at_500": 0.268,
+        "recall_at_budget": 0.4297872340425532,
+        "precision_at_budget": 0.2801664355062413,
+        "near_miss_rate_at_budget": 0.056865464632454926,
+        "average_precision": 0.3505772862073315,
+        "roc_auc": 0.9498617680221405,
+        "flagged_at_budget": 721,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.82,
+        "precision_at_100": 0.64,
+        "precision_at_500": 0.234,
+        "recall_at_budget": 0.6276595744680851,
+        "precision_at_budget": 0.23137254901960785,
+        "near_miss_rate_at_budget": 0.02823529411764706,
+        "average_precision": 0.33622187775291434,
+        "roc_auc": 0.9507984946771902,
+        "flagged_at_budget": 1275,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.85,
+        "precision_at_50": 0.74,
+        "precision_at_100": 0.54,
+        "precision_at_500": 0.244,
+        "recall_at_budget": 0.5234042553191489,
+        "precision_at_budget": 0.25308641975308643,
+        "near_miss_rate_at_budget": 0.03497942386831276,
+        "average_precision": 0.3307479873287546,
+        "roc_auc": 0.9530307068281325,
+        "flagged_at_budget": 972,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.56,
+        "precision_at_100": 0.46,
+        "precision_at_500": 0.334,
+        "recall_at_budget": 0.17446808510638298,
+        "precision_at_budget": 0.3904761904761905,
+        "near_miss_rate_at_budget": 0.03333333333333333,
+        "average_precision": 0.32457171553929415,
+        "roc_auc": 0.9547209734811322,
+        "flagged_at_budget": 210,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.7,
+        "precision_at_50": 0.64,
+        "precision_at_100": 0.48,
+        "precision_at_500": 0.24,
+        "recall_at_budget": 0.5319148936170213,
+        "precision_at_budget": 0.24295432458697766,
+        "near_miss_rate_at_budget": 0.0369290573372206,
+        "average_precision": 0.31101171144258183,
+        "roc_auc": 0.9524436602187697,
+        "flagged_at_budget": 1029,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.6,
+        "precision_at_100": 0.51,
+        "precision_at_500": 0.258,
+        "recall_at_budget": 0.4297872340425532,
+        "precision_at_budget": 0.2573248407643312,
+        "near_miss_rate_at_budget": 0.048407643312101914,
+        "average_precision": 0.306502605352471,
+        "roc_auc": 0.9507066817003704,
+        "flagged_at_budget": 785,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.7,
+        "precision_at_100": 0.55,
+        "precision_at_500": 0.264,
+        "recall_at_budget": 0.23829787234042554,
+        "precision_at_budget": 0.35443037974683544,
+        "near_miss_rate_at_budget": 0.11708860759493671,
+        "average_precision": 0.2926100054843213,
+        "roc_auc": 0.9266663249915802,
+        "flagged_at_budget": 316,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.58,
+        "precision_at_100": 0.45,
+        "precision_at_500": 0.268,
+        "recall_at_budget": 0.22340425531914893,
+        "precision_at_budget": 0.3684210526315789,
+        "near_miss_rate_at_budget": 0.13333333333333333,
+        "average_precision": 0.27922999956010797,
+        "roc_auc": 0.9386223660511634,
+        "flagged_at_budget": 285,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.36,
+        "precision_at_100": 0.3,
+        "precision_at_500": 0.226,
+        "recall_at_budget": 0.5191489361702127,
+        "precision_at_budget": 0.24596774193548387,
+        "near_miss_rate_at_budget": 0.029233870967741934,
+        "average_precision": 0.263061582079231,
+        "roc_auc": 0.9505063624782182,
+        "flagged_at_budget": 992,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.6,
+        "precision_at_50": 0.58,
+        "precision_at_100": 0.43,
+        "precision_at_500": 0.252,
+        "recall_at_budget": 0.28297872340425534,
+        "precision_at_budget": 0.24584103512014788,
+        "near_miss_rate_at_budget": 0.07024029574861368,
+        "average_precision": 0.26270294925437904,
+        "roc_auc": 0.9409209119796167,
+        "flagged_at_budget": 541,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.52,
+        "precision_at_100": 0.34,
+        "precision_at_500": 0.196,
+        "recall_at_budget": 0.6297872340425532,
+        "precision_at_budget": 0.23052959501557632,
+        "near_miss_rate_at_budget": 0.02570093457943925,
+        "average_precision": 0.2524395754170254,
+        "roc_auc": 0.9460854285337745,
+        "flagged_at_budget": 1284,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.42,
+        "precision_at_100": 0.43,
+        "precision_at_500": 0.246,
+        "recall_at_budget": 0.21914893617021278,
+        "precision_at_budget": 0.28851540616246496,
+        "near_miss_rate_at_budget": 0.09523809523809523,
+        "average_precision": 0.2459503153593678,
+        "roc_auc": 0.9296353838719597,
+        "flagged_at_budget": 357,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.26,
+        "precision_at_500": 0.232,
+        "recall_at_budget": 0.26170212765957446,
+        "precision_at_budget": 0.22404371584699453,
+        "near_miss_rate_at_budget": 0.07468123861566485,
+        "average_precision": 0.23133250850849538,
+        "roc_auc": 0.9425996104904014,
+        "flagged_at_budget": 549,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.66,
+        "precision_at_100": 0.47,
+        "precision_at_500": 0.206,
+        "recall_at_budget": 0.3893617021276596,
+        "precision_at_budget": 0.1969860064585576,
+        "near_miss_rate_at_budget": 0.05059203444564048,
+        "average_precision": 0.22924948987723237,
+        "roc_auc": 0.8992124877363049,
+        "flagged_at_budget": 929,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.34,
+        "precision_at_100": 0.28,
+        "precision_at_500": 0.246,
+        "recall_at_budget": 0.20212765957446807,
+        "precision_at_budget": 0.2638888888888889,
+        "near_miss_rate_at_budget": 0.10555555555555556,
+        "average_precision": 0.2281112024046127,
+        "roc_auc": 0.9379541960141161,
+        "flagged_at_budget": 360,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.52,
+        "precision_at_100": 0.37,
+        "precision_at_500": 0.162,
+        "recall_at_budget": 0.4851063829787234,
+        "precision_at_budget": 0.20320855614973263,
+        "near_miss_rate_at_budget": 0.040106951871657755,
+        "average_precision": 0.21808390717619205,
+        "roc_auc": 0.9240632001288603,
+        "flagged_at_budget": 1122,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.6,
+        "precision_at_50": 0.54,
+        "precision_at_100": 0.39,
+        "precision_at_500": 0.19,
+        "recall_at_budget": 0.43829787234042555,
+        "precision_at_budget": 0.18986175115207374,
+        "near_miss_rate_at_budget": 0.04331797235023042,
+        "average_precision": 0.21715757262501892,
+        "roc_auc": 0.9109806563090305,
+        "flagged_at_budget": 1085,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.22,
+        "precision_at_500": 0.184,
+        "recall_at_budget": 0.225531914893617,
+        "precision_at_budget": 0.1944954128440367,
+        "near_miss_rate_at_budget": 0.05688073394495413,
+        "average_precision": 0.2049953827514292,
+        "roc_auc": 0.9361296510521152,
+        "flagged_at_budget": 545,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.22,
+        "precision_at_500": 0.158,
+        "recall_at_budget": 0.5723404255319149,
+        "precision_at_budget": 0.20724191063174113,
+        "near_miss_rate_at_budget": 0.03466872110939907,
+        "average_precision": 0.2037960814139385,
+        "roc_auc": 0.9330536966803825,
+        "flagged_at_budget": 1298,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.42,
+        "precision_at_100": 0.35,
+        "precision_at_500": 0.188,
+        "recall_at_budget": 0.4,
+        "precision_at_budget": 0.19125127161749747,
+        "near_miss_rate_at_budget": 0.04577822990844354,
+        "average_precision": 0.19999454136300363,
+        "roc_auc": 0.9074696519307083,
+        "flagged_at_budget": 983,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.27,
+        "precision_at_500": 0.172,
+        "recall_at_budget": 0.46170212765957447,
+        "precision_at_budget": 0.18499573742540495,
+        "near_miss_rate_at_budget": 0.040068201193520885,
+        "average_precision": 0.19045188130619123,
+        "roc_auc": 0.9202831998359959,
+        "flagged_at_budget": 1173,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.2,
+        "precision_at_100": 0.24,
+        "precision_at_500": 0.138,
+        "recall_at_budget": 0.474468085106383,
+        "precision_at_budget": 0.1957857769973661,
+        "near_miss_rate_at_budget": 0.03950834064969271,
+        "average_precision": 0.18669856056071615,
+        "roc_auc": 0.9273465024673823,
+        "flagged_at_budget": 1139,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.06,
+        "precision_at_100": 0.1,
+        "precision_at_500": 0.088,
+        "recall_at_budget": 0.5765957446808511,
+        "precision_at_budget": 0.20577069096431283,
+        "near_miss_rate_at_budget": 0.033409263477600606,
+        "average_precision": 0.17953478355796285,
+        "roc_auc": 0.9332103791129138,
+        "flagged_at_budget": 1317,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.1,
+        "precision_at_100": 0.13,
+        "precision_at_500": 0.126,
+        "recall_at_budget": 0.2170212765957447,
+        "precision_at_budget": 0.14366197183098592,
+        "near_miss_rate_at_budget": 0.05352112676056338,
+        "average_precision": 0.17658141593819562,
+        "roc_auc": 0.9313843698291137,
+        "flagged_at_budget": 710,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.34,
+        "precision_at_100": 0.31,
+        "precision_at_500": 0.136,
+        "recall_at_budget": 0.04468085106382979,
+        "precision_at_budget": 0.3442622950819672,
+        "near_miss_rate_at_budget": 0.6065573770491803,
+        "average_precision": 0.0946767915376679,
+        "roc_auc": 0.6557555168323791,
+        "flagged_at_budget": 61,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_global"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.34,
+        "precision_at_100": 0.27,
+        "precision_at_500": 0.094,
+        "recall_at_budget": 0.6425531914893617,
+        "precision_at_budget": 0.03246962692183636,
+        "near_miss_rate_at_budget": 0.02451349317277712,
+        "average_precision": 0.06855313087892312,
+        "roc_auc": 0.4912478950374134,
+        "flagged_at_budget": 9301,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.25,
+        "precision_at_50": 0.18,
+        "precision_at_100": 0.17,
+        "precision_at_500": 0.096,
+        "recall_at_budget": 0.05531914893617021,
+        "precision_at_budget": 0.11555555555555555,
+        "near_miss_rate_at_budget": 0.35555555555555557,
+        "average_precision": 0.061790747000281816,
+        "roc_auc": 0.6115366592962469,
+        "flagged_at_budget": 225,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.22,
+        "precision_at_500": 0.122,
+        "recall_at_budget": 0.010638297872340425,
+        "precision_at_budget": 0.38461538461538464,
+        "near_miss_rate_at_budget": 0.15384615384615385,
+        "average_precision": 0.06047158032474625,
+        "roc_auc": 0.5243893045935775,
+        "flagged_at_budget": 13,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.2,
+        "precision_at_100": 0.16,
+        "precision_at_500": 0.112,
+        "recall_at_budget": 0.031914893617021274,
+        "precision_at_budget": 0.17045454545454544,
+        "near_miss_rate_at_budget": 0.3522727272727273,
+        "average_precision": 0.05795022475995882,
+        "roc_auc": 0.5474851737417815,
+        "flagged_at_budget": 88,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.25,
+        "precision_at_50": 0.18,
+        "precision_at_100": 0.18,
+        "precision_at_500": 0.094,
+        "recall_at_budget": 0.2297872340425532,
+        "precision_at_budget": 0.029637760702524697,
+        "near_miss_rate_at_budget": 0.06037321624588365,
+        "average_precision": 0.04969043291169052,
+        "roc_auc": 0.5455158073538241,
+        "flagged_at_budget": 3644,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.22,
+        "precision_at_100": 0.15,
+        "precision_at_500": 0.084,
+        "recall_at_budget": 0.425531914893617,
+        "precision_at_budget": 0.03375527426160337,
+        "near_miss_rate_at_budget": 0.038649789029535864,
+        "average_precision": 0.04923844331302654,
+        "roc_auc": 0.5772387283829494,
+        "flagged_at_budget": 5925,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.35,
+        "precision_at_50": 0.26,
+        "precision_at_100": 0.21,
+        "precision_at_500": 0.084,
+        "recall_at_budget": 0.30425531914893617,
+        "precision_at_budget": 0.022211867039453246,
+        "near_miss_rate_at_budget": 0.035414725069897485,
+        "average_precision": 0.04855634015284899,
+        "roc_auc": 0.5109581057533203,
+        "flagged_at_budget": 6438,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.08,
+        "precision_at_100": 0.06,
+        "precision_at_500": 0.064,
+        "recall_at_budget": 0.02127659574468085,
+        "precision_at_budget": 0.07518796992481203,
+        "near_miss_rate_at_budget": 0.15037593984962405,
+        "average_precision": 0.037753225036011445,
+        "roc_auc": 0.5039216002108623,
+        "flagged_at_budget": 133,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.06,
+        "precision_at_100": 0.09,
+        "precision_at_500": 0.062,
+        "recall_at_budget": 0.23404255319148937,
+        "precision_at_budget": 0.02541002541002541,
+        "near_miss_rate_at_budget": 0.0492030492030492,
+        "average_precision": 0.037301884598405735,
+        "roc_auc": 0.5204469110131642,
+        "flagged_at_budget": 4329,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.06,
+        "precision_at_100": 0.03,
+        "precision_at_500": 0.034,
+        "recall_at_budget": 0.00851063829787234,
+        "precision_at_budget": 0.02962962962962963,
+        "near_miss_rate_at_budget": 0.05185185185185185,
+        "average_precision": 0.03514132950479732,
+        "roc_auc": 0.5427817721222415,
+        "flagged_at_budget": 135,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.04,
+        "precision_at_100": 0.05,
+        "precision_at_500": 0.034,
+        "recall_at_budget": 0.41702127659574467,
+        "precision_at_budget": 0.03198433420365535,
+        "near_miss_rate_at_budget": 0.034758485639686684,
+        "average_precision": 0.03303032766308496,
+        "roc_auc": 0.5450382920150533,
+        "flagged_at_budget": 6128,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.01,
+        "precision_at_500": 0.04,
+        "recall_at_budget": 0.10212765957446808,
+        "precision_at_budget": 0.03950617283950617,
+        "near_miss_rate_at_budget": 0.1111111111111111,
+        "average_precision": 0.029902107092817914,
+        "roc_auc": 0.4452889839071034,
+        "flagged_at_budget": 1215,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.06,
+        "precision_at_100": 0.05,
+        "precision_at_500": 0.042,
+        "recall_at_budget": 0.00425531914893617,
+        "precision_at_budget": 0.05263157894736842,
+        "near_miss_rate_at_budget": 0.07894736842105263,
+        "average_precision": 0.029733251015557946,
+        "roc_auc": 0.4424894934910896,
+        "flagged_at_budget": 38,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.04,
+        "precision_at_100": 0.04,
+        "precision_at_500": 0.038,
+        "recall_at_budget": 0.3148936170212766,
+        "precision_at_budget": 0.019278363944249057,
+        "near_miss_rate_at_budget": 0.029047805132213105,
+        "average_precision": 0.028924789057158423,
+        "roc_auc": 0.47009093438374017,
+        "flagged_at_budget": 7677,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.01,
+        "precision_at_500": 0.03,
+        "recall_at_budget": 0.23191489361702128,
+        "precision_at_budget": 0.019590222861250898,
+        "near_miss_rate_at_budget": 0.04457225017972682,
+        "average_precision": 0.028507589693262954,
+        "roc_auc": 0.4622212297374471,
+        "flagged_at_budget": 5564,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.012,
+        "recall_at_budget": 0.14042553191489363,
+        "precision_at_budget": 0.02806122448979592,
+        "near_miss_rate_at_budget": 0.0778061224489796,
+        "average_precision": 0.027781669862838605,
+        "roc_auc": 0.4645060110409864,
+        "flagged_at_budget": 2352,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.014,
+        "recall_at_budget": 0.32553191489361705,
+        "precision_at_budget": 0.021398601398601398,
+        "near_miss_rate_at_budget": 0.035524475524475525,
+        "average_precision": 0.02729351095568984,
+        "roc_auc": 0.4732081826302148,
+        "flagged_at_budget": 7150,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.014,
+        "recall_at_budget": 0.23617021276595745,
+        "precision_at_budget": 0.017610661589719183,
+        "near_miss_rate_at_budget": 0.039504997620180865,
+        "average_precision": 0.02563115446464013,
+        "roc_auc": 0.435130104991873,
+        "flagged_at_budget": 6303,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.01,
+        "precision_at_500": 0.008,
+        "recall_at_budget": 0.7510638297872341,
+        "precision_at_budget": 0.037244144334247734,
+        "near_miss_rate_at_budget": 0.023317155518041782,
+        "average_precision": 0.025498078205984563,
+        "roc_auc": 0.4274185470999107,
+        "flagged_at_budget": 9478,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.018,
+        "recall_at_budget": 0.0851063829787234,
+        "precision_at_budget": 0.025157232704402517,
+        "near_miss_rate_at_budget": 0.08176100628930817,
+        "average_precision": 0.025393040621485157,
+        "roc_auc": 0.40203072147135055,
+        "flagged_at_budget": 1590,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.002,
+        "recall_at_budget": 0.32127659574468087,
+        "precision_at_budget": 0.019986763732627397,
+        "near_miss_rate_at_budget": 0.03242885506287227,
+        "average_precision": 0.02529204135633595,
+        "roc_auc": 0.44462066743787615,
+        "flagged_at_budget": 7555,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.28085106382978725,
+        "precision_at_budget": 0.017120622568093387,
+        "near_miss_rate_at_budget": 0.03164721141374838,
+        "average_precision": 0.025270744256074524,
+        "roc_auc": 0.4349993410551903,
+        "flagged_at_budget": 7710,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.4276595744680851,
+        "precision_at_budget": 0.021793342730131195,
+        "near_miss_rate_at_budget": 0.02710614767429253,
+        "average_precision": 0.02509386642514581,
+        "roc_auc": 0.43199601704470575,
+        "flagged_at_budget": 9223,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.1127659574468085,
+        "precision_at_budget": 0.024685607824871916,
+        "near_miss_rate_at_budget": 0.05961807172799255,
+        "average_precision": 0.024779924453329192,
+        "roc_auc": 0.40834560923108465,
+        "flagged_at_budget": 2147,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.43617021276595747,
+        "precision_at_budget": 0.021932170749973254,
+        "near_miss_rate_at_budget": 0.02599764630362683,
+        "average_precision": 0.024094824870139323,
+        "roc_auc": 0.3948562768153929,
+        "flagged_at_budget": 9347,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.002,
+        "recall_at_budget": 0.09148936170212765,
+        "precision_at_budget": 0.014610941216445803,
+        "near_miss_rate_at_budget": 0.04757050628610262,
+        "average_precision": 0.02407168409996021,
+        "roc_auc": 0.4103164399408414,
+        "flagged_at_budget": 2943,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.12978723404255318,
+        "precision_at_budget": 0.015774502198086373,
+        "near_miss_rate_at_budget": 0.046289113007499355,
+        "average_precision": 0.023713552076124553,
+        "roc_auc": 0.40536029637873217,
+        "flagged_at_budget": 3867,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.2978723404255319,
+        "precision_at_budget": 0.01633796242268643,
+        "near_miss_rate_at_budget": 0.02800793558174816,
+        "average_precision": 0.023676435340866185,
+        "roc_auc": 0.40222708702464455,
+        "flagged_at_budget": 8569,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.07021276595744681,
+        "precision_at_budget": 0.01217263002582073,
+        "near_miss_rate_at_budget": 0.0450018443378827,
+        "average_precision": 0.021681887412741747,
+        "roc_auc": 0.3442257398485891,
+        "flagged_at_budget": 2711,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure",
+        "split": "final_holdout",
+        "task": "motif",
+        "rows": 15000,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.0574468085106383,
+        "precision_at_budget": 0.0045996592844974446,
+        "near_miss_rate_at_budget": 0.02504258943781942,
+        "average_precision": 0.02091796520140826,
+        "roc_auc": 0.31716565872516145,
+        "flagged_at_budget": 5870,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_structure"
+          ]
+        }
+      }
+    ],
+    "surge": [
+      {
+        "candidate": "A_global+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.86,
+        "precision_at_100": 0.75,
+        "precision_at_500": 0.43,
+        "recall_at_budget": 0.3381294964028777,
+        "precision_at_budget": 0.6962962962962963,
+        "near_miss_rate_at_budget": 0.037037037037037035,
+        "average_precision": 0.592665574273748,
+        "roc_auc": 0.9820539710060507,
+        "flagged_at_budget": 135,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.7,
+        "precision_at_100": 0.74,
+        "precision_at_500": 0.434,
+        "recall_at_budget": 0.26618705035971224,
+        "precision_at_budget": 0.8131868131868132,
+        "near_miss_rate_at_budget": 0.01098901098901099,
+        "average_precision": 0.5737413924705161,
+        "roc_auc": 0.9811042349383636,
+        "flagged_at_budget": 91,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.85,
+        "precision_at_50": 0.72,
+        "precision_at_100": 0.6,
+        "precision_at_500": 0.31,
+        "recall_at_budget": 0.2158273381294964,
+        "precision_at_budget": 0.594059405940594,
+        "near_miss_rate_at_budget": 0.0594059405940594,
+        "average_precision": 0.39103826555817245,
+        "roc_auc": 0.9659583025062086,
+        "flagged_at_budget": 101,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.58,
+        "precision_at_100": 0.52,
+        "precision_at_500": 0.294,
+        "recall_at_budget": 0.2158273381294964,
+        "precision_at_budget": 0.5128205128205128,
+        "near_miss_rate_at_budget": 0.03418803418803419,
+        "average_precision": 0.36180700569635893,
+        "roc_auc": 0.9650088107750452,
+        "flagged_at_budget": 117,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.7,
+        "precision_at_50": 0.66,
+        "precision_at_100": 0.53,
+        "precision_at_500": 0.276,
+        "recall_at_budget": 0.35251798561151076,
+        "precision_at_budget": 0.3475177304964539,
+        "near_miss_rate_at_budget": 0.07446808510638298,
+        "average_precision": 0.3344759825537682,
+        "roc_auc": 0.9590338054240753,
+        "flagged_at_budget": 282,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.68,
+        "precision_at_100": 0.52,
+        "precision_at_500": 0.24,
+        "recall_at_budget": 0.23381294964028776,
+        "precision_at_budget": 0.37790697674418605,
+        "near_miss_rate_at_budget": 0.12790697674418605,
+        "average_precision": 0.30417097706488266,
+        "roc_auc": 0.9558950584404098,
+        "flagged_at_budget": 172,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.72,
+        "precision_at_100": 0.46,
+        "precision_at_500": 0.172,
+        "recall_at_budget": 0.7302158273381295,
+        "precision_at_budget": 0.1592156862745098,
+        "near_miss_rate_at_budget": 0.02823529411764706,
+        "average_precision": 0.27806593986211114,
+        "roc_auc": 0.9512150366651387,
+        "flagged_at_budget": 1275,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.66,
+        "precision_at_100": 0.43,
+        "precision_at_500": 0.194,
+        "recall_at_budget": 0.5503597122302158,
+        "precision_at_budget": 0.17307692307692307,
+        "near_miss_rate_at_budget": 0.04411764705882353,
+        "average_precision": 0.27049141345464994,
+        "roc_auc": 0.952908288774496,
+        "flagged_at_budget": 884,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.4,
+        "precision_at_100": 0.41,
+        "precision_at_500": 0.234,
+        "recall_at_budget": 0.24100719424460432,
+        "precision_at_budget": 0.3507853403141361,
+        "near_miss_rate_at_budget": 0.07853403141361257,
+        "average_precision": 0.2566378345260351,
+        "roc_auc": 0.9530754149567182,
+        "flagged_at_budget": 191,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.5,
+        "precision_at_100": 0.37,
+        "precision_at_500": 0.23,
+        "recall_at_budget": 0.23381294964028776,
+        "precision_at_budget": 0.30952380952380953,
+        "near_miss_rate_at_budget": 0.03333333333333333,
+        "average_precision": 0.25042250191764426,
+        "roc_auc": 0.9539733516813773,
+        "flagged_at_budget": 210,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.6,
+        "precision_at_100": 0.4,
+        "precision_at_500": 0.174,
+        "recall_at_budget": 0.45323741007194246,
+        "precision_at_budget": 0.17475728155339806,
+        "near_miss_rate_at_budget": 0.056865464632454926,
+        "average_precision": 0.2435692745579641,
+        "roc_auc": 0.9477593852102125,
+        "flagged_at_budget": 721,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.48,
+        "precision_at_100": 0.38,
+        "precision_at_500": 0.18,
+        "recall_at_budget": 0.6115107913669064,
+        "precision_at_budget": 0.1652089407191448,
+        "near_miss_rate_at_budget": 0.0369290573372206,
+        "average_precision": 0.24167091307006386,
+        "roc_auc": 0.9528660185558929,
+        "flagged_at_budget": 1029,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "rule_baseline",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.62,
+        "precision_at_100": 0.56,
+        "precision_at_500": 0.126,
+        "recall_at_budget": 0.2014388489208633,
+        "precision_at_budget": 0.5656565656565656,
+        "near_miss_rate_at_budget": 0.12121212121212122,
+        "average_precision": 0.2388266170603705,
+        "roc_auc": 0.9473752881949298,
+        "flagged_at_budget": 99,
+        "notes": {
+          "kind": "deterministic rule",
+          "layers": []
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.54,
+        "precision_at_100": 0.38,
+        "precision_at_500": 0.166,
+        "recall_at_budget": 0.5467625899280576,
+        "precision_at_budget": 0.15637860082304528,
+        "near_miss_rate_at_budget": 0.03497942386831276,
+        "average_precision": 0.23689966051437214,
+        "roc_auc": 0.9506198328933647,
+        "flagged_at_budget": 972,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.52,
+        "precision_at_100": 0.32,
+        "precision_at_500": 0.152,
+        "recall_at_budget": 0.7482014388489209,
+        "precision_at_budget": 0.16199376947040497,
+        "near_miss_rate_at_budget": 0.02570093457943925,
+        "average_precision": 0.2112991141467041,
+        "roc_auc": 0.9478405049360864,
+        "flagged_at_budget": 1284,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.44,
+        "precision_at_100": 0.37,
+        "precision_at_500": 0.17,
+        "recall_at_budget": 0.460431654676259,
+        "precision_at_budget": 0.16305732484076432,
+        "near_miss_rate_at_budget": 0.048407643312101914,
+        "average_precision": 0.21042230515613425,
+        "roc_auc": 0.9490670742851446,
+        "flagged_at_budget": 785,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.6,
+        "precision_at_50": 0.48,
+        "precision_at_100": 0.34,
+        "precision_at_500": 0.174,
+        "recall_at_budget": 0.25539568345323743,
+        "precision_at_budget": 0.24912280701754386,
+        "near_miss_rate_at_budget": 0.13333333333333333,
+        "average_precision": 0.2034109428101112,
+        "roc_auc": 0.9376668207615676,
+        "flagged_at_budget": 285,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.54,
+        "precision_at_100": 0.4,
+        "precision_at_500": 0.164,
+        "recall_at_budget": 0.24820143884892087,
+        "precision_at_budget": 0.21835443037974683,
+        "near_miss_rate_at_budget": 0.11708860759493671,
+        "average_precision": 0.20019693705166233,
+        "roc_auc": 0.9245852876182955,
+        "flagged_at_budget": 316,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.24,
+        "precision_at_500": 0.156,
+        "recall_at_budget": 0.5431654676258992,
+        "precision_at_budget": 0.15221774193548387,
+        "near_miss_rate_at_budget": 0.029233870967741934,
+        "average_precision": 0.18353328864296442,
+        "roc_auc": 0.9489180290056775,
+        "flagged_at_budget": 992,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.46,
+        "precision_at_100": 0.3,
+        "precision_at_500": 0.156,
+        "recall_at_budget": 0.302158273381295,
+        "precision_at_budget": 0.15526802218114602,
+        "near_miss_rate_at_budget": 0.07024029574861368,
+        "average_precision": 0.18076423358455382,
+        "roc_auc": 0.9375050699828671,
+        "flagged_at_budget": 541,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.24,
+        "precision_at_500": 0.152,
+        "recall_at_budget": 0.29136690647482016,
+        "precision_at_budget": 0.14754098360655737,
+        "near_miss_rate_at_budget": 0.07468123861566485,
+        "average_precision": 0.1659586040233572,
+        "roc_auc": 0.9414628329940313,
+        "flagged_at_budget": 549,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.35,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.3,
+        "precision_at_500": 0.154,
+        "recall_at_budget": 0.23381294964028776,
+        "precision_at_budget": 0.18207282913165265,
+        "near_miss_rate_at_budget": 0.09523809523809523,
+        "average_precision": 0.16467005452827063,
+        "roc_auc": 0.9279827869805772,
+        "flagged_at_budget": 357,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.3,
+        "precision_at_100": 0.23,
+        "precision_at_500": 0.166,
+        "recall_at_budget": 0.23741007194244604,
+        "precision_at_budget": 0.18333333333333332,
+        "near_miss_rate_at_budget": 0.10555555555555556,
+        "average_precision": 0.16010698581186142,
+        "roc_auc": 0.938015000307864,
+        "flagged_at_budget": 360,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.5,
+        "precision_at_100": 0.33,
+        "precision_at_500": 0.128,
+        "recall_at_budget": 0.3920863309352518,
+        "precision_at_budget": 0.11733046286329386,
+        "near_miss_rate_at_budget": 0.05059203444564048,
+        "average_precision": 0.15715133331627257,
+        "roc_auc": 0.8977219528547791,
+        "flagged_at_budget": 929,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.44,
+        "precision_at_100": 0.28,
+        "precision_at_500": 0.124,
+        "recall_at_budget": 0.4676258992805755,
+        "precision_at_budget": 0.11981566820276497,
+        "near_miss_rate_at_budget": 0.04331797235023042,
+        "average_precision": 0.15515912517130492,
+        "roc_auc": 0.9112640603452573,
+        "flagged_at_budget": 1085,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.4,
+        "precision_at_100": 0.26,
+        "precision_at_500": 0.104,
+        "recall_at_budget": 0.4856115107913669,
+        "precision_at_budget": 0.12032085561497326,
+        "near_miss_rate_at_budget": 0.040106951871657755,
+        "average_precision": 0.14848711831523353,
+        "roc_auc": 0.9214614451625767,
+        "flagged_at_budget": 1122,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.28,
+        "precision_at_100": 0.21,
+        "precision_at_500": 0.106,
+        "recall_at_budget": 0.6258992805755396,
+        "precision_at_budget": 0.13405238828967642,
+        "near_miss_rate_at_budget": 0.03466872110939907,
+        "average_precision": 0.13962252224536317,
+        "roc_auc": 0.9312996552900323,
+        "flagged_at_budget": 1298,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.22,
+        "precision_at_100": 0.16,
+        "precision_at_500": 0.122,
+        "recall_at_budget": 0.24100719424460432,
+        "precision_at_budget": 0.12293577981651377,
+        "near_miss_rate_at_budget": 0.05688073394495413,
+        "average_precision": 0.13423618860673764,
+        "roc_auc": 0.9332357779039641,
+        "flagged_at_budget": 545,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.25,
+        "precision_at_500": 0.118,
+        "recall_at_budget": 0.4064748201438849,
+        "precision_at_budget": 0.11495422177009156,
+        "near_miss_rate_at_budget": 0.04577822990844354,
+        "average_precision": 0.1318214867466523,
+        "roc_auc": 0.9069539640668934,
+        "flagged_at_budget": 983,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.22,
+        "precision_at_500": 0.112,
+        "recall_at_budget": 0.5,
+        "precision_at_budget": 0.1184995737425405,
+        "near_miss_rate_at_budget": 0.040068201193520885,
+        "average_precision": 0.12821080912006397,
+        "roc_auc": 0.921245451675611,
+        "flagged_at_budget": 1173,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.1,
+        "precision_at_100": 0.13,
+        "precision_at_500": 0.098,
+        "recall_at_budget": 0.26258992805755393,
+        "precision_at_budget": 0.1028169014084507,
+        "near_miss_rate_at_budget": 0.05352112676056338,
+        "average_precision": 0.12002310630980065,
+        "roc_auc": 0.9326708718611308,
+        "flagged_at_budget": 710,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.16,
+        "precision_at_100": 0.19,
+        "precision_at_500": 0.09,
+        "recall_at_budget": 0.48201438848920863,
+        "precision_at_budget": 0.11764705882352941,
+        "near_miss_rate_at_budget": 0.03950834064969271,
+        "average_precision": 0.11931651812403157,
+        "roc_auc": 0.9251191629226166,
+        "flagged_at_budget": 1139,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.06,
+        "precision_at_100": 0.1,
+        "precision_at_500": 0.07,
+        "recall_at_budget": 0.6366906474820144,
+        "precision_at_budget": 0.13439635535307518,
+        "near_miss_rate_at_budget": 0.033409263477600606,
+        "average_precision": 0.11352043762940667,
+        "roc_auc": 0.9315950581472059,
+        "flagged_at_budget": 1317,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.26,
+        "precision_at_100": 0.2,
+        "precision_at_500": 0.084,
+        "recall_at_budget": 0.050359712230215826,
+        "precision_at_budget": 0.22950819672131148,
+        "near_miss_rate_at_budget": 0.6065573770491803,
+        "average_precision": 0.07002077500002407,
+        "roc_auc": 0.6434243177391248,
+        "flagged_at_budget": 61,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_global"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.19,
+        "precision_at_500": 0.06,
+        "recall_at_budget": 0.6294964028776978,
+        "precision_at_budget": 0.01881518116331577,
+        "near_miss_rate_at_budget": 0.02451349317277712,
+        "average_precision": 0.05326257758441628,
+        "roc_auc": 0.4899841572198022,
+        "flagged_at_budget": 9301,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.22,
+        "precision_at_100": 0.16,
+        "precision_at_500": 0.078,
+        "recall_at_budget": 0.01079136690647482,
+        "precision_at_budget": 0.23076923076923078,
+        "near_miss_rate_at_budget": 0.15384615384615385,
+        "average_precision": 0.04190299734793333,
+        "roc_auc": 0.5270238638595983,
+        "flagged_at_budget": 13,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.08,
+        "precision_at_100": 0.12,
+        "precision_at_500": 0.056,
+        "recall_at_budget": 0.06474820143884892,
+        "precision_at_budget": 0.08,
+        "near_miss_rate_at_budget": 0.35555555555555557,
+        "average_precision": 0.03483164725415269,
+        "roc_auc": 0.5967917148416846,
+        "flagged_at_budget": 225,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.05,
+        "precision_at_50": 0.12,
+        "precision_at_100": 0.12,
+        "precision_at_500": 0.072,
+        "recall_at_budget": 0.039568345323741004,
+        "precision_at_budget": 0.125,
+        "near_miss_rate_at_budget": 0.3522727272727273,
+        "average_precision": 0.033752679794704255,
+        "roc_auc": 0.5373402405639678,
+        "flagged_at_budget": 88,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.25,
+        "precision_at_50": 0.18,
+        "precision_at_100": 0.14,
+        "precision_at_500": 0.054,
+        "recall_at_budget": 0.32014388489208634,
+        "precision_at_budget": 0.01382416899658279,
+        "near_miss_rate_at_budget": 0.035414725069897485,
+        "average_precision": 0.03251232715042838,
+        "roc_auc": 0.5119524540671769,
+        "flagged_at_budget": 6438,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.12,
+        "precision_at_100": 0.11,
+        "precision_at_500": 0.06,
+        "recall_at_budget": 0.22302158273381295,
+        "precision_at_budget": 0.017014270032930844,
+        "near_miss_rate_at_budget": 0.06037321624588365,
+        "average_precision": 0.028811196234865027,
+        "roc_auc": 0.5363826857275218,
+        "flagged_at_budget": 3644,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.05,
+        "precision_at_50": 0.14,
+        "precision_at_100": 0.11,
+        "precision_at_500": 0.054,
+        "recall_at_budget": 0.4028776978417266,
+        "precision_at_budget": 0.01890295358649789,
+        "near_miss_rate_at_budget": 0.038649789029535864,
+        "average_precision": 0.028292447763086623,
+        "roc_auc": 0.5660839892140085,
+        "flagged_at_budget": 5925,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.05,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.03,
+        "precision_at_500": 0.042,
+        "recall_at_budget": 0.02158273381294964,
+        "precision_at_budget": 0.045112781954887216,
+        "near_miss_rate_at_budget": 0.15037593984962405,
+        "average_precision": 0.021983718939168985,
+        "roc_auc": 0.49641338416836156,
+        "flagged_at_budget": 133,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.04,
+        "precision_at_500": 0.04,
+        "recall_at_budget": 0.23741007194244604,
+        "precision_at_budget": 0.015246015246015246,
+        "near_miss_rate_at_budget": 0.0492030492030492,
+        "average_precision": 0.020714271845184356,
+        "roc_auc": 0.5123812646662999,
+        "flagged_at_budget": 4329,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.01,
+        "precision_at_500": 0.016,
+        "recall_at_budget": 0.007194244604316547,
+        "precision_at_budget": 0.014814814814814815,
+        "near_miss_rate_at_budget": 0.05185185185185185,
+        "average_precision": 0.01981963320423787,
+        "roc_auc": 0.5293401741044333,
+        "flagged_at_budget": 135,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.02,
+        "precision_at_500": 0.02,
+        "recall_at_budget": 0.4136690647482014,
+        "precision_at_budget": 0.018766318537859008,
+        "near_miss_rate_at_budget": 0.034758485639686684,
+        "average_precision": 0.01885737670931584,
+        "roc_auc": 0.5343358786683464,
+        "flagged_at_budget": 6128,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.04,
+        "precision_at_100": 0.03,
+        "precision_at_500": 0.03,
+        "recall_at_budget": 0.0035971223021582736,
+        "precision_at_budget": 0.02631578947368421,
+        "near_miss_rate_at_budget": 0.07894736842105263,
+        "average_precision": 0.018743023025216063,
+        "roc_auc": 0.45307614796628937,
+        "flagged_at_budget": 38,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.026,
+        "recall_at_budget": 0.11151079136690648,
+        "precision_at_budget": 0.02551440329218107,
+        "near_miss_rate_at_budget": 0.1111111111111111,
+        "average_precision": 0.017729066288565576,
+        "roc_auc": 0.43559973377092376,
+        "flagged_at_budget": 1215,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.02,
+        "precision_at_500": 0.024,
+        "recall_at_budget": 0.33093525179856115,
+        "precision_at_budget": 0.0119838478572359,
+        "near_miss_rate_at_budget": 0.029047805132213105,
+        "average_precision": 0.017488686936555586,
+        "roc_auc": 0.4732888868907591,
+        "flagged_at_budget": 7677,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.02,
+        "recall_at_budget": 0.22661870503597123,
+        "precision_at_budget": 0.011322789360172537,
+        "near_miss_rate_at_budget": 0.04457225017972682,
+        "average_precision": 0.01697615185505271,
+        "roc_auc": 0.45482315411086427,
+        "flagged_at_budget": 5564,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.01,
+        "recall_at_budget": 0.14028776978417265,
+        "precision_at_budget": 0.016581632653061226,
+        "near_miss_rate_at_budget": 0.0778061224489796,
+        "average_precision": 0.01609307067792827,
+        "roc_auc": 0.4503718313217922,
+        "flagged_at_budget": 2352,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.01,
+        "recall_at_budget": 0.302158273381295,
+        "precision_at_budget": 0.011748251748251748,
+        "near_miss_rate_at_budget": 0.035524475524475525,
+        "average_precision": 0.01602174212794931,
+        "roc_auc": 0.4639887057885277,
+        "flagged_at_budget": 7150,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.008,
+        "recall_at_budget": 0.2302158273381295,
+        "precision_at_budget": 0.010153894970648898,
+        "near_miss_rate_at_budget": 0.039504997620180865,
+        "average_precision": 0.015087075042699039,
+        "roc_auc": 0.42843529822250065,
+        "flagged_at_budget": 6303,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.01,
+        "precision_at_500": 0.006,
+        "recall_at_budget": 0.7482014388489209,
+        "precision_at_budget": 0.02194555813462756,
+        "near_miss_rate_at_budget": 0.023317155518041782,
+        "average_precision": 0.015064672393241526,
+        "roc_auc": 0.42855013638864753,
+        "flagged_at_budget": 9478,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.27697841726618705,
+        "precision_at_budget": 0.009987029831387807,
+        "near_miss_rate_at_budget": 0.03164721141374838,
+        "average_precision": 0.015025710785187187,
+        "roc_auc": 0.4336218296114365,
+        "flagged_at_budget": 7710,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.012,
+        "recall_at_budget": 0.08273381294964029,
+        "precision_at_budget": 0.014465408805031447,
+        "near_miss_rate_at_budget": 0.08176100628930817,
+        "average_precision": 0.014854577959455257,
+        "roc_auc": 0.3935215636755641,
+        "flagged_at_budget": 1590,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.39568345323741005,
+        "precision_at_budget": 0.011926704976688712,
+        "near_miss_rate_at_budget": 0.02710614767429253,
+        "average_precision": 0.014825989816790905,
+        "roc_auc": 0.4293288368897329,
+        "flagged_at_budget": 9223,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.1223021582733813,
+        "precision_at_budget": 0.015836050302748022,
+        "near_miss_rate_at_budget": 0.05961807172799255,
+        "average_precision": 0.01476811810569187,
+        "roc_auc": 0.4064999868058277,
+        "flagged_at_budget": 2147,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.002,
+        "recall_at_budget": 0.3057553956834532,
+        "precision_at_budget": 0.011250827266710787,
+        "near_miss_rate_at_budget": 0.03242885506287227,
+        "average_precision": 0.014743295579499428,
+        "roc_auc": 0.4354206350990394,
+        "flagged_at_budget": 7555,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.41007194244604317,
+        "precision_at_budget": 0.012196426660960736,
+        "near_miss_rate_at_budget": 0.02599764630362683,
+        "average_precision": 0.01420135858326646,
+        "roc_auc": 0.3929300249516458,
+        "flagged_at_budget": 9347,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.28776978417266186,
+        "precision_at_budget": 0.009335978527249386,
+        "near_miss_rate_at_budget": 0.02800793558174816,
+        "average_precision": 0.014017676236672565,
+        "roc_auc": 0.4020320491331429,
+        "flagged_at_budget": 8569,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.002,
+        "recall_at_budget": 0.08273381294964029,
+        "precision_at_budget": 0.00781515460414543,
+        "near_miss_rate_at_budget": 0.04757050628610262,
+        "average_precision": 0.013899190878154765,
+        "roc_auc": 0.3966209724789113,
+        "flagged_at_budget": 2943,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.12589928057553956,
+        "precision_at_budget": 0.009050943884147919,
+        "near_miss_rate_at_budget": 0.046289113007499355,
+        "average_precision": 0.013889636049187887,
+        "roc_auc": 0.3980024511840059,
+        "flagged_at_budget": 3867,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.07913669064748201,
+        "precision_at_budget": 0.008115086683880487,
+        "near_miss_rate_at_budget": 0.0450018443378827,
+        "average_precision": 0.012847619132207529,
+        "roc_auc": 0.34441798551377617,
+        "flagged_at_budget": 2711,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure",
+        "split": "final_holdout",
+        "task": "surge",
+        "rows": 15000,
+        "positives": 278,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.0,
+        "precision_at_100": 0.0,
+        "precision_at_500": 0.0,
+        "recall_at_budget": 0.06474820143884892,
+        "precision_at_budget": 0.0030664395229982964,
+        "near_miss_rate_at_budget": 0.02504258943781942,
+        "average_precision": 0.012238569126326067,
+        "roc_auc": 0.31177438160869214,
+        "flagged_at_budget": 5870,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_structure"
+          ]
+        }
+      }
+    ],
+    "discrimination": [
+      {
+        "candidate": "rule_baseline",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.88,
+        "precision_at_500": 0.94,
+        "recall_at_budget": 0.04042553191489362,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.9568959651090208,
+        "roc_auc": 0.9593976384689977,
+        "flagged_at_budget": 19,
+        "notes": {
+          "kind": "deterministic rule",
+          "layers": []
+        }
+      },
+      {
+        "candidate": "D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.98,
+        "precision_at_100": 0.99,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.0,
+        "precision_at_budget": 0.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.9479965801967501,
+        "roc_auc": 0.9495921510467172,
+        "flagged_at_budget": 0,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.91,
+        "precision_at_500": 0.892,
+        "recall_at_budget": 0.006382978723404255,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.9057465466285625,
+        "roc_auc": 0.9236438309280702,
+        "flagged_at_budget": 3,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.98,
+        "precision_at_100": 0.96,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.0,
+        "precision_at_budget": 0.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.9047293324873098,
+        "roc_auc": 0.9178027494153215,
+        "flagged_at_budget": 0,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.92,
+        "precision_at_100": 0.84,
+        "precision_at_500": 0.9,
+        "recall_at_budget": 0.14893617021276595,
+        "precision_at_budget": 0.9090909090909091,
+        "near_miss_rate_at_budget": 0.09090909090909091,
+        "average_precision": 0.8877323694275333,
+        "roc_auc": 0.9233072842393475,
+        "flagged_at_budget": 77,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.92,
+        "precision_at_100": 0.93,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.010638297872340425,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.8836104273899003,
+        "roc_auc": 0.9099195710455764,
+        "flagged_at_budget": 5,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.85,
+        "precision_at_50": 0.88,
+        "precision_at_100": 0.86,
+        "precision_at_500": 0.894,
+        "recall_at_budget": 0.14893617021276595,
+        "precision_at_budget": 0.8641975308641975,
+        "near_miss_rate_at_budget": 0.13580246913580246,
+        "average_precision": 0.8830174290939059,
+        "roc_auc": 0.9177400034225087,
+        "flagged_at_budget": 81,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.96,
+        "precision_at_100": 0.93,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.0,
+        "precision_at_budget": 0.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.8766356237623838,
+        "roc_auc": 0.9000855627174719,
+        "flagged_at_budget": 0,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.76,
+        "precision_at_500": 0.896,
+        "recall_at_budget": 0.18085106382978725,
+        "precision_at_budget": 0.7456140350877193,
+        "near_miss_rate_at_budget": 0.2543859649122807,
+        "average_precision": 0.8762220070257964,
+        "roc_auc": 0.9165364211967372,
+        "flagged_at_budget": 114,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.9,
+        "precision_at_100": 0.82,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.14893617021276595,
+        "precision_at_budget": 0.8333333333333334,
+        "near_miss_rate_at_budget": 0.16666666666666666,
+        "average_precision": 0.8705226039977358,
+        "roc_auc": 0.9056927728024642,
+        "flagged_at_budget": 84,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.88,
+        "precision_at_100": 0.87,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.00851063829787234,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.8666447018027835,
+        "roc_auc": 0.8995379613256517,
+        "flagged_at_budget": 4,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.9,
+        "precision_at_100": 0.77,
+        "precision_at_500": 0.892,
+        "recall_at_budget": 0.13191489361702127,
+        "precision_at_budget": 0.8051948051948052,
+        "near_miss_rate_at_budget": 0.19480519480519481,
+        "average_precision": 0.8643337815671716,
+        "roc_auc": 0.9056813644401346,
+        "flagged_at_budget": 77,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.92,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.002127659574468085,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.8626862092612748,
+        "roc_auc": 0.8911528150134048,
+        "flagged_at_budget": 1,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 1.0,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.87,
+        "precision_at_500": 0.882,
+        "recall_at_budget": 0.01276595744680851,
+        "precision_at_budget": 1.0,
+        "near_miss_rate_at_budget": 0.0,
+        "average_precision": 0.8593352430618809,
+        "roc_auc": 0.8885060749529405,
+        "flagged_at_budget": 6,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.92,
+        "precision_at_100": 0.74,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.12340425531914893,
+        "precision_at_budget": 0.8529411764705882,
+        "near_miss_rate_at_budget": 0.14705882352941177,
+        "average_precision": 0.8559059424710668,
+        "roc_auc": 0.893611317095431,
+        "flagged_at_budget": 68,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.86,
+        "precision_at_100": 0.81,
+        "precision_at_500": 0.876,
+        "recall_at_budget": 0.11702127659574468,
+        "precision_at_budget": 0.8208955223880597,
+        "near_miss_rate_at_budget": 0.1791044776119403,
+        "average_precision": 0.8557058801155131,
+        "roc_auc": 0.8916890080428954,
+        "flagged_at_budget": 67,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.88,
+        "precision_at_100": 0.81,
+        "precision_at_500": 0.834,
+        "recall_at_budget": 0.11702127659574468,
+        "precision_at_budget": 0.873015873015873,
+        "near_miss_rate_at_budget": 0.12698412698412698,
+        "average_precision": 0.8393434015940048,
+        "roc_auc": 0.8647595687639039,
+        "flagged_at_budget": 63,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.72,
+        "precision_at_100": 0.77,
+        "precision_at_500": 0.864,
+        "recall_at_budget": 0.1574468085106383,
+        "precision_at_budget": 0.7708333333333334,
+        "near_miss_rate_at_budget": 0.22916666666666666,
+        "average_precision": 0.8161180746637945,
+        "roc_auc": 0.8774513718555701,
+        "flagged_at_budget": 96,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.85,
+        "precision_at_50": 0.8,
+        "precision_at_100": 0.75,
+        "precision_at_500": 0.872,
+        "recall_at_budget": 0.029787234042553193,
+        "precision_at_budget": 0.8235294117647058,
+        "near_miss_rate_at_budget": 0.17647058823529413,
+        "average_precision": 0.8136233795287511,
+        "roc_auc": 0.8744452683817238,
+        "flagged_at_budget": 17,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.68,
+        "precision_at_100": 0.71,
+        "precision_at_500": 0.888,
+        "recall_at_budget": 0.014893617021276596,
+        "precision_at_budget": 0.6363636363636364,
+        "near_miss_rate_at_budget": 0.36363636363636365,
+        "average_precision": 0.8122332789203628,
+        "roc_auc": 0.8852318749643489,
+        "flagged_at_budget": 11,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.6,
+        "precision_at_50": 0.62,
+        "precision_at_100": 0.71,
+        "precision_at_500": 0.872,
+        "recall_at_budget": 0.18085106382978725,
+        "precision_at_budget": 0.7327586206896551,
+        "near_miss_rate_at_budget": 0.2672413793103448,
+        "average_precision": 0.8096240931585752,
+        "roc_auc": 0.8836061833323826,
+        "flagged_at_budget": 116,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.54,
+        "precision_at_100": 0.73,
+        "precision_at_500": 0.896,
+        "recall_at_budget": 0.20425531914893616,
+        "precision_at_budget": 0.7619047619047619,
+        "near_miss_rate_at_budget": 0.23809523809523808,
+        "average_precision": 0.8082440949424483,
+        "roc_auc": 0.8944213108208316,
+        "flagged_at_budget": 126,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.85,
+        "precision_at_50": 0.76,
+        "precision_at_100": 0.75,
+        "precision_at_500": 0.818,
+        "recall_at_budget": 0.14680851063829786,
+        "precision_at_budget": 0.7582417582417582,
+        "near_miss_rate_at_budget": 0.24175824175824176,
+        "average_precision": 0.8021091929210297,
+        "roc_auc": 0.8483201186469682,
+        "flagged_at_budget": 91,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.78,
+        "precision_at_100": 0.7,
+        "precision_at_500": 0.86,
+        "recall_at_budget": 0.010638297872340425,
+        "precision_at_budget": 0.625,
+        "near_miss_rate_at_budget": 0.375,
+        "average_precision": 0.796197112274188,
+        "roc_auc": 0.8631795105812561,
+        "flagged_at_budget": 8,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.68,
+        "precision_at_100": 0.72,
+        "precision_at_500": 0.85,
+        "recall_at_budget": 0.12340425531914893,
+        "precision_at_budget": 0.6904761904761905,
+        "near_miss_rate_at_budget": 0.30952380952380953,
+        "average_precision": 0.7960655940471324,
+        "roc_auc": 0.8657178711995893,
+        "flagged_at_budget": 84,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.74,
+        "precision_at_100": 0.77,
+        "precision_at_500": 0.844,
+        "recall_at_budget": 0.023404255319148935,
+        "precision_at_budget": 0.7333333333333333,
+        "near_miss_rate_at_budget": 0.26666666666666666,
+        "average_precision": 0.7958290811633593,
+        "roc_auc": 0.8501454566197022,
+        "flagged_at_budget": 15,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.56,
+        "precision_at_100": 0.67,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.02127659574468085,
+        "precision_at_budget": 0.7692307692307693,
+        "near_miss_rate_at_budget": 0.23076923076923078,
+        "average_precision": 0.7923606976406595,
+        "roc_auc": 0.8767269408476414,
+        "flagged_at_budget": 13,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.65,
+        "precision_at_50": 0.6,
+        "precision_at_100": 0.7,
+        "precision_at_500": 0.884,
+        "recall_at_budget": 0.006382978723404255,
+        "precision_at_budget": 0.5,
+        "near_miss_rate_at_budget": 0.5,
+        "average_precision": 0.7895730104229771,
+        "roc_auc": 0.8736067537504991,
+        "flagged_at_budget": 6,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+D_burst",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.45,
+        "precision_at_50": 0.48,
+        "precision_at_100": 0.62,
+        "precision_at_500": 0.89,
+        "recall_at_budget": 0.006382978723404255,
+        "precision_at_budget": 0.42857142857142855,
+        "near_miss_rate_at_budget": 0.5714285714285714,
+        "average_precision": 0.7869460101149762,
+        "roc_auc": 0.881661057555188,
+        "flagged_at_budget": 7,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "D_burst"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.75,
+        "precision_at_50": 0.74,
+        "precision_at_100": 0.71,
+        "precision_at_500": 0.8,
+        "recall_at_budget": 0.13404255319148936,
+        "precision_at_budget": 0.7159090909090909,
+        "near_miss_rate_at_budget": 0.2840909090909091,
+        "average_precision": 0.7843243104383184,
+        "roc_auc": 0.8329530545890137,
+        "flagged_at_budget": 88,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.86,
+        "precision_at_100": 0.8,
+        "precision_at_500": 0.782,
+        "recall_at_budget": 0.027659574468085105,
+        "precision_at_budget": 0.8125,
+        "near_miss_rate_at_budget": 0.1875,
+        "average_precision": 0.7835402893755851,
+        "roc_auc": 0.8090525355085277,
+        "flagged_at_budget": 16,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.82,
+        "precision_at_100": 0.77,
+        "precision_at_500": 0.77,
+        "recall_at_budget": 0.12127659574468085,
+        "precision_at_budget": 0.75,
+        "near_miss_rate_at_budget": 0.25,
+        "average_precision": 0.7767714045406762,
+        "roc_auc": 0.8133706006502767,
+        "flagged_at_budget": 76,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+D_burst+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.8,
+        "precision_at_50": 0.84,
+        "precision_at_100": 0.76,
+        "precision_at_500": 0.718,
+        "recall_at_budget": 0.1127659574468085,
+        "precision_at_budget": 0.7910447761194029,
+        "near_miss_rate_at_budget": 0.208955223880597,
+        "average_precision": 0.7527671922586107,
+        "roc_auc": 0.7621812788774172,
+        "flagged_at_budget": 67,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "D_burst",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.36,
+        "precision_at_100": 0.38,
+        "precision_at_500": 0.548,
+        "recall_at_budget": 0.28085106382978725,
+        "precision_at_budget": 0.3815028901734104,
+        "near_miss_rate_at_budget": 0.6184971098265896,
+        "average_precision": 0.49727692712148097,
+        "roc_auc": 0.4361930294906166,
+        "flagged_at_budget": 346,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.22,
+        "precision_at_100": 0.26,
+        "precision_at_500": 0.57,
+        "recall_at_budget": 0.23829787234042554,
+        "precision_at_budget": 0.36482084690553745,
+        "near_miss_rate_at_budget": 0.6351791530944625,
+        "average_precision": 0.49180671846073437,
+        "roc_auc": 0.454383663225144,
+        "flagged_at_budget": 307,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.26,
+        "precision_at_500": 0.534,
+        "recall_at_budget": 0.1851063829787234,
+        "precision_at_budget": 0.33079847908745247,
+        "near_miss_rate_at_budget": 0.6692015209125475,
+        "average_precision": 0.47001828863201,
+        "roc_auc": 0.3928184359135246,
+        "flagged_at_budget": 263,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.35,
+        "precision_at_50": 0.38,
+        "precision_at_100": 0.33,
+        "precision_at_500": 0.52,
+        "recall_at_budget": 0.18723404255319148,
+        "precision_at_budget": 0.2983050847457627,
+        "near_miss_rate_at_budget": 0.7016949152542373,
+        "average_precision": 0.4674578806143491,
+        "roc_auc": 0.3852033540585249,
+        "flagged_at_budget": 295,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.5,
+        "precision_at_50": 0.4,
+        "precision_at_100": 0.4,
+        "precision_at_500": 0.498,
+        "recall_at_budget": 0.15106382978723404,
+        "precision_at_budget": 0.2679245283018868,
+        "near_miss_rate_at_budget": 0.7320754716981132,
+        "average_precision": 0.46694143555786033,
+        "roc_auc": 0.3508185499971479,
+        "flagged_at_budget": 265,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.25,
+        "precision_at_50": 0.3,
+        "precision_at_100": 0.28,
+        "precision_at_500": 0.518,
+        "recall_at_budget": 0.19574468085106383,
+        "precision_at_budget": 0.3274021352313167,
+        "near_miss_rate_at_budget": 0.6725978647686833,
+        "average_precision": 0.45744002878100337,
+        "roc_auc": 0.35638583081398667,
+        "flagged_at_budget": 281,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.08,
+        "precision_at_500": 0.494,
+        "recall_at_budget": 0.2148936170212766,
+        "precision_at_budget": 0.33114754098360655,
+        "near_miss_rate_at_budget": 0.6688524590163935,
+        "average_precision": 0.4449480381694209,
+        "roc_auc": 0.3612343848040614,
+        "flagged_at_budget": 305,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.3,
+        "precision_at_100": 0.33,
+        "precision_at_500": 0.414,
+        "recall_at_budget": 0.010638297872340425,
+        "precision_at_budget": 0.38461538461538464,
+        "near_miss_rate_at_budget": 0.6153846153846154,
+        "average_precision": 0.4403432852409854,
+        "roc_auc": 0.28241400946894074,
+        "flagged_at_budget": 13,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.4,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.3,
+        "precision_at_500": 0.448,
+        "recall_at_budget": 0.14680851063829786,
+        "precision_at_budget": 0.28512396694214875,
+        "near_miss_rate_at_budget": 0.7148760330578512,
+        "average_precision": 0.4387084935944979,
+        "roc_auc": 0.2984370543608465,
+        "flagged_at_budget": 242,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.14,
+        "precision_at_100": 0.21,
+        "precision_at_500": 0.482,
+        "recall_at_budget": 0.20851063829787234,
+        "precision_at_budget": 0.3141025641025641,
+        "near_miss_rate_at_budget": 0.6858974358974359,
+        "average_precision": 0.4366892704171373,
+        "roc_auc": 0.33230848211739206,
+        "flagged_at_budget": 312,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.38,
+        "precision_at_100": 0.34,
+        "precision_at_500": 0.432,
+        "recall_at_budget": 0.13191489361702127,
+        "precision_at_budget": 0.2831050228310502,
+        "near_miss_rate_at_budget": 0.7168949771689498,
+        "average_precision": 0.4324594270785552,
+        "roc_auc": 0.2724373966117164,
+        "flagged_at_budget": 219,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.34,
+        "precision_at_100": 0.37,
+        "precision_at_500": 0.352,
+        "recall_at_budget": 0.031914893617021274,
+        "precision_at_budget": 0.40540540540540543,
+        "near_miss_rate_at_budget": 0.5945945945945946,
+        "average_precision": 0.42523272720145144,
+        "roc_auc": 0.20497975015686498,
+        "flagged_at_budget": 37,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_global"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.55,
+        "precision_at_50": 0.42,
+        "precision_at_100": 0.36,
+        "precision_at_500": 0.304,
+        "recall_at_budget": 0.01702127659574468,
+        "precision_at_budget": 0.7272727272727273,
+        "near_miss_rate_at_budget": 0.2727272727272727,
+        "average_precision": 0.425120539052139,
+        "roc_auc": 0.18715418401688438,
+        "flagged_at_budget": 11,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.14,
+        "precision_at_100": 0.2,
+        "precision_at_500": 0.45,
+        "recall_at_budget": 0.1723404255319149,
+        "precision_at_budget": 0.2852112676056338,
+        "near_miss_rate_at_budget": 0.7147887323943662,
+        "average_precision": 0.4239090748042184,
+        "roc_auc": 0.29242484741315383,
+        "flagged_at_budget": 284,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.16,
+        "precision_at_100": 0.2,
+        "precision_at_500": 0.454,
+        "recall_at_budget": 0.16170212765957448,
+        "precision_at_budget": 0.2857142857142857,
+        "near_miss_rate_at_budget": 0.7142857142857143,
+        "average_precision": 0.4208965465945462,
+        "roc_auc": 0.2832011864696823,
+        "flagged_at_budget": 266,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.26,
+        "precision_at_100": 0.25,
+        "precision_at_500": 0.438,
+        "recall_at_budget": 0.14680851063829786,
+        "precision_at_budget": 0.25650557620817843,
+        "near_miss_rate_at_budget": 0.7434944237918215,
+        "average_precision": 0.4186860139960931,
+        "roc_auc": 0.26337345274085905,
+        "flagged_at_budget": 269,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.2,
+        "precision_at_100": 0.24,
+        "precision_at_500": 0.43,
+        "recall_at_budget": 0.16808510638297872,
+        "precision_at_budget": 0.2791519434628975,
+        "near_miss_rate_at_budget": 0.7208480565371025,
+        "average_precision": 0.41821627299147884,
+        "roc_auc": 0.2671952541212709,
+        "flagged_at_budget": 283,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.35,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.38,
+        "precision_at_500": 0.318,
+        "recall_at_budget": 0.010638297872340425,
+        "precision_at_budget": 0.3333333333333333,
+        "near_miss_rate_at_budget": 0.6666666666666666,
+        "average_precision": 0.4162900229479233,
+        "roc_auc": 0.20289772403171524,
+        "flagged_at_budget": 15,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.3,
+        "precision_at_100": 0.26,
+        "precision_at_500": 0.372,
+        "recall_at_budget": 0.027659574468085105,
+        "precision_at_budget": 0.3023255813953488,
+        "near_miss_rate_at_budget": 0.6976744186046512,
+        "average_precision": 0.4150464592655145,
+        "roc_auc": 0.22663282185842223,
+        "flagged_at_budget": 43,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.35,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.32,
+        "precision_at_500": 0.33,
+        "recall_at_budget": 0.01702127659574468,
+        "precision_at_budget": 0.2962962962962963,
+        "near_miss_rate_at_budget": 0.7037037037037037,
+        "average_precision": 0.40898057947559735,
+        "roc_auc": 0.19201414636928868,
+        "flagged_at_budget": 27,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.3,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.23,
+        "precision_at_500": 0.406,
+        "recall_at_budget": 0.14468085106382977,
+        "precision_at_budget": 0.26459143968871596,
+        "near_miss_rate_at_budget": 0.7354085603112841,
+        "average_precision": 0.4086470388859526,
+        "roc_auc": 0.23129313787005876,
+        "flagged_at_budget": 257,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.25,
+        "precision_at_50": 0.32,
+        "precision_at_100": 0.3,
+        "precision_at_500": 0.34,
+        "recall_at_budget": 0.019148936170212766,
+        "precision_at_budget": 0.32142857142857145,
+        "near_miss_rate_at_budget": 0.6785714285714286,
+        "average_precision": 0.4081038463532015,
+        "roc_auc": 0.1998117620215618,
+        "flagged_at_budget": 28,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+B_latency+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.15,
+        "precision_at_50": 0.3,
+        "precision_at_100": 0.29,
+        "precision_at_500": 0.382,
+        "recall_at_budget": 0.14042553191489363,
+        "precision_at_budget": 0.26294820717131473,
+        "near_miss_rate_at_budget": 0.7370517928286853,
+        "average_precision": 0.40687193918481906,
+        "roc_auc": 0.21750042781358736,
+        "flagged_at_budget": 251,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "B_latency",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.02,
+        "precision_at_100": 0.09,
+        "precision_at_500": 0.372,
+        "recall_at_budget": 0.0,
+        "precision_at_budget": 0.0,
+        "near_miss_rate_at_budget": 1.0,
+        "average_precision": 0.38972569408440044,
+        "roc_auc": 0.18551137984142377,
+        "flagged_at_budget": 38,
+        "notes": {
+          "kind": "single layer",
+          "layers": [
+            "A_structure"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.15,
+        "precision_at_50": 0.26,
+        "precision_at_100": 0.27,
+        "precision_at_500": 0.298,
+        "recall_at_budget": 0.0425531914893617,
+        "precision_at_budget": 0.2777777777777778,
+        "near_miss_rate_at_budget": 0.7222222222222222,
+        "average_precision": 0.38932248481583276,
+        "roc_auc": 0.1523757914551366,
+        "flagged_at_budget": 72,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.29,
+        "precision_at_500": 0.298,
+        "recall_at_budget": 0.027659574468085105,
+        "precision_at_budget": 0.23636363636363636,
+        "near_miss_rate_at_budget": 0.7636363636363637,
+        "average_precision": 0.38790157555662486,
+        "roc_auc": 0.15169128971536136,
+        "flagged_at_budget": 55,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.1,
+        "precision_at_50": 0.16,
+        "precision_at_100": 0.23,
+        "precision_at_500": 0.316,
+        "recall_at_budget": 0.04468085106382979,
+        "precision_at_budget": 0.22826086956521738,
+        "near_miss_rate_at_budget": 0.7717391304347826,
+        "average_precision": 0.38690625056397016,
+        "roc_auc": 0.15876447435970567,
+        "flagged_at_budget": 92,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.05,
+        "precision_at_50": 0.16,
+        "precision_at_100": 0.17,
+        "precision_at_500": 0.338,
+        "recall_at_budget": 0.023404255319148935,
+        "precision_at_budget": 0.16666666666666666,
+        "near_miss_rate_at_budget": 0.8333333333333334,
+        "average_precision": 0.386332516802566,
+        "roc_auc": 0.1654269579601848,
+        "flagged_at_budget": 66,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history"
+          ]
+        }
+      },
+      {
+        "candidate": "A_global+A_structure",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.1,
+        "precision_at_100": 0.18,
+        "precision_at_500": 0.32,
+        "recall_at_budget": 0.023404255319148935,
+        "precision_at_budget": 0.171875,
+        "near_miss_rate_at_budget": 0.828125,
+        "average_precision": 0.3848780544048186,
+        "roc_auc": 0.15834806913467572,
+        "flagged_at_budget": 64,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_global",
+            "A_structure"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+C_history+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.2,
+        "precision_at_50": 0.24,
+        "precision_at_100": 0.22,
+        "precision_at_500": 0.306,
+        "recall_at_budget": 0.03404255319148936,
+        "precision_at_budget": 0.23880597014925373,
+        "near_miss_rate_at_budget": 0.7611940298507462,
+        "average_precision": 0.3848437707440599,
+        "roc_auc": 0.1472306200444926,
+        "flagged_at_budget": 67,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "C_history",
+            "E_graph"
+          ]
+        }
+      },
+      {
+        "candidate": "A_structure+E_graph",
+        "split": "final_holdout",
+        "task": "discrimination",
+        "rows": 843,
+        "positives": 470,
+        "precision_at_20": 0.0,
+        "precision_at_50": 0.1,
+        "precision_at_100": 0.16,
+        "precision_at_500": 0.31,
+        "recall_at_budget": 0.00851063829787234,
+        "precision_at_budget": 0.1111111111111111,
+        "near_miss_rate_at_budget": 0.8888888888888888,
+        "average_precision": 0.3816134372562754,
+        "roc_auc": 0.14924990017682963,
+        "flagged_at_budget": 36,
+        "notes": {
+          "kind": "stouffer",
+          "layers": [
+            "A_structure",
+            "E_graph"
+          ]
+        }
+      }
+    ]
+  },
+  "winners": {
+    "motif": {
+      "candidate": "A_global+D_burst",
+      "average_precision": 0.6282307964244803,
+      "roc_auc": 0.977961371190933,
+      "baseline_average_precision": 0.3798909634523207
+    },
+    "surge": {
+      "candidate": "A_global+D_burst",
+      "average_precision": 0.592665574273748,
+      "roc_auc": 0.9820539710060507,
+      "baseline_average_precision": 0.2388266170603705
+    },
+    "discrimination": {
+      "candidate": "rule_baseline",
+      "average_precision": 0.9568959651090208,
+      "roc_auc": 0.9593976384689977,
+      "baseline_average_precision": 0.9568959651090208
+    }
+  },
+  "limitations": "Synthetic-fixture evaluation only. These numbers do not prove real-world detection accuracy; they show which layer combination separates the fixture's labelled motifs from its labelled near-miss negatives. Every feature is strictly causal (only facts at or before its own transaction's timestamp), proved by the truncation property tests in tests/unit/test_anomaly_stack.py. The `motif` task's labels are close to the deterministic rule's own predicate, so its margin overstates what a model adds; `discrimination` is the honest comparison."
+}
