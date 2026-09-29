@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate } from "react-router-dom";
-import { authErrorMessage, useAuth } from "../lib/auth";
+import { useAuth } from "../lib/auth";
+import { ApiError } from "../lib/api";
 import { ErrorBanner } from "../components/primitives";
 import { CheckIcon } from "../components/icons";
 import "./AccessGate.css";
@@ -17,9 +18,9 @@ const FEATURES = [
 ];
 
 export function AccessGate() {
-  const { token, signup, login, loginWithGoogle } = useAuth();
+  const { token, signup, login } = useAuth();
   const [mode, setMode] = useState<AccessMode | null>(null);
-  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -37,22 +38,10 @@ export function AccessGate() {
     setError(null);
     setBusy(true);
     try {
-      if (mode === "signup") await signup(email, password);
-      else await login(email, password);
+      if (mode === "signup") await signup(name, password);
+      else await login(name, password);
     } catch (err) {
-      setError(authErrorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onGoogle() {
-    setError(null);
-    setBusy(true);
-    try {
-      await loginWithGoogle();
-    } catch (err) {
-      setError(authErrorMessage(err));
+      setError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend.");
     } finally {
       setBusy(false);
     }
@@ -116,23 +105,9 @@ export function AccessGate() {
             {mode === "signup" ? "Set up your investigator account, then create your first case workspace." : "Sign in to continue to your case workspace."}
           </p>
           {error && <ErrorBanner>{error}</ErrorBanner>}
-          <button type="button" className="auth-google" onClick={onGoogle} disabled={busy}>
-            Continue with Google
-          </button>
-          <div className="auth-divider" role="separator">
-            or
-          </div>
           <div className="form-field">
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="email"
-              required
-              autoFocus
-            />
+            <label htmlFor="name">Name</label>
+            <input id="name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="username" required autoFocus />
           </div>
           <div className="form-field">
             <label htmlFor="password">Password</label>

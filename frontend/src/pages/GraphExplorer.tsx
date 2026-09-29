@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, Badge, EmptyState } from "../components/primitives";
-import { api, ApiError, type GraphResponse, type Finding } from "../lib/api";
+import { NeoCard, Badge, EmptyState, FilterPills } from "../components/primitives";
+import { api, ApiError, ML_RULE_VERSION, type GraphResponse, type Finding } from "../lib/api";
 import { computeLayout } from "../graph/forceLayout";
 import "./GraphExplorer.css";
+
+type BrowseFilterId = "all" | "deterministic" | "ml";
 
 const EDGE_COLOR: Record<string, string> = {
   SPENT_BY: "var(--danger)",
@@ -27,12 +29,59 @@ export function GraphExplorer() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [openFindings, setOpenFindings] = useState<Finding[]>([]);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [browseFilter, setBrowseFilter] = useState<BrowseFilterId>("all");
+  const [comboOpen, setComboOpen] = useState(false);
 
   useEffect(() => {
     if (!caseId) return;
-    api.listFindings(caseId, 200, 0).then((r) => setOpenFindings(r.findings.filter((f) => f.status === "open")));
+    api.listFindings(caseId, 200, 0).then((r) => setFindings(r.findings));
   }, [caseId]);
+
+  const openFindings = useMemo(() => findings.filter((f) => f.status === "open"), [findings]);
+
+  // Local UI state (seed, loaded graph, browse query) does not automatically
+  // clear when :caseId changes on this route -- React Router updates the param
+  // without remounting the component. Skip the very first run (caseId going
+  // from undefined to its initial value) so a seed passed in via ?seed= from
+  // another page survives the initial load; only a genuine case switch clears it.
+  const previousCaseId = useRef(caseId);
+  useEffect(() => {
+    if (previousCaseId.current !== undefined && previousCaseId.current !== caseId) {
+      setSeed("");
+      setSeedInput("");
+      setGraph(null);
+      setBrowseFilter("all");
+      setComboOpen(false);
+    }
+    previousCaseId.current = caseId;
+  }, [caseId]);
+
+  const browseResults = useMemo(() => {
+    let list = findings;
+    if (browseFilter === "deterministic") list = list.filter((f) => f.rule_version !== ML_RULE_VERSION);
+    else if (browseFilter === "ml") list = list.filter((f) => f.rule_version === ML_RULE_VERSION);
+    if (seedInput.trim()) {
+      const q = seedInput.trim().toLowerCase();
+      list = list.filter((f) => f.entity_ref.toLowerCase().includes(q));
+    }
+    const byRef = new Map<string, Finding>();
+    for (const f of list) {
+      const existing = byRef.get(f.entity_ref);
+      if (!existing || (f.rank ?? Infinity) < (existing.rank ?? Infinity)) byRef.set(f.entity_ref, f);
+    }
+    return [...byRef.values()].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 30);
+  }, [findings, browseFilter, seedInput]);
+
+  function selectSeed(id: string) {
+    setSeedInput(id);
+    setSeed(id);
+    setComboOpen(false);
+  }
+
+  function onComboBlur(event: React.FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget)) setComboOpen(false);
+  }
 
   useEffect(() => {
     if (!caseId || !seed) return;
@@ -84,16 +133,65 @@ export function GraphExplorer() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <NeoCard variant="neo-sm">
             <h2>Seed</h2>
-            <div className="form-field">
-              <label>Seed node ID</label>
-              <input
-                value={seedInput}
-                onChange={(e) => setSeedInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && setSeed(seedInput.trim())}
-                placeholder="address:bcrt1q… or tx:…"
-              />
+            <div className="combobox" onBlur={onComboBlur}>
+              <div className="form-field">
+                <label>Search or enter an address / txid</label>
+                <input
+                  value={seedInput}
+                  onChange={(e) => setSeedInput(e.target.value)}
+                  onFocus={() => setComboOpen(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setSeed(seedInput.trim());
+                      setComboOpen(false);
+                    } else if (e.key === "Escape") {
+                      setComboOpen(false);
+                    }
+                  }}
+                  placeholder="type to search this case's findings, or paste address:… / tx:…"
+                />
+              </div>
+              {comboOpen && (
+                <div className="combobox-panel neo-inset">
+                  <FilterPills
+                    active={browseFilter}
+                    onChange={setBrowseFilter}
+                    options={[
+                      { id: "all", label: "All" },
+                      { id: "deterministic", label: "Deterministic" },
+                      { id: "ml", label: "ML-Flagged" },
+                    ]}
+                  />
+                  {browseResults.length === 0 ? (
+                    <p className="coverage-note" style={{ marginTop: 8 }}>No matching findings in this case.</p>
+                  ) : (
+                    <div className="browse-list">
+                      {browseResults.map((f) => (
+                        <button
+                          key={f.entity_ref}
+                          type="button"
+                          className={`browse-item ${seed === f.entity_ref ? "active" : ""}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => selectSeed(f.entity_ref)}
+                        >
+                          <span className="mono-id">{f.entity_ref}</span>
+                          <Badge tone={f.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>
+                            {f.rule_version === ML_RULE_VERSION ? "ml" : "det"}
+                          </Badge>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <button type="button" className="btn-ghost" onClick={() => setSeed(seedInput.trim())} disabled={!seedInput.trim()}>
+            <button
+              type="button"
+              className="btn-ghost"
+              style={{ marginTop: 10 }}
+              onClick={() => { setSeed(seedInput.trim()); setComboOpen(false); }}
+              disabled={!seedInput.trim()}
+            >
               Load
             </button>
             <div className="form-field" style={{ marginTop: 14 }}>

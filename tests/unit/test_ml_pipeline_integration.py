@@ -295,7 +295,10 @@ def test_ml_findings_are_ranked_evidenced_and_hedged(committed_snapshot) -> None
     expected_run_id = model_run_id(snapshot_id=stored[0].snapshot_id, budget=settings.ml_review_budget)
     assert [item.rank for item in sorted(stored, key=lambda x: x.rank)] == list(range(1, len(stored) + 1))
     for item in stored:
-        assert item.entity_ref.startswith("transaction:")
+        # "tx:", matching the graph builder's own transaction-node ID scheme
+        # (app/engine/graph/builder.py) -- not "transaction:", which the graph
+        # never recognizes as a seed and silently resolves to zero nodes.
+        assert item.entity_ref.startswith("tx:")
         assert item.source_refs, "a finding with no source locator cannot be reopened"
         assert item.benign_alternatives, "a finding must carry benign explanations"
         assert any(entry["kind"] == "coverage_limitation" for entry in item.opposing_evidence)

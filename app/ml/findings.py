@@ -301,7 +301,7 @@ def materialize_ml_findings(
                 case_id=snapshot.case_id,
                 snapshot_id=snapshot.id,
                 graph_snapshot_id=graph.id,
-                entity_ref=f"transaction:{txid}",
+                entity_ref=f"tx:{txid}",
                 window_start=window_start,
                 window_end=window_start + timedelta(seconds=WINDOW_SECONDS),
                 rule_id="anomaly_stack_rank",
@@ -397,7 +397,7 @@ def review_decision_labels(session: Session, *, case_id: str, facts) -> np.ndarr
     labels = np.zeros(facts.transaction_count, dtype=bool)
     decided = 0
     for entity_ref, disposition, _ in rows:
-        txid = str(entity_ref).removeprefix("transaction:")
+        txid = str(entity_ref).removeprefix("tx:")
         slot = facts.tx_index.get(txid, -1)
         if slot < 0:
             continue

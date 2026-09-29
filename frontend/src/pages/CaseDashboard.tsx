@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, type CaseDetail } from "../lib/api";
+import { api, ML_RULE_VERSION, type CaseDetail } from "../lib/api";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -62,9 +62,6 @@ export function CaseDashboard() {
         <div className="pill-row">
           <span className="badge tone-muted mono-id">{caseId}</span>
           {caseDetail?.synthetic && <Badge tone="muted">SYNTHETIC</Badge>}
-          <button type="button" className="btn-mustard" onClick={() => navigate(`/cases/${caseId}/graph`)}>
-            View Graph →
-          </button>
         </div>
       </div>
 
@@ -100,15 +97,23 @@ export function CaseDashboard() {
               {pendingReview.slice(0, 10).map((item) => (
                 <li key={item.finding_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Badge tone="deterministic">{item.finding_type}</Badge>
+                    <Badge tone={item.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>{item.finding_type}</Badge>
                     <span className="mono-id">{item.entity_ref}</span>
                     <span className="coverage-note">
                       window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}
                     </span>
                   </div>
-                  <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
-                    Review
-                  </a>
+                  <div style={{ display: "flex", gap: 14 }}>
+                    <a
+                      href={`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`}
+                      onClick={(e) => { e.preventDefault(); navigate(`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`); }}
+                    >
+                      View in Graph
+                    </a>
+                    <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
+                      Review
+                    </a>
+                  </div>
                 </li>
               ))}
             </ul>

@@ -27,9 +27,6 @@ class Settings:
     # ingests and still produces the Phase 4 findings.
     ml_findings_enabled: bool = True
     ml_review_budget: float = 0.01
-    # Verifies the real signed-in identity path (`Authorization: Bearer <Firebase ID token>`).
-    # `None` means only the dev-only `X-TraceX-Actor` header works; see app/auth/firebase.py.
-    firebase_credentials_path: Path | None = None
 
     @staticmethod
     def _parse_ml_review_budget(raw: str) -> float:
@@ -70,15 +67,7 @@ class Settings:
             token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
             ml_findings_enabled=os.environ.get("TRACEX_ML_FINDINGS", "1").lower() not in {"0", "false", "no"},
             ml_review_budget=cls._parse_ml_review_budget(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
-            firebase_credentials_path=cls._resolve_firebase_credentials(
-                os.environ.get("TRACEX_FIREBASE_CREDENTIALS_PATH", "secrets/firebase-adminsdk.json")
-            ),
         )
-
-    @staticmethod
-    def _resolve_firebase_credentials(raw: str) -> Path | None:
-        path = Path(raw).resolve()
-        return path if path.is_file() else None
 
 
 settings = Settings.from_environment()

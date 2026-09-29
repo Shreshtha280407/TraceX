@@ -7,7 +7,6 @@ dependencies = [
   "defusedxml>=0.7,<1",
   "duckdb>=1.2,<2",
   "fastapi>=0.116,<1",
-  "firebase-admin>=6.5,<7",
   "ijson>=3.3,<4",
   "pyarrow>=18,<24",
   "python-multipart>=0.0.20,<1",

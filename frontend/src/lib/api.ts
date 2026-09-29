@@ -191,7 +191,14 @@ export type GraphResponse = {
   cursor: string | null;
 };
 
+// ---- Auth ----
+
 export const api = {
+  signup: (display_name: string, password: string) =>
+    request<{ token: string; actor: string }>("/auth/signup", { method: "POST", body: JSON.stringify({ display_name, password }) }),
+  login: (display_name: string, password: string) =>
+    request<{ token: string; actor: string }>("/auth/login", { method: "POST", body: JSON.stringify({ display_name, password }) }),
+
   // ---- Cases ----
   listCases: () => request<{ cases: CaseWithRole[] }>("/cases"),
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${caseId}`),
@@ -235,9 +242,13 @@ export const api = {
   ) => request<{ review_id: string; finding: Finding }>(`/findings/${findingId}/reviews`, { method: "POST", body: JSON.stringify(body) }),
   exportFindings: (caseId: string) => request<FindingsExportBundle>(`/cases/${caseId}/findings/export`),
 
-  // ---- Features (Phase 5A / Model & Rules) ----
+  // ---- Features (Phase 5A) ----
   exportFeatures: (caseId: string, snapshotId?: string) =>
     request<FeatureExportResponse>(`/cases/${caseId}/features/export${snapshotId ? `?snapshot_id=${snapshotId}` : ""}`),
+
+  // ---- System (Settings page) ----
+  health: () => request<{ status: string; database: string; evidence_vault: string }>("/healthz"),
+  ready: () => request<{ status: string; worker_id: string; heartbeat_at: string }>("/readyz"),
 };
 
 export { API_BASE };

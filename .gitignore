@@ -5,9 +5,7 @@ __pycache__/
 var/
 *.egg-info/
 
-# Firebase service-account private key (Admin SDK). Full-admin credential for
-# the Firebase project -- never commit, never print, never share outside a
-# secrets manager in production.
+# Local secrets/credentials -- never commit.
 /secrets/
 .env
 .env.*

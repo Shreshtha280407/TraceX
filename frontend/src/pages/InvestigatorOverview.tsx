@@ -25,10 +25,11 @@ export function InvestigatorOverview() {
   useEffect(() => {
     api.listCases().then((result) => {
       setCases(result.cases);
-      if (result.cases.length === 0) {
-        navigate("/onboarding", { replace: true });
-        return;
-      }
+      // A brand-new sign-up has zero case memberships. Rather than blocking on a
+      // separate full-page "create your first case" screen, land on Home as
+      // normal and surface the same New Case modal on top of it -- dismissible,
+      // so a new user can look around before committing to creating one.
+      if (result.cases.length === 0) setShowNewCase(true);
       Promise.all(
         result.cases.map((c) =>
           api
@@ -37,7 +38,7 @@ export function InvestigatorOverview() {
         )
       ).then((lists) => setQueue(lists.flat().sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 8)));
     });
-  }, [navigate]);
+  }, []);
 
   useEffect(() => {
     if (!cases) return;
@@ -105,7 +106,7 @@ export function InvestigatorOverview() {
               autoFocus
               placeholder="PS26146-CASE-004"
             />
-            <p className="form-hint">Use a clear, unique identifier — you can rename it later from Case Settings.</p>
+            <p className="form-hint">Use a clear, unique identifier — you can rename it later from Settings.</p>
           </div>
           <div className="modal-actions">
             <button type="button" className="btn-ghost" onClick={() => setShowNewCase(false)} disabled={creating}>
