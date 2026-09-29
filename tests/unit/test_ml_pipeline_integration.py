@@ -411,6 +411,26 @@ def test_ml_findings_visible_through_the_real_findings_api(committed_snapshot) -
         assert evidence_body["source_refs"], "an ML finding's evidence has no source locator to open"
         assert evidence_body["feature_vector"]["release_id"] == RELEASE_ID
         assert evidence_body["coverage"]["model_run_id"] == top["coverage"]["model_run_id"]
+        # Phase 7: the replay contract must say a model produced this row, not the
+        # deterministic-only default -- an evidence bundle that claims "no model
+        # ran" for a row an ML release actually scored is exactly the kind of
+        # unreviewable-provenance failure the export contract exists to prevent.
+        assert evidence_body["replay_contract"]["ml_enabled"] is True
+        assert evidence_body["replay_contract"]["release_id"] == RELEASE_ID
+        assert evidence_body["replay_contract"]["model_run_id"] == top["coverage"]["model_run_id"]
+
+        deterministic = [item for item in body["findings"] if item["rule_version"] != ML_RULE_VERSION]
+        assert deterministic, "fixture should also carry a deterministic finding for this to be a real mix"
+        det_evidence = client.get(f"/v1/findings/{deterministic[0]['finding_id']}/evidence", headers=headers).json()
+        assert det_evidence["replay_contract"]["ml_enabled"] is False
+        assert det_evidence["replay_contract"]["release_id"] is None
+
+        export = client.get(f"/v1/cases/{case_id}/findings/export", headers=headers)
+        assert export.status_code == 200
+        export_body = export.json()
+        assert export_body["ml_enabled"] is True, "export must reflect the ML finding it actually contains"
+        assert export_body["method"] == "mixed"
+        assert set(export_body["methods"]) >= {ML_RULE_VERSION, deterministic[0]["rule_version"]}
     finally:
         app.dependency_overrides.clear()
 

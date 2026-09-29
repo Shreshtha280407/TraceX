@@ -1,4 +1,4 @@
-.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test phase-six phase-six-throughput phase-six-throughput-1m phase-six-query-latency phase-six-test
+.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test phase-six phase-six-throughput phase-six-throughput-1m phase-six-query-latency phase-six-test phase-seven phase-seven-test phase-seven-walkthrough
 
 phase-zero: verify-fixture test
 
@@ -114,3 +114,26 @@ phase-six-query-latency: | datasets/phase5a_100k
 phase-six-test:
 	uv run ruff check app/engine/findings/deterministic.py scripts/phase6_throughput.py scripts/phase6_query_latency.py tests/unit/test_phase_six_crash_retry.py tests/unit/test_phase_six_offline_and_access.py tests/unit/test_phase_four.py
 	uv run pytest -q tests/unit/test_phase_six_crash_retry.py tests/unit/test_phase_six_offline_and_access.py tests/unit/test_phase_four.py tests/unit/test_auth_and_case_reads.py
+
+# ---------------------------------------------------------------------------
+# Phase 7 (submission proof package)
+# ---------------------------------------------------------------------------
+
+phase-seven: phase-seven-test phase-seven-walkthrough
+
+# Offline-boot proof (socket guard installed before any `app.*` import) and
+# pinned-dependency-manifest checks, plus the evidence-export honesty fix
+# (export/evidence must reflect which rule/model actually produced a row,
+# never a hardcoded label) and its regression coverage.
+phase-seven-test:
+	uv run ruff check app/api/routes.py scripts/phase7_case_walkthrough.py tests/unit/test_phase_seven_offline_launch.py tests/unit/test_ml_pipeline_integration.py
+	uv run --extra ml pytest -q tests/unit/test_phase_seven_offline_launch.py tests/unit/test_ml_pipeline_integration.py tests/unit/test_phase_four.py
+
+# The full case walkthrough over the real API and worker: original file ->
+# progress events -> committed graph -> deterministic lead -> model rank ->
+# source rows -> analyst decision -> case-scoped export. Also the
+# accuracy-honesty proof: one coinjoin_like scenario and one
+# nearmiss_rule_positive high-volume benign lookalike, both opened down to
+# their source record. See docs/phase7.md.
+phase-seven-walkthrough: | datasets/phase5a_100k
+	uv run --extra ml python scripts/phase7_case_walkthrough.py --output experiments/runs/phase7_case_walkthrough.json

@@ -556,7 +556,9 @@ def finding_evidence(
             "graph_snapshot_id": finding.graph_snapshot_id,
             "rule_id": finding.rule_id,
             "rule_version": finding.rule_version,
-            "ml_enabled": False,
+            "ml_enabled": finding.rule_version == ML_RULE_VERSION,
+            "release_id": (finding.coverage or {}).get("release_id"),
+            "model_run_id": (finding.coverage or {}).get("model_run_id"),
         },
     }
 
@@ -569,10 +571,16 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
             select(FindingRecord).where(FindingRecord.case_id == case_id).order_by(FindingRecord.rank, FindingRecord.id)
         )
     )
+    # Same rule as `list_findings`: an export is a page over whatever rule/model
+    # versions actually produced these rows, never a hardcoded label. A case can
+    # hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix.
+    methods = sorted({finding.rule_version for finding in findings})
+    ml_present = any(finding.rule_version == ML_RULE_VERSION for finding in findings)
     return {
         "case_id": case_id,
-        "method": "deterministic-v1",
-        "ml_enabled": False,
+        "method": methods[0] if len(methods) == 1 else ("mixed" if methods else "none"),
+        "methods": methods,
+        "ml_enabled": ml_present,
         "limitations": [
             "Findings prioritize observed patterns for review; they do not establish ownership, origin, or wrongdoing.",
             "Time windows and spend links are limited to committed source coverage.",
