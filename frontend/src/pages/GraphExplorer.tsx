@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, EmptyState, FilterPills } from "../components/primitives";
 import { api, ApiError, ML_RULE_VERSION, type GraphResponse, type Finding } from "../lib/api";
-import { computeLayout } from "../graph/forceLayout";
+import { computeLayout, type LayoutPoint } from "../graph/forceLayout";
 import "./GraphExplorer.css";
 
 type BrowseFilterId = "all" | "deterministic" | "ml";
@@ -16,22 +16,77 @@ const EDGE_COLOR: Record<string, string> = {
   POSSIBLE_COMMON_CONTROL: "var(--ink-mute)",
 };
 
-const WIDTH = 760;
-const HEIGHT = 560;
+const EDGE_MARKER: Record<string, string> = {
+  SPENT_BY: "url(#arrow-input)",
+  CREATES_OUTPUT: "url(#arrow-output)",
+  OBSERVED_TX: "url(#arrow-observed)",
+};
+
+// Widescreen viewBox so the canvas genuinely fills the middle column instead of
+// letterboxing inside a near-square SVG aspect ratio.
+const WIDTH = 1040;
+const HEIGHT = 600;
+// Backend hard-clamps depth to 1..5 (app/api/routes.py) -- each extra BFS hop
+// multiplies the frontier before node_limit/edge_limit cut it off, so this isn't
+// an arbitrary UI choice, it's the real ceiling the API enforces.
+const MAX_DEPTH = 5;
+const ZOOM_MIN_W = WIDTH * 0.22;
+const ZOOM_MAX_W = WIDTH * 2.4;
+
+type ViewBox = { x: number; y: number; w: number; h: number };
+const DEFAULT_VIEWBOX: ViewBox = { x: 0, y: 0, w: WIDTH, h: HEIGHT };
+
+/** Short, collision-resistant label for canvas text. Output-node labels carry
+ * their disambiguating ":<vout>" as a suffix, so a naive front slice(0, n) always
+ * cuts it off and makes a transaction and every one of its own outputs render
+ * identically. Keep a short head plus whatever suffix distinguishes the id. */
+function shortLabel(label: string): string {
+  if (label.length <= 14) return label;
+  const suffixMatch = label.match(/:(\d+)$/);
+  if (suffixMatch) {
+    const base = label.slice(0, label.length - suffixMatch[0].length);
+    return `${base.slice(0, 6)}…:${suffixMatch[1]}`;
+  }
+  return `${label.slice(0, 6)}…${label.slice(-4)}`;
+}
 
 export function GraphExplorer() {
   const { caseId } = useParams<{ caseId: string }>();
   const [searchParams] = useSearchParams();
   const [seedInput, setSeedInput] = useState(searchParams.get("seed") ?? "");
   const [seed, setSeed] = useState(searchParams.get("seed") ?? "");
+  const [seedHistory, setSeedHistory] = useState<string[]>([]);
   const [depth, setDepth] = useState(2);
+  const [customDepthOpen, setCustomDepthOpen] = useState(false);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [browseFilter, setBrowseFilter] = useState<BrowseFilterId>("all");
   const [comboOpen, setComboOpen] = useState(false);
+  const [viewBox, setViewBox] = useState<ViewBox>(DEFAULT_VIEWBOX);
+  const [isDragging, setIsDragging] = useState(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragState = useRef({ active: false, lastX: 0, lastY: 0 });
+  const unhoverTimer = useRef<number | null>(null);
+
+  /** The "set as source" chip floats a few px away from the node it belongs to, so
+   * moving the pointer from one to the other briefly leaves both elements' hit areas.
+   * Clearing hoveredId on that exact mouseleave made the chip disappear mid-move,
+   * before a click could land on it. A short cancellable delay bridges the gap. */
+  function hoverNode(id: string) {
+    if (unhoverTimer.current) { window.clearTimeout(unhoverTimer.current); unhoverTimer.current = null; }
+    setHoveredId(id);
+  }
+  function scheduleUnhover(id: string) {
+    if (unhoverTimer.current) window.clearTimeout(unhoverTimer.current);
+    unhoverTimer.current = window.setTimeout(() => {
+      setHoveredId((h) => (h === id ? null : h));
+      unhoverTimer.current = null;
+    }, 250);
+  }
 
   useEffect(() => {
     if (!caseId) return;
@@ -50,9 +105,11 @@ export function GraphExplorer() {
     if (previousCaseId.current !== undefined && previousCaseId.current !== caseId) {
       setSeed("");
       setSeedInput("");
+      setSeedHistory([]);
       setGraph(null);
       setBrowseFilter("all");
       setComboOpen(false);
+      setCustomDepthOpen(false);
     }
     previousCaseId.current = caseId;
   }, [caseId]);
@@ -73,10 +130,26 @@ export function GraphExplorer() {
     return [...byRef.values()].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 30);
   }, [findings, browseFilter, seedInput]);
 
-  function selectSeed(id: string) {
-    setSeedInput(id);
-    setSeed(id);
+  /** Every user-driven jump to a new seed (combobox pick, Load, Enter, or the
+   * hover "Set as source" action on a node) funnels through here so the back
+   * arrow always has an accurate trail to undo through. */
+  function goToSeed(next: string) {
+    const trimmed = next.trim();
+    if (!trimmed) return;
+    setSeedHistory((h) => (seed && seed !== trimmed ? [...h, seed] : h));
+    setSeedInput(trimmed);
+    setSeed(trimmed);
     setComboOpen(false);
+  }
+
+  function goBack() {
+    setSeedHistory((h) => {
+      if (h.length === 0) return h;
+      const prev = h[h.length - 1];
+      setSeedInput(prev);
+      setSeed(prev);
+      return h.slice(0, -1);
+    });
   }
 
   function onComboBlur(event: React.FocusEvent<HTMLDivElement>) {
@@ -92,6 +165,7 @@ export function GraphExplorer() {
       .then((result) => {
         setGraph(result);
         setSelectedId(result.nodes.find((n) => n.id === seed)?.id ?? result.nodes[0]?.id ?? null);
+        setViewBox(DEFAULT_VIEWBOX);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 409) setNotFound(true);
@@ -100,7 +174,7 @@ export function GraphExplorer() {
   }, [caseId, seed, depth]);
 
   const positions = useMemo(() => {
-    if (!graph) return new Map();
+    if (!graph) return new Map<string, LayoutPoint>();
     return computeLayout(
       graph.nodes.map((n) => n.id),
       graph.edges.map((e) => ({ from: e.from, to: e.to })),
@@ -113,10 +187,43 @@ export function GraphExplorer() {
   const degreeOf = (id: string) => graph?.edges.filter((e) => e.from === id || e.to === id).length ?? 0;
   const selectedNode = graph?.nodes.find((n) => n.id === selectedId) ?? null;
   const selectedFinding = selectedNode ? openFindings.find((f) => f.entity_ref === selectedNode.id) : undefined;
+  const hoveredPos = hoveredId ? positions.get(hoveredId) : null;
 
   const coverage = graph?.coverage as
     | { missing_outpoint_inputs?: number; unknown_prior_output_inputs?: number; spend_lineage_complete?: boolean; value_violations?: number }
     | undefined;
+
+  function zoomBy(factor: number) {
+    setViewBox((vb) => {
+      const newW = Math.min(ZOOM_MAX_W, Math.max(ZOOM_MIN_W, vb.w * factor));
+      const newH = newW * (HEIGHT / WIDTH);
+      const cx = vb.x + vb.w / 2;
+      const cy = vb.y + vb.h / 2;
+      return { x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH };
+    });
+  }
+  const resetView = () => setViewBox(DEFAULT_VIEWBOX);
+
+  function onSvgPointerDown(e: React.PointerEvent<SVGSVGElement>) {
+    if (e.target !== e.currentTarget) return; // only pan when grabbing empty canvas, not a node/edge
+    dragState.current = { active: true, lastX: e.clientX, lastY: e.clientY };
+    setIsDragging(true);
+  }
+  function onSvgPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    if (!dragState.current.active || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = viewBox.w / rect.width;
+    const scaleY = viewBox.h / rect.height;
+    const dx = (e.clientX - dragState.current.lastX) * scaleX;
+    const dy = (e.clientY - dragState.current.lastY) * scaleY;
+    dragState.current.lastX = e.clientX;
+    dragState.current.lastY = e.clientY;
+    setViewBox((vb) => ({ ...vb, x: vb.x - dx, y: vb.y - dy }));
+  }
+  function endDrag() {
+    dragState.current.active = false;
+    setIsDragging(false);
+  }
 
   return (
     <Shell>
@@ -141,12 +248,8 @@ export function GraphExplorer() {
                   onChange={(e) => setSeedInput(e.target.value)}
                   onFocus={() => setComboOpen(true)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      setSeed(seedInput.trim());
-                      setComboOpen(false);
-                    } else if (e.key === "Escape") {
-                      setComboOpen(false);
-                    }
+                    if (e.key === "Enter") goToSeed(seedInput);
+                    else if (e.key === "Escape") setComboOpen(false);
                   }}
                   placeholder="type to search this case's findings, or paste address:… / tx:…"
                 />
@@ -172,7 +275,7 @@ export function GraphExplorer() {
                           type="button"
                           className={`browse-item ${seed === f.entity_ref ? "active" : ""}`}
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => selectSeed(f.entity_ref)}
+                          onClick={() => goToSeed(f.entity_ref)}
                         >
                           <span className="mono-id">{f.entity_ref}</span>
                           <Badge tone={f.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>
@@ -185,24 +288,46 @@ export function GraphExplorer() {
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              className="btn-ghost"
-              style={{ marginTop: 10 }}
-              onClick={() => { setSeed(seedInput.trim()); setComboOpen(false); }}
-              disabled={!seedInput.trim()}
-            >
-              Load
-            </button>
             <div className="form-field" style={{ marginTop: 14 }}>
               <label>Depth</label>
               <div className="pill-row">
                 {[1, 2, 3].map((d) => (
-                  <button key={d} type="button" className={`pill ${depth === d ? "active" : ""}`} onClick={() => setDepth(d)}>
+                  <button
+                    key={d}
+                    type="button"
+                    className={`pill ${depth === d && !customDepthOpen ? "active" : ""}`}
+                    onClick={() => { setDepth(d); setCustomDepthOpen(false); }}
+                  >
                     {d}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className={`pill ${customDepthOpen || depth > 3 ? "active" : ""}`}
+                  onClick={() => setCustomDepthOpen(true)}
+                >
+                  Custom
+                </button>
               </div>
+              {customDepthOpen && (
+                <div className="depth-custom-row">
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_DEPTH}
+                    value={depth}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value));
+                      if (!Number.isFinite(n)) return;
+                      setDepth(Math.min(MAX_DEPTH, Math.max(1, n)));
+                    }}
+                  />
+                  <span className="coverage-note">
+                    Capped at {MAX_DEPTH} — each extra hop multiplies how many nodes/edges get pulled in and how long the
+                    layout takes to settle.
+                  </span>
+                </div>
+              )}
             </div>
           </NeoCard>
 
@@ -218,10 +343,19 @@ export function GraphExplorer() {
 
           <NeoCard variant="neo-sm">
             <h2>Edge Legend</h2>
-            <div className="legend-row"><span className="legend-swatch" style={{ background: EDGE_COLOR.SPENT_BY }} /> SPENT_BY</div>
-            <div className="legend-row"><span className="legend-swatch" style={{ background: EDGE_COLOR.CREATES_OUTPUT }} /> CREATES</div>
-            <div className="legend-row"><span className="legend-swatch" style={{ background: EDGE_COLOR.OBSERVED_TX }} /> OBSERVED_TX</div>
-            <div className="legend-row"><span className="legend-swatch dashed" /> POSSIBLE_COMMON_CONTROL</div>
+            <div className="legend-row">
+              <span className="legend-swatch" style={{ background: EDGE_COLOR.SPENT_BY }} />
+              Input <span className="legend-sub">spent by this tx</span>
+            </div>
+            <div className="legend-row">
+              <span className="legend-swatch" style={{ background: EDGE_COLOR.CREATES_OUTPUT }} />
+              Output <span className="legend-sub">created by this tx</span>
+            </div>
+            <div className="legend-row">
+              <span className="legend-swatch" style={{ background: EDGE_COLOR.OBSERVED_TX }} />
+              Observed <span className="legend-sub">network capture</span>
+            </div>
+            <div className="legend-row"><span className="legend-swatch dashed" /> Possible common control</div>
           </NeoCard>
 
           {coverage && coverage.spend_lineage_complete === false && (
@@ -243,42 +377,103 @@ export function GraphExplorer() {
           ) : graph.nodes.length === 0 ? (
             <EmptyState title="Seed not found in this snapshot" body="That node ID doesn't appear in the current graph snapshot." />
           ) : (
-            <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
-              {graph.edges.map((edge) => {
-                const from = positions.get(edge.from);
-                const to = positions.get(edge.to);
-                if (!from || !to) return null;
-                const dashed = edge.type === "POSSIBLE_COMMON_CONTROL";
-                return (
-                  <line
-                    key={edge.id}
-                    x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                    stroke={EDGE_COLOR[edge.type] ?? "var(--ink-mute)"}
-                    strokeWidth={1.4}
-                    strokeDasharray={dashed ? "4 4" : undefined}
-                    opacity={0.7}
-                  />
-                );
-              })}
-              {graph.nodes.map((node) => {
-                const pos = positions.get(node.id);
-                if (!pos) return null;
-                const isSeed = node.id === seed;
-                const isFlagged = flaggedIds.has(node.id);
-                const cls = isFlagged ? "node-flag" : isSeed ? "node-seed" : "node-normal";
-                return (
-                  <g key={node.id} onClick={() => setSelectedId(node.id)} style={{ cursor: "pointer" }}>
-                    <circle
-                      cx={pos.x} cy={pos.y} r={isSeed ? 12 : 8}
-                      className={`${cls} ${selectedId === node.id ? "node-selected" : ""}`}
+            <>
+              <div className="graph-toolbar graph-toolbar-right">
+                {seedHistory.length > 0 && (
+                  <button type="button" className="graph-toolbar-back" onClick={goBack} title="Undo — return to the previous source">
+                    ← Undo
+                  </button>
+                )}
+                <button type="button" onClick={() => zoomBy(0.8)} title="Zoom in">+</button>
+                <button type="button" onClick={() => zoomBy(1.25)} title="Zoom out">−</button>
+                <button type="button" onClick={resetView} title="Reset view">⟲</button>
+              </div>
+              <svg
+                ref={svgRef}
+                viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+                className={isDragging ? "dragging" : ""}
+                onPointerDown={onSvgPointerDown}
+                onPointerMove={onSvgPointerMove}
+                onPointerUp={endDrag}
+                onPointerLeave={endDrag}
+              >
+                <defs>
+                  <marker id="arrow-input" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="var(--danger)" />
+                  </marker>
+                  <marker id="arrow-output" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="var(--info)" />
+                  </marker>
+                  <marker id="arrow-observed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="var(--mustard)" />
+                  </marker>
+                  <radialGradient id="node-sheen" cx="35%" cy="30%" r="70%">
+                    <stop offset="0%" stopColor="rgba(255,255,255,0.55)" />
+                    <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+                  </radialGradient>
+                </defs>
+
+                {graph.edges.map((edge) => {
+                  const from = positions.get(edge.from);
+                  const to = positions.get(edge.to);
+                  if (!from || !to) return null;
+                  const dashed = edge.type === "POSSIBLE_COMMON_CONTROL";
+                  return (
+                    <line
+                      key={edge.id}
+                      x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                      stroke={EDGE_COLOR[edge.type] ?? "var(--ink-mute)"}
+                      strokeWidth={1.5}
+                      strokeDasharray={dashed ? "4 4" : undefined}
+                      markerEnd={EDGE_MARKER[edge.type]}
+                      opacity={0.8}
                     />
-                    <text x={pos.x} y={pos.y + 22} textAnchor="middle" fontSize={9} fill="var(--ink-mute)">
-                      {node.label.slice(0, 10)}
-                    </text>
+                  );
+                })}
+                {graph.nodes.map((node) => {
+                  const pos = positions.get(node.id);
+                  if (!pos) return null;
+                  const isSeed = node.id === seed;
+                  const isFlagged = flaggedIds.has(node.id);
+                  const cls = isFlagged ? "node-flag" : isSeed ? "node-seed" : "node-normal";
+                  const degree = degreeOf(node.id);
+                  const radius = isSeed ? 14 : Math.max(6, Math.min(13, 5 + Math.sqrt(degree)));
+                  return (
+                    <g
+                      key={node.id}
+                      onClick={() => setSelectedId(node.id)}
+                      onMouseEnter={() => hoverNode(node.id)}
+                      onMouseLeave={() => scheduleUnhover(node.id)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      {isSeed && <circle cx={pos.x} cy={pos.y} r={radius + 5} className="node-seed-ring" />}
+                      <circle
+                        cx={pos.x} cy={pos.y} r={radius}
+                        className={`graph-node-circle ${cls} ${selectedId === node.id ? "node-selected" : ""}`}
+                      />
+                      <circle cx={pos.x} cy={pos.y} r={radius} fill="url(#node-sheen)" pointerEvents="none" />
+                      <text x={pos.x} y={pos.y + radius + 13} textAnchor="middle" fontSize={9} fill="var(--ink-mute)">
+                        {shortLabel(node.label)}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {hoveredId && hoveredPos && hoveredId !== seed && (
+                  <g
+                    className="node-action-chip"
+                    transform={`translate(${Math.min(hoveredPos.x + 12, viewBox.x + viewBox.w - 98)}, ${hoveredPos.y - 18})`}
+                    onMouseEnter={() => hoverNode(hoveredId)}
+                    onMouseLeave={() => scheduleUnhover(hoveredId)}
+                    onClick={(e) => { e.stopPropagation(); goToSeed(hoveredId); }}
+                  >
+                    <rect className="chip-hit-area" x={-8} y={-16} width={108} height={32} rx={14} />
+                    <rect className="chip-bg" x={0} y={-11} width={92} height={22} rx={11} />
+                    <text x={46} y={4} textAnchor="middle">Set as source</text>
                   </g>
-                );
-              })}
-            </svg>
+                )}
+              </svg>
+            </>
           )}
         </NeoCard>
 
@@ -301,6 +496,7 @@ export function GraphExplorer() {
                     ? `Flagged by ${selectedFinding.finding_type} — reasoning available on the Evidence Package for this finding.`
                     : "This node has no open finding attached in the current case."}
                 </p>
+                <p className="coverage-note" style={{ marginTop: 10 }}>Hover a node on the canvas to set it as the new source.</p>
               </>
             )}
           </NeoCard>

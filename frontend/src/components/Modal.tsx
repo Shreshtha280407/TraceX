@@ -8,11 +8,15 @@ export function Modal({
   onClose,
   title,
   children,
+  wide,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  /** Near-fullscreen card instead of the default compact form width — for content
+   * like a raw record dump that needs real reading room, not a form-sized box. */
+  wide?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -27,7 +31,7 @@ export function Modal({
 
   return createPortal(
     <div className="modal-overlay" onClick={onClose}>
-      <div className="neo modal-card" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`neo modal-card ${wide ? "modal-card-wide" : ""}`} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-header">
           <h2>{title}</h2>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close">

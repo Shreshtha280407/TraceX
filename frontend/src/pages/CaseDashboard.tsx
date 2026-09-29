@@ -108,7 +108,7 @@ export function CaseDashboard() {
                       href={`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`}
                       onClick={(e) => { e.preventDefault(); navigate(`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`); }}
                     >
-                      View in Graph
+                      Graph
                     </a>
                     <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
                       Review

@@ -14,6 +14,26 @@
 .source-ref-row:last-child { border-bottom: none; }
 .source-ref-row pre { background: var(--surface-3); padding: 8px; border-radius: 8px; font-size: 10px; overflow-x: auto; margin: 6px 0 0; }
 
+.list-search-input {
+  width: 100%; margin: 8px 0; padding: 9px 12px; font-size: 12px; font-family: inherit;
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 8px; color: var(--ink);
+  box-shadow: inset 3px 3px 7px var(--shadow-d), inset -2px -2px 5px var(--shadow-l);
+}
+.list-search-input:focus { outline: 1px solid var(--mustard-glow); }
+
+/* Supporting Evidence and the Counterevidence checklist share this fixed height
+   so the two cards stay visually balanced regardless of how many records either
+   finding happens to carry, instead of one column stretching far past the other. */
+.scrollable-record-list { max-height: 320px; overflow-y: auto; padding-right: 4px; }
+.scrollable-record-list::-webkit-scrollbar { width: 8px; }
+.scrollable-record-list::-webkit-scrollbar-thumb { background: var(--ink-mute); border-radius: 8px; }
+.scrollable-record-list::-webkit-scrollbar-track { background: transparent; }
+
+.fullscreen-record-pre {
+  background: var(--surface-3); padding: 16px; border-radius: 12px; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; margin: 0;
+}
+
 .review-buttons { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .review-buttons button { text-align: left; padding: 11px 14px; border-radius: 12px; font-weight: 600; font-size: 13px; cursor: pointer; border: 1px solid var(--line); background: var(--surface-3); color: var(--ink); }
 .review-buttons button.selected { border-color: var(--mustard); background: color-mix(in srgb, var(--mustard) 14%, var(--surface-3)); color: var(--mustard); }

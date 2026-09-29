@@ -125,6 +125,8 @@
 .modal-overlay { position: fixed; inset: 0; background: rgba(8, 8, 7, 0.4); backdrop-filter: blur(1px); display: grid;
   place-items: center; padding: 24px; z-index: 100; }
 .modal-card { width: 460px; max-width: 100%; padding: 28px; }
+.modal-card-wide { width: min(1100px, 92vw); max-height: 86vh; display: flex; flex-direction: column; }
+.modal-card-wide .modal-body-scroll { flex: 1; min-height: 0; overflow: auto; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .modal-header h2 { margin: 0; font-size: 18px; }
 .modal-close { background: none; border: 0; color: var(--ink-dim); cursor: pointer; font-size: 22px; line-height: 1;

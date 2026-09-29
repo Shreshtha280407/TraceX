@@ -62,7 +62,11 @@ export function computeLayout(
     for (const id of nodeIds) {
       const pos = positions.get(id)!;
       const disp = displacement.get(id)!;
-      const centerPull = 0.02;
+      // Weak gravity only — just enough to keep disconnected nodes from drifting off
+      // the visible canvas. Anything stronger overpowers the spring/repulsion forces
+      // above and drags every node toward a uniform wheel around the seed, hiding the
+      // real edge topology (chains, branches, isolated pairs) behind a starburst.
+      const centerPull = 0.006;
       disp.x += (width / 2 - pos.x) * centerPull;
       disp.y += (height / 2 - pos.y) * centerPull;
       const dist = Math.sqrt(disp.x * disp.x + disp.y * disp.y) || 0.01;

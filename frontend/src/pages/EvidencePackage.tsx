@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primitives";
+import { Modal } from "../components/Modal";
 import { api, ApiError, type FindingEvidence } from "../lib/api";
 import { recordReview } from "../lib/sessionStats";
 import "./EvidencePackage.css";
@@ -23,6 +24,9 @@ export function EvidencePackage() {
   const [submitting, setSubmitting] = useState(false);
   const [staleNotice, setStaleNotice] = useState(false);
   const [openRecord, setOpenRecord] = useState<{ locator: string; record: unknown } | null>(null);
+  const [evidenceSearch, setEvidenceSearch] = useState("");
+  const [counterSearch, setCounterSearch] = useState("");
+  const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown } | null>(null);
 
   function load() {
     if (!findingId) return;
@@ -74,6 +78,10 @@ export function EvidencePackage() {
 
   const { finding } = evidence;
   const sourceRefs = evidence.source_refs as { evidence_id: string; locator: string; locator_type?: string }[];
+  const matches = (ref: { locator: string }, query: string) =>
+    !query.trim() || ref.locator.toLowerCase().includes(query.trim().toLowerCase());
+  const filteredSourceRefs = sourceRefs.filter((ref) => matches(ref, evidenceSearch));
+  const filteredCounterRefs = sourceRefs.filter((ref) => matches(ref, counterSearch));
 
   return (
     <Shell>
@@ -99,18 +107,45 @@ export function EvidencePackage() {
             {sourceRefs.length === 0 ? (
               <p className="coverage-note">No source references attached.</p>
             ) : (
-              sourceRefs.map((ref, index) => (
-                <div className="source-ref-row" key={`${ref.evidence_id}-${index}`}>
-                  <div style={{ flex: 1 }}>
-                    <div className="mono-id">{ref.locator}</div>
-                    <div className="meta-line">{ref.locator_type ?? "source"}</div>
-                    <button type="button" className="btn-ghost" style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }} onClick={() => viewRecord(ref.evidence_id, ref.locator)}>
-                      View raw record
-                    </button>
-                    {openRecord?.locator === ref.locator && <pre>{JSON.stringify(openRecord.record, null, 2)}</pre>}
-                  </div>
+              <>
+                <input
+                  type="text"
+                  className="list-search-input"
+                  placeholder="Search records by locator…"
+                  value={evidenceSearch}
+                  onChange={(e) => setEvidenceSearch(e.target.value)}
+                />
+                <div className="scrollable-record-list">
+                  {filteredSourceRefs.length === 0 ? (
+                    <p className="coverage-note" style={{ padding: "8px 0" }}>No records match "{evidenceSearch}".</p>
+                  ) : (
+                    filteredSourceRefs.map((ref, index) => (
+                      <div className="source-ref-row" key={`${ref.evidence_id}-${index}`}>
+                        <div style={{ flex: 1 }}>
+                          <div className="mono-id">{ref.locator}</div>
+                          <div className="meta-line">{ref.locator_type ?? "source"}</div>
+                          <button type="button" className="btn-ghost" style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }} onClick={() => viewRecord(ref.evidence_id, ref.locator)}>
+                            View raw record
+                          </button>
+                          {openRecord?.locator === ref.locator && (
+                            <>
+                              <pre>{JSON.stringify(openRecord.record, null, 2)}</pre>
+                              <button
+                                type="button"
+                                className="btn-ghost"
+                                style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }}
+                                onClick={() => setFullscreenRecord(openRecord)}
+                              >
+                                ⤢ Full screen
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
-              ))
+              </>
             )}
           </NeoCard>
           <NeoCard variant="neo-sm">
@@ -160,7 +195,7 @@ export function EvidencePackage() {
                 {JSON.stringify(evidence.opposing_evidence, null, 2)}
               </pre>
             )}
-            <p className="coverage-note" style={{ marginTop: 8 }}>
+            <p className="coverage-note" style={{ marginTop: 8, overflowWrap: "anywhere" }}>
               Coverage: {JSON.stringify(evidence.coverage)}
             </p>
           </NeoCard>
@@ -188,21 +223,34 @@ export function EvidencePackage() {
             {sourceRefs.length > 0 && (
               <div className="form-field">
                 <label>Counterevidence (optional)</label>
-                {sourceRefs.map((ref, index) => (
-                  <label key={index} style={{ display: "flex", gap: 6, fontSize: 11, marginBottom: 4 }}>
-                    <input
-                      type="checkbox"
-                      checked={counterRefs.has(ref.evidence_id)}
-                      onChange={(e) => {
-                        const next = new Set(counterRefs);
-                        if (e.target.checked) next.add(ref.evidence_id);
-                        else next.delete(ref.evidence_id);
-                        setCounterRefs(next);
-                      }}
-                    />
-                    <span className="mono-id">{ref.locator}</span>
-                  </label>
-                ))}
+                <input
+                  type="text"
+                  className="list-search-input"
+                  placeholder="Search records by locator…"
+                  value={counterSearch}
+                  onChange={(e) => setCounterSearch(e.target.value)}
+                />
+                <div className="scrollable-record-list">
+                  {filteredCounterRefs.length === 0 ? (
+                    <p className="coverage-note" style={{ padding: "8px 0" }}>No records match "{counterSearch}".</p>
+                  ) : (
+                    filteredCounterRefs.map((ref, index) => (
+                      <label key={index} style={{ display: "flex", gap: 6, fontSize: 11, marginBottom: 4 }}>
+                        <input
+                          type="checkbox"
+                          checked={counterRefs.has(ref.evidence_id)}
+                          onChange={(e) => {
+                            const next = new Set(counterRefs);
+                            if (e.target.checked) next.add(ref.evidence_id);
+                            else next.delete(ref.evidence_id);
+                            setCounterRefs(next);
+                          }}
+                        />
+                        <span className="mono-id">{ref.locator}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
               </div>
             )}
             <button type="button" className="btn-mustard" disabled={!disposition || !reason.trim() || submitting} onClick={submitReview}>
@@ -226,6 +274,17 @@ export function EvidencePackage() {
           </NeoCard>
         </div>
       </div>
+
+      <Modal
+        open={!!fullscreenRecord}
+        onClose={() => setFullscreenRecord(null)}
+        title={fullscreenRecord?.locator ?? "Raw record"}
+        wide
+      >
+        <div className="modal-body-scroll">
+          <pre className="fullscreen-record-pre">{JSON.stringify(fullscreenRecord?.record, null, 2)}</pre>
+        </div>
+      </Modal>
     </Shell>
   );
 }

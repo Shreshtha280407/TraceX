@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primitives";
+import { NeoCard, Badge, ErrorBanner } from "../components/primitives";
 import { api, ApiError, type FindingsExportBundle, type FeatureExportResponse } from "../lib/api";
 import { recordExport } from "../lib/sessionStats";
 
@@ -47,10 +47,6 @@ export function ExportDeployment() {
         </div>
       </div>
 
-      <NoticeBanner>
-        Both export endpoints on this backend are synchronous GETs today — there is no async "generate export" job.
-        Clicking below calls them directly and shows the real result rather than a fabricated progress tracker.
-      </NoticeBanner>
       {error && <ErrorBanner>{error}</ErrorBanner>}
 
       <div className="two-col">
