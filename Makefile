@@ -1,4 +1,4 @@
-.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test
+.PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test phase-six phase-six-throughput phase-six-throughput-1m phase-six-query-latency phase-six-test
 
 phase-zero: verify-fixture test
 
@@ -87,3 +87,30 @@ datasets/phase5a_100k:
 	@echo "No fixture at datasets/phase5a_100k. Run: make dataset"
 	@echo "(that runs: uv run python fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify)"
 	@exit 1
+
+# ---------------------------------------------------------------------------
+# Phase 6 (performance, recovery, security)
+# ---------------------------------------------------------------------------
+
+phase-six: phase-six-test phase-six-throughput phase-six-query-latency
+
+# Real pipeline (HTTP upload -> worker parse/commit -> graph -> deterministic
+# findings/features), staged timings, against the generator-v2 100K fixture.
+phase-six-throughput: | datasets/phase5a_100k
+	uv run python scripts/phase6_throughput.py --scale 100k --output experiments/runs/phase6_throughput_100k.json
+
+# Same pipeline at 1,000,000 rows via a lightweight synthetic linear-chain
+# generator (the labelled fixture generator has no size parameter). Slow and
+# memory-heavy -- see docs/phase6.md for what this host could and could not
+# complete.
+phase-six-throughput-1m:
+	uv run python scripts/phase6_throughput.py --scale 1m --output experiments/runs/phase6_throughput_1m.json
+
+# 200+ bounded graph queries at 1 and 4 concurrent readers, including the
+# fixture's actual highest-degree node.
+phase-six-query-latency: | datasets/phase5a_100k
+	uv run python scripts/phase6_query_latency.py --output experiments/runs/phase6_query_latency.json
+
+phase-six-test:
+	uv run ruff check app/engine/findings/deterministic.py scripts/phase6_throughput.py scripts/phase6_query_latency.py tests/unit/test_phase_six_crash_retry.py tests/unit/test_phase_six_offline_and_access.py tests/unit/test_phase_four.py
+	uv run pytest -q tests/unit/test_phase_six_crash_retry.py tests/unit/test_phase_six_offline_and_access.py tests/unit/test_phase_four.py tests/unit/test_auth_and_case_reads.py

@@ -1,6 +1,6 @@
 # TraceX
 
-Offline, case-scoped Bitcoin-intelligence backend. **Phases 0–4.1** are implemented: frozen contract/fixture, case-scoped upload/jobs, receipt-approved bulk ingestion, a correct UTXO graph, and deterministic reviewable findings including bounded peeling-chain, CoinJoin-like structure, and synthetic-review-seed context.
+Offline, case-scoped Bitcoin-intelligence backend. **Phases 0–6** are implemented: frozen contract/fixture, case-scoped upload/jobs, receipt-approved bulk ingestion, a correct UTXO graph, deterministic reviewable findings including bounded peeling-chain, CoinJoin-like structure, and synthetic-review-seed context, plus measured throughput/query-latency, proven crash-and-retry recovery, and proven offline/cross-case isolation. See [docs/phase6.md](docs/phase6.md) for the measured numbers, on this host's actual hardware, not an assumed target.
 
 **The anomaly stack is implemented, causal, and wired into the case path.** Six scoring layers over four grains — transaction shape, spend latency as survival, causal per-entity baselines, population motif-burst detection, bounded graph context, and p-value fusion — plus an ablation harness that runs every layer alone and every combination against the deterministic rule baseline. Every feature uses only facts at or before its own transaction's timestamp, proved by truncation property tests. Ingestion runs it automatically at snapshot completion, writing findings the existing findings endpoint serves (`TRACEX_ML_FINDINGS=0` to disable). See [docs/anomaly_stack.md](docs/anomaly_stack.md).
 
@@ -29,6 +29,22 @@ make phase-five-a-smoke
 ```
 
 This regenerates and exercises the separate synthetic 10K fixture through ingestion, UTXO graph construction, deterministic findings, Phase 4.1 signals, feature export, and the Phase 5A input contract. It does not train or select a model.
+
+## Phase 6 performance, recovery, and security
+
+```bash
+make phase-six-test             # crash/retry + offline/cross-case-access + Phase 4 regression tests
+make phase-six-throughput       # staged timings against the real 100K fixture
+make phase-six-throughput-1m    # the same pipeline at 1,000,000 synthetic rows
+make phase-six-query-latency    # 200+ bounded graph queries at 1 and 4 concurrent readers
+```
+
+Every number is measured on this development host's actual hardware, not the
+36 GiB Mac profile the master architecture describes as a target. See
+[docs/phase6.md](docs/phase6.md) for the full table, what did and did not hit
+the stated targets, the crash/retry and offline/isolation evidence, and a
+real cross-signal duplicate-finding bug found and fixed while building the
+1M-row benchmark.
 
 ## Contract layout
 

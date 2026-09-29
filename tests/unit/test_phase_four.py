@@ -191,3 +191,82 @@ def test_deterministic_findings_are_replayable_and_reviews_are_versioned(tmp_pat
         assert conflict.status_code == 409
     finally:
         app.dependency_overrides.clear()
+
+
+def test_two_independent_peeling_chains_sharing_an_origin_address_and_window_do_not_crash_ingestion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: two unrelated 3-hop peeling chains that both originate at the
+    same reused address, spent within the same 15-minute window, used to make
+    `materialize_findings` attempt two `peeling_chain_candidate` rows with an
+    identical (entity_ref, window_start, window_end, rule_id) key and abort the
+    whole snapshot commit on the table's UNIQUE constraint. Found while
+    building the Phase 6 throughput benchmark against a synthetic dataset with
+    realistic address reuse; fixed by deduplicating candidates by that key
+    before insert, keeping the highest-scoring one.
+    """
+    client = _client(tmp_path, monkeypatch)
+    owner = {"X-TraceX-Actor": "case-lead"}
+    shared = "bcrt1qsharedorigin"
+
+    def chain(prefix: int, start_amount: int, funding_time: str, spend_times: list[str]) -> list[dict]:
+        fund_txid, s1, s2, s3 = (_tx(prefix + i) for i in range(4))
+        amounts = [start_amount, start_amount - 10_000, start_amount - 20_000, start_amount - 30_000]
+        addrs = [shared, f"bcrt1qhop{prefix}a", f"bcrt1qhop{prefix}b", f"bcrt1qhop{prefix}c"]
+        rows = [
+            {
+                "txid": fund_txid,
+                "network": "bitcoin-regtest",
+                "timestamp": funding_time,
+                "inputs": [],
+                "outputs": [{"address": addrs[0], "amount_sats": amounts[0]}],
+                "fee_sats": 0,
+            }
+        ]
+        previous_txid = fund_txid
+        for hop, (spend_txid, spend_time) in enumerate(zip([s1, s2, s3], spend_times)):
+            rows.append(
+                {
+                    "txid": spend_txid,
+                    "network": "bitcoin-regtest",
+                    "timestamp": spend_time,
+                    "inputs": [
+                        {"prev_txid": previous_txid, "prev_vout": 0, "address": addrs[hop], "amount_sats": amounts[hop]}
+                    ],
+                    "outputs": [{"address": addrs[hop + 1], "amount_sats": amounts[hop + 1]}],
+                    "fee_sats": 1_000,
+                }
+            )
+            previous_txid = spend_txid
+        return rows
+
+    # Both chains' first spend (the signal's window-key transaction) lands in
+    # the same 2026-01-01T00:00-00:15Z bucket despite unrelated funding.
+    rows = chain(100, 100_000, "2025-12-31T23:50:00Z", ["2026-01-01T00:05:00Z", "2026-01-01T00:06:00Z", "2026-01-01T00:07:00Z"])
+    rows += chain(200, 50_000, "2025-12-31T23:55:00Z", ["2026-01-01T00:10:00Z", "2026-01-01T00:11:00Z", "2026-01-01T00:12:00Z"])
+    try:
+        case_id = client.post(
+            "/v1/cases", headers=owner, json={"name": "Peeling chain collision regression", "synthetic": True}
+        ).json()["case_id"]
+        imported = client.post(
+            f"/v1/cases/{case_id}/imports",
+            headers={**owner, "Idempotency-Key": "phase-four-peeling-collision"},
+            files={
+                "file": ("chains.ndjson", "\n".join(json.dumps(row) for row in rows).encode(), "application/x-ndjson")
+            },
+        )
+        assert imported.status_code == 202, imported.text
+        assert runner.process_one("finding-worker")
+        job = client.get(f"/v1/jobs/{imported.json()['job_id']}", headers=owner).json()
+        assert job["state"] == "completed", job  # used to be "failed" with SOURCE_VERIFICATION_FAILED / IntegrityError
+
+        findings = client.get(f"/v1/cases/{case_id}/findings", headers=owner).json()["findings"]
+        keys = [(f["entity_ref"], f["window_start"], f["window_end"], f["rule_id"]) for f in findings]
+        assert len(keys) == len(set(keys)), "duplicate (entity_ref, window, rule_id) key survived into findings"
+
+        shared_peeling = [
+            f for f in findings if f["rule_id"] == "peeling_chain_candidate" and f["entity_ref"] == f"address:{shared}"
+        ]
+        assert len(shared_peeling) == 1, shared_peeling
+    finally:
+        app.dependency_overrides.clear()

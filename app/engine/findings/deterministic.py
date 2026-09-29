@@ -510,6 +510,21 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                 source_refs=_dedupe_refs(facts),
             )
         )
+    # Two distinct detector signals (e.g. two independent peeling chains, or a
+    # peeling chain and a synthetic-seed propagation) can resolve to the same
+    # address and the same window bucket. `entity_ref`/window/rule_id is the
+    # table's unique key, so appending one candidate per signal unchecked can
+    # attempt two rows with an identical key and abort the whole snapshot's
+    # commit on the resulting IntegrityError. Keep the highest-scoring
+    # candidate per key; ties keep whichever was constructed first, which is
+    # deterministic given the deterministic fact/signal ordering above.
+    deduped_candidates: dict[tuple[str, datetime, datetime, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        key = (candidate["entity_ref"], candidate["start"], candidate["end"], candidate["rule_id"])
+        current = deduped_candidates.get(key)
+        if current is None or candidate["score"] > current["score"]:
+            deduped_candidates[key] = candidate
+    candidates = list(deduped_candidates.values())
     candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
     for rank, candidate in enumerate(candidates, 1):
         feature_hash = _hash(candidate["feature"])
