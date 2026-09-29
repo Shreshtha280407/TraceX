@@ -42,9 +42,70 @@ ML_RULE_VERSION = "anomaly-stack-v1"
 WINDOW_SECONDS = 900
 #: The combination the ablation selected on the fixture, using unsupervised layers
 #: only. Recorded here rather than tuned at call time so a stored finding always
-#: names the configuration that produced it.
+#: names the configuration that produced it. This is the Phase 5B frozen decision
+#: (`experiments/model_decision.md`) and must not change without a new release ID.
 DEFAULT_LAYERS = ("A_global", "D_burst")
 DEFAULT_BUDGET = 0.01
+FUSION_METHOD = "stouffer"
+#: The scoring release identity. There is no static model artifact -- the stack
+#: is refit on each snapshot's own reference period at scoring time -- so this ID
+#: names the frozen *procedure* (layers, fusion, feature contract, training seed)
+#: rather than a `.joblib` file. Bump it whenever any of `release_identity()`'s
+#: fields change; the bump automatically changes `model_run_id` for every finding
+#: scored afterward, so a reviewer can always tell which procedure produced a row.
+RELEASE_ID = "anomaly-stack-v1"
+
+
+def release_identity() -> dict[str, Any]:
+    """The frozen scoring-release identity, derived from code, not configuration.
+
+    Every field here is a Phase 5B frozen decision: the layer combination, the
+    fusion method, the default review budget, the training seed used by the
+    stratified/global Isolation Forest and MiniBatchKMeans fits inside layer A,
+    and the transaction feature contract layer A actually scores on (layer D
+    derives its motif count series from the same table's family flags, so it
+    adds no columns of its own). Changing any of these is a new release and must
+    go through `experiments/model_decision.md`, not a silent code edit.
+    """
+    return {
+        "release_id": RELEASE_ID,
+        "layers": list(DEFAULT_LAYERS),
+        "fusion_method": FUSION_METHOD,
+        "default_review_budget": DEFAULT_BUDGET,
+        "training_seed": layers.SEED,
+        "feature_contract_version": ML_RULE_VERSION,
+        "feature_columns_sha256": hashlib.sha256(",".join(grains.TRANSACTION_COLUMNS).encode("utf-8")).hexdigest(),
+        "fitting_strategy": (
+            "dynamic: refit on each snapshot's own earliest reference_fraction of "
+            "transactions at scoring time; no static model artifact is loaded or shipped"
+        ),
+    }
+
+
+def release_manifest_sha256() -> str:
+    """A digest over the frozen identity -- the "signature" every finding is tied to.
+
+    Computed from code constants only, so it is reproducible by anyone reading
+    this file; it does not depend on any file outside the repository being present
+    at runtime, which keeps `materialize_ml_findings` deployable without also
+    shipping `experiments/`.
+    """
+    return hashlib.sha256(json.dumps(release_identity(), sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def model_run_id(*, snapshot_id: str, budget: float) -> str:
+    """A stable, deterministic ID naming exactly which scoring release, applied to
+    exactly which snapshot and budget, produced a set of findings.
+
+    Deterministic (not a random UUID) on purpose: re-scoring the same snapshot at
+    the same budget under an unchanged release always reproduces the same ID, so
+    a reviewer -- or a test -- can recompute it independently rather than trusting
+    a value stamped at write time. It changes automatically if the release
+    identity changes, which is what makes it a safe substitute for a versioned
+    static artifact hash.
+    """
+    payload = f"{RELEASE_ID}:{release_manifest_sha256()[:16]}:{snapshot_id}:{budget:.6f}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 @dataclass
@@ -54,6 +115,8 @@ class MLFindingResult:
     layers_used: tuple[str, ...]
     budget: float
     flagged: int
+    release_id: str = RELEASE_ID
+    model_run_id: str | None = None
 
 
 def _hash(value: dict) -> str:
@@ -83,7 +146,9 @@ def _source_refs_by_txid(records: dict[str, list[dict]]) -> dict[str, list[dict]
     return refs
 
 
-def _coverage(graph: GraphSnapshot, scored: int, flagged: int, budget: float) -> dict[str, Any]:
+def _coverage(
+    graph: GraphSnapshot, scored: int, flagged: int, budget: float, *, release_id: str, run_id: str
+) -> dict[str, Any]:
     graph_coverage = graph.coverage or {}
     return {
         "complete": bool(graph_coverage.get("spend_lineage_complete")),
@@ -92,11 +157,17 @@ def _coverage(graph: GraphSnapshot, scored: int, flagged: int, budget: float) ->
         "scored_transactions": scored,
         "flagged_at_budget": flagged,
         "review_budget_fraction": budget,
+        "release_id": release_id,
+        "model_run_id": run_id,
+        "release_manifest_sha256": release_manifest_sha256(),
         "notes": [
             "Scores are a triage ranking over the committed snapshot, not a probability of criminality.",
             ("Every feature is computed only from facts at or before its own transaction's timestamp; "
              "activity outside the committed snapshot is unknown, not absent."),
             "No supervised model contributed to this ranking.",
+            ("This model is dynamically fitted on the committed snapshot's own reference period at "
+             "scoring time; there is no static model artifact. release_manifest_sha256 identifies "
+             "the frozen procedure, not a loaded file -- see experiments/model_decision.md."),
         ],
         "graph": graph_coverage,
     }
@@ -127,14 +198,18 @@ def materialize_ml_findings(
         .where(FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == ML_RULE_VERSION)
         .limit(1)
     ):
-        return MLFindingResult(0, 0, layer_names, budget, 0)
+        return MLFindingResult(0, 0, layer_names, budget, 0, model_run_id=model_run_id(
+            snapshot_id=snapshot.id, budget=budget
+        ))
 
     records = _facts(session, evidence_root, snapshot.id)
     facts = facts_from_records(records)
     if facts.transaction_count < 50:
         # Too little committed evidence for a reference distribution to mean
         # anything; store nothing rather than rank noise.
-        return MLFindingResult(0, facts.transaction_count, layer_names, budget, 0)
+        return MLFindingResult(0, facts.transaction_count, layer_names, budget, 0, model_run_id=model_run_id(
+            snapshot_id=snapshot.id, budget=budget
+        ))
 
     cut = int(facts.transaction_count * reference_fraction)
     reference = np.zeros(facts.transaction_count, dtype=bool)
@@ -180,7 +255,10 @@ def materialize_ml_findings(
     flagged = np.flatnonzero(score >= threshold)
     order = flagged[np.argsort(-score[flagged], kind="stable")]
     refs_by_txid = _source_refs_by_txid(records)
-    coverage = _coverage(graph, facts.transaction_count, int(flagged.size), budget)
+    run_id = model_run_id(snapshot_id=snapshot.id, budget=budget)
+    coverage = _coverage(
+        graph, facts.transaction_count, int(flagged.size), budget, release_id=RELEASE_ID, run_id=run_id
+    )
 
     out_starts, out_order = facts.outputs_of()
     attribution = available.get("A_global") or next(iter(available.values()))
@@ -201,6 +279,8 @@ def materialize_ml_findings(
 
         feature_vector = {
             "feature_contract_version": ML_RULE_VERSION,
+            "release_id": RELEASE_ID,
+            "model_run_id": run_id,
             "layers": {name: float(available[name].score[transaction]) for name in layer_names},
             "fused_score": float(score[transaction]),
             "threshold": float(threshold),
@@ -282,13 +362,17 @@ def materialize_ml_findings(
                 "snapshot_id": snapshot.id,
                 "finding_count": written,
                 "method": ML_RULE_VERSION,
+                "release_id": RELEASE_ID,
+                "model_run_id": run_id,
                 "ml_enabled": True,
                 "supervised": False,
                 "layers": list(layer_names),
                 "review_budget_fraction": budget,
             },
         )
-    return MLFindingResult(written, facts.transaction_count, layer_names, budget, int(flagged.size))
+    return MLFindingResult(
+        written, facts.transaction_count, layer_names, budget, int(flagged.size), model_run_id=run_id
+    )
 
 
 def review_decision_labels(session: Session, *, case_id: str, facts) -> np.ndarray | None:

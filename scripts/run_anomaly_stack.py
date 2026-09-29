@@ -57,8 +57,9 @@ def main() -> int:
     if not (args.dataset / "transactions.ndjson").is_file():
         parser.error(
             f"no fixture at {args.dataset}. Generate it first:\n"
-            "  python3 fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k "
-            "--formats csv,ndjson,xml,json --verify"
+            "  make dataset\n"
+            "  (or: uv run python fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k "
+            "--formats csv,ndjson,xml,json --verify)"
         )
 
     config = StackConfig(

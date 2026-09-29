@@ -1,0 +1,125 @@
+{
+  "$schema": "release-manifest-v1",
+  "release_id": "anomaly-stack-v1",
+  "release_manifest_sha256": "92105889529876f5dd6619b71fb96783bdb5a83e0644e55635936dbc8994e21c",
+  "frozen_scoring_procedure": {
+    "release_id": "anomaly-stack-v1",
+    "layers": [
+      "A_global",
+      "D_burst"
+    ],
+    "fusion_method": "stouffer",
+    "default_review_budget": 0.01,
+    "training_seed": 42,
+    "feature_contract_version": "anomaly-stack-v1",
+    "feature_columns_sha256": "f06f0f171479affef70a7284da4f126c1c3b8ea9677f9e82561dc489f77f7eec",
+    "fitting_strategy": "dynamic: refit on each snapshot's own earliest reference_fraction of transactions at scoring time; no static model artifact is loaded or shipped"
+  },
+  "git": {
+    "commit": "2c1b59ea5b3cb7deac41e038a85817bd5d790bdf",
+    "dirty": true,
+    "branch": "main"
+  },
+  "fixture_identity": {
+    "available": true,
+    "generator_version": "2.0.0",
+    "generator_sha256": "a0f2cce94c8e19c3d94c8de0eb4125accdfd8c74e4de2309278685600bea1cf1",
+    "config_sha256": "4e62b06ce31d63aff942a5631e21d0c1b113d2f4e82874746817494b9d76dee7",
+    "seed": "tracex-phase5a-prep-100k-v2",
+    "network": "bitcoin-regtest",
+    "canonical_transaction_count": 100000
+  },
+  "dependency_constraints": {
+    "requires_python": ">=3.11",
+    "ml_extra_specifiers": "ml = [\"scikit-learn>=1.5,<2\", \"numpy>=1.26,<3\", \"scipy>=1.11,<2\"]",
+    "installed_versions_at_manifest_creation": {
+      "numpy": "2.5.3",
+      "scipy": "1.18.1",
+      "sklearn": "1.9.1"
+    },
+    "interpreter_at_manifest_creation": "3.12.13"
+  },
+  "frozen_holdout_evidence": {
+    "source": "100K synthetic fixture, final_holdout split, Aditya's 32GB MacBook Pro",
+    "python_version": "3.11.16",
+    "run_seconds": 50,
+    "peak_rss_mb": 871,
+    "selected_candidate": "A_global + D_burst",
+    "tasks": {
+      "motif_triage": {
+        "average_precision": 0.6282307964,
+        "precision_at_20": 0.95,
+        "precision_at_50": 0.94,
+        "precision_at_100": 0.89,
+        "precision_at_1pct": 0.8444444444,
+        "recall_at_1pct": 0.2425531915,
+        "rule_only_average_precision": 0.3798909635
+      },
+      "surge_detection": {
+        "average_precision": 0.5926655743,
+        "precision_at_20": 0.9,
+        "precision_at_50": 0.86,
+        "precision_at_100": 0.75,
+        "precision_at_1pct": 0.6962962963,
+        "recall_at_1pct": 0.3381294964,
+        "rule_only_average_precision": 0.2388266171
+      },
+      "discrimination": {
+        "description": "true motif vs. benign rule-positive payroll",
+        "rule_only_average_precision": 0.9568959651,
+        "note": "rule-only remains best; no unsupervised combination beat it on this task"
+      }
+    },
+    "validation_run_evidence": {
+      "run_seconds": 49,
+      "peak_rss_mb": 896,
+      "note": "runtime/RSS only, from the same MacBook session; AP/precision numbers for validation are read fresh below from --validation-run, not hardcoded, because re-running validation (unlike holdout) is exactly what make anomaly-stack is for"
+    },
+    "limitations": [
+      "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
+      "No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere in this stack.",
+      "Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a real CoinJoin (see the discrimination task above: rule-only wins). Analyst-labelled reviews are required before any supervised model may score production cases; see app.ml.findings.review_decision_labels."
+    ]
+  },
+  "validation_evidence": {
+    "available": true,
+    "source_file": "experiments/runs/anomaly_stack_validation.json",
+    "split": "validation",
+    "budget": 0.01,
+    "deployable_configuration": true,
+    "winners_by_task": {
+      "motif": {
+        "candidate": "A_global+D_burst",
+        "average_precision": 0.6462631860956382,
+        "roc_auc": 0.9779960486610103,
+        "baseline_average_precision": 0.40052107590244923
+      },
+      "surge": {
+        "candidate": "A_global+D_burst",
+        "average_precision": 0.7639629857264775,
+        "roc_auc": 0.9915023801057831,
+        "baseline_average_precision": 0.34791015105766043
+      },
+      "discrimination": {
+        "candidate": "D_burst",
+        "average_precision": 0.9198697806454251,
+        "roc_auc": 0.9195895607660314,
+        "baseline_average_precision": 0.9093212816193892
+      }
+    }
+  },
+  "model_run_id_strategy": "app.ml.findings.model_run_id(snapshot_id, budget) -- sha256(release_id + release_manifest_sha256[:16] + snapshot_id + budget)[:24]. Deterministic: the same snapshot scored again under an unchanged release reproduces the same ID. It changes automatically if release_identity() changes, which is what makes it a safe substitute for a versioned static-artifact hash when no static artifact exists.",
+  "fallback_behaviour": {
+    "TRACEX_ML_FINDINGS=0": "ml_status=disabled; ingestion, graph, deterministic findings, exports and review all proceed unaffected.",
+    "ml extra not installed": "ml_status=unavailable; import still completes.",
+    "scoring raises": "ml_status=error:<ExceptionType>; import still completes.",
+    "TRACEX_ML_REVIEW_BUDGET outside (0, 0.5]": "ml_status=invalid_budget; import still completes; a non-numeric value falls back to the 0.01 default with a logged warning rather than crashing application startup.",
+    "successful score, nothing clears the budget": "ml_status=no_rows_flagged.",
+    "successful score": "ml_status=written; ml_finding_count>0; ml_model_run_id set."
+  },
+  "known_limitations": [
+    "Synthetic-fixture evaluation only. This does not measure real-world detection accuracy.",
+    "No ownership, origin, criminality, or IP-to-wallet attribution claim is made anywhere in this stack.",
+    "Unsupervised scoring cannot reliably separate a structurally identical benign payroll run from a real CoinJoin (see the discrimination task above: rule-only wins). Analyst-labelled reviews are required before any supervised model may score production cases; see app.ml.findings.review_decision_labels."
+  ]
+}

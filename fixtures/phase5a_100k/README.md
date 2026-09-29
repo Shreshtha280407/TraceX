@@ -7,9 +7,14 @@ attribution dataset, proof of real-world detection performance, or a training
 corpus.
 
 ```bash
-python3 fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify
-# or: make dataset
+make dataset
+# or directly: uv run python fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify
 ```
+
+Always through `uv run` (or `make dataset`, which does the same). A bare `python3`
+resolves to whatever the OS shipped, which on many macOS installs is below this
+generator's `>=3.11` floor and fails with a confusing syntax error rather than a
+clear version message.
 
 The generator uses the Python standard library and the versioned seed in
 `fixture_config.json`. `--verify` checks every UTXO/split/raw-record invariant,

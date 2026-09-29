@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,29 @@ class Settings:
     ml_findings_enabled: bool = True
     ml_review_budget: float = 0.01
 
+    @staticmethod
+    def _parse_ml_review_budget(raw: str) -> float:
+        """Never let a malformed env var crash application startup.
+
+        A range check (is this budget *safe*, e.g. not negative or larger than
+        half the snapshot) belongs to the caller that knows what "safe" means for
+        a review queue -- `app.engine.ingestion.pipeline._materialize_ml_findings`
+        does that and turns an unsafe-but-numeric value into a visible
+        `invalid_budget` status without failing the import. This parser only
+        guards the narrower failure: a value that is not a number at all, which
+        would otherwise raise out of `Settings.from_environment()` at process
+        start and take the whole application down over one bad ML setting.
+        """
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "TRACEX_ML_REVIEW_BUDGET=%r is not a number; using the default 0.01. "
+                "ML findings will run at the default budget until this is fixed.",
+                raw,
+            )
+            return 0.01
+
     @classmethod
     def from_environment(cls) -> Settings:
         return cls(
@@ -40,7 +66,7 @@ class Settings:
             secret_key=os.environ.get("TRACEX_SECRET_KEY", "tracex-dev-only-secret"),
             token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
             ml_findings_enabled=os.environ.get("TRACEX_ML_FINDINGS", "1").lower() not in {"0", "false", "no"},
-            ml_review_budget=float(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
+            ml_review_budget=cls._parse_ml_review_budget(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
         )
 
 

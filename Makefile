@@ -44,8 +44,15 @@ phase-five-b-compare:
 
 # Regenerate the 100K fixture in all four ingestion formats and verify every
 # invariant and manifest hash.  ~35 s, ~350 MB of output.
+#
+# Uses `uv run python`, the project-managed interpreter pinned by pyproject.toml
+# (requires-python >=3.11), rather than the bare `python3` on PATH. A bare
+# `python3` is whatever the OS shipped -- macOS's system Python is 3.9-3.10 on
+# many installs, which is below the floor this generator needs and fails with
+# an opaque syntax/typing error instead of a clear version message. `uv sync`
+# has already resolved and pinned the right interpreter before this ever runs.
 dataset:
-	python3 fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify
+	uv run python fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify
 
 # Run every layer alone, every combination, and the deterministic rule baseline
 # on the validation split, for all three tasks.  Unsupervised only -- this is the
@@ -78,4 +85,5 @@ anomaly-stack-test:
 
 datasets/phase5a_100k:
 	@echo "No fixture at datasets/phase5a_100k. Run: make dataset"
+	@echo "(that runs: uv run python fixtures/phase5a_100k/generate.py --output datasets/phase5a_100k --formats csv,ndjson,xml,json --verify)"
 	@exit 1

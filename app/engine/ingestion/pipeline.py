@@ -34,6 +34,14 @@ def _chunks(rows: Iterator[ParsedRow], size: int) -> Iterator[list[ParsedRow]]:
         yield batch
 
 
+#: A review budget outside this fraction of the snapshot is not a safe
+#: configuration: at or below 0 there is no queue at all, and above half the
+#: snapshot "triage" has stopped meaning anything. This is a runtime safety rail
+#: on `TRACEX_ML_REVIEW_BUDGET`, independent of whatever numeric value `float()`
+#: is willing to parse.
+ML_BUDGET_SAFE_RANGE = (0.0, 0.5)
+
+
 def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str, object]:
     """Run the anomaly stack on the completed snapshot, if it is available.
 
@@ -48,6 +56,21 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str,
     """
     if not getattr(settings, "ml_findings_enabled", True):
         return {"written": 0, "status": "disabled"}
+
+    budget = getattr(settings, "ml_review_budget", 0.01)
+    low, high = ML_BUDGET_SAFE_RANGE
+    if not isinstance(budget, (int, float)) or isinstance(budget, bool) or not (low < budget <= high):
+        # A misconfigured budget must not silently score against a nonsensical
+        # threshold (0, negative, or "flag half the snapshot"); it must not raise
+        # either, since raising here would look like a scoring failure rather
+        # than a configuration one. `invalid_budget` is a distinct, visible
+        # status neither `disabled` nor `error:*` would honestly describe.
+        logger.warning(
+            "TRACEX_ML_REVIEW_BUDGET=%r for snapshot %s is outside the safe range %s; skipping ML findings",
+            budget, snapshot.id, ML_BUDGET_SAFE_RANGE,
+        )
+        return {"written": 0, "status": "invalid_budget"}
+
     try:
         from app.ml.findings import materialize_ml_findings
     except ImportError:
@@ -55,16 +78,17 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str,
         return {"written": 0, "status": "unavailable"}
     try:
         result = materialize_ml_findings(
-            session,
-            evidence_root=settings.evidence_root,
-            snapshot=snapshot,
-            graph=graph,
-            budget=float(getattr(settings, "ml_review_budget", 0.01)),
+            session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, budget=float(budget),
         )
     except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
         logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
         return {"written": 0, "status": f"error:{type(error).__name__}"}
-    return {"written": result.written, "status": "written" if result.written else "no_rows_flagged"}
+    return {
+        "written": result.written,
+        "status": "written" if result.written else "no_rows_flagged",
+        "model_run_id": result.model_run_id,
+        "release_id": result.release_id,
+    }
 
 
 def _snapshot_for_job(session: Session, job: ImportJob, source: EvidenceSource) -> Snapshot:
@@ -333,6 +357,8 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "finding_count": finding_count,
             "ml_finding_count": ml_result["written"],
             "ml_status": ml_result["status"],
+            "ml_model_run_id": ml_result.get("model_run_id"),
+            "ml_release_id": ml_result.get("release_id"),
             "provisional": False,
         },
     )

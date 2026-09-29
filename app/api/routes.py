@@ -512,12 +512,29 @@ def list_findings(
             .limit(limit)
         )
     )
+    # `method`/`ml_enabled` describe this page, not a case-wide constant: a page
+    # can hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix
+    # of both (they share this table and endpoint by design), so a hardcoded
+    # "always deterministic-v1, ml_enabled always False" was simply wrong the
+    # moment an ML finding existed. `methods` lists every rule_version present.
+    #
+    # The ML rule-version string is duplicated here rather than imported from
+    # `app.ml.findings` on purpose: that module (and the `app.ml` package it
+    # lives in) imports numpy/scikit-learn at module load, and this route must
+    # keep working -- cases, deterministic findings, everything -- on a
+    # deployment that never installed the optional `ml` extra. Keep this literal
+    # in sync with `app.ml.findings.ML_RULE_VERSION`; a mismatch only ever makes
+    # ML findings under-reported here, never mis-scoped or mis-cased.
+    ML_RULE_VERSION = "anomaly-stack-v1"
+    methods = sorted({record.rule_version for record in records})
+    ml_present = any(record.rule_version == ML_RULE_VERSION for record in records)
     return {
         "findings": [finding_view(record) for record in records],
         "limit": limit,
         "offset": offset,
-        "method": "deterministic-v1",
-        "ml_enabled": False,
+        "method": methods[0] if len(methods) == 1 else "mixed",
+        "methods": methods,
+        "ml_enabled": ml_present,
     }
 
 
