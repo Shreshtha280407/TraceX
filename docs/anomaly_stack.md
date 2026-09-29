@@ -171,10 +171,33 @@ its source locators so a reviewer can reopen the raw record, benign alternatives
 an explicit coverage limitation, and a claim worded as triage priority rather than
 a verdict. Writing is idempotent per snapshot. Only unsupervised layers run there.
 
+### It runs automatically
+
+`app/engine/ingestion/pipeline.py` calls the stack at snapshot completion, right
+after the deterministic Phase 4 findings, so a finished import produces the ranking
+without anyone asking for it. The outcome lands on the `import.completed` event as
+`ml_finding_count` and `ml_status`, so a skip is visible rather than silent.
+
+It is deliberately non-fatal. An import that has already committed correct evidence
+and correct deterministic findings must not be failed because an optional model
+could not produce a score, so every outcome is recorded and none of them raise:
+
+| `ml_status` | Meaning |
+| --- | --- |
+| `written` | the ranking was produced and stored |
+| `no_rows_flagged` | the stack ran; nothing cleared the budget |
+| `unavailable` | the optional `ml` extra is not installed |
+| `disabled` | `TRACEX_ML_FINDINGS=0` |
+| `error:<Type>` | the stack raised; the import still completed |
+
+Two settings control it: `TRACEX_ML_FINDINGS` (default on) and
+`TRACEX_ML_REVIEW_BUDGET` (default `0.01`).
+
 `tests/unit/test_ml_pipeline_integration.py` ingests a small source through the
 real worker, builds the graph, and asserts the equal-output shape and both peel
-steps are recovered from snapshot facts — so the offline harness and the product
-path are provably reading the same evidence.
+steps are recovered from snapshot facts, that ingestion writes the findings on its
+own, and that a stack which raises cannot fail the import — so the offline harness
+and the product path are provably reading the same evidence.
 
 ## Leakage and causality controls
 
@@ -212,8 +235,11 @@ For comparison, the existing `prepare_feature_package` path peaks at ~5.7 GB ove
 what makes the difference, and it is what has to stay if this is to scale past the
 fixture — at 1M rows the dict-of-dicts path will not fit under a 24 GB threshold.
 
-New dependencies: `numpy` and `scikit-learn` only, both already declared in the
-`[ml]` extra. ECOD and HBOS are written in-tree rather than pulled from `pyod`, so
+Dependencies: `numpy`, `scipy` and `scikit-learn`, all declared explicitly in the
+`[ml]` extra. `scipy` arrives transitively with scikit-learn, but `detectors.py`
+and `fusion.py` import it directly (`poisson`, `nbinom`, `norm`), and a direct
+import belongs in the declared set — otherwise a future scikit-learn that loosens
+or drops that transitive pin breaks the stack with no warning. ECOD and HBOS are written in-tree rather than pulled from `pyod`, so
 a reviewer can read the exact arithmetic behind a score — which is what the PS's
 *explainable* requirement needs.
 

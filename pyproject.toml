@@ -17,7 +17,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "ruff>=0.12,<1"]
-ml = ["scikit-learn>=1.5,<2"]
+# scipy arrives transitively with scikit-learn, but app/ml imports it directly
+# (poisson/nbinom/norm in detectors.py and fusion.py). A direct import belongs in
+# the declared dependency set, or a future scikit-learn that drops or loosens the
+# transitive pin breaks the stack with no warning.
+ml = ["scikit-learn>=1.5,<2", "numpy>=1.26,<3", "scipy>=1.11,<2"]
 
 [project.scripts]
 tracex-init-db = "app.db:init_database"

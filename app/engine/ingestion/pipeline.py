@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterator
 from datetime import timedelta
 from itertools import islice
@@ -23,12 +24,47 @@ from app.jobs.service import utcnow
 from app.models import EvidenceSource, FragmentReceipt, GraphSnapshot, ImportCheckpoint, ImportJob, Snapshot
 from app.storage.raw import resolve_source
 
+logger = logging.getLogger(__name__)
+
 PARSER_REVISION = "phase2-ingestion-v1"
 
 
 def _chunks(rows: Iterator[ParsedRow], size: int) -> Iterator[list[ParsedRow]]:
     while batch := list(islice(rows, size)):
         yield batch
+
+
+def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str, object]:
+    """Run the anomaly stack on the completed snapshot, if it is available.
+
+    Deliberately non-fatal. The stack lives behind the optional `ml` extra, and an
+    ingestion that has already committed correct evidence and correct
+    deterministic findings must not be failed because a ranking could not be
+    produced. Every outcome is recorded on the completion event so a silent skip
+    is still visible.
+
+    Only the unsupervised layers run here; the supervised comparator needs analyst
+    review decisions and must never write into a case on generator truth.
+    """
+    if not getattr(settings, "ml_findings_enabled", True):
+        return {"written": 0, "status": "disabled"}
+    try:
+        from app.ml.findings import materialize_ml_findings
+    except ImportError:
+        # scikit-learn/numpy absent: Phase 4 findings still stand on their own.
+        return {"written": 0, "status": "unavailable"}
+    try:
+        result = materialize_ml_findings(
+            session,
+            evidence_root=settings.evidence_root,
+            snapshot=snapshot,
+            graph=graph,
+            budget=float(getattr(settings, "ml_review_budget", 0.01)),
+        )
+    except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
+        logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
+        return {"written": 0, "status": f"error:{type(error).__name__}"}
+    return {"written": result.written, "status": "written" if result.written else "no_rows_flagged"}
 
 
 def _snapshot_for_job(session: Session, job: ImportJob, source: EvidenceSource) -> Snapshot:
@@ -272,6 +308,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     finding_count = materialize_findings(
         session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record
     )
+    ml_result = _materialize_ml_findings(session, settings=settings, snapshot=snapshot, graph=graph_record)
     snapshot.provisional = False
     snapshot.state = "complete"
     snapshot.completed_at = utcnow()
@@ -294,6 +331,8 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "snapshot_id": snapshot.id,
             "graph_snapshot_id": graph.graph_snapshot_id,
             "finding_count": finding_count,
+            "ml_finding_count": ml_result["written"],
+            "ml_status": ml_result["status"],
             "provisional": False,
         },
     )

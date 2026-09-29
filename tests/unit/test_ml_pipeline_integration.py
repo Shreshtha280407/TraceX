@@ -21,9 +21,10 @@ from app.config import Settings
 from app.db import Base, make_engine
 from app.jobs.service import create_or_reuse_job
 from app.ml.facts import facts_from_records, load_facts_from_snapshot
-from app.ml.findings import ML_RULE_VERSION, materialize_ml_findings, review_decision_labels
+from app.ml.findings import ML_RULE_VERSION, review_decision_labels
 from app.models import (
     Case,
+    CaseEvent,
     CaseMembership,
     EvidenceSource,
     FindingRecord,
@@ -208,26 +209,45 @@ def test_the_stack_detects_the_shapes_through_the_real_path(committed_snapshot) 
     assert int(peel.sum()) == 2, "both peel steps should be recovered from the snapshot"
 
 
-def test_findings_are_written_ranked_evidenced_and_hedged(committed_snapshot) -> None:
-    """The ranking has to arrive as reviewable findings, or it never reaches anyone."""
-    sessions, evidence_root, _case_id, job_id, _ = committed_snapshot
+def test_ingestion_writes_ml_findings_without_being_asked(committed_snapshot) -> None:
+    """The trigger: a completed import must produce the ranking on its own.
+
+    Nothing in this test calls the stack. If the ingestion pipeline does not run it
+    at completion, the ranking exists only in a benchmark script and never reaches
+    the findings endpoint or the frontend.
+    """
+    sessions, _, case_id, job_id, _ = committed_snapshot
     with sessions() as session:
         job = session.get(ImportJob, job_id)
-        snapshot = session.get(Snapshot, job.snapshot_id)
-        graph = session.scalars(
-            select(GraphSnapshot).where(GraphSnapshot.snapshot_id == snapshot.id)
-        ).first()
-        assert graph is not None, "ingestion did not build a graph snapshot"
-        result = materialize_ml_findings(
-            session, evidence_root=evidence_root, snapshot=snapshot, graph=graph,
-            layer_names=("A_global",), budget=0.15,
-        )
-        session.commit()
-
-        assert result.written > 0
         stored = list(session.scalars(
             select(FindingRecord).where(
-                FindingRecord.snapshot_id == snapshot.id,
+                FindingRecord.snapshot_id == job.snapshot_id,
+                FindingRecord.rule_version == ML_RULE_VERSION,
+            )
+        ))
+        event = session.scalars(
+            select(CaseEvent)
+            .where(CaseEvent.case_id == case_id, CaseEvent.event_type == "import.completed")
+            .order_by(CaseEvent.sequence.desc())
+        ).first()
+
+    assert stored, "ingestion completed without producing any anomaly-stack findings"
+    assert event is not None
+    # The outcome is on the completion event, so a skip is visible rather than silent.
+    assert event.payload["ml_status"] == "written"
+    assert event.payload["ml_finding_count"] == len(stored)
+    # Deterministic Phase 4 findings are untouched and still reported separately.
+    assert "finding_count" in event.payload
+
+
+def test_ml_findings_are_ranked_evidenced_and_hedged(committed_snapshot) -> None:
+    """Whatever ingestion wrote has to be reviewable, not just ordered."""
+    sessions, _, _case_id, job_id, _ = committed_snapshot
+    with sessions() as session:
+        job = session.get(ImportJob, job_id)
+        stored = list(session.scalars(
+            select(FindingRecord).where(
+                FindingRecord.snapshot_id == job.snapshot_id,
                 FindingRecord.rule_version == ML_RULE_VERSION,
             )
         ))
@@ -244,26 +264,63 @@ def test_findings_are_written_ranked_evidenced_and_hedged(committed_snapshot) ->
         claim = item.claim.lower()
         assert "triage" in claim or "prioritize" in claim
         assert "criminal" not in claim and "illicit" not in claim
+        # No supervised model may contribute to what a case actually stores.
+        assert any("No supervised model" in note for note in item.coverage["notes"])
         # The hard-excluded Phase 4.1 fields never appear in a stored vector.
         text = json.dumps(item.feature_vector)
         for forbidden in ("risk_propagation_score", "risk_seed_distance", "risk_seed_count"):
             assert forbidden not in text
 
 
-def test_writing_findings_is_idempotent(committed_snapshot) -> None:
-    """A snapshot is immutable, so re-running must not duplicate its queue."""
-    sessions, evidence_root, _, job_id, _ = committed_snapshot
+def test_a_failing_stack_cannot_fail_the_import(committed_snapshot, monkeypatch) -> None:
+    """Evidence and deterministic findings must survive a ranking that blows up.
+
+    An import that has already committed correct facts must not be rolled back
+    because an optional model could not produce a score.
+    """
+    from app.engine.ingestion import pipeline
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr("app.ml.findings.materialize_ml_findings", explode)
+    sessions, evidence_root, _case_id, job_id, _ = committed_snapshot
     with sessions() as session:
         job = session.get(ImportJob, job_id)
         snapshot = session.get(Snapshot, job.snapshot_id)
         graph = session.scalars(
             select(GraphSnapshot).where(GraphSnapshot.snapshot_id == snapshot.id)
         ).first()
-        again = materialize_ml_findings(
-            session, evidence_root=evidence_root, snapshot=snapshot,
-            graph=graph, layer_names=("A_global",), budget=0.15,
+        settings = Settings(
+            database_url="sqlite://", evidence_root=evidence_root, max_upload_bytes=1,
+            lease_seconds=1, event_heartbeat_seconds=1,
         )
-    assert again.written == 0
+        outcome = pipeline._materialize_ml_findings(
+            session, settings=settings, snapshot=snapshot, graph=graph
+        )
+    assert outcome["written"] == 0
+    assert outcome["status"] == "error:RuntimeError"
+
+
+def test_the_stack_can_be_turned_off(committed_snapshot) -> None:
+    """A deployment that does not want the ranking must be able to say so."""
+    from app.engine.ingestion import pipeline
+
+    sessions, evidence_root, _case_id, job_id, _ = committed_snapshot
+    with sessions() as session:
+        job = session.get(ImportJob, job_id)
+        snapshot = session.get(Snapshot, job.snapshot_id)
+        graph = session.scalars(
+            select(GraphSnapshot).where(GraphSnapshot.snapshot_id == snapshot.id)
+        ).first()
+        settings = Settings(
+            database_url="sqlite://", evidence_root=evidence_root, max_upload_bytes=1,
+            lease_seconds=1, event_heartbeat_seconds=1, ml_findings_enabled=False,
+        )
+        outcome = pipeline._materialize_ml_findings(
+            session, settings=settings, snapshot=snapshot, graph=graph
+        )
+    assert outcome == {"written": 0, "status": "disabled"}
 
 
 def test_supervised_labels_require_enough_review_decisions(committed_snapshot) -> None:

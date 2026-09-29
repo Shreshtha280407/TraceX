@@ -18,6 +18,12 @@ class Settings:
     ingestion_batch_records: int = 32768
     secret_key: str = "tracex-dev-only-secret"
     token_ttl_seconds: int = 86400
+    # The anomaly stack runs after the deterministic findings on every completed
+    # snapshot. It needs the optional `ml` extra; without it the run is skipped
+    # and recorded, never fatal, so a deployment without scikit-learn still
+    # ingests and still produces the Phase 4 findings.
+    ml_findings_enabled: bool = True
+    ml_review_budget: float = 0.01
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -33,6 +39,8 @@ class Settings:
             ingestion_batch_records=int(os.environ.get("TRACEX_INGESTION_BATCH_RECORDS", "32768")),
             secret_key=os.environ.get("TRACEX_SECRET_KEY", "tracex-dev-only-secret"),
             token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
+            ml_findings_enabled=os.environ.get("TRACEX_ML_FINDINGS", "1").lower() not in {"0", "false", "no"},
+            ml_review_budget=float(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
         )
 
 
