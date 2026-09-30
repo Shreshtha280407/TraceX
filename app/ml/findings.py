@@ -182,6 +182,7 @@ def materialize_ml_findings(
     layer_names: tuple[str, ...] = DEFAULT_LAYERS,
     budget: float = DEFAULT_BUDGET,
     reference_fraction: float = 0.7,
+    records: dict[str, list[dict]] | None = None,
 ) -> MLFindingResult:
     """Score a committed snapshot and store the flagged transactions as findings.
 
@@ -191,7 +192,7 @@ def materialize_ml_findings(
     discipline the offline harness uses for its train split, applied where there
     are no splits.
     """
-    from app.engine.graph.builder import _facts
+    from app.engine.graph.builder import load_facts
 
     if session.scalar(
         select(FindingRecord.id)
@@ -202,7 +203,8 @@ def materialize_ml_findings(
             snapshot_id=snapshot.id, budget=budget
         ))
 
-    records = _facts(session, evidence_root, snapshot.id)
+    if records is None:
+        records = load_facts(session, evidence_root, snapshot.id)
     facts = facts_from_records(records)
     if facts.transaction_count < 50:
         # Too little committed evidence for a reference distribution to mean

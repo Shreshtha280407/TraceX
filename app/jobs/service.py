@@ -23,6 +23,7 @@ def utcnow() -> datetime:
 # measured run rather than being averaged into a meaningless single bar.
 _STAGE_SPAN: dict[str, tuple[float, float]] = {
     "queued": (0.0, 0.0),
+    "source_verification": (0.0, 0.0),
     "ingesting": (0.0, 0.55),
     "graph_building": (0.55, 0.70),
     "findings": (0.70, 0.92),
@@ -35,7 +36,12 @@ def job_progress(job: ImportJob) -> dict:
     """Real progress where it can be measured, and an explicit admission where
     it cannot -- never a fabricated moving number."""
     if job.state == "completed":
-        return {"percent": 100.0, "basis": "completed", "determinate": True}
+        counted = f"{job.rows_seen:,} of {job.total_records:,}" if job.total_records else f"{job.rows_seen:,}"
+        return {
+            "percent": 100.0,
+            "basis": f"completed · {counted} records parsed · {job.rows_accepted:,} accepted · {job.rows_quarantined:,} quarantined",
+            "determinate": True,
+        }
     if job.state == "failed":
         return {"percent": None, "basis": "failed", "determinate": False}
     start, end = _STAGE_SPAN.get(job.stage, (0.0, 0.55))
@@ -51,7 +57,12 @@ def job_progress(job: ImportJob) -> dict:
         return {"percent": None, "basis": f"{job.rows_seen:,} records parsed", "determinate": False}
     return {
         "percent": round(start * 100, 1),
-        "basis": {"graph_building": "building graph snapshot", "findings": "scoring deterministic findings", "ml_scoring": "running anomaly stack"}.get(job.stage, job.stage),
+        "basis": {
+            "source_verification": "verifying source hash and counting records",
+            "graph_building": "building graph snapshot",
+            "findings": "scoring deterministic findings",
+            "ml_scoring": "running anomaly stack",
+        }.get(job.stage, job.stage),
         "determinate": True,
     }
 

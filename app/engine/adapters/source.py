@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,31 +115,91 @@ def _xml_rows(path: Path) -> Iterator[ParsedRow]:
         raise SourceParseError("XML contains no transaction, record, or row elements")
 
 
-def count_records(path: Path, source_format: str) -> int | None:
-    """Cheap record count for a progress denominator, or None when the format
-    cannot be counted without a full parse.
+#: Start tags the XML adapter yields as records (see `_xml_rows`): any element
+#: whose local name is transaction/record/row, case-insensitively, with an
+#: optional namespace prefix. `<records>` is excluded by the lookahead.
+_XML_RECORD_START = re.compile(rb"<(?:[A-Za-z_][\w.\-]*:)?(?:transaction|record|row)(?=[\s/>])", re.IGNORECASE)
+_XML_SCAN_OVERLAP = 256
 
-    Line-oriented formats are counted with a buffered byte scan (no decoding,
-    no parsing), which is fast enough to run once before ingestion. JSON arrays
-    and XML need real parsing to count, so they report None and the UI shows an
-    indeterminate progress state rather than a number it had to invent.
+
+def _count_csv(path: Path) -> int:
+    """Logical CSV records, matching `csv.DictReader`: a newline inside a quoted
+    field does not end a record, and fully blank lines are skipped.
+
+    Quote parity is enough to know whether a physical line ends inside a quoted
+    field, because an escaped quote (`""`) adds two and never flips parity.
     """
-    if source_format not in {"csv", "ndjson"}:
+    records = 0
+    in_quotes = False
+    record_has_content = False
+    header_seen = False
+    with path.open("rb") as handle:
+        for line in handle:
+            if line.count(b'"') % 2:
+                in_quotes = not in_quotes
+            if line.strip():
+                record_has_content = True
+            if in_quotes:
+                continue
+            if record_has_content:
+                if header_seen:
+                    records += 1
+                else:
+                    header_seen = True
+            record_has_content = False
+    if in_quotes and record_has_content and header_seen:
+        # Unterminated quote at EOF: the reader still yields that final record.
+        records += 1
+    return records
+
+
+def _count_ndjson(path: Path) -> int:
+    # Blank lines are skipped by `_ndjson_rows`, so they are not records.
+    with path.open("rb") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+def _count_json_array(path: Path) -> int:
+    """Top-level array elements via ijson's event stream (C backend when
+    available) -- no Python objects are built for the records themselves."""
+    count = 0
+    with path.open("rb") as handle:
+        for prefix, event, _ in ijson.parse(handle):
+            if prefix == "item" and event in {"start_map", "start_array", "string", "number", "boolean", "null"}:
+                count += 1
+    return count
+
+
+def _count_xml(path: Path) -> int:
+    count = 0
+    pending = b""
+    with path.open("rb") as handle:
+        while chunk := handle.read(1 << 22):
+            data = pending + chunk
+            cut = max(0, len(data) - _XML_SCAN_OVERLAP)
+            # A tag that starts in the overlap is counted on the next pass, once
+            # its whole name is guaranteed to be in the buffer.
+            count += sum(1 for match in _XML_RECORD_START.finditer(data) if match.start() < cut)
+            pending = data[cut:]
+    return count + len(_XML_RECORD_START.findall(pending))
+
+
+def count_records(path: Path, source_format: str) -> int | None:
+    """Record count used as the progress denominator, or None if it cannot be
+    determined (unreadable or malformed file -- the parse itself reports why).
+
+    Every format is counted with the same record semantics its row adapter
+    uses, so `rows_seen` reaches exactly this number on a clean import:
+    CSV respects quoted multi-line fields, NDJSON skips blank lines, JSON arrays
+    count top-level elements, and XML counts transaction/record/row elements.
+    """
+    counters = {"csv": _count_csv, "ndjson": _count_ndjson, "json": _count_json_array, "xml": _count_xml}
+    counter = counters.get(source_format)
+    if counter is None:
         return None
     try:
-        newlines = 0
-        ends_with_newline = True
-        with path.open("rb") as handle:
-            while chunk := handle.read(1 << 20):
-                newlines += chunk.count(b"\n")
-                ends_with_newline = chunk.endswith(b"\n")
-        if newlines == 0:
-            return None
-        # A final line with no trailing newline still holds a record.
-        lines = newlines if ends_with_newline else newlines + 1
-        # CSV's first line is the header, which is not a record.
-        return max(lines - 1, 0) if source_format == "csv" else lines
-    except OSError:
+        return counter(path)
+    except (OSError, ijson.JSONError, ValueError):
         return None
 
 

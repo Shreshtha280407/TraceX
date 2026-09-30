@@ -18,7 +18,7 @@ from app.engine.adapters import ParsedRow, SourceParseError, count_records, rows
 from app.engine.canonical import NormalizationError, normalize_row
 from app.engine.catalogue import publish_batch
 from app.engine.findings import materialize_findings
-from app.engine.graph.builder import build_graph_snapshot
+from app.engine.graph.builder import FactRecords, build_graph_snapshot, load_facts
 from app.events import append_event
 from app.jobs.service import utcnow
 from app.models import EvidenceSource, FragmentReceipt, GraphSnapshot, ImportCheckpoint, ImportJob, Snapshot
@@ -42,7 +42,7 @@ def _chunks(rows: Iterator[ParsedRow], size: int) -> Iterator[list[ParsedRow]]:
 ML_BUDGET_SAFE_RANGE = (0.0, 0.5)
 
 
-def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str, object]:
+def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None) -> dict[str, object]:
     """Run the anomaly stack on the completed snapshot, if it is available.
 
     Deliberately non-fatal. The stack lives behind the optional `ml` extra, and an
@@ -79,6 +79,7 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph) -> dict[str,
     try:
         result = materialize_ml_findings(
             session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, budget=float(budget),
+            records=records,
         )
     except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
         logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
@@ -263,6 +264,14 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     seen_txids: dict[str, str | None] = {
         txid: None for txid in _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id)
     }
+    # On a fresh (non-resumed) run every receipted fact is produced right here,
+    # so the later stages can take them from memory instead of re-reading and
+    # re-decoding every fragment. Checkpoint and receipts commit together, so
+    # no checkpoint means no receipted fragment from an earlier attempt. A
+    # resumed job falls back to reading the committed fragments.
+    collected: FactRecords | None = (
+        {"transactions": [], "inputs": [], "outputs": [], "network_observations": []} if last_record == 0 else None
+    )
     for batch in _chunks(
         (row for row in row_iterator if row.logical_record > last_record), settings.ingestion_batch_records
     ):
@@ -324,6 +333,10 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             accepted=accepted,
             quarantined=quarantined,
         )
+        if collected is not None:
+            # Same order load_facts reads them back in: per record type, by batch.
+            for record_type, records in collected.items():
+                records.extend(facts[record_type])
         batch_number += 1
     if not parsed_any and last_record == 0:
         raise SourceParseError("source contains no records")
@@ -340,16 +353,23 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     snapshot = _snapshot_for_job(session, job, source)
     snapshot.state = "graph_building"
     _stage("graph_building")
-    graph = build_graph_snapshot(session, evidence_root=settings.evidence_root, snapshot=snapshot)
+    # Loaded once and shared: graph build, deterministic findings and the
+    # anomaly stack each used to re-read and re-parse every committed fragment.
+    records = collected if collected is not None else load_facts(session, settings.evidence_root, snapshot.id)
+    collected = None
+    graph = build_graph_snapshot(session, evidence_root=settings.evidence_root, snapshot=snapshot, records=records)
     graph_record = session.get(GraphSnapshot, graph.graph_snapshot_id)
     if graph_record is None:
         raise RuntimeError("graph snapshot receipt was not persisted")
     _stage("findings")
     finding_count = materialize_findings(
-        session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record
+        session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record, records=records
     )
     _stage("ml_scoring")
-    ml_result = _materialize_ml_findings(session, settings=settings, snapshot=snapshot, graph=graph_record)
+    ml_result = _materialize_ml_findings(
+        session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
+    )
+    del records
     snapshot.provisional = False
     snapshot.state = "complete"
     snapshot.completed_at = utcnow()

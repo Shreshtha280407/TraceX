@@ -22,7 +22,7 @@ from app.engine.adapters import SourceParseError, rows_for_source
 from app.engine.chat import ChatTurn, ChatUnavailable, build_finding_context
 from app.engine.chat import ask as ask_chat
 from app.engine.findings import refresh_synthetic_seed_proximity
-from app.engine.graph import GraphQueryError, query_neighbourhood
+from app.engine.graph import GraphNodeNotFound, GraphQueryError, query_flow, query_neighbourhood
 from app.events import append_event, event_envelope
 from app.jobs.service import create_or_reuse_job, job_view
 from app.ml_release_constants import ML_RULE_VERSION
@@ -343,6 +343,16 @@ def get_evidence_record(
     raise HTTPException(status_code=404, detail="Source locator not found")
 
 
+def _latest_graph(session: Session, case_id: str, graph_snapshot_id: str | None = None) -> GraphSnapshot:
+    query = select(GraphSnapshot).where(GraphSnapshot.case_id == case_id, GraphSnapshot.state == "complete")
+    if graph_snapshot_id:
+        query = query.where(GraphSnapshot.id == graph_snapshot_id)
+    graph = session.scalar(query.order_by(GraphSnapshot.created_at.desc()).limit(1))
+    if graph is None:
+        raise HTTPException(status_code=409, detail="No completed graph snapshot is available for this case")
+    return graph
+
+
 @router.get("/cases/{case_id}/graph")
 def get_graph(
     case_id: str,
@@ -354,14 +364,7 @@ def get_graph(
     session: Session = Depends(get_session),
 ) -> dict:
     require_case_member(case_id, user, session)
-    graph = session.scalar(
-        select(GraphSnapshot)
-        .where(GraphSnapshot.case_id == case_id, GraphSnapshot.state == "complete")
-        .order_by(GraphSnapshot.created_at.desc())
-        .limit(1)
-    )
-    if graph is None:
-        raise HTTPException(status_code=409, detail="No completed graph snapshot is available for this case")
+    graph = _latest_graph(session, case_id)
     try:
         return query_neighbourhood(
             evidence_root=settings.evidence_root,
@@ -371,6 +374,28 @@ def get_graph(
             node_limit=node_limit,
             edge_limit=edge_limit,
         )
+    except GraphQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/cases/{case_id}/graph/flow")
+def get_graph_flow(
+    case_id: str,
+    node: str = Query(min_length=1, max_length=512),
+    limit: int = Query(default=40, ge=1, le=200),
+    graph_snapshot_id: str | None = Query(default=None, min_length=1, max_length=128),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Direct inputs and outputs of one node -- powers "set as source" in the
+    Graph Explorer. Pass the finding's graph_snapshot_id to stay on the same
+    snapshot the path was detected in; otherwise the latest one is used."""
+    require_case_member(case_id, user, session)
+    graph = _latest_graph(session, case_id, graph_snapshot_id)
+    try:
+        return query_flow(evidence_root=settings.evidence_root, graph=graph, node=node, limit=limit)
+    except GraphNodeNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except GraphQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

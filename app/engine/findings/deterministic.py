@@ -5,15 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Hashable
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from statistics import median
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.engine.graph.builder import _facts
+from app.db import bulk_insert_serialized
+from app.engine.graph.builder import FactRecords, bulk_allocation, load_facts
 from app.engine.motifs.deterministic import (
     detect_coinjoin_like_transactions,
     detect_peeling_chains,
@@ -115,12 +117,24 @@ def _hash(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _ref_key(reference: dict) -> Hashable:
+    # Source refs are flat dicts of scalars, so a sorted item tuple identifies
+    # one exactly; serializing each to JSON just to compare it cost ~15 s per
+    # 100K-row snapshot. Anything unhashable falls back to the JSON form.
+    key = tuple(sorted(reference.items()))
+    try:
+        hash(key)
+    except TypeError:
+        return json.dumps(reference, sort_keys=True)
+    return key
+
+
 def _dedupe_refs(facts: list[dict]) -> list[dict]:
-    seen: set[str] = set()
+    seen: set[Hashable] = set()
     result = []
     for fact in facts:
         for reference in fact.get("source_refs", []):
-            key = json.dumps(reference, sort_keys=True)
+            key = _ref_key(reference)
             if key not in seen:
                 seen.add(key)
                 result.append(reference)
@@ -237,11 +251,13 @@ def _window_features(
     inbound_times = [transaction_times[txid] for txid in inbound_txids if transaction_times.get(txid)]
     outgoing_txids = {tx_input["txid"] for tx_input, _, _ in rapid_events}
     outgoing_outputs = [output for txid in outgoing_txids for output in outputs_by_tx.get(txid, [])]
-    component_nodes = {
-        f"address:{address}",
-        *(f"tx:{txid}" for txid in inbound_txids | outgoing_txids),
-        *(f"out:{output['txid']}:{output['vout']}" for output in outputs),
-    }
+    # Only the size of the one-hop node set is reported: the address itself, its
+    # distinct transactions and its distinct received outputs. The three kinds
+    # carry different id prefixes in the graph, so they never collide and are
+    # counted directly instead of formatting every id just to measure a set.
+    component_node_count = (
+        1 + len(inbound_txids | outgoing_txids) + len({(output["txid"], output["vout"]) for output in outputs})
+    )
     # This is a one-hop, in-window delta only; it is deliberately not a wallet/entity component claim.
     component_edge_delta = 2 * len(outputs) + len(rapid_events)
     return {
@@ -259,18 +275,55 @@ def _window_features(
         "inter_event_gaps_seconds": _inter_event_gaps(inbound_times),
         "bounded_component_change": {
             "scope": "one_hop_address_window",
-            "node_delta": len(component_nodes),
+            "node_delta": component_node_count,
             "edge_delta": component_edge_delta,
             "resolved_spend_edge_delta": len(rapid_events),
         },
     }
 
 
-def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot, graph: GraphSnapshot) -> int:
-    """Store deterministic address/window observations exactly once for a snapshot."""
+_FEATURE_JSON_COLUMNS = frozenset({"feature_vector", "coverage", "source_refs"})
+_FINDING_JSON_COLUMNS = frozenset(
+    {"coverage", "feature_vector", "explanations", "benign_alternatives", "opposing_evidence", "source_refs"}
+)
+
+
+class _JSONCache:
+    """Serialize each distinct Python object once.
+
+    Hundreds of thousands of rows share the same snapshot `coverage` dict, and
+    an address-window finding shares its feature dict with the feature row.
+    Keyed by identity; every cached object is kept alive by the rows that hold
+    it for as long as this cache exists, so an id cannot be reused meanwhile.
+    """
+
+    def __init__(self) -> None:
+        self._by_id: dict[int, str] = {}
+
+    def __call__(self, value: Any) -> str:
+        key = id(value)
+        cached = self._by_id.get(key)
+        if cached is None:
+            cached = self._by_id[key] = json.dumps(value)
+        return cached
+
+
+def materialize_findings(
+    session: Session, *, evidence_root, snapshot: Snapshot, graph: GraphSnapshot, records: FactRecords | None = None
+) -> int:
+    """Store deterministic address/window observations exactly once for a snapshot.
+
+    `records` lets the ingestion pipeline pass facts it already decoded.
+    """
     if session.scalar(select(FeatureRecord.id).where(FeatureRecord.snapshot_id == snapshot.id).limit(1)):
         return 0
-    records = _facts(session, evidence_root, snapshot.id)
+    if records is None:
+        records = load_facts(session, evidence_root, snapshot.id)
+    with bulk_allocation():
+        return _materialize(session, snapshot=snapshot, graph=graph, records=records)
+
+
+def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, records: FactRecords) -> int:
     transactions = {fact["txid"]: fact for fact in records["transactions"]}
     transaction_times = {
         txid: _time(fact.get("block_time") or fact.get("source_timestamp")) for txid, fact in transactions.items()
@@ -306,6 +359,10 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
     candidates: list[dict[str, Any]] = []
     coverage = _coverage(graph, transactions)
     signal_by_key: dict[tuple[str, int, datetime], list[dict[str, Any]]] = defaultdict(list)
+    # Outpoints already present per window key: an output fact is identified by
+    # (txid, vout), so this replaces a linear, dict-by-dict `in` scan of the
+    # window's list -- quadratic on busy addresses.
+    event_outpoints: dict[tuple[str, int, datetime], set[tuple[str, int]]] = {}
 
     def add_signal(address: str | None, observed: datetime | None, signal: dict[str, Any], output: dict[str, Any] | None = None) -> None:
         if not address or not observed:
@@ -313,10 +370,16 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
         for seconds in WINDOW_SECONDS:
             start, _ = _window(observed, seconds)
             key = (str(address), seconds, start)
-            if output is not None and output not in output_events[key]:
-                # A detector can key a row to the verified spend time; preserve
-                # the actual output fact rather than inventing a transfer.
-                output_events[key].append(output)
+            if output is not None:
+                present = event_outpoints.get(key)
+                if present is None:
+                    present = event_outpoints[key] = {(item["txid"], item["vout"]) for item in output_events[key]}
+                outpoint = (output["txid"], output["vout"])
+                if outpoint not in present:
+                    # A detector can key a row to the verified spend time; preserve
+                    # the actual output fact rather than inventing a transfer.
+                    present.add(outpoint)
+                    output_events[key].append(output)
             signal_by_key[key].append(signal)
 
     peeling = detect_peeling_chains(transactions=transactions, inputs=records["inputs"], outputs=records["outputs"])
@@ -346,9 +409,13 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
     for signal in coinjoin:
         for output in outputs_by_tx.get(signal["transaction_id"], []):
             add_signal(output.get("address") or output.get("script_id"), transaction_times.get(signal["transaction_id"]), signal, output)
+    outputs_by_address: dict[str, list[dict]] = defaultdict(list)
+    if propagation:
+        for item in records["outputs"]:
+            outputs_by_address[item.get("address") or item.get("script_id")].append(item)
     for signal in propagation:
         address = signal["entity_ref"].removeprefix("address:")
-        for output in [item for item in records["outputs"] if (item.get("address") or item.get("script_id")) == address]:
+        for output in outputs_by_address.get(address, []):
             add_signal(address, transaction_times.get(output["txid"]), signal, output)
 
     history = _history_features(output_events)
@@ -456,6 +523,12 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
         )
     # Detector finding records are separate from the address-window export but
     # share its snapshot, graph, source locators, coverage, and explanation.
+    earliest_key_by_address: dict[str, tuple[str, int, datetime]] = {}
+    if propagation:
+        for feature_key in features_by_key:
+            current = earliest_key_by_address.get(feature_key[0])
+            if current is None or feature_key[2] < current[2]:
+                earliest_key_by_address[feature_key[0]] = feature_key
     for signal in [*peeling, *coinjoin, *propagation]:
         if signal["finding_type"] == "peeling_chain_candidate":
             txid = signal["transaction_ids"][0]
@@ -481,8 +554,7 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                         break
         else:
             address = signal["entity_ref"].removeprefix("address:")
-            matching = [key for key in features_by_key if key[0] == address]
-            key = min(matching, key=lambda item: item[2]) if matching else None
+            key = earliest_key_by_address.get(address)
             observed = key[2] if key else None
         start = key[2] if key else (_window(observed, WINDOW_SECONDS[0])[0] if observed else datetime(1970, 1, 1, tzinfo=UTC))
         feature = dict(features_by_key[key]) if key in features_by_key else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
@@ -515,6 +587,11 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
     # ingestion (measured: 51.8s of a ~80s import). A single bulk insert of plain
     # dicts skips the identity map and per-object flush entirely for rows that
     # are written once and never mutated in this transaction.
+    #
+    # JSON columns are serialized here, once per distinct object (see
+    # _JSONCache): every feature row shares the same coverage dict, which the
+    # ORM path re-serialized ~800K times per 100K-row snapshot.
+    to_json = _JSONCache()
     feature_rows = [
         {
             "id": new_id(),
@@ -525,14 +602,14 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             "window_start": start,
             "window_end": start + timedelta(seconds=seconds),
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
-            "feature_vector": feature,
-            "coverage": coverage,
-            "source_refs": _dedupe_refs(output_events[(address, seconds, start)]),
+            "feature_vector": to_json(feature),
+            "coverage": to_json(coverage),
+            "source_refs": json.dumps(_dedupe_refs(output_events[(address, seconds, start)])),
         }
         for (address, seconds, start), feature in features_by_key.items()
     ]
-    if feature_rows:
-        session.execute(insert(FeatureRecord), feature_rows)
+    bulk_insert_serialized(session, FeatureRecord, feature_rows, _FEATURE_JSON_COLUMNS)
+    del feature_rows
     # Two distinct detector signals (e.g. two independent peeling chains, or a
     # peeling chain and a synthetic-seed propagation) can resolve to the same
     # address and the same window bucket. `entity_ref`/window/rule_id is the
@@ -549,6 +626,16 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             deduped_candidates[key] = candidate
     candidates = list(deduped_candidates.values())
     candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
+    opposing_evidence = [
+        {
+            "kind": "coverage_limitation",
+            "statement": (
+                "This committed snapshot contains no ownership attribution or independently "
+                "verified benign context; the pattern alone cannot establish either."
+            ),
+            "source_refs": [],
+        }
+    ]
     finding_rows = [
         {
             "id": new_id(),
@@ -567,28 +654,20 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             "finding_version": 1,
             "raw_score": candidate["score"],
             "rank": rank,
-            "coverage": candidate.get("coverage", coverage),
-            "feature_vector": candidate["feature"],
+            "coverage": to_json(candidate.get("coverage", coverage)),
+            "feature_vector": to_json(candidate["feature"]),
             "feature_vector_hash": _hash(candidate["feature"]),
-            "explanations": candidate["explanations"],
-            "benign_alternatives": candidate["alternatives"],
-            "opposing_evidence": [
-                {
-                    "kind": "coverage_limitation",
-                    "statement": (
-                        "This committed snapshot contains no ownership attribution or independently "
-                        "verified benign context; the pattern alone cannot establish either."
-                    ),
-                    "source_refs": [],
-                }
-            ],
-            "source_refs": candidate.get("source_refs", _dedupe_refs(candidate["facts"])),
+            "explanations": json.dumps(candidate["explanations"]),
+            "benign_alternatives": json.dumps(candidate["alternatives"]),
+            "opposing_evidence": to_json(opposing_evidence),
+            "source_refs": json.dumps(
+                candidate["source_refs"] if "source_refs" in candidate else _dedupe_refs(candidate["facts"])
+            ),
             "status": "open",
         }
         for rank, candidate in enumerate(candidates, 1)
     ]
-    if finding_rows:
-        session.execute(insert(FindingRecord), finding_rows)
+    bulk_insert_serialized(session, FindingRecord, finding_rows, _FINDING_JSON_COLUMNS)
     if candidates:
         append_event(
             session,
@@ -614,7 +693,7 @@ def refresh_synthetic_seed_proximity(
     so this updates only the frozen snapshot's feature rows and adds missing
     review findings. Existing score paths are never used to create graph edges.
     """
-    records = _facts(session, evidence_root, snapshot.id)
+    records = load_facts(session, evidence_root, snapshot.id)
     transactions = {fact["txid"]: fact for fact in records["transactions"]}
     seeds = list(
         session.scalars(

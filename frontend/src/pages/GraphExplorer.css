@@ -41,6 +41,49 @@
   background: color-mix(in srgb, var(--danger) 12%, var(--surface-3));
 }
 .ff-note-danger .ff-note-clear { color: #f08a72; }
+.ff-note-icon {
+  display: inline-grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--danger); color: #fff3ee; font-size: 11px; font-weight: 800;
+}
+
+/* ---- Source-centred flow view ---- */
+.ff-toolbar { flex-wrap: wrap; }
+.ff-toolbar .ff-tool-text { width: auto; padding: 0 12px; font-size: 12px; font-weight: 600; }
+.ff-trace { display: flex; gap: 6px; align-items: center; flex: 1 1 260px; max-width: 420px; }
+.ff-trace input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 10px; font-size: 12px; color: var(--ink);
+  font-family: 'IBM Plex Mono', monospace;
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 8px;
+}
+.ff-trace input:focus { outline: 1px solid var(--mustard-glow); }
+.ff-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; font-size: 11px; }
+.ff-trail-item { display: inline-flex; align-items: center; gap: 4px; }
+.ff-trail-sep { color: var(--ink-mute); }
+.ff-trail button {
+  font: inherit; font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 3px 8px; border-radius: 6px;
+  background: var(--surface-3); border: 1px solid var(--line); color: var(--ink-dim); cursor: pointer;
+}
+.ff-trail button:hover:not(:disabled) { border-color: var(--mustard-glow); color: var(--mustard); }
+.ff-trail button.current { border-color: var(--mustard); color: var(--mustard); cursor: default; }
+.ff-loading { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-dim); margin-bottom: 10px; }
+.ff-loading .spinner { width: 14px; height: 14px; }
+/* The flow canvas can be taller than the viewport (many counterparties); it
+   scrolls in both axes and starts with the source centred in view. */
+.ff-scroll-flow { max-height: 780px; overflow: auto; background: #12110e; }
+.ff-scroll-flow .ff-svg { margin: 0 auto; }
+/* Double-click re-centres on a node; it must not also select its label text. */
+.ff-scroll-flow .ff-svg text { user-select: none; -webkit-user-select: none; }
+.sf-enter { animation: sf-enter 0.28s ease-out; transform-origin: center; transform-box: fill-box; }
+@keyframes sf-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sf-enter { animation: none; } }
+/* "Can't be source" has to be unmissable, same weight as the danger note. */
+.ff-deadend {
+  margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5;
+  color: #f08a72; border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-3));
+}
+.ff-deadend b { color: #ffb29c; }
+.ff-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---- Searchable path picker ---- */
 .ff-picker { position: sticky; top: 14px; }

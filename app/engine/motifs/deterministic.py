@@ -143,21 +143,56 @@ def detect_peeling_chains(
     }
     results: list[dict[str, Any]] = []
     emitted: set[tuple[str, ...]] = set()
-    for start_outpoint, start_input in sorted(spenders.items()):
-        current = start_outpoint
-        steps: list[dict[str, Any]] = []
-        for _ in range(max_hops):
-            spending_input = spenders.get(current)
-            previous = outputs_by_outpoint.get(current)
-            if spending_input is None or previous is None:
-                break
+    # The hop taken from an outpoint depends only on that outpoint, and chains
+    # started from neighbouring outpoints share their suffixes, so each hop is
+    # resolved once and memoised: (spending txid, continuation or None), or
+    # None when the outpoint ends the walk.
+    hop_cache: dict[tuple[str, int], tuple[str, dict[str, Any] | None] | None] = {}
+    # A transaction's uniquely-spent outputs in continuation preference order
+    # (largest amount first, ties by vout) -- the same order `min` over
+    # (-amount, vout) selects from.
+    spent_outputs_by_tx: dict[str, list[dict[str, Any]]] = {}
+
+    def _next_hop(outpoint: tuple[str, int]) -> tuple[str, dict[str, Any] | None] | None:
+        if outpoint in hop_cache:
+            return hop_cache[outpoint]
+        spending_input = spenders.get(outpoint)
+        previous = outputs_by_outpoint.get(outpoint)
+        hop: tuple[str, dict[str, Any] | None] | None = None
+        if spending_input is not None and previous is not None:
             spending_txid = spending_input["txid"]
-            candidates = [
-                output
-                for output in outputs_by_tx.get(spending_txid, [])
-                if (output["txid"], output["vout"]) in spenders and output["amount_sats"] < previous["amount_sats"]
-            ]
-            if not candidates:
+            ranked = spent_outputs_by_tx.get(spending_txid)
+            if ranked is None:
+                ranked = spent_outputs_by_tx[spending_txid] = sorted(
+                    (item for item in outputs_by_tx.get(spending_txid, []) if (item["txid"], item["vout"]) in spenders),
+                    key=lambda item: (-item["amount_sats"], item["vout"]),
+                )
+            continuation = next((item for item in ranked if item["amount_sats"] < previous["amount_sats"]), None)
+            hop = (spending_txid, continuation)
+        hop_cache[outpoint] = hop
+        return hop
+
+    for start_outpoint in sorted(spenders):
+        # Walk first, cheaply; per-hop detail is only built for a chain that is
+        # long enough and not already emitted (most walks are neither).
+        walk: list[tuple[tuple[str, int], str, dict[str, Any] | None]] = []
+        current = start_outpoint
+        for _ in range(max_hops):
+            hop = _next_hop(current)
+            if hop is None:
+                break
+            walk.append((current, hop[0], hop[1]))
+            if hop[1] is None:
+                break
+            current = (hop[1]["txid"], hop[1]["vout"])
+        if len(walk) < min_chain_length:
+            continue
+        if tuple(spending_txid for _, spending_txid, _ in walk) in emitted:
+            continue
+        steps: list[dict[str, Any]] = []
+        for outpoint, spending_txid, continuation in walk:
+            previous = outputs_by_outpoint[outpoint]
+            if continuation is None:
                 # The current output's spend is itself a verified transaction
                 # in the chain.  Do not nominate an unspent terminal output as
                 # a continuation; only preceding continuation outputs were
@@ -175,7 +210,6 @@ def detect_peeling_chains(
                     }
                 )
                 break
-            continuation = min(candidates, key=lambda output: (-output["amount_sats"], output["vout"]))
             steps.append(
                 {
                     "previous_output_id": f"out:{previous['txid']}:{previous['vout']}",
@@ -191,12 +225,7 @@ def detect_peeling_chains(
                     **_hop_detail(spending_txid, previous, continuation),
                 }
             )
-            current = (continuation["txid"], continuation["vout"])
-        if len(steps) < min_chain_length:
-            continue
         txids = tuple(step["spending_transaction_id"] for step in steps)
-        if txids in emitted:
-            continue
         emitted.add(txids)
         known_times = [tx_times[txid] for txid in txids if tx_times.get(txid)]
         duration = (max(known_times) - min(known_times)).total_seconds() if len(known_times) >= 2 else 0.0

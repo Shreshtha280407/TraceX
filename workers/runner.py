@@ -8,7 +8,7 @@ import socket
 import time
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import SessionLocal, ensure_schema
 from app.engine.ingestion import ingest_source
 from app.jobs.service import claim_next_job, fail_job, record_worker_heartbeat
 from app.models import EvidenceSource
@@ -52,6 +52,9 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--worker-id", default=f"{socket.gethostname()}-phase1")
     args = parser.parse_args()
+    # Bring an older database forward (e.g. import_jobs.total_records) before the
+    # first claim query selects every ImportJob column.
+    ensure_schema()
     while True:
         processed = process_one(args.worker_id)
         if args.once:

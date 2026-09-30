@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, EmptyState, FilterPills } from "../components/primitives";
 import { FundFlowGraph, ZOOM_STEPS, type GraphNodeInfo } from "../components/FundFlowGraph";
-import { api, ApiError, type Finding, type PathSignals } from "../lib/api";
+import { SourceFlowGraph, type FlowSide } from "../components/SourceFlowGraph";
+import { api, ApiError, type Finding, type FlowCounterparty, type FlowResponse, type PathSignals } from "../lib/api";
 import "./GraphExplorer.css";
 
 // Entities / Clusters / Temporal were removed rather than left as dead tabs:
@@ -70,6 +71,20 @@ function shortId(id: string): string {
   return bare.length <= 14 ? bare : `${bare.slice(0, 6)}…${bare.slice(-4)}`;
 }
 
+function nodeKind(type: string): string {
+  if (type === "transaction") return "Transaction";
+  if (type === "output") return "Output";
+  return "Address";
+}
+
+function stampUtc(iso: string | null | undefined): string {
+  if (!iso) return "not available";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "not available" : `${d.toISOString().replace("T", " ").slice(0, 19)} UTC`;
+}
+
+type TrailEntry = { id: string; label: string; type: string };
+
 function pathCode(finding: Finding): string {
   return `P-${String(finding.rank ?? 0).padStart(2, "0")}`;
 }
@@ -105,11 +120,25 @@ export function GraphExplorer() {
   const [sourceNodeId, setSourceNodeId] = useState<string | null>(null);
   const [sourceNote, setSourceNote] = useState<string | null>(null);
   const [sourceNoteTone, setSourceNoteTone] = useState<"info" | "danger">("info");
+  // Source-centred flow view ("set as source"): the node's direct inputs and
+  // outputs, fetched live from the case graph snapshot.
+  const [flow, setFlow] = useState<FlowResponse | null>(null);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [trail, setTrail] = useState<TrailEntry[]>([]);
+  const [flowPick, setFlowPick] = useState<{ c: FlowCounterparty; side: FlowSide } | null>(null);
+  const [traceQuery, setTraceQuery] = useState("");
+  // Only the latest "set as source" request may land: re-centring twice in a
+  // row must not let a slower, older response overwrite the newer source.
+  const flowTicket = useRef(0);
 
   useEffect(() => {
     if (!caseId) return;
     setFindings(null);
     setSelectedFindingId(null);
+    setFlow(null);
+    setTrail([]);
+    setFlowPick(null);
+    setSourceNote(null);
     api
       .listFindings(caseId, 200, 0)
       .then((r) => setFindings(r.findings))
@@ -181,48 +210,86 @@ export function GraphExplorer() {
     setSelectedFindingId(findingId);
     setUnresolvedSeed(null);
     setSourceNote(null);
+    setFlow(null);
+    setTrail([]);
+    setFlowPick(null);
     setActiveTab("fund-flow");
   }
 
-  /** Re-root the view on a node: mark it as the source (the graph highlights it
-   * and scrolls it to centre) and, when another detected path starts at or runs
-   * through it, switch to that path. Never fabricates a path that isn't in the
-   * data — if nothing else covers the node, the current path simply stays. */
-  function setSource(nodeId: string) {
-    const list = pathFindings ?? [];
-    // graph_path.nodes only records out:/tx: ids, so an address node has to be
-    // matched against the step detail instead -- otherwise every address on the
-    // chain in front of you would be reported as "not on this path".
-    const onCurrent =
-      (selected?.graph_path?.nodes.includes(nodeId) ?? false) ||
-      (selected?.steps ?? []).some(
-        (s) =>
-          `address:${s.previous_address}` === nodeId ||
-          `address:${s.continuing_address}` === nodeId ||
-          s.co_spend_addresses.some((a) => `address:${a}` === nodeId) ||
-          s.peel_outputs.some((p) => p.output_id === nodeId || `address:${p.address}` === nodeId)
+  function refuse(message: string) {
+    setSourceNote(message);
+    setSourceNoteTone("danger");
+  }
+
+  /** Re-root the canvas on a node: fetch its direct inputs and outputs and draw
+   * it in the centre. A node with no transactions in or out of it is refused
+   * with a highlighted reason instead of being "selected" as an empty view. */
+  async function setSource(nodeId: string, opts: { fromTrail?: number } = {}) {
+    if (!caseId) return;
+    const ticket = ++flowTicket.current;
+    setFlowLoading(true);
+    try {
+      const result = await api.getGraphFlow(caseId, nodeId, 40, selected?.graph_snapshot_id);
+      if (ticket !== flowTicket.current) return;
+      if (!result.center.selectable) {
+        refuse(
+          `${shortId(nodeId)} can't be selected as source — ${result.center.reason ?? "it has no further transactions in this snapshot."}`
+        );
+        return;
+      }
+      const entry = { id: result.center.id, label: result.center.label, type: result.center.type };
+      setTrail((t) => {
+        if (opts.fromTrail !== undefined) return t.slice(0, opts.fromTrail + 1);
+        const existing = t.findIndex((e) => e.id === entry.id);
+        return existing >= 0 ? t.slice(0, existing + 1) : [...t, entry];
+      });
+      setFlow(result);
+      setFlowPick(null);
+      setNode(null);
+      setSourceNodeId(result.center.id);
+      setSourceNoteTone("info");
+      const resolved = result.center.resolved_from ? ` (output ${shortId(result.center.resolved_from)} resolved to its ${nodeKind(result.center.type).toLowerCase()})` : "";
+      setSourceNote(
+        `Source set to ${nodeKind(result.center.type).toLowerCase()} ${shortId(result.center.id)}${resolved} — ` +
+          `${result.totals.input_count} direct input(s), ${result.totals.output_count} direct output(s).`
       );
-    const exact = list.find((f) => f.entity_ref === nodeId);
-    const containing = list.find((f) => f.finding_id !== selectedFindingId && f.graph_path?.nodes.includes(nodeId));
-    const target = exact ?? containing;
+    } catch (err) {
+      if (ticket !== flowTicket.current) return;
+      if (err instanceof ApiError && err.status === 404) {
+        refuse(`${shortId(nodeId)} can't be selected as source — it is not in this case's graph snapshot.`);
+      } else if (err instanceof ApiError && err.status === 409) {
+        refuse("No completed graph snapshot is available for this case yet — finish an import first.");
+      } else {
+        refuse(err instanceof ApiError ? `Could not load the flow: ${String(err.detail)}` : "Could not reach the TraceX backend.");
+      }
+    } finally {
+      if (ticket === flowTicket.current) setFlowLoading(false);
+    }
+  }
 
-    // Nothing to explore from here: say so loudly and leave the current source
-    // untouched rather than silently "selecting" a dead end.
-    if (!onCurrent && (!target || target.finding_id === selectedFindingId)) {
-      setSourceNote(`No detected path starts at or passes through ${shortId(nodeId)} in this case — not set as source.`);
-      setSourceNoteTone("danger");
+  /** Counterparties arrive already classified: a dead end is refused with the
+   * backend's own reason, never re-queried as an empty source. */
+  function setSourceFromFlow(c: FlowCounterparty) {
+    if (!c.selectable || !c.source_id) {
+      refuse(`${shortId(c.id)} can't be selected as source — ${c.reason ?? "it has no further transactions from it."}`);
       return;
     }
+    void setSource(c.source_id);
+  }
 
-    setSourceNodeId(nodeId);
-    setNode(null);
-    setSourceNoteTone("info");
-    if (target && target.finding_id !== selectedFindingId) {
-      setSourceNote(`Source set to ${shortId(nodeId)} — switched to ${pathCode(target)}, which also covers it.`);
-      setSelectedFindingId(target.finding_id);
-      return;
-    }
-    setSourceNote(`Source set to ${shortId(nodeId)} — centred on the path you're viewing.`);
+  function traceSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const value = traceQuery.trim();
+    if (value) void setSource(value);
+  }
+
+  function backToPath() {
+    flowTicket.current += 1;
+    setFlowLoading(false);
+    setFlow(null);
+    setFlowPick(null);
+    setTrail([]);
+    setSourceNote(null);
   }
 
   function togglePin(findingId: string) {
@@ -344,17 +411,85 @@ export function GraphExplorer() {
           {picker}
 
           <div className="ff-canvas-wrap">
-            {unresolvedSeed ? (
+            <div className="ff-toolbar">
+              <button type="button" onClick={() => setZoomIdx((i) => Math.max(0, i - 1))} disabled={zoomIdx === 0} title="Zoom out">−</button>
+              <span className="ff-zoom-label">{Math.round(ZOOM_STEPS[zoomIdx] * 100)}%</span>
+              <button type="button" onClick={() => setZoomIdx((i) => Math.min(ZOOM_STEPS.length - 1, i + 1))} disabled={zoomIdx === ZOOM_STEPS.length - 1} title="Zoom in">+</button>
+              <button type="button" onClick={() => setZoomIdx(3)} title="Reset zoom">⟲</button>
+              {flow && (
+                <button type="button" className="ff-tool-text" onClick={backToPath} title="Back to the detected path">
+                  ← {selected ? pathCode(selected) : "Path"}
+                </button>
+              )}
+              <form className="ff-trace" onSubmit={traceSubmit}>
+                <input
+                  value={traceQuery}
+                  onChange={(e) => setTraceQuery(e.target.value)}
+                  placeholder="Trace a txid or address…"
+                  aria-label="Trace a txid or address as the source"
+                />
+                <button type="submit" className="ff-tool-text" disabled={!traceQuery.trim() || flowLoading}>Trace</button>
+              </form>
+              <span className="ff-hint">
+                {flow ? "Tap for detail · double-click or hover → “Set as source”" : "Tap a node for detail · hover for “Set as source”"}
+              </span>
+            </div>
+            {flow && trail.length > 0 && (
+              <nav className="ff-trail" aria-label="Source history">
+                {trail.map((entry, index) => (
+                  <span key={entry.id} className="ff-trail-item">
+                    {index > 0 && <span className="ff-trail-sep">→</span>}
+                    <button
+                      type="button"
+                      className={index === trail.length - 1 ? "current" : ""}
+                      disabled={index === trail.length - 1}
+                      onClick={() => void setSource(entry.id, { fromTrail: index })}
+                      title={entry.id}
+                    >
+                      {entry.type === "transaction" ? "TX" : "ADDR"} {shortId(entry.id)}
+                    </button>
+                  </span>
+                ))}
+              </nav>
+            )}
+            {sourceNote && (
+              <div className={`ff-note ${sourceNoteTone === "danger" ? "ff-note-danger" : ""}`} role={sourceNoteTone === "danger" ? "alert" : "status"}>
+                {sourceNoteTone === "danger" && <span className="ff-note-icon">✕</span>}
+                {sourceNote}
+                {flow && sourceNoteTone !== "danger" && (
+                  <button type="button" className="ff-note-clear" onClick={backToPath}>clear source</button>
+                )}
+                {!flow && sourceNodeId && sourceNoteTone !== "danger" && (
+                  <button type="button" className="ff-note-clear" onClick={() => { setSourceNodeId(null); setSourceNote(null); }}>
+                    clear source
+                  </button>
+                )}
+                {sourceNoteTone === "danger" && (
+                  <button type="button" className="ff-note-clear" onClick={() => setSourceNote(null)}>dismiss</button>
+                )}
+              </div>
+            )}
+            {flowLoading && <div className="ff-loading" role="status"><span className="spinner" /> Loading direct inputs and outputs…</div>}
+            {flow ? (
+              <SourceFlowGraph
+                flow={flow}
+                zoom={ZOOM_STEPS[zoomIdx]}
+                selectedId={flowPick?.c.id ?? null}
+                onSelect={(c, side) => setFlowPick({ c, side })}
+                onSelectCenter={() => setFlowPick(null)}
+                onSetSource={setSourceFromFlow}
+              />
+            ) : unresolvedSeed ? (
               <NeoCard>
                 <EmptyState
                   title="This finding has no fund-flow path"
-                  body={`"${unresolvedSeed}" is a real finding, but its type is a plain address/window observation rather than a UTXO chain, so there is no path to draw. Open its Evidence Package for the full explanation.`}
+                  body={`"${unresolvedSeed}" is a real finding, but its type is a plain address/window observation rather than a UTXO chain, so there is no path to draw. Trace it above to see its direct inputs and outputs, or open its Evidence Package.`}
                 />
               </NeoCard>
             ) : pathFindings === null ? (
               <NeoCard><p className="coverage-note">Loading…</p></NeoCard>
             ) : !selected ? (
-              <NeoCard><EmptyState title="No suspicious path selected" body="Pick one from the Paths list." /></NeoCard>
+              <NeoCard><EmptyState title="No suspicious path selected" body="Pick one from the Paths list, or trace any txid or address above." /></NeoCard>
             ) : !hasSteps ? (
               <NeoCard>
                 <EmptyState
@@ -363,42 +498,118 @@ export function GraphExplorer() {
                 />
               </NeoCard>
             ) : (
-              <>
-                <div className="ff-toolbar">
-                  <button type="button" onClick={() => setZoomIdx((i) => Math.max(0, i - 1))} disabled={zoomIdx === 0} title="Zoom out">−</button>
-                  <span className="ff-zoom-label">{Math.round(ZOOM_STEPS[zoomIdx] * 100)}%</span>
-                  <button type="button" onClick={() => setZoomIdx((i) => Math.min(ZOOM_STEPS.length - 1, i + 1))} disabled={zoomIdx === ZOOM_STEPS.length - 1} title="Zoom in">+</button>
-                  <button type="button" onClick={() => setZoomIdx(3)} title="Reset zoom">⟲</button>
-                  <span className="ff-hint">Tap a node for detail · hover for “Set as source”</span>
-                </div>
-                {sourceNote && (
-                  <div className={`ff-note ${sourceNoteTone === "danger" ? "ff-note-danger" : ""}`} role="status">
-                    {sourceNote}
-                    {sourceNodeId && sourceNoteTone !== "danger" && (
-                      <button type="button" className="ff-note-clear" onClick={() => { setSourceNodeId(null); setSourceNote(null); }}>
-                        clear source
-                      </button>
-                    )}
-                    {sourceNoteTone === "danger" && (
-                      <button type="button" className="ff-note-clear" onClick={() => setSourceNote(null)}>dismiss</button>
-                    )}
-                  </div>
-                )}
-                <FundFlowGraph
-                  finding={selected}
-                  signals={signals}
-                  zoom={ZOOM_STEPS[zoomIdx]}
-                  selectedNodeId={node?.id ?? null}
-                  sourceNodeId={sourceNodeId}
-                  onSelectNode={setNode}
-                  onSetSource={setSource}
-                />
-              </>
+              <FundFlowGraph
+                finding={selected}
+                signals={signals}
+                zoom={ZOOM_STEPS[zoomIdx]}
+                selectedNodeId={node?.id ?? null}
+                sourceNodeId={sourceNodeId}
+                onSelectNode={setNode}
+                onSetSource={(id) => void setSource(id)}
+              />
             )}
           </div>
 
           <aside className="ff-panel">
-            {node ? (
+            {flow && flowPick ? (
+              <>
+                <div className="ff-panel-head">
+                  <div className="ff-panel-label">{flowPick.side === "input" ? "DIRECT INPUT" : "DIRECT OUTPUT"}</div>
+                  <button type="button" className="ff-close" onClick={() => setFlowPick(null)} aria-label="Back to source detail">×</button>
+                </div>
+                <h2 className="ff-panel-title">{nodeKind(flowPick.c.type)}</h2>
+                <div className="ff-kv"><span>Id</span><b className="ff-kv-long mono-id">{flowPick.c.id}</b></div>
+                <div className="ff-kv">
+                  <span>{flowPick.side === "input" ? "Flowed in" : "Flowed out"}</span>
+                  <b>{flowPick.c.amount_sats === null ? "amount unknown" : btc(flowPick.c.amount_sats)}</b>
+                </div>
+                <div className="ff-kv"><span>UTXOs</span><b>{flowPick.c.utxo_count}</b></div>
+                {flowPick.side === "output" && flowPick.c.type !== "transaction" && (
+                  <div className="ff-kv"><span>Spent onward</span><b>{flowPick.c.spent_count} of {flowPick.c.utxo_count}</b></div>
+                )}
+                {flowPick.c.timestamp && <div className="ff-kv"><span>Observed at</span><b>{stampUtc(flowPick.c.timestamp)}</b></div>}
+                <div className="ff-kv">
+                  <span>Beyond this source</span>
+                  <b>
+                    {flowPick.c.type === "address_or_script"
+                      ? `${flowPick.c.onward_count} other transaction(s)`
+                      : flowPick.c.type === "transaction"
+                        ? `${flowPick.c.onward_count} other input/output leg(s)`
+                        : flowPick.c.selectable ? "continues" : "nothing"}
+                  </b>
+                </div>
+                {flowPick.c.via.length > 0 && (
+                  <>
+                    <div className="ff-panel-label ff-section">{flowPick.c.type === "transaction" ? "VIA UTXOS" : "VIA TRANSACTIONS"}</div>
+                    <div className="ff-evidence-sub mono-id">{flowPick.c.via.map((v) => shortId(v)).join(" · ")}</div>
+                  </>
+                )}
+                {!flowPick.c.selectable && (
+                  <div className="ff-deadend" role="note">
+                    <b>Can't be selected as source.</b> {flowPick.c.reason ?? "It has no further transactions from it."}
+                  </div>
+                )}
+                <div className="ff-actions">
+                  <button
+                    type="button"
+                    className="ff-btn ff-btn-primary"
+                    disabled={!flowPick.c.selectable}
+                    title={flowPick.c.selectable ? "Re-centre the graph on this node" : flowPick.c.reason ?? undefined}
+                    onClick={() => setSourceFromFlow(flowPick.c)}
+                  >
+                    Set as source
+                  </button>
+                  <button type="button" className="ff-btn" onClick={() => setFlowPick(null)}>Back to source</button>
+                </div>
+              </>
+            ) : flow ? (
+              <>
+                <div className="ff-panel-label">SOURCE</div>
+                <h2 className="ff-panel-title">{nodeKind(flow.center.type)}</h2>
+                <p className="ff-panel-sub mono-id ff-kv-long" style={{ maxWidth: "none", textAlign: "left" }}>{flow.center.label}</p>
+                {flow.center.resolved_from && (
+                  <p className="coverage-note">Requested output {shortId(flow.center.resolved_from)} — shown through its {nodeKind(flow.center.type).toLowerCase()}.</p>
+                )}
+                <div className="ff-kv"><span>Direct inputs</span><b>{flow.totals.input_count}</b></div>
+                <div className="ff-kv"><span>Total in</span><b>{flow.totals.input_sats === null ? "partly unknown" : btc(flow.totals.input_sats)}</b></div>
+                <div className="ff-kv"><span>Direct outputs</span><b>{flow.totals.output_count}</b></div>
+                <div className="ff-kv"><span>Total out</span><b>{flow.totals.output_sats === null ? "partly unknown" : btc(flow.totals.output_sats)}</b></div>
+                {flow.center.type === "transaction" &&
+                  flow.totals.input_sats !== null &&
+                  flow.totals.output_sats !== null &&
+                  flow.totals.input_sats >= flow.totals.output_sats &&
+                  flow.totals.input_count > 0 && (
+                    <div className="ff-kv"><span>Implied fee</span><b>{btc(flow.totals.input_sats - flow.totals.output_sats)}</b></div>
+                  )}
+                {flow.center.type === "address_or_script" && (
+                  <div className="ff-kv"><span>Transactions</span><b>{flow.center.transaction_count ?? 0}</b></div>
+                )}
+                <div className="ff-kv"><span>Observed at</span><b>{stampUtc(flow.center.timestamp)}</b></div>
+                {(flow.totals.dead_end_inputs > 0 || flow.totals.dead_end_outputs > 0) && (
+                  <div className="ff-deadend" role="note">
+                    <b>{flow.totals.dead_end_inputs + flow.totals.dead_end_outputs} dead end(s)</b> shown in red have no further
+                    transactions and can't be selected as source.
+                  </div>
+                )}
+                {(flow.truncated_inputs > 0 || flow.truncated_outputs > 0) && (
+                  <p className="coverage-note">
+                    Showing the 40 largest per side; {flow.truncated_inputs + flow.truncated_outputs} smaller counterparties are not drawn.
+                  </p>
+                )}
+                <p className="coverage-note ff-section">
+                  Only committed, uniquely resolved spends appear. An input whose previous output is outside the imported data
+                  has no arrow — absence here is not evidence of absence on-chain.
+                </p>
+                <div className="ff-actions">
+                  <button type="button" className="ff-btn ff-btn-primary" onClick={backToPath}>
+                    {selected ? `Back to ${pathCode(selected)}` : "Close flow"}
+                  </button>
+                </div>
+                <p className="ff-footnote">
+                  Arrow weight follows the amount moved. Blue = funds in, amber = funds out, red dashed = dead end.
+                </p>
+              </>
+            ) : node ? (
               <>
                 <div className="ff-panel-head">
                   <div className="ff-panel-label">NODE</div>
@@ -413,7 +624,7 @@ export function GraphExplorer() {
                 ))}
                 <p className="coverage-note ff-section">{node.note}</p>
                 <div className="ff-actions">
-                  <button type="button" className="ff-btn ff-btn-primary" onClick={() => setSource(node.id)}>Set as source</button>
+                  <button type="button" className="ff-btn ff-btn-primary" onClick={() => void setSource(node.id)}>Set as source</button>
                   <button type="button" className="ff-btn" onClick={() => setNode(null)}>Back to path</button>
                 </div>
               </>

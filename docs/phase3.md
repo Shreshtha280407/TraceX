@@ -1,6 +1,6 @@
 # Phase 3 — accurate Bitcoin graph
 
-Every graph snapshot is derived only from receipt-approved Phase 2 Parquet fragments. The builder creates an immutable DuckDB file with indexed `nodes` and `edges` tables and emits `graph.delta_ready` only after the file and its control-plane record are ready.
+Every graph snapshot is derived only from receipt-approved Phase 2 Parquet fragments. The builder creates an immutable DuckDB file with `nodes` (sorted by `node_id`) and `edges` (sorted by `from_node`) tables — no ART indexes, which measured no faster for any graph query while costing ~11 s and ~350 MB per 100K-row snapshot; the sort order lets DuckDB's zone maps prune lookups instead — and emits `graph.delta_ready` only after the file and its control-plane record are ready.
 
 ## Canonical graph rules
 

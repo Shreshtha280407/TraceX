@@ -114,6 +114,20 @@ TRANSACTION_COLUMNS = (
 # exists. Input *ages* below are the causal counterpart: they look backwards.
 
 
+def _median_of_sorted(ordered: np.ndarray) -> float:
+    """`np.median` for an already-sorted (either direction) non-empty 1-D array.
+
+    Same arithmetic -- the middle element, or the float64 mean of the two middle
+    elements -- without np.median's partition/reduce machinery, which dominated
+    this per-transaction loop on the tiny arrays it is called with.
+    """
+    size = ordered.size
+    middle = size // 2
+    if size % 2:
+        return float(ordered[middle])
+    return float((ordered[middle - 1] + ordered[middle]) / 2)
+
+
 def build_transaction_table(facts: Facts) -> Table:
     """Shape features for every transaction.
 
@@ -174,7 +188,7 @@ def build_transaction_table(facts: Facts) -> Table:
         row[15] = np.log1p(total)
         row[16] = np.log1p(largest)
         row[17] = np.log1p(float(ordered[-1])) if n_out else 0.0
-        row[18] = np.log1p(float(np.median(values))) if n_out else 0.0
+        row[18] = np.log1p(_median_of_sorted(ordered)) if n_out else 0.0
         row[19] = np.log1p(fee)
         row[20] = fee / input_total if input_total > 0 else 0.0
         # Peel geometry: one dominant continuation plus a small payment.
@@ -188,7 +202,7 @@ def build_transaction_table(facts: Facts) -> Table:
         row[27] = np.log1p(input_total)
         row[28] = total / input_total if input_total > 0 else 0.0
         row[29] = np.log1p(float(ages.min())) if ages.size else 0.0
-        row[30] = np.log1p(float(np.median(ages))) if ages.size else 0.0
+        row[30] = np.log1p(_median_of_sorted(np.sort(ages))) if ages.size else 0.0
         row[31] = float((ages <= 3600).mean()) if ages.size else 0.0
     return Table(TRANSACTION_COLUMNS, matrix)
 

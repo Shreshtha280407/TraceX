@@ -253,6 +253,58 @@ export type GraphResponse = {
   cursor: string | null;
 };
 
+/** One direct counterparty of the flow source (app/engine/graph/query.py::query_flow).
+ * For a transaction source these are addresses (grouped over their UTXOs); for an
+ * address source they are the transactions that paid it or spent from it. */
+export type FlowCounterparty = {
+  id: string;
+  type: "address_or_script" | "transaction" | "output";
+  label: string;
+  /** null when any aggregated UTXO has no committed amount. */
+  amount_sats: number | null;
+  utxo_count: number;
+  spent_count: number;
+  /** Up to 5 connecting ids: funding/spending txids, or the UTXOs involved. */
+  via: string[];
+  timestamp: string | null;
+  /** Node to re-centre on when this counterparty becomes the source. */
+  source_id: string | null;
+  /** Activity beyond the current source: other transactions (address) or other legs (transaction). */
+  onward_count: number;
+  selectable: boolean;
+  reason: string | null;
+};
+
+export type FlowResponse = {
+  snapshot_id: string;
+  graph_snapshot_id: string;
+  center: {
+    id: string;
+    type: "address_or_script" | "transaction";
+    label: string;
+    attributes: Record<string, unknown>;
+    timestamp: string | null;
+    /** Set when an output was requested and resolved to its address / creating tx. */
+    resolved_from: string | null;
+    transaction_count: number | null;
+    selectable: boolean;
+    reason: string | null;
+  };
+  inputs: FlowCounterparty[];
+  outputs: FlowCounterparty[];
+  totals: {
+    input_count: number;
+    output_count: number;
+    input_sats: number | null;
+    output_sats: number | null;
+    dead_end_inputs: number;
+    dead_end_outputs: number;
+  };
+  truncated_inputs: number;
+  truncated_outputs: number;
+  coverage: Record<string, unknown>;
+};
+
 // ---- Auth ----
 
 export const api = {
@@ -292,6 +344,13 @@ export const api = {
   getGraph: (caseId: string, seed: string, depth: number, nodeLimit: number, edgeLimit: number) =>
     request<GraphResponse>(
       `/cases/${caseId}/graph?seed=${encodeURIComponent(seed)}&depth=${depth}&node_limit=${nodeLimit}&edge_limit=${edgeLimit}`
+    ),
+
+  getGraphFlow: (caseId: string, node: string, limit = 40, graphSnapshotId?: string) =>
+    request<FlowResponse>(
+      `/cases/${caseId}/graph/flow?node=${encodeURIComponent(node)}&limit=${limit}${
+        graphSnapshotId ? `&graph_snapshot_id=${encodeURIComponent(graphSnapshotId)}` : ""
+      }`
     ),
 
   // ---- Findings ----

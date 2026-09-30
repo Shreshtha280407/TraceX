@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,32 +43,89 @@ def _receipt_path(evidence_root: Path, relative_path: str) -> Path:
     return path
 
 
-def _facts(session: Session, evidence_root: Path, snapshot_id: str) -> dict[str, list[dict[str, Any]]]:
-    grouped: dict[str, list[dict[str, Any]]] = {
+FactRecords = dict[str, list[dict[str, Any]]]
+
+#: One encoder instance: `json.dumps(..., sort_keys=True)` builds a fresh
+#: JSONEncoder per call, which was measurable at ~1.5M node/edge attributes.
+_encode_attributes = json.JSONEncoder(sort_keys=True).encode
+
+
+def _attributes_json(attributes: dict[str, Any]) -> str:
+    return _encode_attributes(attributes) if attributes else "{}"
+
+
+@contextmanager
+def bulk_allocation():
+    """Pause the cyclic GC while millions of acyclic dicts/tuples are built.
+
+    Those containers are freed by reference counting; the collector only
+    re-traverses them over and over as the heap grows, which cost seconds per
+    stage on a 100K-row snapshot. Restores the previous state on exit.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def load_facts(session: Session, evidence_root: Path, snapshot_id: str) -> FactRecords:
+    """Decode every receipt-approved fact of a snapshot, in commit order.
+
+    Ordered by batch explicitly: receipts used to be read in whatever order the
+    database returned them, and several consumers are first-seen-wins.
+    """
+    grouped: FactRecords = {
         "transactions": [],
         "inputs": [],
         "outputs": [],
         "network_observations": [],
     }
-    receipts = session.scalars(select(FragmentReceipt).where(FragmentReceipt.snapshot_id == snapshot_id))
-    for receipt in receipts:
-        if receipt.record_type not in grouped:
-            continue
-        table = pq.read_table(_receipt_path(evidence_root, receipt.storage_relative_path), columns=["canonical_json"])
-        grouped[receipt.record_type].extend(json.loads(value) for value in table.column("canonical_json").to_pylist())
+    receipts = session.scalars(
+        select(FragmentReceipt)
+        .where(FragmentReceipt.snapshot_id == snapshot_id)
+        .order_by(FragmentReceipt.logical_batch, FragmentReceipt.record_type)
+    )
+    decode = json.JSONDecoder().decode
+    with bulk_allocation():
+        for receipt in receipts:
+            if receipt.record_type not in grouped:
+                continue
+            table = pq.read_table(
+                _receipt_path(evidence_root, receipt.storage_relative_path), columns=["canonical_json"]
+            )
+            grouped[receipt.record_type].extend(map(decode, table.column("canonical_json").to_pylist()))
     return grouped
+
+
+# Kept for callers that predate `load_facts`.
+_facts = load_facts
 
 
 def _safe_name(value: str) -> str:
     return value.replace("-", "").replace("/", "")
 
 
-def build_graph_snapshot(session: Session, *, evidence_root: Path, snapshot: Snapshot) -> GraphBuildResult:
-    """Build one immutable DuckDB graph from committed fragments for a completed snapshot."""
+def build_graph_snapshot(
+    session: Session, *, evidence_root: Path, snapshot: Snapshot, records: FactRecords | None = None
+) -> GraphBuildResult:
+    """Build one immutable DuckDB graph from committed fragments for a completed snapshot.
+
+    `records` lets the ingestion pipeline decode the snapshot's facts once and
+    share them with every stage instead of re-reading them here.
+    """
     existing = session.scalar(select(GraphSnapshot).where(GraphSnapshot.snapshot_id == snapshot.id))
     if existing:
         return GraphBuildResult(existing.id, existing.node_count, existing.edge_count, existing.coverage)
-    records = _facts(session, evidence_root, snapshot.id)
+    if records is None:
+        records = load_facts(session, evidence_root, snapshot.id)
+    with bulk_allocation():
+        return _build(session, evidence_root=evidence_root, snapshot=snapshot, records=records)
+
+
+def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records: FactRecords) -> GraphBuildResult:
     root = evidence_root.resolve()
     relative = Path(snapshot.case_id) / "graphs" / f"snapshot-{_safe_name(snapshot.id)}.duckdb"
     target = root / relative
@@ -199,56 +258,48 @@ def build_graph_snapshot(session: Session, *, evidence_root: Path, snapshot: Sna
         and double_spend_conflicts == 0,
     }
     target.parent.mkdir(parents=True, exist_ok=True)
+    node_table = pa.table(
+        {
+            "node_id": pa.array(list(nodes), pa.string()),
+            "node_type": pa.array([kind for kind, _, _ in nodes.values()], pa.string()),
+            "label": pa.array([label for _, label, _ in nodes.values()], pa.string()),
+            "attributes_json": pa.array([_attributes_json(attrs) for _, _, attrs in nodes.values()], pa.string()),
+        }
+    )
+    edge_table = pa.table(
+        {
+            "edge_id": pa.array(list(edges), pa.string()),
+            "from_node": pa.array([item[0] for item in edges.values()], pa.string()),
+            "to_node": pa.array([item[1] for item in edges.values()], pa.string()),
+            "edge_type": pa.array([item[2] for item in edges.values()], pa.string()),
+            "attributes_json": pa.array([_attributes_json(item[3]) for item in edges.values()], pa.string()),
+            "uncertainty": pa.array([item[4] for item in edges.values()], pa.float64()),
+        }
+    )
     connection = duckdb.connect(str(temporary))
     try:
+        # No PRIMARY KEY / secondary indexes: ids are unique by construction
+        # (dict keys above), and measured on the 100K fixture the ART indexes
+        # did not speed up any graph query while costing ~11 s to build and
+        # ~350 MB per snapshot. Rows are stored sorted instead, so DuckDB's
+        # per-row-group min/max zone maps prune point lookups on node_id and
+        # from_node.
         connection.execute(
-            "CREATE TABLE nodes (node_id VARCHAR PRIMARY KEY, node_type VARCHAR, label VARCHAR, attributes_json VARCHAR)"
+            "CREATE TABLE nodes (node_id VARCHAR, node_type VARCHAR, label VARCHAR, attributes_json VARCHAR)"
         )
         connection.execute(
-            "CREATE TABLE edges (edge_id VARCHAR PRIMARY KEY, from_node VARCHAR, to_node VARCHAR, edge_type VARCHAR, attributes_json VARCHAR, uncertainty DOUBLE)"
+            "CREATE TABLE edges (edge_id VARCHAR, from_node VARCHAR, to_node VARCHAR, edge_type VARCHAR, attributes_json VARCHAR, uncertainty DOUBLE)"
         )
-        if nodes:
-            connection.register(
-                "node_batch",
-                pa.Table.from_pylist(
-                    [
-                        {
-                            "node_id": node_id,
-                            "node_type": kind,
-                            "label": label,
-                            "attributes_json": json.dumps(attrs, sort_keys=True),
-                        }
-                        for node_id, (kind, label, attrs) in nodes.items()
-                    ]
-                ),
-            )
-            connection.execute("INSERT INTO nodes SELECT * FROM node_batch")
-            connection.unregister("node_batch")
-        if edges:
-            connection.register(
-                "edge_batch",
-                pa.Table.from_pylist(
-                    [
-                        {
-                            "edge_id": edge_id,
-                            "from_node": from_node,
-                            "to_node": to_node,
-                            "edge_type": edge_type,
-                            "attributes_json": json.dumps(attrs, sort_keys=True),
-                            "uncertainty": uncertainty,
-                        }
-                        for edge_id, (from_node, to_node, edge_type, attrs, uncertainty) in edges.items()
-                    ]
-                ),
-            )
-            connection.execute("INSERT INTO edges SELECT * FROM edge_batch")
-            connection.unregister("edge_batch")
-        connection.execute("CREATE INDEX nodes_node_id_idx ON nodes(node_id)")
-        connection.execute("CREATE INDEX edges_from_idx ON edges(from_node)")
-        connection.execute("CREATE INDEX edges_to_idx ON edges(to_node)")
+        connection.register("node_batch", node_table)
+        connection.execute("INSERT INTO nodes SELECT * FROM node_batch ORDER BY node_id")
+        connection.unregister("node_batch")
+        connection.register("edge_batch", edge_table)
+        connection.execute("INSERT INTO edges SELECT * FROM edge_batch ORDER BY from_node, edge_id")
+        connection.unregister("edge_batch")
         connection.execute("CHECKPOINT")
     finally:
         connection.close()
+    del node_table, edge_table
     with temporary.open("rb") as handle:
         os.fsync(handle.fileno())
     digest = _hash(temporary)

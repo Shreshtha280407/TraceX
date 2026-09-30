@@ -327,9 +327,18 @@ export function EvidenceIntake() {
                   <p className="coverage-note">{job.progress?.basis ?? "waiting for the worker to claim this job"}</p>
                 </div>
                 <div className="stat-grid">
-                  <StatTile label="Rows seen" value={job.rows_seen} />
-                  <StatTile label="Rows accepted" value={job.rows_accepted} />
-                  <StatTile label="Rows quarantined" value={job.rows_quarantined} />
+                  <StatTile
+                    label="Total records"
+                    value={job.total_records !== null ? job.total_records.toLocaleString() : job.state === "queued" ? "…" : "—"}
+                    sub={job.total_records !== null ? "counted before parsing" : job.state === "queued" ? "counted when the worker starts" : "could not be counted"}
+                  />
+                  <StatTile
+                    label="Rows seen"
+                    value={job.rows_seen.toLocaleString()}
+                    sub={job.total_records ? `${Math.max(0, job.total_records - job.rows_seen).toLocaleString()} remaining` : undefined}
+                  />
+                  <StatTile label="Rows accepted" value={job.rows_accepted.toLocaleString()} />
+                  <StatTile label="Rows quarantined" value={job.rows_quarantined.toLocaleString()} />
                   <StatTile label="Bytes read" value={formatBytes(job.bytes_read)} />
                 </div>
               </>
