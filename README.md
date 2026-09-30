@@ -1,4 +1,3 @@
-
 # TraceX — Bitcoin Intelligence and Investigation Platform
 
 **Case-scoped, evidence-first analysis of Bitcoin transaction data: UTXO graph construction, deterministic pattern findings, unsupervised anomaly ranking, and reviewable evidence export.**
