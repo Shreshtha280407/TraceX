@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ML_RULE_VERSION, type CaseDetail } from "../lib/api";
+import { api, ML_RULE_VERSION, type CaseDetail, type FindingsSummary } from "../lib/api";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -25,11 +25,16 @@ export function CaseDashboard() {
   const navigate = useNavigate();
   const [caseDetail, setCaseDetail] = useState<CaseDetail | null>(null);
   const [events, setEvents] = useState<CaseEvent[]>([]);
+  // Real per-case counts. The findings list below is capped at a page, so its
+  // length is a display limit and must never be reported as the workload.
+  const [summary, setSummary] = useState<FindingsSummary | null>(null);
 
   useEffect(() => {
     if (!caseId) return;
     setCaseDetail(null);
+    setSummary(null);
     api.getCase(caseId).then(setCaseDetail);
+    api.getFindingsSummary(caseId).then(setSummary).catch(() => setSummary(null));
   }, [caseId]);
 
   useEffect(() => {
@@ -43,7 +48,10 @@ export function CaseDashboard() {
   const trackedJobs = useTrackedJobs(caseId);
   const activeJobs = trackedJobs.filter((job) => ["queued", "running", "checkpointed"].includes(job.state));
   const transactionsIngested = trackedJobs.length > 0 ? trackedJobs.reduce((sum, job) => sum + job.rows_accepted, 0) : null;
-  const openFindings = findings?.filter((f) => f.status === "open").length ?? null;
+  const openFindings = summary?.open ?? null;
+  const pendingReviewCount = summary ? (summary.by_status.open ?? 0) + (summary.by_status.needs_data_review ?? 0) : null;
+  // The queue list itself is still the capped page — it is a "top N to work on
+  // next" list, labelled as such, not the count.
   const pendingReview = findings?.filter((f) => f.status === "open" || f.status === "needs_data_review") ?? null;
 
   if (!caseId) return null;
@@ -76,8 +84,16 @@ export function CaseDashboard() {
           value={activeJobs.length || (trackedJobs.length ? 0 : "—")}
           sub={activeJobs.length ? "in progress" : "backpressure clear"}
         />
-        <StatTile label="Open findings" value={openFindings ?? "—"} sub={findings ? `of ${findings.length} listed` : "loading…"} />
-        <StatTile label="Pending human review" value={pendingReview?.length ?? "—"} sub="open + needs data review" />
+        <StatTile
+          label="Open findings"
+          value={openFindings?.toLocaleString() ?? "—"}
+          sub={summary ? `of ${summary.total.toLocaleString()} in this case` : "loading…"}
+        />
+        <StatTile
+          label="Pending human review"
+          value={pendingReviewCount?.toLocaleString() ?? "—"}
+          sub="open + needs data review, this case"
+        />
         <StatTile
           label="Model status"
           value={findings === null ? "—" : mlEnabled ? "Active" : "No ML findings yet"}
@@ -135,7 +151,7 @@ export function CaseDashboard() {
             ) : (
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 {events.map((event) => (
-                  <li key={event.id} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12 }}>
+                  <li key={event.id} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13 }}>
                     <span className="mono-id">{new Date((event.data.created_at as string) ?? Date.now()).toLocaleTimeString()}</span>
                     <Badge tone={EVENT_TONE[event.event] === "danger" ? "danger" : "muted"}>
                       <span className={`dot tone-${EVENT_TONE[event.event] ?? "muted"}`} /> {event.event}

@@ -74,8 +74,8 @@ export const CheckIcon = () => (
 
 export const ExportIcon = () => (
   <Svg>
-    <path d="M12 3.5v10.5" />
-    <path d="M8 7.5 12 3.5l4 4" />
+    <path d="M12 4v10.5" />
+    <path d="M7.5 11 12 15.5 16.5 11" />
     <path d="M4.5 15v3.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V15" />
   </Svg>
 );

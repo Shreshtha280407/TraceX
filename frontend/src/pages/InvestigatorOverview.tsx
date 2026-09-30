@@ -10,11 +10,21 @@ import { getSessionStats } from "../lib/sessionStats";
 
 type QueueItem = Finding & { caseName: string };
 
+function timeOfDayGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 export function InvestigatorOverview() {
   const { actor, token } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState<CaseWithRole[] | null>(null);
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
+  // Real open-finding count across assigned cases. The queue below is only the
+  // top few shown; its length is a display cap, never the workload.
+  const [openTotal, setOpenTotal] = useState<number | null>(null);
   const [activity, setActivity] = useState<(CaseEvent & { caseName: string })[]>([]);
   const [showNewCase, setShowNewCase] = useState(false);
   const [newCaseName, setNewCaseName] = useState("");
@@ -25,11 +35,6 @@ export function InvestigatorOverview() {
   useEffect(() => {
     api.listCases().then((result) => {
       setCases(result.cases);
-      // A brand-new sign-up has zero case memberships. Rather than blocking on a
-      // separate full-page "create your first case" screen, land on Home as
-      // normal and surface the same New Case modal on top of it -- dismissible,
-      // so a new user can look around before committing to creating one.
-      if (result.cases.length === 0) setShowNewCase(true);
       Promise.all(
         result.cases.map((c) =>
           api
@@ -37,6 +42,9 @@ export function InvestigatorOverview() {
             .then((r) => r.findings.filter((f) => f.status === "open").map((f) => ({ ...f, caseName: c.name })))
         )
       ).then((lists) => setQueue(lists.flat().sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 8)));
+      Promise.all(result.cases.map((c) => api.getFindingsSummary(c.case_id).catch(() => null))).then((summaries) =>
+        setOpenTotal(summaries.reduce((sum, s) => sum + (s?.open ?? 0), 0))
+      );
     });
   }, []);
 
@@ -73,14 +81,14 @@ export function InvestigatorOverview() {
     }
   }
 
-  const pendingReview = queue?.length ?? null;
+  const pendingReview = openTotal;
   const highPriority = queue?.filter((f) => (f.rank ?? Infinity) <= 10).length ?? null;
 
   return (
     <Shell>
       <div className="page-header">
         <div>
-          <h1>Good evening, {actor}</h1>
+          <h1>{timeOfDayGreeting()}, {actor}</h1>
           <p className="subtitle">
             {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} findings awaiting your review
           </p>
@@ -196,7 +204,7 @@ export function InvestigatorOverview() {
             ) : (
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
                 {activity.map((event) => (
-                  <li key={`${event.caseName}-${event.id}`} style={{ fontSize: 12 }}>
+                  <li key={`${event.caseName}-${event.id}`} style={{ fontSize: 13 }}>
                     <strong>{event.event}</strong> · {event.caseName}
                   </li>
                 ))}

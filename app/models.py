@@ -73,6 +73,9 @@ class ImportJob(Base):
     rows_seen: Mapped[int] = mapped_column(Integer, default=0)
     rows_accepted: Mapped[int] = mapped_column(Integer, default=0)
     rows_quarantined: Mapped[int] = mapped_column(Integer, default=0)
+    # Cheap up-front record count, used only to turn rows_seen into a real
+    # percentage. Null when the format can't be counted without a full parse.
+    total_records: Mapped[int | None] = mapped_column(Integer, nullable=True)
     snapshot_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)

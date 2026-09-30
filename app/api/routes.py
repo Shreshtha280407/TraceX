@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_case_member
@@ -449,6 +449,9 @@ def finding_view(finding: FindingRecord) -> dict:
         "explanation": detector.get("explanation", finding.explanations[0] if finding.explanations else finding.claim),
         "evidence_refs": detector.get("evidence_refs", finding.source_refs),
         "graph_path": detector.get("graph_path"),
+        "hop_count": detector.get("hop_count"),
+        "total_duration_sec": detector.get("total_duration_sec"),
+        "steps": detector.get("steps"),
         "feature_vector_hash": finding.feature_vector_hash,
         "explanations": finding.explanations,
         "benign_alternatives": finding.benign_alternatives,
@@ -502,18 +505,22 @@ def list_findings(
     case_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    rule_id: list[str] | None = Query(default=None),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict:
     require_case_member(case_id, user, session)
+    # rule_id lets a caller ask for one or more specific pattern types directly
+    # instead of paging through FindingRecord.rank order -- necessary because
+    # rank is a single case-wide ordering across rule types whose raw_score
+    # scales genuinely differ (e.g. rapid_redistribution's 45-100 range vs.
+    # peeling_chain_candidate's 0-1 range), so a rare-but-real pattern type can
+    # sit well past the first `limit` rows even though it exists in the case.
+    query = select(FindingRecord).where(FindingRecord.case_id == case_id)
+    if rule_id:
+        query = query.where(FindingRecord.rule_id.in_(rule_id))
     records = list(
-        session.scalars(
-            select(FindingRecord)
-            .where(FindingRecord.case_id == case_id)
-            .order_by(FindingRecord.rank, FindingRecord.created_at)
-            .offset(offset)
-            .limit(limit)
-        )
+        session.scalars(query.order_by(FindingRecord.rank, FindingRecord.created_at).offset(offset).limit(limit))
     )
     # `method`/`ml_enabled` describe this page, not a case-wide constant: a page
     # can hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix
@@ -527,13 +534,44 @@ def list_findings(
     # on a deployment that never installed the optional `ml` extra.
     methods = sorted({record.rule_version for record in records})
     ml_present = any(record.rule_version == ML_RULE_VERSION for record in records)
+    # Real totals, not the length of this page. Callers were treating `limit`
+    # (200) or a client-side slice as if it were the number of findings, which
+    # misreported the review workload by orders of magnitude.
+    count_base = select(func.count()).select_from(FindingRecord).where(FindingRecord.case_id == case_id)
+    if rule_id:
+        count_base = count_base.where(FindingRecord.rule_id.in_(rule_id))
+    total = session.scalar(count_base) or 0
+    open_total = session.scalar(count_base.where(FindingRecord.status == "open")) or 0
     return {
         "findings": [finding_view(record) for record in records],
+        "total": total,
+        "open_total": open_total,
         "limit": limit,
         "offset": offset,
         "method": methods[0] if len(methods) == 1 else "mixed",
         "methods": methods,
         "ml_enabled": ml_present,
+    }
+
+
+@router.get("/cases/{case_id}/findings/summary")
+def findings_summary(
+    case_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> dict:
+    """Counts only — lets a dashboard show the real review workload for a case
+    without pulling a capped page of rows and measuring its length."""
+    require_case_member(case_id, user, session)
+    rows = session.execute(
+        select(FindingRecord.status, func.count())
+        .where(FindingRecord.case_id == case_id)
+        .group_by(FindingRecord.status)
+    ).all()
+    by_status = {status: count for status, count in rows}
+    return {
+        "case_id": case_id,
+        "total": sum(by_status.values()),
+        "by_status": by_status,
+        "open": by_status.get("open", 0),
     }
 
 
@@ -562,6 +600,48 @@ def finding_evidence(
             "release_id": (finding.coverage or {}).get("release_id"),
             "model_run_id": (finding.coverage or {}).get("model_run_id"),
         },
+    }
+
+
+@router.get("/findings/{finding_id}/path-signals")
+def finding_path_signals(
+    finding_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> dict:
+    """Real signal breakdown for a peeling-chain finding's fund-flow path.
+
+    velocity/peel_ratio/cluster_link come straight from the detector's own
+    already-computed factors (see app.engine.motifs.deterministic). entity_risk
+    is the one signal computed here: how much of this path's own node set is
+    independently touched by *other* open findings in the same case -- a real
+    cross-reference against this case's own anomaly output, not a new model.
+    """
+    finding = session.get(FindingRecord, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    require_case_member(finding.case_id, user, session)
+    detector = (finding.feature_vector or {}).get("detector_result", {})
+    graph_path = detector.get("graph_path") or {}
+    path_nodes: set[str] = set(graph_path.get("nodes") or [])
+    other_entity_refs = set(
+        session.scalars(
+            select(FindingRecord.entity_ref).where(
+                FindingRecord.case_id == finding.case_id,
+                FindingRecord.id != finding.id,
+                FindingRecord.status == "open",
+            )
+        )
+    )
+    matches = path_nodes & other_entity_refs
+    entity_risk = (len(matches) / len(path_nodes)) if path_nodes else 0.0
+    return {
+        "finding_id": finding.id,
+        "velocity": detector.get("velocity"),
+        "peel_ratio": detector.get("peel_ratio"),
+        "cluster_link": detector.get("cluster_link"),
+        "entity_risk": entity_risk,
+        "entity_risk_matches": sorted(matches),
+        "entity_risk_path_node_count": len(path_nodes),
+        "confidence": finding.raw_score,
     }
 
 
@@ -613,6 +693,33 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
     # hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix.
     methods = sorted({finding.rule_version for finding in findings})
     ml_present = any(finding.rule_version == ML_RULE_VERSION for finding in findings)
+    # Review/audit history is batched into two queries grouped by finding_id.
+    # Calling the per-finding helpers inside the comprehension below issued two
+    # round-trips per finding -- on a case with a few thousand findings that is
+    # thousands of queries and the export never finished in a usable time.
+    finding_ids = [finding.id for finding in findings]
+    reviews_by_finding: dict[str, list[dict]] = {}
+    audits_by_finding: dict[str, list[dict]] = {}
+    if finding_ids:
+        for review in session.scalars(
+            select(ReviewDecisionRecord)
+            .where(ReviewDecisionRecord.finding_id.in_(finding_ids))
+            .order_by(ReviewDecisionRecord.created_at, ReviewDecisionRecord.id)
+        ):
+            reviews_by_finding.setdefault(review.finding_id, []).append(review_view(review))
+        for record in session.scalars(
+            select(AuditRecord)
+            .where(AuditRecord.target_type == "finding", AuditRecord.target_id.in_(finding_ids))
+            .order_by(AuditRecord.created_at, AuditRecord.id)
+        ):
+            audits_by_finding.setdefault(record.target_id, []).append(
+                {
+                    "audit_id": record.id,
+                    "action": record.action,
+                    "detail": record.detail,
+                    "created_at": record.created_at.isoformat() if record.created_at else None,
+                }
+            )
     return {
         "case_id": case_id,
         "method": methods[0] if len(methods) == 1 else ("mixed" if methods else "none"),
@@ -628,8 +735,8 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
                 "feature_vector": finding.feature_vector,
                 "source_refs": finding.source_refs,
                 "opposing_evidence": finding.opposing_evidence,
-                "review_history": finding_review_history(session, finding.id),
-                "audit_history": finding_audit_history(session, finding.id),
+                "review_history": reviews_by_finding.get(finding.id, []),
+                "audit_history": audits_by_finding.get(finding.id, []),
             }
             for finding in findings
         ],

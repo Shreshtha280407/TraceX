@@ -76,6 +76,28 @@ export function NoticeBanner({ children }: { children: ReactNode }) {
   return <div className="notice-banner">{children}</div>;
 }
 
+export type PriorityId = "all" | "high" | "medium" | "low";
+
+export const PRIORITY_META: Record<Exclude<PriorityId, "all">, { label: string; tone: "danger" | "warning" | "muted" }> = {
+  high: { label: "HIGH PRIORITY", tone: "danger" },
+  medium: { label: "MEDIUM PRIORITY", tone: "warning" },
+  low: { label: "LOW PRIORITY", tone: "muted" },
+};
+
+/** Same percentile-of-rank tiering used everywhere a finding needs a priority
+ * badge, whether ranking a single finding or counting how many fall in each tier. */
+export function priorityTier(rank: number | null, total: number): Exclude<PriorityId, "all"> {
+  if (rank === null || total === 0) return "low";
+  const percentile = rank / total;
+  if (percentile <= 0.33) return "high";
+  if (percentile <= 0.66) return "medium";
+  return "low";
+}
+
+export function priorityOf(rank: number | null, total: number) {
+  return PRIORITY_META[priorityTier(rank, total)];
+}
+
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const diffMs = Date.now() - new Date(iso).getTime();

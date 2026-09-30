@@ -67,14 +67,25 @@ async function fetchPreviewSample(source: EvidenceSourceRow): Promise<PreviewRec
   return results;
 }
 
-const STAGE_LABELS = ["Staging", "Hash + Sample", "Normalize", "Batch Commit", "Index", "Ready"];
+const STAGE_LABELS = ["Staging", "Parsing", "Graph", "Findings", "Anomaly Stack", "Ready"];
+
+// Now that the pipeline commits a distinct stage for each phase, the tracker
+// can follow the real one instead of lighting up four boxes at once.
+const STAGE_INDEX: Record<string, number> = {
+  queued: 0,
+  ingesting: 1,
+  graph_building: 2,
+  findings: 3,
+  ml_scoring: 4,
+  ingested: 5,
+};
 
 function visualStage(job: ImportJob | null): { doneCount: number; activeIndexes: number[]; failed: boolean } {
   if (!job) return { doneCount: 0, activeIndexes: [], failed: false };
-  if (job.state === "failed") return { doneCount: job.stage === "queued" ? 0 : 1, activeIndexes: [], failed: true };
-  if (job.state === "queued") return { doneCount: 0, activeIndexes: [0], failed: false };
-  if (job.stage === "ingested" && job.state === "completed") return { doneCount: 6, activeIndexes: [], failed: false };
-  return { doneCount: 1, activeIndexes: [1, 2, 3, 4], failed: false };
+  const index = STAGE_INDEX[job.stage] ?? 1;
+  if (job.state === "failed") return { doneCount: index, activeIndexes: [], failed: true };
+  if (job.state === "completed") return { doneCount: 6, activeIndexes: [], failed: false };
+  return { doneCount: index, activeIndexes: [index], failed: false };
 }
 
 function formatBytes(bytes: number): string {
@@ -94,6 +105,7 @@ export function EvidenceIntake() {
   const [previewRecords, setPreviewRecords] = useState<PreviewRecord[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [fullscreenSource, setFullscreenSource] = useState<EvidenceSourceRow | null>(null);
+  const [uploadingFile, setUploadingFile] = useState<string | null>(null);
 
   async function togglePreview(source: EvidenceSourceRow) {
     if (previewSource?.source_id === source.source_id) {
@@ -140,6 +152,11 @@ export function EvidenceIntake() {
   async function upload(file: File) {
     if (!caseId) return;
     setError(null);
+    // The upload itself is one large multipart POST with no progress events (see
+    // api.createImport) -- for a multi-thousand-row file that request alone can run
+    // many seconds. Without this, the pipeline card stayed on "Upload a source to
+    // start a job" the whole time, indistinguishable from the drop not registering.
+    setUploadingFile(file.name);
     try {
       const idempotencyKey = crypto.randomUUID();
       const result = await api.createImport(caseId, file, idempotencyKey);
@@ -148,6 +165,8 @@ export function EvidenceIntake() {
       setJob(initial);
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail) : "Upload failed — could not reach the backend.");
+    } finally {
+      setUploadingFile(null);
     }
   }
 
@@ -175,22 +194,38 @@ export function EvidenceIntake() {
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <NeoCard>
             <h2>Drop Source</h2>
-            <div
-              className={`drop-zone ${dragging ? "dragging" : ""}`}
-              onClick={() => inputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            {/* A <label htmlFor> opens the picker through the browser's own native
+                label-activation path -- no JS, no synthetic .click(). The previous
+                `<div onClick={() => input.click()}>` wrapping the input recursed:
+                the synthetic click bubbled back to the div and re-entered the
+                handler, and Chrome silently refuses to show a file dialog once
+                that happens (Playwright never hit it because it intercepts the
+                file-chooser request at the CDP layer, above this guard). The input
+                is kept OUTSIDE the label as a sibling so no bubbling path exists. */}
+            <label
+              htmlFor="evidence-file-input"
+              className={`drop-zone ${dragging ? "dragging" : ""} ${uploadingFile ? "busy" : ""}`}
+              onDragOver={(e) => { e.preventDefault(); if (!uploadingFile) setDragging(true); }}
               onDragLeave={() => setDragging(false)}
-              onDrop={onDrop}
+              onDrop={uploadingFile ? (e) => e.preventDefault() : onDrop}
             >
-              <div className="drop-icon">↑</div>
-              <p>Drop CSV, JSON (NDJSON) or XML, or click to browse</p>
-              <input
-                ref={inputRef}
-                type="file"
-                accept=".csv,.json,.ndjson,.xml"
-                onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])}
-              />
-            </div>
+              <div className="drop-icon">{uploadingFile ? <span className="spinner" /> : "↑"}</div>
+              <p>{uploadingFile ? `Uploading ${uploadingFile}…` : "Drop CSV, JSON (NDJSON) or XML, or click to browse"}</p>
+            </label>
+            <input
+              id="evidence-file-input"
+              ref={inputRef}
+              type="file"
+              className="visually-hidden-input"
+              accept=".csv,.json,.ndjson,.xml"
+              disabled={!!uploadingFile}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                // Reset so re-picking the SAME file still fires change.
+                e.target.value = "";
+                if (file) void upload(file);
+              }}
+            />
           </NeoCard>
           <NeoCard>
             <h2>Staged Sources</h2>
@@ -235,7 +270,7 @@ export function EvidenceIntake() {
                             <button
                               type="button"
                               className="btn-ghost"
-                              style={{ padding: "4px 10px", fontSize: 11, marginTop: 6 }}
+                              style={{ padding: "4px 10px", fontSize: 13, marginTop: 6 }}
                               onClick={(e) => { e.stopPropagation(); setFullscreenSource(source); }}
                             >
                               ⤢ Full screen
@@ -254,7 +289,12 @@ export function EvidenceIntake() {
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <NeoCard>
             <h2>Ingestion Pipeline</h2>
-            {!job ? (
+            {uploadingFile && !job ? (
+              <div className="upload-in-flight">
+                <div className="spinner" />
+                <p className="coverage-note">Uploading {uploadingFile}… large files can take a while, this page will switch to live stage tracking once the job is accepted.</p>
+              </div>
+            ) : !job ? (
               <p className="coverage-note">Upload a source to start a job.</p>
             ) : (
               <>
@@ -269,11 +309,23 @@ export function EvidenceIntake() {
                     </div>
                   ))}
                 </div>
-                <p className="coverage-note" style={{ marginBottom: 16 }}>
-                  This job record exposes state <span className="mono-id">{job.state}</span> / stage{" "}
-                  <span className="mono-id">{job.stage}</span>. Hash+Sample / Normalize / Batch Commit / Index are not
-                  individually observable stages on this backend yet — shown here as one combined in-progress phase.
-                </p>
+                <div className="ingest-progress">
+                  <div className="ingest-progress-head">
+                    <span className="mono-id">{job.state} · {job.stage}</span>
+                    <span className="ingest-progress-pct">
+                      {job.progress?.percent !== null && job.progress?.percent !== undefined
+                        ? `${job.progress.percent}%`
+                        : "in progress"}
+                    </span>
+                  </div>
+                  <div className={`ingest-progress-track ${job.progress?.determinate === false ? "indeterminate" : ""}`}>
+                    <div
+                      className="ingest-progress-fill"
+                      style={job.progress?.determinate !== false ? { width: `${job.progress?.percent ?? 0}%` } : undefined}
+                    />
+                  </div>
+                  <p className="coverage-note">{job.progress?.basis ?? "waiting for the worker to claim this job"}</p>
+                </div>
                 <div className="stat-grid">
                   <StatTile label="Rows seen" value={job.rows_seen} />
                   <StatTile label="Rows accepted" value={job.rows_accepted} />

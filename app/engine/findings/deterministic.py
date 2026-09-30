@@ -10,7 +10,7 @@ from itertools import pairwise
 from statistics import median
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from app.engine.graph.builder import _facts
@@ -20,7 +20,7 @@ from app.engine.motifs.deterministic import (
     propagate_synthetic_review_seeds,
 )
 from app.events import append_event
-from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed
+from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed, new_id
 
 RULE_VERSION = "deterministic-v1"
 FEATURE_SCHEMA_VERSION = "phase4.1-feature-v1"
@@ -490,6 +490,16 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
         feature["detector_result"] = {
             "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
             "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal.get("graph_path"),
+            # peeling_chain_candidate-only fields (None for other signal types): the
+            # per-hop breakdown and its already-computed real signal components were
+            # being thrown away here even though the detector fully computes them --
+            # this is the one place a UI wanting hop-level detail can read them back.
+            "steps": signal.get("steps"),
+            "hop_count": signal.get("hop_count"),
+            "total_duration_sec": signal.get("total_duration_sec"),
+            "peel_ratio": signal.get("peel_ratio"),
+            "velocity": signal.get("velocity"),
+            "cluster_link": signal.get("cluster_link"),
         }
         candidates.append(
             {
@@ -500,16 +510,29 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
                 "facts": [], "source_refs": signal["evidence_refs"], "coverage": {**coverage, **signal["coverage"]},
             }
         )
-    for (address, seconds, start), feature in features_by_key.items():
-        facts = output_events[(address, seconds, start)]
-        session.add(
-            FeatureRecord(
-                case_id=snapshot.case_id, snapshot_id=snapshot.id, graph_snapshot_id=graph.id,
-                entity_ref=f"address:{address}", window_start=start, window_end=start + timedelta(seconds=seconds),
-                feature_schema_version=FEATURE_SCHEMA_VERSION, feature_vector=feature, coverage=coverage,
-                source_refs=_dedupe_refs(facts),
-            )
-        )
+    # A real 20K-row import produces ~190K feature rows. Building that many ORM
+    # instances and letting the unit of work flush them one at a time dominated
+    # ingestion (measured: 51.8s of a ~80s import). A single bulk insert of plain
+    # dicts skips the identity map and per-object flush entirely for rows that
+    # are written once and never mutated in this transaction.
+    feature_rows = [
+        {
+            "id": new_id(),
+            "case_id": snapshot.case_id,
+            "snapshot_id": snapshot.id,
+            "graph_snapshot_id": graph.id,
+            "entity_ref": f"address:{address}",
+            "window_start": start,
+            "window_end": start + timedelta(seconds=seconds),
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "feature_vector": feature,
+            "coverage": coverage,
+            "source_refs": _dedupe_refs(output_events[(address, seconds, start)]),
+        }
+        for (address, seconds, start), feature in features_by_key.items()
+    ]
+    if feature_rows:
+        session.execute(insert(FeatureRecord), feature_rows)
     # Two distinct detector signals (e.g. two independent peeling chains, or a
     # peeling chain and a synthetic-seed propagation) can resolve to the same
     # address and the same window bucket. `entity_ref`/window/rule_id is the
@@ -526,43 +549,46 @@ def materialize_findings(session: Session, *, evidence_root, snapshot: Snapshot,
             deduped_candidates[key] = candidate
     candidates = list(deduped_candidates.values())
     candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
-    for rank, candidate in enumerate(candidates, 1):
-        feature_hash = _hash(candidate["feature"])
-        session.add(
-            FindingRecord(
-                case_id=snapshot.case_id,
-                snapshot_id=snapshot.id,
-                graph_snapshot_id=graph.id,
-                entity_ref=candidate["entity_ref"],
-                window_start=candidate["start"],
-                window_end=candidate["end"],
-                rule_id=candidate["rule_id"],
-                rule_version=RULE_VERSION,
-                claim=(
-                    f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
-                    f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
-                ),
-                raw_score=candidate["score"],
-                rank=rank,
-                coverage=candidate.get("coverage", coverage),
-                feature_vector=candidate["feature"],
-                feature_vector_hash=feature_hash,
-                explanations=candidate["explanations"],
-                benign_alternatives=candidate["alternatives"],
-                opposing_evidence=[
-                    {
-                        "kind": "coverage_limitation",
-                        "statement": (
-                            "This committed snapshot contains no ownership attribution or independently "
-                            "verified benign context; the pattern alone cannot establish either."
-                        ),
-                        "source_refs": [],
-                    }
-                ],
-                source_refs=candidate.get("source_refs", _dedupe_refs(candidate["facts"])),
-                status="open",
-            )
-        )
+    finding_rows = [
+        {
+            "id": new_id(),
+            "case_id": snapshot.case_id,
+            "snapshot_id": snapshot.id,
+            "graph_snapshot_id": graph.id,
+            "entity_ref": candidate["entity_ref"],
+            "window_start": candidate["start"],
+            "window_end": candidate["end"],
+            "rule_id": candidate["rule_id"],
+            "rule_version": RULE_VERSION,
+            "claim": (
+                f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
+                f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
+            ),
+            "finding_version": 1,
+            "raw_score": candidate["score"],
+            "rank": rank,
+            "coverage": candidate.get("coverage", coverage),
+            "feature_vector": candidate["feature"],
+            "feature_vector_hash": _hash(candidate["feature"]),
+            "explanations": candidate["explanations"],
+            "benign_alternatives": candidate["alternatives"],
+            "opposing_evidence": [
+                {
+                    "kind": "coverage_limitation",
+                    "statement": (
+                        "This committed snapshot contains no ownership attribution or independently "
+                        "verified benign context; the pattern alone cannot establish either."
+                    ),
+                    "source_refs": [],
+                }
+            ],
+            "source_refs": candidate.get("source_refs", _dedupe_refs(candidate["facts"])),
+            "status": "open",
+        }
+        for rank, candidate in enumerate(candidates, 1)
+    ]
+    if finding_rows:
+        session.execute(insert(FindingRecord), finding_rows)
     if candidates:
         append_event(
             session,

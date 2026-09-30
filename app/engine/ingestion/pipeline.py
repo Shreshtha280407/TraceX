@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.engine.adapters import ParsedRow, SourceParseError, rows_for_source
+from app.engine.adapters import ParsedRow, SourceParseError, count_records, rows_for_source
 from app.engine.canonical import NormalizationError, normalize_row
 from app.engine.catalogue import publish_batch
 from app.engine.findings import materialize_findings
@@ -252,6 +252,10 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     job.state = "running"
     job.stage = "ingesting"
     source.parser_revision = PARSER_REVISION
+    # Counted once, before parsing, purely so progress has a real denominator.
+    # None for formats that cannot be counted without a full parse.
+    if job.total_records is None:
+        job.total_records = count_records(source_path, source.source_format)
     session.commit()
     parsed_any = False
     batch_number = last_record // settings.ingestion_batch_records
@@ -323,15 +327,28 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         batch_number += 1
     if not parsed_any and last_record == 0:
         raise SourceParseError("source contains no records")
+    # Parsing is only about half of an import; graph build, deterministic
+    # findings and the ML layer follow. Those used to run entirely under the
+    # "ingesting" stage with no further writes, so a UI polling this job saw
+    # nothing change for the whole back half and looked hung. Each stage is now
+    # committed as it starts, which is what the intake page reports live.
+    def _stage(name: str) -> None:
+        job.stage = name
+        job.lease_expires_at = utcnow() + timedelta(seconds=settings.lease_seconds)
+        session.commit()
+
     snapshot = _snapshot_for_job(session, job, source)
     snapshot.state = "graph_building"
+    _stage("graph_building")
     graph = build_graph_snapshot(session, evidence_root=settings.evidence_root, snapshot=snapshot)
     graph_record = session.get(GraphSnapshot, graph.graph_snapshot_id)
     if graph_record is None:
         raise RuntimeError("graph snapshot receipt was not persisted")
+    _stage("findings")
     finding_count = materialize_findings(
         session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record
     )
+    _stage("ml_scoring")
     ml_result = _materialize_ml_findings(session, settings=settings, snapshot=snapshot, graph=graph_record)
     snapshot.provisional = False
     snapshot.state = "complete"

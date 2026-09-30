@@ -92,6 +92,51 @@ def detect_peeling_chains(
     outputs_by_tx: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for output in outputs:
         outputs_by_tx[output["txid"]].append(output)
+    inputs_by_tx: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for tx_input in inputs:
+        inputs_by_tx[tx_input["txid"]].append(tx_input)
+
+    def _address_of(output: dict[str, Any] | None) -> str | None:
+        if output is None:
+            return None
+        value = output.get("address") or output.get("script_id")
+        return str(value) if value else None
+
+    def _hop_detail(spending_txid: str, previous: dict[str, Any], continuation: dict[str, Any] | None) -> dict[str, Any]:
+        """Per-hop context a reviewer needs to read the chain without re-querying
+        the graph: which addresses each hop moved between, the transaction's own
+        in/out arity, the sibling outputs actually peeled off at this hop, and the
+        co-spent input addresses behind the common-input-ownership signal."""
+        tx_inputs = inputs_by_tx.get(spending_txid, [])
+        tx_outputs = outputs_by_tx.get(spending_txid, [])
+        continuation_key = (continuation["txid"], continuation["vout"]) if continuation else None
+        peels = [
+            {
+                "output_id": f"out:{item['txid']}:{item['vout']}",
+                "address": _address_of(item),
+                "amount_sats": item["amount_sats"],
+                # "spent" here means a uniquely-resolved onward spend exists in
+                # this snapshot -- an unspent peel is a real terminal output.
+                "is_spent": (item["txid"], item["vout"]) in spenders,
+            }
+            for item in sorted(tx_outputs, key=lambda o: (-o["amount_sats"], o["vout"]))
+            if (item["txid"], item["vout"]) != continuation_key
+        ]
+        co_spend_addresses = sorted({addr for item in tx_inputs if (addr := item.get("address"))})
+        return {
+            "previous_address": _address_of(previous),
+            "previous_script_type": previous.get("script_type"),
+            "continuing_address": _address_of(continuation),
+            "continuing_script_type": continuation.get("script_type") if continuation else None,
+            "input_count": len(tx_inputs),
+            "output_count": len(tx_outputs),
+            # Bounded so a wide transaction can't bloat the stored finding row.
+            "peel_outputs": peels[:4],
+            "peel_output_total": len(peels),
+            "co_spend_addresses": co_spend_addresses[:6],
+            "co_spend_input_address_count": len(co_spend_addresses),
+        }
+
     spenders = resolved_spenders(inputs, outputs_by_outpoint)
     tx_times = {
         txid: _time(fact.get("block_time") or fact.get("source_timestamp")) for txid, fact in transactions.items()
@@ -126,6 +171,7 @@ def detect_peeling_chains(
                         "continuing_value_sats": None,
                         "timestamp": (tx_times.get(spending_txid).isoformat() if tx_times.get(spending_txid) else None),
                         "edge_ids": [edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY")],
+                        **_hop_detail(spending_txid, previous, None),
                     }
                 )
                 break
@@ -142,6 +188,7 @@ def detect_peeling_chains(
                         edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY"),
                         edge_id(f"tx:{spending_txid}", f"out:{continuation['txid']}:{continuation['vout']}", "CREATES_OUTPUT"),
                     ],
+                    **_hop_detail(spending_txid, previous, continuation),
                 }
             )
             current = (continuation["txid"], continuation["vout"])
@@ -173,6 +220,11 @@ def detect_peeling_chains(
         refs = dedupe_refs(*evidence_facts)
         evidence_coverage = min(1.0, len(refs) / max(1, len(steps)))
         score = max(0.0, min(1.0, (min(1.0, len(steps) / max_hops) + regularity + time_continuity + evidence_coverage) / 4))
+        # Real, deterministic common-input-ownership signal (see _hop_detail):
+        # fraction of hops whose spending tx combines >=2 distinct input addresses
+        # in one signature set. Kept alongside score's own components rather than
+        # recomputed downstream from raw steps -- one source of truth per signal.
+        cluster_link_ratio = sum(1 for step in steps if step["co_spend_input_address_count"] >= 2) / len(steps)
         start_output = outputs_by_outpoint[start_outpoint]
         results.append(
             {
@@ -185,6 +237,9 @@ def detect_peeling_chains(
                 "steps": steps,
                 "hop_count": len(steps),
                 "total_duration_sec": float(duration),
+                "peel_ratio": regularity,
+                "velocity": time_continuity,
+                "cluster_link": cluster_link_ratio,
                 "score": score,
                 "coverage": {
                     "verified_utxo_hops": len(steps),

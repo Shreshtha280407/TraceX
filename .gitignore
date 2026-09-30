@@ -30,6 +30,10 @@ frontend/.env.*
 # Locally generated Phase 5A 100K dataset artifacts.
 /datasets/phase5a_100k/
 
+# Manually sliced test datasets (e.g. a 20K-row prefix for local upload testing) --
+# derived from the fixture above, not source, never committed.
+/datasets/ingestion_rows_*.csv
+
 # Phase 5B run outputs: feature packages, fitted model artifacts, candidate logs.
 # Comparison/selection is reproducible from source + the fixture; nothing here is
 # committed.

@@ -114,6 +114,34 @@ def _xml_rows(path: Path) -> Iterator[ParsedRow]:
         raise SourceParseError("XML contains no transaction, record, or row elements")
 
 
+def count_records(path: Path, source_format: str) -> int | None:
+    """Cheap record count for a progress denominator, or None when the format
+    cannot be counted without a full parse.
+
+    Line-oriented formats are counted with a buffered byte scan (no decoding,
+    no parsing), which is fast enough to run once before ingestion. JSON arrays
+    and XML need real parsing to count, so they report None and the UI shows an
+    indeterminate progress state rather than a number it had to invent.
+    """
+    if source_format not in {"csv", "ndjson"}:
+        return None
+    try:
+        newlines = 0
+        ends_with_newline = True
+        with path.open("rb") as handle:
+            while chunk := handle.read(1 << 20):
+                newlines += chunk.count(b"\n")
+                ends_with_newline = chunk.endswith(b"\n")
+        if newlines == 0:
+            return None
+        # A final line with no trailing newline still holds a record.
+        lines = newlines if ends_with_newline else newlines + 1
+        # CSV's first line is the header, which is not a record.
+        return max(lines - 1, 0) if source_format == "csv" else lines
+    except OSError:
+        return None
+
+
 def rows_for_source(path: Path, source_format: str) -> Iterator[ParsedRow]:
     if source_format == "csv":
         return _csv_rows(path)

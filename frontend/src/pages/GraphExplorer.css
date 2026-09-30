@@ -1,44 +1,140 @@
-.graph-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
-@media (max-width: 1300px) { .graph-layout { grid-template-columns: 1fr; } }
+/* Fund-flow explorer — styling mirrors docs/tracex_graph_mockup.svg. The canvas
+   itself is an SVG (components/FundFlowGraph.tsx); everything here is the page
+   chrome and the right-hand "Selected path" panel around it. */
 
-.graph-canvas-wrap { padding: 0; overflow: hidden; position: relative; }
-.graph-canvas-wrap svg { width: 100%; height: 600px; display: block; cursor: grab; touch-action: none; }
-.graph-canvas-wrap svg.dragging { cursor: grabbing; }
+.ff-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ff-counters { display: flex; gap: 18px; font-size: 12px; color: var(--ink-mute); white-space: nowrap; }
+.ff-counters b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
 
-.graph-toolbar { position: absolute; top: 14px; display: flex; gap: 6px; z-index: 5; }
-.graph-toolbar-right { right: 14px; }
-.graph-toolbar button {
-  width: 32px; height: 32px; border-radius: 9px; background: var(--surface-3); border: 1px solid var(--line);
-  color: var(--ink); font-size: 16px; line-height: 1; cursor: pointer; display: flex; align-items: center;
-  justify-content: center; box-shadow: 3px 3px 8px var(--shadow-d), -2px -2px 6px var(--shadow-l);
+.ff-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr) 360px; gap: 14px; align-items: start; margin-top: 14px; }
+@media (max-width: 1500px) { .ff-layout { grid-template-columns: 220px minmax(0, 1fr); } .ff-panel { grid-column: 1 / -1; } }
+@media (max-width: 1000px) { .ff-layout { grid-template-columns: 1fr; } }
+
+/* The canvas keeps the mockup's fixed 162px column pitch at any hop count, so a
+   long chain scrolls sideways rather than being squeezed into illegibility. */
+.ff-canvas-wrap { min-width: 0; }
+.ff-scroll { overflow-x: auto; border-radius: 12px; }
+.ff-svg { display: block; max-width: none; }
+.ff-svg .ff-chip { cursor: pointer; }
+
+.ff-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ff-toolbar button {
+  width: 30px; height: 30px; border-radius: 8px; background: var(--surface-3); border: 1px solid var(--line);
+  color: var(--ink); font-size: 15px; line-height: 1; cursor: pointer;
 }
-.graph-toolbar button:hover { border-color: var(--mustard-glow); color: var(--mustard); }
-.graph-toolbar-back {
-  width: auto !important; padding: 0 14px; font-size: 13px !important; font-weight: 600; gap: 6px;
+.ff-toolbar button:hover:not(:disabled) { border-color: var(--mustard-glow); color: var(--mustard); }
+.ff-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
+.ff-zoom-label { font-size: 12px; color: var(--ink-dim); font-family: 'IBM Plex Mono', monospace; min-width: 42px; text-align: center; }
+.ff-hint { font-size: 11px; color: var(--ink-mute); margin-left: auto; }
+.ff-note {
+  font-size: 12px; color: var(--ink-dim); background: var(--surface-3); border: 1px solid var(--mustard-glow);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 12px;
 }
-
-.legend-row { display: flex; align-items: baseline; gap: 8px; font-size: 11px; color: var(--ink-dim); margin-bottom: 8px; }
-.legend-swatch { width: 18px; height: 2px; flex: 0 0 auto; align-self: center; }
-.legend-swatch.dashed { background: none; border-top: 2px dashed var(--ink-mute); }
-.legend-sub { color: var(--ink-mute); font-size: 10px; }
-
-.node-flag { fill: var(--danger); }
-.node-seed { fill: var(--mustard); }
-.node-normal { fill: var(--ink-mute); }
-.graph-node-circle { stroke: rgba(0,0,0,0.35); stroke-width: 1px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.55)); }
-.node-selected { stroke: var(--mustard); stroke-width: 3px; filter: drop-shadow(0 0 6px var(--mustard-glow)); }
-.node-seed-ring { fill: none; stroke: var(--mustard); stroke-width: 2px; stroke-dasharray: 3 3; opacity: 0.9; }
-
-.node-action-chip .chip-bg { fill: var(--mustard); filter: drop-shadow(2px 2px 5px var(--shadow-d)); pointer-events: none; }
-.node-action-chip .chip-hit-area { fill: transparent; }
-.node-action-chip text { fill: #161409; font-size: 9px; font-weight: 700; pointer-events: none; }
-.node-action-chip { cursor: pointer; }
-
-.depth-custom-row { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.depth-custom-row input {
-  background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
-  color: var(--ink); font-size: 14px; width: 90px;
-  box-shadow: inset 3px 3px 7px var(--shadow-d), inset -2px -2px 5px var(--shadow-l);
+.ff-note-clear {
+  margin-left: auto; background: none; border: none; color: var(--mustard); font: inherit;
+  font-size: 11px; cursor: pointer; text-decoration: underline; padding: 0;
 }
-.depth-custom-row input:focus { outline: 1px solid var(--mustard-glow); }
+/* A dead-end "set as source" has to be unmissable, not a quiet grey line. */
+.ff-note-danger {
+  border-color: var(--danger); color: #f08a72; font-weight: 600;
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-3));
+}
+.ff-note-danger .ff-note-clear { color: #f08a72; }
 
+/* ---- Searchable path picker ---- */
+.ff-picker { position: sticky; top: 14px; }
+.ff-search {
+  width: 100%; margin: 8px 0 10px; padding: 8px 10px; font-size: 12px; color: var(--ink);
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 9px;
+}
+.ff-search:focus { outline: 1px solid var(--mustard-glow); }
+.ff-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 460px; overflow-y: auto; padding-right: 4px; }
+.ff-picker-row {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; padding: 8px 9px;
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+  color: var(--ink); font: inherit; text-align: left;
+}
+.ff-picker-row:hover { border-color: var(--mustard-glow); }
+.ff-picker-row.active { border-color: var(--mustard); background: color-mix(in srgb, var(--mustard) 10%, var(--surface-3)); }
+.ff-picker-code { font-size: 11px; font-weight: 700; color: var(--mustard); }
+.ff-picker-ref { font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.ff-picker-meta { font-size: 10px; color: var(--ink-mute); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ff-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.ff-dot.tone-danger { background: var(--danger); }
+.ff-dot.tone-warning { background: var(--mustard); }
+.ff-dot.tone-muted { background: var(--ink-mute); }
+.ff-picker-count { margin-top: 8px; font-size: 11px; }
+
+.ff-panel-head { display: flex; align-items: center; justify-content: space-between; }
+.ff-close {
+  background: none; border: none; color: var(--ink-mute); font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.ff-close:hover { color: var(--mustard); }
+.ff-kv-long { font-size: 11px !important; word-break: break-all; text-align: right; max-width: 210px; }
+
+.ff-panel {
+  background: #15140f; border: 1px solid #2a2720; border-radius: 12px; padding: 20px;
+  display: flex; flex-direction: column;
+}
+.ff-panel-label { font-size: 11px; letter-spacing: 0.08em; color: var(--ink-mute); font-weight: 600; }
+.ff-section { margin-top: 20px; margin-bottom: 8px; }
+.ff-panel-title { font-size: 20px; margin: 10px 0 4px; color: #efe9db; }
+.ff-panel-sub { font-size: 12px; color: var(--ink-mute); margin: 0 0 12px; }
+
+.ff-risk-badge {
+  align-self: flex-start; font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 12px; margin-bottom: 10px;
+}
+.ff-risk-badge.tone-danger { background: #2a1410; border: 1px solid var(--danger); color: #f08a72; }
+.ff-risk-badge.tone-warning { background: #2a2110; border: 1px solid var(--mustard); color: var(--mustard); }
+.ff-risk-badge.tone-muted { background: #1c1a14; border: 1px solid #3a362b; color: var(--ink-mute); }
+
+.ff-kv {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid #25221b; font-size: 12px; color: var(--ink-mute);
+}
+.ff-kv b { font-size: 13px; color: var(--ink); font-weight: 500; }
+.ff-kv-bar { gap: 8px; }
+.ff-conf-track { flex: 1; height: 5px; border-radius: 2.5px; background: #26231b; overflow: hidden; }
+.ff-conf-fill { display: block; height: 100%; background: var(--mustard); border-radius: 2.5px; }
+
+.ff-reasons { margin: 0 0 8px; padding-left: 16px; font-size: 12.5px; color: var(--ink); display: flex; flex-direction: column; gap: 5px; }
+.ff-reasons li::marker { color: var(--mustard); }
+
+.ff-evidence { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+.ff-tag { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; flex: 0 0 auto; width: 78px; text-align: center; }
+.ff-tag-observed { background: #10222a; border: 1px solid #5f8fa3; color: #7cc4e0; }
+.ff-tag-inferred { background: none; border: 1px dashed var(--ink-mute); color: #b5ae9c; }
+.ff-tag-suspected { background: #24160c; border: 1px dotted #e0802f; color: #f0a066; }
+.ff-evidence-main { font-size: 12px; color: var(--ink); }
+.ff-evidence-sub { font-size: 11px; color: var(--ink-mute); margin-top: 2px; word-break: break-all; }
+
+.ff-signal { display: grid; grid-template-columns: 84px 1fr 34px; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ff-signal-label { font-size: 12px; color: var(--ink-mute); }
+.ff-signal-track { height: 6px; border-radius: 3px; background: #26231b; overflow: hidden; }
+.ff-signal-fill { display: block; height: 100%; background: var(--mustard); border-radius: 3px; transition: width 0.3s ease; }
+.ff-signal-value { font-size: 12px; color: var(--ink); font-family: 'IBM Plex Mono', monospace; text-align: right; }
+
+.ff-actions { display: flex; gap: 10px; margin-top: 20px; }
+.ff-btn {
+  flex: 1; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  background: #17150f; border: 1px solid #3a362b; color: var(--ink);
+}
+.ff-btn:hover { border-color: var(--mustard-glow); }
+.ff-btn-primary { background: color-mix(in srgb, var(--mustard) 16%, transparent); border-color: var(--mustard); color: var(--mustard); }
+.ff-btn-on { border-color: var(--mustard); color: var(--mustard); }
+.ff-footnote { font-size: 11px; color: #6f6a5d; margin: 14px 0 0; line-height: 1.5; }
+
+/* ---- Suspicious Path tab ---- */
+.path-list-card { margin-top: 14px; }
+.path-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.path-list-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px;
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
+  text-align: left; color: var(--ink); font: inherit;
+}
+.path-list-row:hover { border-color: var(--mustard-glow); }
+.path-list-row.active { border-color: var(--mustard); background: color-mix(in srgb, var(--mustard) 8%, var(--surface-3)); }
+.path-list-main { display: flex; flex-direction: column; gap: 3px; }
+.path-list-type { font-weight: 600; font-size: 13px; }
+.path-list-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-dim); }

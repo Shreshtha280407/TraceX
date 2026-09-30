@@ -39,7 +39,7 @@
 .landing-eyebrow,
 .auth-eyebrow {
   color: var(--ink-mute);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.16em;
   margin: 0 0 24px;
@@ -116,7 +116,7 @@
 
 .landing-trust li {
   color: var(--ink-dim);
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.04em;
 }
 

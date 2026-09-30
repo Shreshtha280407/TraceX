@@ -1,507 +1,507 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, EmptyState, FilterPills } from "../components/primitives";
-import { api, ApiError, ML_RULE_VERSION, type GraphResponse, type Finding } from "../lib/api";
-import { computeLayout, type LayoutPoint } from "../graph/forceLayout";
+import { FundFlowGraph, ZOOM_STEPS, type GraphNodeInfo } from "../components/FundFlowGraph";
+import { api, ApiError, type Finding, type PathSignals } from "../lib/api";
 import "./GraphExplorer.css";
 
-type BrowseFilterId = "all" | "deterministic" | "ml";
+// Entities / Clusters / Temporal were removed rather than left as dead tabs:
+// entity attribution has no data source in this build, while clustering and
+// temporal information are already rendered inside Fund flow itself (dashed
+// co-spend cluster boxes and the elapsed timeline), so separate empty views
+// would have been navigation noise pointing at capability that is already here.
+type TabId = "fund-flow" | "suspicious-path";
 
-const EDGE_COLOR: Record<string, string> = {
-  SPENT_BY: "var(--danger)",
-  CREATES_OUTPUT: "var(--info)",
-  OBSERVED_TX: "var(--mustard)",
-  LOCKED_TO: "var(--ink-mute)",
-  POSSIBLE_COMMON_CONTROL: "var(--ink-mute)",
+const TABS: { id: TabId; label: string }[] = [
+  { id: "fund-flow", label: "Fund flow" },
+  { id: "suspicious-path", label: "Suspicious path" },
+];
+
+// Only these rule_ids ever carry a graph_path (app/engine/motifs/deterministic.py).
+// Everything else is a plain address/window observation with no path to draw.
+const PATH_RULE_IDS = ["peeling_chain_candidate", "coinjoin_like_structure", "synthetic_seed_proximity"];
+
+const FINDING_TYPE_LABEL: Record<string, string> = {
+  peeling_chain_candidate: "Peeling chain",
+  coinjoin_like_structure: "Equal-output structuring",
+  synthetic_seed_proximity: "Synthetic seed proximity",
 };
 
-const EDGE_MARKER: Record<string, string> = {
-  SPENT_BY: "url(#arrow-input)",
-  CREATES_OUTPUT: "url(#arrow-output)",
-  OBSERVED_TX: "url(#arrow-observed)",
-};
+function humanizeFindingType(ruleId: string): string {
+  return FINDING_TYPE_LABEL[ruleId] ?? ruleId.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
-// Widescreen viewBox so the canvas genuinely fills the middle column instead of
-// letterboxing inside a near-square SVG aspect ratio.
-const WIDTH = 1040;
-const HEIGHT = 600;
-// Backend hard-clamps depth to 1..5 (app/api/routes.py) -- each extra BFS hop
-// multiplies the frontier before node_limit/edge_limit cut it off, so this isn't
-// an arbitrary UI choice, it's the real ceiling the API enforces.
-const MAX_DEPTH = 5;
-const ZOOM_MIN_W = WIDTH * 0.22;
-const ZOOM_MAX_W = WIDTH * 2.4;
+function humanizeReasonCode(code: string): string {
+  return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
-type ViewBox = { x: number; y: number; w: number; h: number };
-const DEFAULT_VIEWBOX: ViewBox = { x: 0, y: 0, w: WIDTH, h: HEIGHT };
+/** Risk comes from the detector's OWN score, not the case-wide rank percentile.
+ * Rank orders every rule type together even though their raw_score scales
+ * genuinely differ, which produced the incoherent "Confidence 1.00 / LOW
+ * PRIORITY" pairing on a maximal-confidence chain. */
+function riskTier(score: number): { label: string; tone: "danger" | "warning" | "muted" } {
+  if (score >= 0.75) return { label: "HIGH RISK", tone: "danger" };
+  if (score >= 0.5) return { label: "MEDIUM RISK", tone: "warning" };
+  return { label: "LOW RISK", tone: "muted" };
+}
 
-/** Short, collision-resistant label for canvas text. Output-node labels carry
- * their disambiguating ":<vout>" as a suffix, so a naive front slice(0, n) always
- * cuts it off and makes a transaction and every one of its own outputs render
- * identically. Keep a short head plus whatever suffix distinguishes the id. */
-function shortLabel(label: string): string {
-  if (label.length <= 14) return label;
-  const suffixMatch = label.match(/:(\d+)$/);
-  if (suffixMatch) {
-    const base = label.slice(0, label.length - suffixMatch[0].length);
-    return `${base.slice(0, 6)}…:${suffixMatch[1]}`;
-  }
-  return `${label.slice(0, 6)}…${label.slice(-4)}`;
+function btc(satoshis: number | null | undefined): string {
+  if (satoshis === null || satoshis === undefined) return "—";
+  const v = satoshis / 1e8;
+  if (v > 0 && v < 0.01) return `${v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")} BTC`;
+  return `${v.toFixed(2)} BTC`;
+}
+
+function formatDuration(totalSeconds: number | null | undefined): string {
+  if (totalSeconds === null || totalSeconds === undefined || totalSeconds <= 0) return "—";
+  const s = Math.round(totalSeconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h} hr ${m % 60} min` : `${h} hr`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
+}
+
+function shortId(id: string): string {
+  const bare = id.includes(":") ? id.split(":").slice(1).join(":") : id;
+  return bare.length <= 14 ? bare : `${bare.slice(0, 6)}…${bare.slice(-4)}`;
+}
+
+function pathCode(finding: Finding): string {
+  return `P-${String(finding.rank ?? 0).padStart(2, "0")}`;
+}
+
+function SignalBar({ label, value }: { label: string; value: number | null | undefined }) {
+  const pct = value === null || value === undefined ? null : Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return (
+    <div className="ff-signal">
+      <span className="ff-signal-label">{label}</span>
+      <span className="ff-signal-track">
+        <span className="ff-signal-fill" style={{ width: `${pct ?? 0}%`, opacity: pct === null ? 0.25 : 1 }} />
+      </span>
+      <span className="ff-signal-value">{pct === null ? "n/a" : (pct / 100).toFixed(2)}</span>
+    </div>
+  );
 }
 
 export function GraphExplorer() {
   const { caseId } = useParams<{ caseId: string }>();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [seedInput, setSeedInput] = useState(searchParams.get("seed") ?? "");
-  const [seed, setSeed] = useState(searchParams.get("seed") ?? "");
-  const [seedHistory, setSeedHistory] = useState<string[]>([]);
-  const [depth, setDepth] = useState(2);
-  const [customDepthOpen, setCustomDepthOpen] = useState(false);
-  const [graph, setGraph] = useState<GraphResponse | null>(null);
-  const [notFound, setNotFound] = useState(false);
+  const [findings, setFindings] = useState<Finding[] | null>(null);
+  const [pathFindings, setPathFindings] = useState<Finding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [findings, setFindings] = useState<Finding[]>([]);
-  const [browseFilter, setBrowseFilter] = useState<BrowseFilterId>("all");
-  const [comboOpen, setComboOpen] = useState(false);
-  const [viewBox, setViewBox] = useState<ViewBox>(DEFAULT_VIEWBOX);
-  const [isDragging, setIsDragging] = useState(false);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const dragState = useRef({ active: false, lastX: 0, lastY: 0 });
-  const unhoverTimer = useRef<number | null>(null);
-
-  /** The "set as source" chip floats a few px away from the node it belongs to, so
-   * moving the pointer from one to the other briefly leaves both elements' hit areas.
-   * Clearing hoveredId on that exact mouseleave made the chip disappear mid-move,
-   * before a click could land on it. A short cancellable delay bridges the gap. */
-  function hoverNode(id: string) {
-    if (unhoverTimer.current) { window.clearTimeout(unhoverTimer.current); unhoverTimer.current = null; }
-    setHoveredId(id);
-  }
-  function scheduleUnhover(id: string) {
-    if (unhoverTimer.current) window.clearTimeout(unhoverTimer.current);
-    unhoverTimer.current = window.setTimeout(() => {
-      setHoveredId((h) => (h === id ? null : h));
-      unhoverTimer.current = null;
-    }, 250);
-  }
+  const [activeTab, setActiveTab] = useState<TabId>("fund-flow");
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [signals, setSignals] = useState<PathSignals | null>(null);
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
+  const [unresolvedSeed, setUnresolvedSeed] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [zoomIdx, setZoomIdx] = useState(3);
+  const [node, setNode] = useState<GraphNodeInfo | null>(null);
+  const [sourceNodeId, setSourceNodeId] = useState<string | null>(null);
+  const [sourceNote, setSourceNote] = useState<string | null>(null);
+  const [sourceNoteTone, setSourceNoteTone] = useState<"info" | "danger">("info");
 
   useEffect(() => {
     if (!caseId) return;
-    api.listFindings(caseId, 200, 0).then((r) => setFindings(r.findings));
-  }, [caseId]);
-
-  const openFindings = useMemo(() => findings.filter((f) => f.status === "open"), [findings]);
-
-  // Local UI state (seed, loaded graph, browse query) does not automatically
-  // clear when :caseId changes on this route -- React Router updates the param
-  // without remounting the component. Skip the very first run (caseId going
-  // from undefined to its initial value) so a seed passed in via ?seed= from
-  // another page survives the initial load; only a genuine case switch clears it.
-  const previousCaseId = useRef(caseId);
-  useEffect(() => {
-    if (previousCaseId.current !== undefined && previousCaseId.current !== caseId) {
-      setSeed("");
-      setSeedInput("");
-      setSeedHistory([]);
-      setGraph(null);
-      setBrowseFilter("all");
-      setComboOpen(false);
-      setCustomDepthOpen(false);
-    }
-    previousCaseId.current = caseId;
-  }, [caseId]);
-
-  const browseResults = useMemo(() => {
-    let list = findings;
-    if (browseFilter === "deterministic") list = list.filter((f) => f.rule_version !== ML_RULE_VERSION);
-    else if (browseFilter === "ml") list = list.filter((f) => f.rule_version === ML_RULE_VERSION);
-    if (seedInput.trim()) {
-      const q = seedInput.trim().toLowerCase();
-      list = list.filter((f) => f.entity_ref.toLowerCase().includes(q));
-    }
-    const byRef = new Map<string, Finding>();
-    for (const f of list) {
-      const existing = byRef.get(f.entity_ref);
-      if (!existing || (f.rank ?? Infinity) < (existing.rank ?? Infinity)) byRef.set(f.entity_ref, f);
-    }
-    return [...byRef.values()].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 30);
-  }, [findings, browseFilter, seedInput]);
-
-  /** Every user-driven jump to a new seed (combobox pick, Load, Enter, or the
-   * hover "Set as source" action on a node) funnels through here so the back
-   * arrow always has an accurate trail to undo through. */
-  function goToSeed(next: string) {
-    const trimmed = next.trim();
-    if (!trimmed) return;
-    setSeedHistory((h) => (seed && seed !== trimmed ? [...h, seed] : h));
-    setSeedInput(trimmed);
-    setSeed(trimmed);
-    setComboOpen(false);
-  }
-
-  function goBack() {
-    setSeedHistory((h) => {
-      if (h.length === 0) return h;
-      const prev = h[h.length - 1];
-      setSeedInput(prev);
-      setSeed(prev);
-      return h.slice(0, -1);
-    });
-  }
-
-  function onComboBlur(event: React.FocusEvent<HTMLDivElement>) {
-    if (!event.currentTarget.contains(event.relatedTarget)) setComboOpen(false);
-  }
-
-  useEffect(() => {
-    if (!caseId || !seed) return;
-    setError(null);
-    setNotFound(false);
+    setFindings(null);
+    setSelectedFindingId(null);
     api
-      .getGraph(caseId, seed, depth, 200, 500)
-      .then((result) => {
-        setGraph(result);
-        setSelectedId(result.nodes.find((n) => n.id === seed)?.id ?? result.nodes[0]?.id ?? null);
-        setViewBox(DEFAULT_VIEWBOX);
-      })
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 409) setNotFound(true);
-        else setError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend.");
-      });
-  }, [caseId, seed, depth]);
+      .listFindings(caseId, 200, 0)
+      .then((r) => setFindings(r.findings))
+      .catch((err) => setError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend."));
+  }, [caseId]);
 
-  const positions = useMemo(() => {
-    if (!graph) return new Map<string, LayoutPoint>();
-    return computeLayout(
-      graph.nodes.map((n) => n.id),
-      graph.edges.map((e) => ({ from: e.from, to: e.to })),
-      WIDTH,
-      HEIGHT
+  // `findings` is the top-200 by case-wide rank, but rank is one ordering across
+  // every rule type and their raw_score scales genuinely differ -- a real peeling
+  // chain can sit far past position 200. Fetch path-shaped rule_ids directly.
+  useEffect(() => {
+    if (!caseId) return;
+    setPathFindings(null);
+    api
+      .listFindings(caseId, 200, 0, PATH_RULE_IDS)
+      .then((r) =>
+        setPathFindings(
+          r.findings.filter((f) => f.graph_path && f.status === "open").sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity))
+        )
+      )
+      .catch(() => setPathFindings([]));
+  }, [caseId]);
+
+  // Other pages link here with ?seed=<entity_ref>, which may name a finding that
+  // has no path at all. Resolve once both fetches land; otherwise open on the
+  // top-ranked real path so Fund Flow is never blank for no reason.
+  useEffect(() => {
+    if (!findings || !pathFindings || selectedFindingId) return;
+    const seed = searchParams.get("seed");
+    if (seed) {
+      const match = [...pathFindings, ...findings].find((f) => f.entity_ref === seed);
+      if (match?.graph_path) {
+        setSelectedFindingId(match.finding_id);
+        return;
+      }
+      if (match) {
+        setUnresolvedSeed(seed);
+        return;
+      }
+    }
+    if (pathFindings.length > 0) setSelectedFindingId(pathFindings[0].finding_id);
+  }, [findings, pathFindings, searchParams, selectedFindingId]);
+
+  const selected = useMemo(
+    () => pathFindings?.find((f) => f.finding_id === selectedFindingId) ?? findings?.find((f) => f.finding_id === selectedFindingId) ?? null,
+    [pathFindings, findings, selectedFindingId]
+  );
+
+  useEffect(() => {
+    setSignals(null);
+    setNode(null);
+    if (!selected || selected.rule_id !== "peeling_chain_candidate") return;
+    api.getPathSignals(selected.finding_id).then(setSignals).catch(() => undefined);
+  }, [selected]);
+
+  const filteredPaths = useMemo(() => {
+    const list = pathFindings ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (f) =>
+        f.entity_ref.toLowerCase().includes(q) ||
+        pathCode(f).toLowerCase().includes(q) ||
+        humanizeFindingType(f.rule_id).toLowerCase().includes(q) ||
+        (f.steps ?? []).some((s) => s.spending_transaction_id.toLowerCase().includes(q))
     );
-  }, [graph]);
+  }, [pathFindings, query]);
 
-  const flaggedIds = useMemo(() => new Set(openFindings.map((f) => f.entity_ref)), [openFindings]);
-  const degreeOf = (id: string) => graph?.edges.filter((e) => e.from === id || e.to === id).length ?? 0;
-  const selectedNode = graph?.nodes.find((n) => n.id === selectedId) ?? null;
-  const selectedFinding = selectedNode ? openFindings.find((f) => f.entity_ref === selectedNode.id) : undefined;
-  const hoveredPos = hoveredId ? positions.get(hoveredId) : null;
+  function selectPath(findingId: string) {
+    setSelectedFindingId(findingId);
+    setUnresolvedSeed(null);
+    setSourceNote(null);
+    setActiveTab("fund-flow");
+  }
 
-  const coverage = graph?.coverage as
-    | { missing_outpoint_inputs?: number; unknown_prior_output_inputs?: number; spend_lineage_complete?: boolean; value_violations?: number }
-    | undefined;
+  /** Re-root the view on a node: mark it as the source (the graph highlights it
+   * and scrolls it to centre) and, when another detected path starts at or runs
+   * through it, switch to that path. Never fabricates a path that isn't in the
+   * data — if nothing else covers the node, the current path simply stays. */
+  function setSource(nodeId: string) {
+    const list = pathFindings ?? [];
+    // graph_path.nodes only records out:/tx: ids, so an address node has to be
+    // matched against the step detail instead -- otherwise every address on the
+    // chain in front of you would be reported as "not on this path".
+    const onCurrent =
+      (selected?.graph_path?.nodes.includes(nodeId) ?? false) ||
+      (selected?.steps ?? []).some(
+        (s) =>
+          `address:${s.previous_address}` === nodeId ||
+          `address:${s.continuing_address}` === nodeId ||
+          s.co_spend_addresses.some((a) => `address:${a}` === nodeId) ||
+          s.peel_outputs.some((p) => p.output_id === nodeId || `address:${p.address}` === nodeId)
+      );
+    const exact = list.find((f) => f.entity_ref === nodeId);
+    const containing = list.find((f) => f.finding_id !== selectedFindingId && f.graph_path?.nodes.includes(nodeId));
+    const target = exact ?? containing;
 
-  function zoomBy(factor: number) {
-    setViewBox((vb) => {
-      const newW = Math.min(ZOOM_MAX_W, Math.max(ZOOM_MIN_W, vb.w * factor));
-      const newH = newW * (HEIGHT / WIDTH);
-      const cx = vb.x + vb.w / 2;
-      const cy = vb.y + vb.h / 2;
-      return { x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH };
+    // Nothing to explore from here: say so loudly and leave the current source
+    // untouched rather than silently "selecting" a dead end.
+    if (!onCurrent && (!target || target.finding_id === selectedFindingId)) {
+      setSourceNote(`No detected path starts at or passes through ${shortId(nodeId)} in this case — not set as source.`);
+      setSourceNoteTone("danger");
+      return;
+    }
+
+    setSourceNodeId(nodeId);
+    setNode(null);
+    setSourceNoteTone("info");
+    if (target && target.finding_id !== selectedFindingId) {
+      setSourceNote(`Source set to ${shortId(nodeId)} — switched to ${pathCode(target)}, which also covers it.`);
+      setSelectedFindingId(target.finding_id);
+      return;
+    }
+    setSourceNote(`Source set to ${shortId(nodeId)} — centred on the path you're viewing.`);
+  }
+
+  function togglePin(findingId: string) {
+    setPinned((p) => {
+      const next = new Set(p);
+      if (next.has(findingId)) next.delete(findingId);
+      else next.add(findingId);
+      return next;
     });
   }
-  const resetView = () => setViewBox(DEFAULT_VIEWBOX);
 
-  function onSvgPointerDown(e: React.PointerEvent<SVGSVGElement>) {
-    if (e.target !== e.currentTarget) return; // only pan when grabbing empty canvas, not a node/edge
-    dragState.current = { active: true, lastX: e.clientX, lastY: e.clientY };
-    setIsDragging(true);
-  }
-  function onSvgPointerMove(e: React.PointerEvent<SVGSVGElement>) {
-    if (!dragState.current.active || !svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const scaleX = viewBox.w / rect.width;
-    const scaleY = viewBox.h / rect.height;
-    const dx = (e.clientX - dragState.current.lastX) * scaleX;
-    const dy = (e.clientY - dragState.current.lastY) * scaleY;
-    dragState.current.lastX = e.clientX;
-    dragState.current.lastY = e.clientY;
-    setViewBox((vb) => ({ ...vb, x: vb.x - dx, y: vb.y - dy }));
-  }
-  function endDrag() {
-    dragState.current.active = false;
-    setIsDragging(false);
-  }
+  const risk = selected ? riskTier(selected.score) : null;
+  const steps = selected?.steps ?? [];
+  const hasSteps = steps.length > 0;
+  const timeUnavailable = !!(selected?.uncertainty as { time_continuity_unavailable?: boolean } | undefined)?.time_continuity_unavailable;
+  const startSats = steps[0]?.previous_value_sats ?? null;
+  const endSats = steps.length ? steps[steps.length - 1].continuing_value_sats ?? steps[steps.length - 1].previous_value_sats : null;
+  const clusterHops = steps.filter((s) => s.co_spend_input_address_count >= 2).length;
+
+  const picker = (
+    <NeoCard variant="neo-sm" className="ff-picker">
+      <h2>Paths</h2>
+      <input
+        className="ff-search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search txid, address, P-code…"
+        aria-label="Search paths"
+      />
+      {pathFindings === null ? (
+        <p className="coverage-note">Loading…</p>
+      ) : filteredPaths.length === 0 ? (
+        <p className="coverage-note">{query ? "No path matches that search." : "No path-shaped findings in this case."}</p>
+      ) : (
+        <div className="ff-picker-list">
+          {filteredPaths.map((f) => {
+            const r = riskTier(f.score);
+            return (
+              <button
+                key={f.finding_id}
+                type="button"
+                className={`ff-picker-row ${selectedFindingId === f.finding_id ? "active" : ""}`}
+                onClick={() => selectPath(f.finding_id)}
+              >
+                <span className="ff-picker-code">{pathCode(f)}</span>
+                <span className="mono-id ff-picker-ref">{shortId(f.entity_ref)}</span>
+                <span className="ff-picker-meta">
+                  {f.hop_count ?? "?"} hops · <span className={`ff-dot tone-${r.tone}`} />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <p className="coverage-note ff-picker-count">
+        {pathFindings ? `${filteredPaths.length} of ${pathFindings.length} path(s)` : ""}
+      </p>
+    </NeoCard>
+  );
 
   return (
     <Shell>
-      <div className="page-header">
+      <div className="page-header ff-header">
         <div>
           <h1>UTXO Graph Explorer</h1>
-          <p className="subtitle">Transaction-as-node graph — bounded query {graph ? `· snapshot ${graph.snapshot_id}` : ""}</p>
+          <p className="subtitle">
+            Fund-flow view · case {caseId?.slice(0, 8)} · {selected ? `snapshot ${selected.snapshot_id.slice(0, 8)}…` : "no path selected"} · bounded query
+          </p>
         </div>
+        {selected && (
+          <div className="ff-counters">
+            <span>Hops <b>{selected.hop_count ?? "—"}</b></span>
+            <span>Evidence <b>{selected.evidence_refs.length}</b></span>
+            <span>Confidence <b>{selected.score.toFixed(2)}</b></span>
+          </div>
+        )}
       </div>
 
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="graph-layout">
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <NeoCard variant="neo-sm">
-            <h2>Seed</h2>
-            <div className="combobox" onBlur={onComboBlur}>
-              <div className="form-field">
-                <label>Search or enter an address / txid</label>
-                <input
-                  value={seedInput}
-                  onChange={(e) => setSeedInput(e.target.value)}
-                  onFocus={() => setComboOpen(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") goToSeed(seedInput);
-                    else if (e.key === "Escape") setComboOpen(false);
-                  }}
-                  placeholder="type to search this case's findings, or paste address:… / tx:…"
-                />
-              </div>
-              {comboOpen && (
-                <div className="combobox-panel neo-inset">
-                  <FilterPills
-                    active={browseFilter}
-                    onChange={setBrowseFilter}
-                    options={[
-                      { id: "all", label: "All" },
-                      { id: "deterministic", label: "Deterministic" },
-                      { id: "ml", label: "ML-Flagged" },
-                    ]}
-                  />
-                  {browseResults.length === 0 ? (
-                    <p className="coverage-note" style={{ marginTop: 8 }}>No matching findings in this case.</p>
-                  ) : (
-                    <div className="browse-list">
-                      {browseResults.map((f) => (
-                        <button
-                          key={f.entity_ref}
-                          type="button"
-                          className={`browse-item ${seed === f.entity_ref ? "active" : ""}`}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => goToSeed(f.entity_ref)}
-                        >
-                          <span className="mono-id">{f.entity_ref}</span>
-                          <Badge tone={f.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>
-                            {f.rule_version === ML_RULE_VERSION ? "ml" : "det"}
-                          </Badge>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="form-field" style={{ marginTop: 14 }}>
-              <label>Depth</label>
-              <div className="pill-row">
-                {[1, 2, 3].map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    className={`pill ${depth === d && !customDepthOpen ? "active" : ""}`}
-                    onClick={() => { setDepth(d); setCustomDepthOpen(false); }}
-                  >
-                    {d}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className={`pill ${customDepthOpen || depth > 3 ? "active" : ""}`}
-                  onClick={() => setCustomDepthOpen(true)}
-                >
-                  Custom
-                </button>
-              </div>
-              {customDepthOpen && (
-                <div className="depth-custom-row">
-                  <input
-                    type="number"
-                    min={1}
-                    max={MAX_DEPTH}
-                    value={depth}
-                    onChange={(e) => {
-                      const n = Math.round(Number(e.target.value));
-                      if (!Number.isFinite(n)) return;
-                      setDepth(Math.min(MAX_DEPTH, Math.max(1, n)));
-                    }}
-                  />
-                  <span className="coverage-note">
-                    Capped at {MAX_DEPTH} — each extra hop multiplies how many nodes/edges get pulled in and how long the
-                    layout takes to settle.
-                  </span>
-                </div>
-              )}
-            </div>
-          </NeoCard>
+      <FilterPills active={activeTab} onChange={setActiveTab} options={TABS} />
 
-          {graph && (
-            <NeoCard variant="neo-sm">
-              <h2>Counters</h2>
-              <div className="kv-row"><span className="k">Nodes shown</span><span>{graph.nodes.length} / 200</span></div>
-              <div className="kv-row"><span className="k">Edges shown</span><span>{graph.edges.length} / 500</span></div>
-              <div className="kv-row"><span className="k">Truncated nodes</span><span>{graph.truncated_nodes}</span></div>
-              <div className="kv-row"><span className="k">Truncated edges</span><span>{graph.truncated_edges}</span></div>
-            </NeoCard>
-          )}
-
-          <NeoCard variant="neo-sm">
-            <h2>Edge Legend</h2>
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: EDGE_COLOR.SPENT_BY }} />
-              Input <span className="legend-sub">spent by this tx</span>
-            </div>
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: EDGE_COLOR.CREATES_OUTPUT }} />
-              Output <span className="legend-sub">created by this tx</span>
-            </div>
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: EDGE_COLOR.OBSERVED_TX }} />
-              Observed <span className="legend-sub">network capture</span>
-            </div>
-            <div className="legend-row"><span className="legend-swatch dashed" /> Possible common control</div>
-          </NeoCard>
-
-          {coverage && coverage.spend_lineage_complete === false && (
-            <div className="notice-banner coverage-note">
-              No prevout IDs on {(coverage.missing_outpoint_inputs ?? 0) + (coverage.unknown_prior_output_inputs ?? 0)} source(s) —
-              spend lineage is incomplete for this snapshot; edges fall back to participation-only where a spend link
-              couldn't be verified.
-            </div>
-          )}
-        </div>
-
-        <NeoCard className="graph-canvas-wrap">
-          {!seed ? (
-            <EmptyState title="No seed selected" body="Enter a node ID (address:… or tx:…) and press Load, or open this page from a finding." />
-          ) : notFound ? (
-            <EmptyState title="Graph not built yet" body="No completed graph snapshot is available for this case — run an import first." />
-          ) : !graph ? (
-            <p className="coverage-note" style={{ padding: 20 }}>Loading…</p>
-          ) : graph.nodes.length === 0 ? (
-            <EmptyState title="Seed not found in this snapshot" body="That node ID doesn't appear in the current graph snapshot." />
+      {activeTab === "suspicious-path" && (
+        <NeoCard className="path-list-card">
+          <h2>Suspicious paths in this case</h2>
+          <p className="coverage-note">
+            Every pattern below is a structural review signal — a real, verified sequence of UTXO spends or an
+            equal-output shape. None of it asserts ownership, laundering, or wrongdoing on its own.
+          </p>
+          {pathFindings === null ? (
+            <p className="coverage-note">Loading…</p>
+          ) : pathFindings.length === 0 ? (
+            <EmptyState title="No path-shaped findings yet" body="Peeling-chain or equal-output patterns appear here once the deterministic detectors flag one in this case." />
           ) : (
-            <>
-              <div className="graph-toolbar graph-toolbar-right">
-                {seedHistory.length > 0 && (
-                  <button type="button" className="graph-toolbar-back" onClick={goBack} title="Undo — return to the previous source">
-                    ← Undo
+            <div className="path-list">
+              {pathFindings.map((f) => {
+                const r = riskTier(f.score);
+                return (
+                  <button key={f.finding_id} type="button" className={`path-list-row ${selectedFindingId === f.finding_id ? "active" : ""}`} onClick={() => selectPath(f.finding_id)}>
+                    <div className="path-list-main">
+                      <span className="path-list-type">{pathCode(f)} · {humanizeFindingType(f.rule_id)}</span>
+                      <span className="mono-id">{shortId(f.entity_ref)}</span>
+                    </div>
+                    <div className="path-list-meta">
+                      {f.hop_count !== null && <span>{f.hop_count} hops</span>}
+                      <span>{formatDuration(f.total_duration_sec)}</span>
+                      <Badge tone={r.tone}>{r.label}</Badge>
+                    </div>
                   </button>
-                )}
-                <button type="button" onClick={() => zoomBy(0.8)} title="Zoom in">+</button>
-                <button type="button" onClick={() => zoomBy(1.25)} title="Zoom out">−</button>
-                <button type="button" onClick={resetView} title="Reset view">⟲</button>
-              </div>
-              <svg
-                ref={svgRef}
-                viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
-                className={isDragging ? "dragging" : ""}
-                onPointerDown={onSvgPointerDown}
-                onPointerMove={onSvgPointerMove}
-                onPointerUp={endDrag}
-                onPointerLeave={endDrag}
-              >
-                <defs>
-                  <marker id="arrow-input" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-                    <path d="M0,0 L10,5 L0,10 z" fill="var(--danger)" />
-                  </marker>
-                  <marker id="arrow-output" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-                    <path d="M0,0 L10,5 L0,10 z" fill="var(--info)" />
-                  </marker>
-                  <marker id="arrow-observed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-                    <path d="M0,0 L10,5 L0,10 z" fill="var(--mustard)" />
-                  </marker>
-                  <radialGradient id="node-sheen" cx="35%" cy="30%" r="70%">
-                    <stop offset="0%" stopColor="rgba(255,255,255,0.55)" />
-                    <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-                  </radialGradient>
-                </defs>
-
-                {graph.edges.map((edge) => {
-                  const from = positions.get(edge.from);
-                  const to = positions.get(edge.to);
-                  if (!from || !to) return null;
-                  const dashed = edge.type === "POSSIBLE_COMMON_CONTROL";
-                  return (
-                    <line
-                      key={edge.id}
-                      x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                      stroke={EDGE_COLOR[edge.type] ?? "var(--ink-mute)"}
-                      strokeWidth={1.5}
-                      strokeDasharray={dashed ? "4 4" : undefined}
-                      markerEnd={EDGE_MARKER[edge.type]}
-                      opacity={0.8}
-                    />
-                  );
-                })}
-                {graph.nodes.map((node) => {
-                  const pos = positions.get(node.id);
-                  if (!pos) return null;
-                  const isSeed = node.id === seed;
-                  const isFlagged = flaggedIds.has(node.id);
-                  const cls = isFlagged ? "node-flag" : isSeed ? "node-seed" : "node-normal";
-                  const degree = degreeOf(node.id);
-                  const radius = isSeed ? 14 : Math.max(6, Math.min(13, 5 + Math.sqrt(degree)));
-                  return (
-                    <g
-                      key={node.id}
-                      onClick={() => setSelectedId(node.id)}
-                      onMouseEnter={() => hoverNode(node.id)}
-                      onMouseLeave={() => scheduleUnhover(node.id)}
-                      style={{ cursor: "pointer" }}
-                    >
-                      {isSeed && <circle cx={pos.x} cy={pos.y} r={radius + 5} className="node-seed-ring" />}
-                      <circle
-                        cx={pos.x} cy={pos.y} r={radius}
-                        className={`graph-node-circle ${cls} ${selectedId === node.id ? "node-selected" : ""}`}
-                      />
-                      <circle cx={pos.x} cy={pos.y} r={radius} fill="url(#node-sheen)" pointerEvents="none" />
-                      <text x={pos.x} y={pos.y + radius + 13} textAnchor="middle" fontSize={9} fill="var(--ink-mute)">
-                        {shortLabel(node.label)}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {hoveredId && hoveredPos && hoveredId !== seed && (
-                  <g
-                    className="node-action-chip"
-                    transform={`translate(${Math.min(hoveredPos.x + 12, viewBox.x + viewBox.w - 98)}, ${hoveredPos.y - 18})`}
-                    onMouseEnter={() => hoverNode(hoveredId)}
-                    onMouseLeave={() => scheduleUnhover(hoveredId)}
-                    onClick={(e) => { e.stopPropagation(); goToSeed(hoveredId); }}
-                  >
-                    <rect className="chip-hit-area" x={-8} y={-16} width={108} height={32} rx={14} />
-                    <rect className="chip-bg" x={0} y={-11} width={92} height={22} rx={11} />
-                    <text x={46} y={4} textAnchor="middle">Set as source</text>
-                  </g>
-                )}
-              </svg>
-            </>
+                );
+              })}
+            </div>
           )}
         </NeoCard>
+      )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <NeoCard variant="neo-sm">
-            <h2>Selected Node</h2>
-            {!selectedNode ? (
-              <p className="coverage-note">Click a node to inspect it.</p>
+      {activeTab === "fund-flow" && (
+        <div className="ff-layout">
+          {picker}
+
+          <div className="ff-canvas-wrap">
+            {unresolvedSeed ? (
+              <NeoCard>
+                <EmptyState
+                  title="This finding has no fund-flow path"
+                  body={`"${unresolvedSeed}" is a real finding, but its type is a plain address/window observation rather than a UTXO chain, so there is no path to draw. Open its Evidence Package for the full explanation.`}
+                />
+              </NeoCard>
+            ) : pathFindings === null ? (
+              <NeoCard><p className="coverage-note">Loading…</p></NeoCard>
+            ) : !selected ? (
+              <NeoCard><EmptyState title="No suspicious path selected" body="Pick one from the Paths list." /></NeoCard>
+            ) : !hasSteps ? (
+              <NeoCard>
+                <EmptyState
+                  title="Per-hop detail unavailable for this finding"
+                  body="This finding was materialized before per-hop steps were persisted, or its pattern type has no hop sequence. Re-run ingestion for this case to populate it."
+                />
+              </NeoCard>
             ) : (
               <>
-                <p className="mono-id" style={{ wordBreak: "break-all" }}>{selectedNode.id}</p>
-                {selectedFinding && <Badge tone="danger">{selectedFinding.finding_type}</Badge>}
-                <div className="kv-row"><span className="k">Accounting check</span><span>{coverage?.value_violations === 0 ? "PASS" : coverage?.value_violations ? "FAIL" : "—"}</span></div>
-                <div className="kv-row"><span className="k">Degree (local)</span><span>{degreeOf(selectedNode.id)}</span></div>
-                <div className="kv-row"><span className="k">Block time</span><span>{String(selectedNode.attributes.block_time ?? "—")}</span></div>
-                <div className="kv-row"><span className="k">Observer receive</span><span>—</span></div>
-                <div className="kv-row"><span className="k">Ingestion time</span><span>—</span></div>
-                <p className="coverage-note" style={{ marginTop: 10 }}>
-                  {selectedFinding
-                    ? `Flagged by ${selectedFinding.finding_type} — reasoning available on the Evidence Package for this finding.`
-                    : "This node has no open finding attached in the current case."}
-                </p>
-                <p className="coverage-note" style={{ marginTop: 10 }}>Hover a node on the canvas to set it as the new source.</p>
+                <div className="ff-toolbar">
+                  <button type="button" onClick={() => setZoomIdx((i) => Math.max(0, i - 1))} disabled={zoomIdx === 0} title="Zoom out">−</button>
+                  <span className="ff-zoom-label">{Math.round(ZOOM_STEPS[zoomIdx] * 100)}%</span>
+                  <button type="button" onClick={() => setZoomIdx((i) => Math.min(ZOOM_STEPS.length - 1, i + 1))} disabled={zoomIdx === ZOOM_STEPS.length - 1} title="Zoom in">+</button>
+                  <button type="button" onClick={() => setZoomIdx(3)} title="Reset zoom">⟲</button>
+                  <span className="ff-hint">Tap a node for detail · hover for “Set as source”</span>
+                </div>
+                {sourceNote && (
+                  <div className={`ff-note ${sourceNoteTone === "danger" ? "ff-note-danger" : ""}`} role="status">
+                    {sourceNote}
+                    {sourceNodeId && sourceNoteTone !== "danger" && (
+                      <button type="button" className="ff-note-clear" onClick={() => { setSourceNodeId(null); setSourceNote(null); }}>
+                        clear source
+                      </button>
+                    )}
+                    {sourceNoteTone === "danger" && (
+                      <button type="button" className="ff-note-clear" onClick={() => setSourceNote(null)}>dismiss</button>
+                    )}
+                  </div>
+                )}
+                <FundFlowGraph
+                  finding={selected}
+                  signals={signals}
+                  zoom={ZOOM_STEPS[zoomIdx]}
+                  selectedNodeId={node?.id ?? null}
+                  sourceNodeId={sourceNodeId}
+                  onSelectNode={setNode}
+                  onSetSource={setSource}
+                />
               </>
             )}
-          </NeoCard>
+          </div>
+
+          <aside className="ff-panel">
+            {node ? (
+              <>
+                <div className="ff-panel-head">
+                  <div className="ff-panel-label">NODE</div>
+                  <button type="button" className="ff-close" onClick={() => setNode(null)} aria-label="Back to path detail">×</button>
+                </div>
+                <h2 className="ff-panel-title">{node.title}</h2>
+                {node.rows.map((r) => (
+                  <div className="ff-kv" key={r.k}>
+                    <span>{r.k}</span>
+                    <b className={r.v.length > 24 ? "ff-kv-long mono-id" : ""}>{r.v}</b>
+                  </div>
+                ))}
+                <p className="coverage-note ff-section">{node.note}</p>
+                <div className="ff-actions">
+                  <button type="button" className="ff-btn ff-btn-primary" onClick={() => setSource(node.id)}>Set as source</button>
+                  <button type="button" className="ff-btn" onClick={() => setNode(null)}>Back to path</button>
+                </div>
+              </>
+            ) : !selected ? (
+              <p className="coverage-note">Nothing selected.</p>
+            ) : (
+              <>
+                <div className="ff-panel-label">SELECTED PATH</div>
+                <h2 className="ff-panel-title">{pathCode(selected)} · {humanizeFindingType(selected.rule_id)}</h2>
+                <p className="ff-panel-sub">{btc(startSats)} → {btc(endSats)} · {selected.hop_count ?? steps.length} hops</p>
+                {risk && <span className={`ff-risk-badge tone-${risk.tone}`}>{risk.label}</span>}
+
+                <div className="ff-kv"><span>Risk</span><b>{risk?.label.replace(" RISK", "") ?? "—"}</b></div>
+                <div className="ff-kv"><span>Pattern</span><b>{humanizeFindingType(selected.rule_id)}</b></div>
+                <div className="ff-kv"><span>Amount</span><b>{btc(startSats)}</b></div>
+                <div className="ff-kv"><span>Hops</span><b>{selected.hop_count ?? steps.length}</b></div>
+                <div className="ff-kv"><span>Time window</span><b>{timeUnavailable ? "not available" : formatDuration(selected.total_duration_sec)}</b></div>
+                <div className="ff-kv ff-kv-bar">
+                  <span>Confidence</span>
+                  <span className="ff-conf-track"><span className="ff-conf-fill" style={{ width: `${Math.round(selected.score * 100)}%` }} /></span>
+                  <b>{selected.score.toFixed(2)}</b>
+                </div>
+
+                <div className="ff-panel-label ff-section">WHY FLAGGED</div>
+                <ul className="ff-reasons">
+                  {selected.reason_codes.map((code) => <li key={code}>{humanizeReasonCode(code)}</li>)}
+                </ul>
+                <p className="coverage-note">{selected.explanation}</p>
+
+                <div className="ff-panel-label ff-section">EVIDENCE</div>
+                <div className="ff-evidence">
+                  <span className="ff-tag ff-tag-observed">OBSERVED</span>
+                  <div>
+                    <div className="ff-evidence-main">{steps.length} verified on-chain transaction hop(s)</div>
+                    <div className="ff-evidence-sub mono-id">{steps.slice(0, 3).map((s) => shortId(s.spending_transaction_id)).join(" · ")}</div>
+                  </div>
+                </div>
+                {clusterHops > 0 && (
+                  <div className="ff-evidence">
+                    <span className="ff-tag ff-tag-inferred">INFERRED</span>
+                    <div>
+                      <div className="ff-evidence-main">Co-spend cluster at {clusterHops} of {steps.length} hop(s)</div>
+                      <div className="ff-evidence-sub">common-input-ownership heuristic · no identity asserted</div>
+                    </div>
+                  </div>
+                )}
+                {signals && signals.entity_risk_matches.length > 0 && (
+                  <div className="ff-evidence">
+                    <span className="ff-tag ff-tag-suspected">SUSPECTED</span>
+                    <div>
+                      <div className="ff-evidence-main">{signals.entity_risk_matches.length} path node(s) flagged by other findings</div>
+                      <div className="ff-evidence-sub">cross-reference within this case · not an external attribution</div>
+                    </div>
+                  </div>
+                )}
+
+                {selected.rule_id === "peeling_chain_candidate" && (
+                  <>
+                    <div className="ff-panel-label ff-section">SIGNAL CONTRIBUTION</div>
+                    {signals ? (
+                      <>
+                        <SignalBar label="Velocity" value={signals.velocity} />
+                        <SignalBar label="Peel ratio" value={signals.peel_ratio} />
+                        <SignalBar label="Entity risk" value={signals.entity_risk} />
+                        <SignalBar label="Cluster link" value={signals.cluster_link} />
+                      </>
+                    ) : (
+                      <p className="coverage-note">Loading signal breakdown…</p>
+                    )}
+                  </>
+                )}
+
+                <div className="ff-actions">
+                  <button type="button" className="ff-btn ff-btn-primary" onClick={() => navigate(`/findings/${selected.finding_id}`)}>
+                    Open evidence package
+                  </button>
+                  <button type="button" className={`ff-btn ${pinned.has(selected.finding_id) ? "ff-btn-on" : ""}`} onClick={() => togglePin(selected.finding_id)}>
+                    {pinned.has(selected.finding_id) ? "Pinned" : "Pin path"}
+                  </button>
+                </div>
+                <p className="ff-footnote">
+                  Observed = on-chain fact · Inferred = heuristic attribution · Suspected = cross-referenced within this case.
+                </p>
+              </>
+            )}
+          </aside>
         </div>
-      </div>
+      )}
     </Shell>
   );
 }

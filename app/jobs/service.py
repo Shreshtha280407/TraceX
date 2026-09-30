@@ -17,9 +17,50 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# An import is parse -> graph build -> deterministic findings -> ML scoring.
+# Parsing is the only stage with a natural row-level denominator, so the others
+# are represented as the share of total wall time they actually take on a
+# measured run rather than being averaged into a meaningless single bar.
+_STAGE_SPAN: dict[str, tuple[float, float]] = {
+    "queued": (0.0, 0.0),
+    "ingesting": (0.0, 0.55),
+    "graph_building": (0.55, 0.70),
+    "findings": (0.70, 0.92),
+    "ml_scoring": (0.92, 0.99),
+    "ingested": (1.0, 1.0),
+}
+
+
+def job_progress(job: ImportJob) -> dict:
+    """Real progress where it can be measured, and an explicit admission where
+    it cannot -- never a fabricated moving number."""
+    if job.state == "completed":
+        return {"percent": 100.0, "basis": "completed", "determinate": True}
+    if job.state == "failed":
+        return {"percent": None, "basis": "failed", "determinate": False}
+    start, end = _STAGE_SPAN.get(job.stage, (0.0, 0.55))
+    if job.stage in ("ingesting", "queued") and job.total_records:
+        fraction = min(1.0, job.rows_seen / job.total_records)
+        return {
+            "percent": round((start + (end - start) * fraction) * 100, 1),
+            "basis": f"{job.rows_seen:,} of {job.total_records:,} records parsed",
+            "determinate": True,
+        }
+    if job.stage in ("ingesting", "queued"):
+        # Row count unknown for this format: report rows done, not a fake bar.
+        return {"percent": None, "basis": f"{job.rows_seen:,} records parsed", "determinate": False}
+    return {
+        "percent": round(start * 100, 1),
+        "basis": {"graph_building": "building graph snapshot", "findings": "scoring deterministic findings", "ml_scoring": "running anomaly stack"}.get(job.stage, job.stage),
+        "determinate": True,
+    }
+
+
 def job_view(job: ImportJob) -> dict:
     return {
         "job_id": job.id,
+        "total_records": job.total_records,
+        "progress": job_progress(job),
         "case_id": job.case_id,
         "source_id": job.source_id,
         "state": job.state,

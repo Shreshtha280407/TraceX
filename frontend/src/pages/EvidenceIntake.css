@@ -3,34 +3,60 @@
   background: var(--surface-3); border-radius: 16px; color: var(--ink-dim);
 }
 .drop-zone.dragging { border-color: var(--mustard); color: var(--ink); }
-.drop-zone input { display: none; }
+.drop-zone { display: block; }
+.drop-zone.busy { cursor: default; pointer-events: none; }
+/* Kept in the layout (not display:none) so the label's native activation and
+   keyboard focus both still reach it, but visually removed. */
+.visually-hidden-input {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 .drop-zone .drop-icon { margin: 0 auto 10px; width: 44px; height: 44px; border-radius: 13px; background: var(--surface); display: flex; align-items: center; justify-content: center; }
+
+.spinner {
+  width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--line);
+  border-top-color: var(--mustard); animation: spin 0.7s linear infinite;
+}
+.upload-in-flight { display: flex; align-items: center; gap: 12px; }
+.upload-in-flight .spinner { flex: 0 0 auto; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .source-item { border-bottom: 1px solid var(--line); }
 .source-item:last-child { border-bottom: none; }
 .source-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; font-size: 12px; }
 .source-row .name { font-weight: 600; color: var(--ink); }
-.source-row .meta { color: var(--ink-mute); font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
-.source-expand-caret { color: var(--ink-mute); font-size: 11px; width: 10px; text-align: center; }
+.source-row .meta { color: var(--ink-mute); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.source-expand-caret { color: var(--ink-mute); font-size: 13px; width: 10px; text-align: center; }
 
 .source-preview { padding: 0 0 14px; }
 .source-preview-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
 .source-preview-record pre {
-  background: var(--surface-3); padding: 8px; border-radius: 8px; font-size: 10px; overflow-x: auto; margin: 4px 0 0;
+  background: var(--surface-3); padding: 8px; border-radius: 8px; font-size: 12px; overflow-x: auto; margin: 4px 0 0;
 }
 
 .stage-track { display: flex; align-items: center; margin: 6px 0 20px; }
 .stage-node { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
 .stage-node .dot-ring { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  background: var(--surface-3); border: 2px solid var(--line); font-size: 11px; color: var(--ink-mute); }
+  background: var(--surface-3); border: 2px solid var(--line); font-size: 13px; color: var(--ink-mute); }
 .stage-node.done .dot-ring { background: var(--success); border-color: var(--success); color: #0d1a0a; }
 .stage-node.active .dot-ring { background: var(--mustard); border-color: var(--mustard); color: #161409; animation: pulse 1.4s ease-in-out infinite; }
 .stage-node.failed .dot-ring { background: var(--danger); border-color: var(--danger); color: #1a0705; }
-.stage-node .label { font-size: 10px; color: var(--ink-mute); text-align: center; }
+.stage-node .label { font-size: 12px; color: var(--ink-mute); text-align: center; }
 .stage-connector { flex: 0 0 auto; width: 100%; height: 2px; background: var(--line); margin-top: -20px; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 .quarantine-row { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .quarantine-row:last-child { border-bottom: none; }
 .quarantine-row .reason { color: var(--danger); font-weight: 600; }
-.quarantine-row .locator { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-mute); }
+.quarantine-row .locator { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-mute); }
+
+/* Live ingestion progress. The bar is only ever as honest as the denominator:
+   when the source format has no cheap record count the track switches to an
+   indeterminate sweep rather than showing a number nobody measured. */
+.ingest-progress { margin-bottom: 16px; }
+.ingest-progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; font-size: 12px; color: var(--ink-dim); }
+.ingest-progress-pct { font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; color: var(--mustard); }
+.ingest-progress-track { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; box-shadow: inset 2px 2px 5px var(--shadow-d); }
+.ingest-progress-fill { height: 100%; background: var(--mustard); border-radius: 4px; transition: width 0.4s ease; }
+.ingest-progress-track.indeterminate .ingest-progress-fill { width: 35%; animation: ingest-sweep 1.4s ease-in-out infinite; }
+@keyframes ingest-sweep { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }

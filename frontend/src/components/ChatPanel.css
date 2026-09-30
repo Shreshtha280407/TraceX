@@ -8,7 +8,7 @@
 .chat-panel-header h2 { margin: 0; font-size: 16px; }
 
 .chat-panel-disclaimer {
-  font-size: 11px; color: var(--ink-mute); line-height: 1.5; margin: 0 0 14px;
+  font-size: 13px; color: var(--ink-mute); line-height: 1.5; margin: 0 0 14px;
   padding-bottom: 14px; border-bottom: 1px solid var(--line);
 }
 
@@ -20,7 +20,7 @@
 .chat-bubble-pending { color: var(--ink-mute); font-style: italic; }
 
 .chat-panel-error {
-  font-size: 11px; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 13px; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-radius: 10px; padding: 8px 10px; margin: 10px 0 0;
 }
 

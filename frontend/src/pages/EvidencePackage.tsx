@@ -22,6 +22,57 @@ function refKey(ref: { evidence_id: string; locator: string }): string {
   return `${ref.evidence_id}::${ref.locator}`;
 }
 
+function humanizeKey(key: string): string {
+  return key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
+function coverageValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(3);
+  if (value === null || value === undefined) return "—";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+type OpposingItem = { kind?: string; statement?: string; source_refs?: unknown[] };
+
+/** The four factors the peeling-chain detector actually averages into its score
+ * (app/engine/motifs/deterministic.py). Showing each one's real value, and what
+ * would have to change to pull the score down, is genuine sensitivity — unlike a
+ * raw JSON dump, which is what used to sit here. */
+function sensitivityRows(evidence: FindingEvidence): { label: string; value: string; note: string }[] | null {
+  const finding = evidence.finding;
+  if (finding.rule_id !== "peeling_chain_candidate") return null;
+  const detector = (evidence.feature_vector?.detector_result ?? {}) as Record<string, unknown>;
+  const coverage = (evidence.coverage ?? {}) as Record<string, unknown>;
+  const hops = finding.hop_count ?? 0;
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
+  const peel = num(detector.peel_ratio);
+  const velocity = num(detector.velocity);
+  const cov = num(coverage.evidence_coverage);
+  return [
+    {
+      label: "Chain length",
+      value: `${hops} hop(s)`,
+      note: `Contributes min(1, ${hops}/8) = ${Math.min(1, hops / 8).toFixed(2)}. Below 3 hops the detector would not emit this finding at all.`,
+    },
+    {
+      label: "Peel ratio",
+      value: peel === null ? "n/a" : peel.toFixed(2),
+      note: "Fraction of hops where the continuation is strictly smaller than its input. Drops if any hop stops reducing in value.",
+    },
+    {
+      label: "Velocity",
+      value: velocity === null ? "n/a" : velocity.toFixed(2),
+      note: "Derived from the real median gap between hop timestamps. Falls toward 0 as hops spread further apart in time.",
+    },
+    {
+      label: "Evidence coverage",
+      value: cov === null ? "n/a" : cov.toFixed(2),
+      note: "Distinct source records backing the hops. Falls if fewer source rows support the chain.",
+    },
+  ];
+}
+
 export function EvidencePackage() {
   const { findingId } = useParams<{ findingId: string }>();
   const navigate = useNavigate();
@@ -37,6 +88,38 @@ export function EvidencePackage() {
   const [counterSearch, setCounterSearch] = useState("");
   const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [contraryText, setContraryText] = useState<string | null>(null);
+  const [contraryBusy, setContraryBusy] = useState(false);
+  const [contraryError, setContraryError] = useState<string | null>(null);
+
+  /** Routed through the same grounded endpoint the chat panel uses, so the model
+   * only ever sees this finding's own evidence and is instructed to say it does
+   * not know rather than invent. The answer is labelled as generated commentary
+   * in the UI -- it never becomes part of the evidence record. */
+  async function askContraryCase() {
+    if (!findingId) return;
+    setContraryBusy(true);
+    setContraryError(null);
+    try {
+      const result = await api.chatAboutFinding(
+        findingId,
+        "Argue against this finding. Using only the evidence provided, what are the strongest benign explanations, " +
+          "and what specific evidence is missing that a reviewer would need before escalating? Be concise.",
+        []
+      );
+      setContraryText(result.answer);
+    } catch (err) {
+      setContraryError(
+        err instanceof ApiError && err.status === 503
+          ? "The local model is not reachable right now, so no summary can be generated. Everything above is unaffected — it comes from the stored evidence, not the model."
+          : err instanceof ApiError
+            ? String(err.detail)
+            : "Could not reach the TraceX backend."
+      );
+    } finally {
+      setContraryBusy(false);
+    }
+  }
 
   function load() {
     if (!findingId) return;
@@ -91,6 +174,7 @@ export function EvidencePackage() {
   if (!evidence) return <Shell><p className="coverage-note">Loading…</p></Shell>;
 
   const { finding } = evidence;
+  const sensitivity = sensitivityRows(evidence);
   const sourceRefs = evidence.source_refs as { evidence_id: string; locator: string; locator_type?: string }[];
   const matches = (ref: { locator: string }, query: string) =>
     !query.trim() || ref.locator.toLowerCase().includes(query.trim().toLowerCase());
@@ -146,7 +230,7 @@ export function EvidencePackage() {
                           <button
                             type="button"
                             className="btn-ghost"
-                            style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }}
+                            style={{ padding: "4px 10px", fontSize: 13, marginTop: 4 }}
                             onClick={() => viewRecord(ref.evidence_id, ref.locator, ref.locator_type === "csv_logical_record")}
                           >
                             View raw record
@@ -159,7 +243,7 @@ export function EvidencePackage() {
                               <button
                                 type="button"
                                 className="btn-ghost"
-                                style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }}
+                                style={{ padding: "4px 10px", fontSize: 13, marginTop: 4 }}
                                 onClick={() => setFullscreenRecord(openRecord)}
                               >
                                 ⤢ Full screen
@@ -214,16 +298,95 @@ export function EvidencePackage() {
           </NeoCard>
           <NeoCard variant="neo-sm">
             <h2>Contrary Evidence &amp; Sensitivity</h2>
+            <div className="contrary-scroll">
+
             {evidence.opposing_evidence.length === 0 ? (
               <p className="coverage-note">No contrary evidence recorded in this snapshot.</p>
             ) : (
-              <pre style={{ fontSize: 10, background: "var(--surface-3)", padding: 8, borderRadius: 8, overflowX: "auto" }}>
-                {JSON.stringify(evidence.opposing_evidence, null, 2)}
-              </pre>
+              <div className="opposing-list">
+                {(evidence.opposing_evidence as OpposingItem[]).map((item, i) => (
+                  <div className="opposing-item" key={i}>
+                    <span className="opposing-kind">{humanizeKey(item.kind ?? "note")}</span>
+                    <p className="opposing-statement">{item.statement ?? JSON.stringify(item)}</p>
+                    {!!item.source_refs?.length && (
+                      <p className="coverage-note">{item.source_refs.length} supporting source record(s)</p>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
-            <p className="coverage-note" style={{ marginTop: 8, overflowWrap: "anywhere" }}>
-              Coverage: {JSON.stringify(evidence.coverage)}
+
+            {sensitivity && (
+              <>
+                <h3 className="sub-heading">What this score rests on</h3>
+                <table className="sensitivity-table">
+                  <tbody>
+                    {sensitivity.map((row) => (
+                      <tr key={row.label}>
+                        <th>{row.label}</th>
+                        <td className="mono-id">{row.value}</td>
+                        <td className="sensitivity-note">{row.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+
+            <h3 className="sub-heading">Coverage</h3>
+            <div className="coverage-scroll">
+            <table className="coverage-table">
+              <tbody>
+                {Object.entries(evidence.coverage ?? {}).flatMap(([k, v]) => {
+                  // Coverage nests one level (graph stats, time coverage, notes).
+                  // Flatten it into readable rows instead of leaking JSON blobs.
+                  if (Array.isArray(v)) {
+                    return [
+                      <tr key={k}>
+                        <th>{humanizeKey(k)}</th>
+                        <td>
+                          <ul className="coverage-notes-list">
+                            {v.map((entry, i) => <li key={i}>{coverageValue(entry)}</li>)}
+                          </ul>
+                        </td>
+                      </tr>,
+                    ];
+                  }
+                  if (v && typeof v === "object") {
+                    return [
+                      <tr key={k} className="coverage-group">
+                        <th colSpan={2}>{humanizeKey(k)}</th>
+                      </tr>,
+                      ...Object.entries(v as Record<string, unknown>).map(([nk, nv]) => (
+                        <tr key={`${k}.${nk}`}>
+                          <th className="coverage-sub">{humanizeKey(nk)}</th>
+                          <td className="mono-id">{coverageValue(nv)}</td>
+                        </tr>
+                      )),
+                    ];
+                  }
+                  return [
+                    <tr key={k}>
+                      <th>{humanizeKey(k)}</th>
+                      <td className="mono-id">{coverageValue(v)}</td>
+                    </tr>,
+                  ];
+                })}
+              </tbody>
+            </table>
+            </div>
+
+            <h3 className="sub-heading">Plain-language contrary case</h3>
+            <p className="coverage-note">
+              Asks the local offline model to argue against this finding using only the evidence above. It is a
+              generated summary to help a reviewer think, never a new piece of evidence.
             </p>
+            {contraryText && <p className="contrary-text">{contraryText}</p>}
+            {contraryError && <p className="field-hint-required">{contraryError}</p>}
+            <button type="button" className="btn-ghost" disabled={contraryBusy} onClick={askContraryCase}>
+              {contraryBusy ? "Asking local model…" : contraryText ? "Ask again" : "Argue against this finding"}
+            </button>
+            </div>
           </NeoCard>
         </div>
 
@@ -243,8 +406,20 @@ export function EvidencePackage() {
               ))}
             </div>
             <div className="form-field">
-              <label>Reason</label>
-              <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Add reviewer notes for the audit trail…" />
+              <label htmlFor="review-reason">
+                Reason <span className="required-tag">required</span>
+              </label>
+              <textarea
+                id="review-reason"
+                required
+                aria-required="true"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Add reviewer notes for the audit trail…"
+              />
+              {disposition && !reason.trim() && (
+                <p className="field-hint-required">A reason is required — it is written to the immutable audit trail with your decision.</p>
+              )}
             </div>
             {sourceRefs.length > 0 && (
               <div className="form-field">
@@ -263,7 +438,7 @@ export function EvidencePackage() {
                     filteredCounterRefs.map((ref) => {
                       const key = refKey(ref);
                       return (
-                        <label key={key} style={{ display: "flex", gap: 6, fontSize: 11, marginBottom: 4 }}>
+                        <label key={key} style={{ display: "flex", gap: 6, fontSize: 13, marginBottom: 4 }}>
                           <input
                             type="checkbox"
                             checked={counterRefs.has(key)}

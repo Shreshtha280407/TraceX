@@ -1,34 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, Badge, FilterPills, relativeTime } from "../components/primitives";
+import { NeoCard, Badge, FilterPills, relativeTime, priorityTier, priorityOf, type PriorityId } from "../components/primitives";
 import { api, ML_RULE_VERSION, type Finding, type FindingsListResponse } from "../lib/api";
 import "./FindingsFeed.css";
 
 type MlReleaseInfo = { releaseId: string; modelRunId: string; layers: string[] };
 
 type FilterId = "all" | "deterministic" | "ml" | "reviewed";
-type PriorityId = "all" | "high" | "medium" | "low";
-
-const PRIORITY_META: Record<Exclude<PriorityId, "all">, { label: string; tone: "danger" | "warning" | "muted" }> = {
-  high: { label: "HIGH PRIORITY", tone: "danger" },
-  medium: { label: "MEDIUM PRIORITY", tone: "warning" },
-  low: { label: "LOW PRIORITY", tone: "muted" },
-};
-
-/** Same percentile-of-rank tiering used everywhere on this page, whether ranking
- * a single finding's badge or counting how many findings fall in each tier. */
-function priorityTier(rank: number | null, total: number): Exclude<PriorityId, "all"> {
-  if (rank === null || total === 0) return "low";
-  const percentile = rank / total;
-  if (percentile <= 0.33) return "high";
-  if (percentile <= 0.66) return "medium";
-  return "low";
-}
-
-function priorityOf(rank: number | null, total: number) {
-  return PRIORITY_META[priorityTier(rank, total)];
-}
 
 export function FindingsFeed() {
   const { caseId } = useParams<{ caseId: string }>();
@@ -69,7 +48,12 @@ export function FindingsFeed() {
   }, [response]);
 
   const findings = response?.findings ?? [];
-  const total = findings.length;
+  // Rank percentiles must divide by the case's REAL finding count, not by how
+  // many rows this page happened to return, or every tier is wrong once the
+  // case has more findings than the page limit.
+  const total = response?.total ?? findings.length;
+  const openTotal = response?.open_total ?? 0;
+  const truncated = total > findings.length;
 
   const byCategory = useMemo(
     () => ({
@@ -106,7 +90,20 @@ export function FindingsFeed() {
           <h1>Findings Feed</h1>
           <p className="subtitle">Deterministic motifs plus the unsupervised anomaly ranking — the rule-based baseline is always available; ML runs automatically on ingest</p>
         </div>
+        {response && (
+          <div className="ff-counters">
+            <span>Open <b>{openTotal.toLocaleString()}</b></span>
+            <span>Total <b>{total.toLocaleString()}</b></span>
+          </div>
+        )}
       </div>
+
+      {truncated && (
+        <p className="coverage-note" style={{ marginBottom: 10 }}>
+          Showing the top {findings.length.toLocaleString()} of {total.toLocaleString()} findings in this case, ranked by
+          triage priority. Filter counts below describe this page; the Open/Total figures above are the whole case.
+        </p>
+      )}
 
       <div className="two-col">
         <div>

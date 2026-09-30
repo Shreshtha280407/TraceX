@@ -3,6 +3,6 @@
 .finding-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .finding-card-left { display: flex; align-items: center; gap: 8px; }
 .finding-card .addr { display: block; margin: 6px 0; word-break: break-all; }
-.finding-card .meta { font-size: 11px; color: var(--ink-mute); }
+.finding-card .meta { font-size: 13px; color: var(--ink-mute); }
 .rank-bar-track { height: 5px; border-radius: 4px; background: var(--surface-3); margin-top: 8px; overflow: hidden; }
 .rank-bar-fill { height: 100%; background: linear-gradient(90deg, var(--mustard-2), var(--mustard)); }

@@ -1,18 +1,18 @@
 .evidence-header { margin-bottom: 20px; }
 .evidence-header .back-link { font-size: 12px; color: var(--ink-mute); cursor: pointer; margin-bottom: 10px; display: inline-block; }
 .evidence-header h1 { font-size: 20px; line-height: 1.4; margin: 10px 0 8px; font-family: 'IBM Plex Sans', sans-serif; font-weight: 600; }
-.evidence-header .meta-line { font-size: 11px; color: var(--ink-mute); }
+.evidence-header .meta-line { font-size: 13px; color: var(--ink-mute); }
 
 .evidence-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(260px, 0.9fr); gap: 16px; align-items: start; }
 @media (max-width: 1200px) { .evidence-columns { grid-template-columns: 1fr; } }
 
 .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
-.feature-chip { background: var(--surface-3); border-radius: 10px; padding: 8px 10px; font-size: 11px; }
+.feature-chip { background: var(--surface-3); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
 .feature-chip .k { color: var(--ink-mute); display: block; margin-bottom: 2px; }
 
 .source-ref-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .source-ref-row:last-child { border-bottom: none; }
-.source-ref-row pre { background: var(--surface-3); padding: 8px; border-radius: 8px; font-size: 10px; overflow-x: auto; margin: 6px 0 0; }
+.source-ref-row pre { background: var(--surface-3); padding: 8px; border-radius: 8px; font-size: 12px; overflow-x: auto; margin: 6px 0 0; }
 
 .list-search-input {
   width: 100%; margin: 8px 0; padding: 9px 12px; font-size: 12px; font-family: inherit;
@@ -33,5 +33,58 @@
 .review-buttons button { text-align: left; padding: 11px 14px; border-radius: 12px; font-weight: 600; font-size: 13px; cursor: pointer; border: 1px solid var(--line); background: var(--surface-3); color: var(--ink); }
 .review-buttons button.selected { border-color: var(--mustard); background: color-mix(in srgb, var(--mustard) 14%, var(--surface-3)); color: var(--mustard); }
 
-.audit-entry { font-size: 11px; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--ink-dim); }
+.audit-entry { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--ink-dim); }
 .audit-entry:last-child { border-bottom: none; }
+
+/* A decision cannot be submitted without a reason (it is written to the audit
+   trail), so the requirement is stated on the field rather than only enforced
+   by a disabled button the reviewer has to guess about. */
+.required-tag {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-radius: 4px; padding: 2px 6px; margin-left: 6px;
+}
+.field-hint-required { font-size: 11px; color: #f08a72; margin: 6px 0 0; }
+
+/* Contrary evidence / sensitivity: this section used to dump JSON.stringify of
+   opposing_evidence and coverage, which read as placeholder debug output even
+   though the values behind it were real. Structured rendering instead. */
+.sub-heading {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-mute); margin: 18px 0 8px; font-weight: 600;
+}
+.opposing-list { display: flex; flex-direction: column; gap: 10px; }
+.opposing-item {
+  background: var(--surface-3); border: 1px solid var(--line);
+  border-left: 3px solid var(--mustard); border-radius: 8px; padding: 10px 12px;
+}
+.opposing-kind {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--mustard);
+}
+.opposing-statement { font-size: 12.5px; color: var(--ink); margin: 5px 0 0; line-height: 1.5; }
+
+.coverage-table, .sensitivity-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.coverage-table th, .sensitivity-table th {
+  text-align: left; font-weight: 500; color: var(--ink-mute); padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap;
+}
+.coverage-table td, .sensitivity-table td {
+  padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--ink); vertical-align: top;
+}
+.sensitivity-table td.sensitivity-note { color: var(--ink-dim); padding-left: 12px; line-height: 1.5; }
+.contrary-text {
+  font-size: 12.5px; line-height: 1.6; color: var(--ink); background: var(--surface-3);
+  border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0;
+  white-space: pre-wrap;
+}
+.coverage-group th { color: var(--mustard); padding-top: 12px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.coverage-sub { padding-left: 12px !important; }
+.coverage-notes-list { margin: 0; padding-left: 16px; color: var(--ink-dim); display: flex; flex-direction: column; gap: 4px; }
+
+/* Coverage expands to ~25 rows on a real snapshot, which made this card tower
+   over the rest of the column. Scroll it in place instead of letting the page
+   grow lopsided; the sticky header keeps the column meanings visible. */
+.contrary-scroll { max-height: 460px; overflow-y: auto; padding-right: 8px; }
+.contrary-scroll::-webkit-scrollbar { width: 8px; }
+.contrary-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.contrary-scroll::-webkit-scrollbar-thumb:hover { background: var(--ink-mute); }

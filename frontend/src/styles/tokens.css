@@ -25,7 +25,11 @@
   --bg:#121210; --surface:#1c1b17; --surface-2:#201f19; --surface-3:#17160f;
   --shadow-d:rgba(0,0,0,0.7); --shadow-l:rgba(255,255,255,0.035);
   --mustard:#e3a62f; --mustard-2:#c98a1f; --mustard-glow:rgba(227,166,47,0.28);
-  --amber:#f4c766; --ink:#f3efe4; --ink-dim:#a8a08c; --ink-mute:#6e6a5c;
+  /* ink-mute was #6e6a5c -- ~3.2:1 against --surface, below the 4.5:1 WCAG AA
+     floor for normal text and genuinely hard to read. #9a9480 measures ~5.7:1
+     against --surface (higher still against the darker --bg/--surface-3), a
+     real accessibility fix, not just a taste change. */
+  --amber:#f4c766; --ink:#f3efe4; --ink-dim:#a8a08c; --ink-mute:#9a9480;
   --line:rgba(255,255,255,0.07); --danger:#e3572f; --info:#4fa0c9; --success:#7fae63;
 }
 body{ margin:0; background:var(--bg); font-family:'IBM Plex Sans',sans-serif; color:var(--ink); }
@@ -52,7 +56,7 @@ a{ color:var(--mustard); text-decoration:none; } a:hover{ color:var(--amber); }
   box-shadow:7px 7px 16px var(--shadow-d), -5px -5px 12px var(--shadow-l), inset 0 1px 0 rgba(255,255,255,0.28);
 }
 .btn-mustard:disabled{ opacity:0.45; cursor:not-allowed; }
-.badge{ border-radius:999px; font-size:10px; font-weight:700; letter-spacing:0.04em; padding:4px 10px;
+.badge{ border-radius:999px; font-size:12px; font-weight:700; letter-spacing:0.04em; padding:4px 10px;
 display:inline-flex; align-items:center; gap:5px; }
 .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; }
 /* Page canvas: source artboards are a fixed 1440x900 design surface — build the real

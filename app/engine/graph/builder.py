@@ -96,7 +96,16 @@ def build_graph_snapshot(session: Session, *, evidence_root: Path, snapshot: Sna
             f"tx:{txid}",
             "transaction",
             txid,
-            {"network": transaction.get("network"), "block_time": transaction.get("block_time")},
+            {
+                "network": transaction.get("network"),
+                "block_time": transaction.get("block_time"),
+                # block_time is null for unconfirmed/regtest data -- source_timestamp
+                # (the ingested row's own timestamp) is real and always present, and is
+                # what the peeling-chain detector already falls back to for its own
+                # elapsed-time math. Surfacing it here is what the graph/UI needs to
+                # stop showing a hardcoded placeholder for "when was this tx observed".
+                "source_timestamp": transaction.get("source_timestamp"),
+            },
         )
     for output in records["outputs"]:
         txid, vout = output["txid"], output["vout"]

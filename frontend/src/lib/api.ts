@@ -51,12 +51,21 @@ export type EvidenceSourceRow = {
   synthetic: boolean;
 };
 
+export type JobProgress = {
+  /** null when the format has no cheap record count — render indeterminate. */
+  percent: number | null;
+  basis: string;
+  determinate: boolean;
+};
+
 export type ImportJob = {
   job_id: string;
   case_id: string;
   source_id: string;
   state: "queued" | "running" | "checkpointed" | "completed" | "failed";
   stage: string;
+  total_records: number | null;
+  progress: JobProgress;
   attempt: number;
   lease_expires_at: string | null;
   bytes_read: number;
@@ -72,6 +81,31 @@ export type ImportJob = {
 };
 
 export type GraphPath = { nodes: string[]; edge_ids: string[] } | null;
+
+/** One verified hop of a peeling-chain finding (app.engine.motifs.deterministic
+ * ::detect_peeling_chains) — only present for rule_id === "peeling_chain_candidate",
+ * and only on findings materialized after this field started being persisted. */
+export type PeelOutput = { output_id: string; address: string | null; amount_sats: number; is_spent: boolean };
+
+export type PeelingStep = {
+  previous_output_id: string;
+  spending_transaction_id: string;
+  continuing_output_id: string | null;
+  previous_value_sats: number;
+  continuing_value_sats: number | null;
+  timestamp: string | null;
+  edge_ids: string[];
+  co_spend_input_address_count: number;
+  previous_address: string | null;
+  previous_script_type: string | null;
+  continuing_address: string | null;
+  continuing_script_type: string | null;
+  input_count: number;
+  output_count: number;
+  peel_outputs: PeelOutput[];
+  peel_output_total: number;
+  co_spend_addresses: string[];
+};
 
 export type Finding = {
   finding_id: string;
@@ -102,10 +136,36 @@ export type Finding = {
   opposing_evidence: unknown[];
   source_refs: unknown[];
   status: "open" | "triaged" | "dismissed" | "escalated" | "needs_data_review";
+  // peeling_chain_candidate-only, and only on findings materialized after this
+  // was added to detector_result -- older findings will have these as null.
+  hop_count: number | null;
+  total_duration_sec: number | null;
+  steps: PeelingStep[] | null;
+};
+
+export type PathSignals = {
+  finding_id: string;
+  velocity: number | null;
+  peel_ratio: number | null;
+  cluster_link: number | null;
+  entity_risk: number;
+  entity_risk_matches: string[];
+  entity_risk_path_node_count: number;
+  confidence: number;
+};
+
+export type FindingsSummary = {
+  case_id: string;
+  total: number;
+  by_status: Record<string, number>;
+  open: number;
 };
 
 export type FindingsListResponse = {
   findings: Finding[];
+  /** Real totals for the whole case — NOT the length of this page. */
+  total: number;
+  open_total: number;
   limit: number;
   offset: number;
   method: string;
@@ -235,9 +295,15 @@ export const api = {
     ),
 
   // ---- Findings ----
-  listFindings: (caseId: string, limit = 50, offset = 0) =>
-    request<FindingsListResponse>(`/cases/${caseId}/findings?limit=${limit}&offset=${offset}`),
+  listFindings: (caseId: string, limit = 50, offset = 0, ruleIds?: string[]) => {
+    const ruleParams = (ruleIds ?? []).map((id) => `rule_id=${encodeURIComponent(id)}`).join("&");
+    return request<FindingsListResponse>(
+      `/cases/${caseId}/findings?limit=${limit}&offset=${offset}${ruleParams ? `&${ruleParams}` : ""}`
+    );
+  },
+  getFindingsSummary: (caseId: string) => request<FindingsSummary>(`/cases/${caseId}/findings/summary`),
   getFindingEvidence: (findingId: string) => request<FindingEvidence>(`/findings/${findingId}/evidence`),
+  getPathSignals: (findingId: string) => request<PathSignals>(`/findings/${findingId}/path-signals`),
   submitReview: (
     findingId: string,
     body: { expected_finding_version: number; disposition: string; reason: string; counterevidence_refs: { evidence_id: string; locator: string }[] }
