@@ -127,6 +127,16 @@
 .modal-card { width: 460px; max-width: 100%; padding: 28px; }
 .modal-card-wide { width: min(1100px, 92vw); max-height: 86vh; display: flex; flex-direction: column; }
 .modal-card-wide .modal-body-scroll { flex: 1; min-height: 0; overflow: auto; }
+.fullscreen-record-pre {
+  background: var(--surface-3); padding: 16px; border-radius: 12px; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; margin: 0;
+}
+
+.record-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: 'IBM Plex Mono', monospace; background: var(--surface-3); border-radius: 8px; overflow: hidden; }
+.record-table th, .record-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.record-table th { color: var(--ink-mute); font-weight: 600; white-space: nowrap; width: 1%; }
+.record-table td { color: var(--ink); word-break: break-word; }
+.record-table tr:last-child th, .record-table tr:last-child td { border-bottom: none; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .modal-header h2 { margin: 0; font-size: 18px; }
 .modal-close { background: none; border: 0; color: var(--ink-dim); cursor: pointer; font-size: 22px; line-height: 1;

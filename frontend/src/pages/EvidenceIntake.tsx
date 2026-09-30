@@ -2,9 +2,70 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, ErrorBanner } from "../components/primitives";
+import { Modal } from "../components/Modal";
+import { RecordPreview } from "../components/RecordPreview";
 import { api, ApiError, type EvidenceSourceRow, type ImportJob } from "../lib/api";
 import { trackJob, jobsForCase } from "../lib/jobRegistry";
 import "./EvidenceIntake.css";
+
+type PreviewRecord = { locator: string; record: unknown };
+
+// The backend only supports looking up ONE record at a time by exact locator (no
+// bulk/listing endpoint), and the locator format is format-specific (see
+// app/engine/adapters/source.py). A "preview" is built by walking that same
+// format's locator sequence from the start and stopping at the first 404.
+const PREVIEW_SAMPLE_SIZE = 5;
+const XML_TAG_CANDIDATES = ["record", "transaction", "row"];
+
+async function fetchPreviewSample(source: EvidenceSourceRow): Promise<PreviewRecord[]> {
+  const results: PreviewRecord[] = [];
+  if (source.source_format === "csv" || source.source_format === "ndjson") {
+    for (let i = 1; i <= PREVIEW_SAMPLE_SIZE; i++) {
+      try {
+        const res = await api.getEvidenceRecord(source.source_id, `record:${i}`);
+        results.push({ locator: res.locator, record: res.record });
+      } catch {
+        break;
+      }
+    }
+    return results;
+  }
+  if (source.source_format === "json") {
+    for (let i = 0; i < PREVIEW_SAMPLE_SIZE; i++) {
+      try {
+        const res = await api.getEvidenceRecord(source.source_id, `/${i}`);
+        results.push({ locator: res.locator, record: res.record });
+      } catch {
+        break;
+      }
+    }
+    return results;
+  }
+  if (source.source_format === "xml") {
+    let tag: string | null = null;
+    for (const candidate of XML_TAG_CANDIDATES) {
+      try {
+        const res = await api.getEvidenceRecord(source.source_id, `/${candidate}[1]`);
+        results.push({ locator: res.locator, record: res.record });
+        tag = candidate;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!tag) return results;
+    for (let i = 2; i <= PREVIEW_SAMPLE_SIZE; i++) {
+      try {
+        const res = await api.getEvidenceRecord(source.source_id, `/${tag}[${i}]`);
+        results.push({ locator: res.locator, record: res.record });
+      } catch {
+        break;
+      }
+    }
+    return results;
+  }
+  return results;
+}
 
 const STAGE_LABELS = ["Staging", "Hash + Sample", "Normalize", "Batch Commit", "Index", "Ready"];
 
@@ -29,6 +90,24 @@ export function EvidenceIntake() {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [previewSource, setPreviewSource] = useState<EvidenceSourceRow | null>(null);
+  const [previewRecords, setPreviewRecords] = useState<PreviewRecord[] | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [fullscreenSource, setFullscreenSource] = useState<EvidenceSourceRow | null>(null);
+
+  async function togglePreview(source: EvidenceSourceRow) {
+    if (previewSource?.source_id === source.source_id) {
+      setPreviewSource(null);
+      setPreviewRecords(null);
+      return;
+    }
+    setPreviewSource(source);
+    setPreviewRecords(null);
+    setPreviewLoading(true);
+    const records = await fetchPreviewSample(source);
+    setPreviewRecords(records);
+    setPreviewLoading(false);
+  }
 
   const refreshSources = useCallback(() => {
     if (!caseId) return;
@@ -120,15 +199,54 @@ export function EvidenceIntake() {
             ) : sources.length === 0 ? (
               <p className="coverage-note">No sources uploaded to this case yet.</p>
             ) : (
-              sources.map((source) => (
-                <div className="source-row" key={source.source_id}>
-                  <div>
-                    <div className="name">{source.filename}</div>
-                    <div className="meta">sha256:{source.sha256.slice(0, 16)}… · {formatBytes(source.byte_size)}</div>
+              sources.map((source) => {
+                const isOpen = previewSource?.source_id === source.source_id;
+                return (
+                  <div className="source-item" key={source.source_id}>
+                    <div className="source-row" style={{ cursor: "pointer" }} onClick={() => togglePreview(source)}>
+                      <div>
+                        <div className="name">{source.filename}</div>
+                        <div className="meta">sha256:{source.sha256.slice(0, 16)}… · {formatBytes(source.byte_size)}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span className="badge tone-muted">{source.source_format.toUpperCase()}</span>
+                        <span className="source-expand-caret">{isOpen ? "▾" : "▸"}</span>
+                      </div>
+                    </div>
+                    {isOpen && (
+                      <div className="source-preview">
+                        {previewLoading ? (
+                          <p className="coverage-note">Loading preview…</p>
+                        ) : !previewRecords || previewRecords.length === 0 ? (
+                          <p className="coverage-note">Could not load a preview for this source.</p>
+                        ) : (
+                          <>
+                            <div className="source-preview-list">
+                              {previewRecords.map((r) => (
+                                <div className="source-preview-record" key={r.locator}>
+                                  <div className="mono-id">{r.locator}</div>
+                                  <RecordPreview record={r.record} isCsv={source.source_format === "csv"} />
+                                </div>
+                              ))}
+                            </div>
+                            <p className="coverage-note" style={{ marginTop: 6 }}>
+                              Showing the first {previewRecords.length} record{previewRecords.length === 1 ? "" : "s"} of this source.
+                            </p>
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ padding: "4px 10px", fontSize: 11, marginTop: 6 }}
+                              onClick={(e) => { e.stopPropagation(); setFullscreenSource(source); }}
+                            >
+                              ⤢ Full screen
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <span className="badge tone-muted">{source.source_format.toUpperCase()}</span>
-                </div>
-              ))
+                );
+              })
             )}
           </NeoCard>
         </div>
@@ -184,6 +302,22 @@ export function EvidenceIntake() {
           </NeoCard>
         </div>
       </div>
+
+      <Modal
+        open={!!fullscreenSource}
+        onClose={() => setFullscreenSource(null)}
+        title={fullscreenSource?.filename ?? "Source preview"}
+        wide
+      >
+        <div className="modal-body-scroll">
+          {previewRecords?.map((r) => (
+            <div key={r.locator} style={{ marginBottom: 16 }}>
+              <div className="mono-id" style={{ marginBottom: 6 }}>{r.locator}</div>
+              <RecordPreview record={r.record} isCsv={fullscreenSource?.source_format === "csv"} preClassName="fullscreen-record-pre" />
+            </div>
+          ))}
+        </div>
+      </Modal>
     </Shell>
   );
 }

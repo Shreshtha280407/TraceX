@@ -1,4 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+/* Self-hosted (see frontend/src/assets/fonts/) so a fully offline deployment
+   never makes an outbound request to Google Fonts on first paint. */
+@font-face {
+  font-family: 'Space Grotesk'; font-style: normal; font-weight: 500 700; font-display: swap;
+  src: url('../assets/fonts/space-grotesk-var.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('../assets/fonts/ibm-plex-sans-var.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('../assets/fonts/ibm-plex-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('../assets/fonts/ibm-plex-mono-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 600; font-display: swap;
+  src: url('../assets/fonts/ibm-plex-mono-600.woff2') format('woff2');
+}
 
 :root{
   --bg:#121210; --surface:#1c1b17; --surface-2:#201f19; --surface-3:#17160f;

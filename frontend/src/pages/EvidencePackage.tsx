@@ -3,15 +3,23 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primitives";
 import { Modal } from "../components/Modal";
+import { RecordPreview } from "../components/RecordPreview";
 import { api, ApiError, type FindingEvidence } from "../lib/api";
 import { recordReview } from "../lib/sessionStats";
 import "./EvidencePackage.css";
 
 const DISPOSITIONS: { id: "escalated" | "dismissed" | "needs_data_review"; label: string }[] = [
   { id: "escalated", label: "Escalate for Investigation" },
-  { id: "dismissed", label: "Mark Benign" },
+  { id: "dismissed", label: "Dismiss" },
   { id: "needs_data_review", label: "Needs More Evidence" },
 ];
+
+/** Within one finding, every source_ref commonly shares the same evidence_id (one
+ * uploaded source file) and is distinguished only by locator (e.g. "record:8") --
+ * so evidence_id alone is not a unique key for a specific record. */
+function refKey(ref: { evidence_id: string; locator: string }): string {
+  return `${ref.evidence_id}::${ref.locator}`;
+}
 
 export function EvidencePackage() {
   const { findingId } = useParams<{ findingId: string }>();
@@ -23,10 +31,10 @@ export function EvidencePackage() {
   const [counterRefs, setCounterRefs] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [staleNotice, setStaleNotice] = useState(false);
-  const [openRecord, setOpenRecord] = useState<{ locator: string; record: unknown } | null>(null);
+  const [openRecord, setOpenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
   const [evidenceSearch, setEvidenceSearch] = useState("");
   const [counterSearch, setCounterSearch] = useState("");
-  const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown } | null>(null);
+  const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
 
   function load() {
     if (!findingId) return;
@@ -35,12 +43,12 @@ export function EvidencePackage() {
 
   useEffect(load, [findingId]);
 
-  async function viewRecord(evidenceId: string, locator: string) {
+  async function viewRecord(evidenceId: string, locator: string, isCsv: boolean) {
     try {
       const result = await api.getEvidenceRecord(evidenceId, locator);
-      setOpenRecord({ locator, record: result.record });
+      setOpenRecord({ locator, record: result.record, isCsv });
     } catch {
-      setOpenRecord({ locator, record: "Could not reopen this source record." });
+      setOpenRecord({ locator, record: "Could not reopen this source record.", isCsv: false });
     }
   }
 
@@ -50,16 +58,20 @@ export function EvidencePackage() {
     setStaleNotice(false);
     setError(null);
     const isReversal = evidence.review_history.length > 0;
+    const allRefs = evidence.source_refs as { evidence_id: string; locator: string }[];
     try {
       await api.submitReview(findingId, {
         expected_finding_version: evidence.finding.finding_version,
         disposition,
         reason: reason.trim(),
-        counterevidence_refs: [...counterRefs].map((evidence_id) => ({ evidence_id, locator: evidence_id })),
+        counterevidence_refs: allRefs
+          .filter((ref) => counterRefs.has(refKey(ref)))
+          .map((ref) => ({ evidence_id: ref.evidence_id, locator: ref.locator })),
       });
       recordReview(isReversal);
       setReason("");
       setDisposition(null);
+      setCounterRefs(new Set());
       load();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -124,12 +136,19 @@ export function EvidencePackage() {
                         <div style={{ flex: 1 }}>
                           <div className="mono-id">{ref.locator}</div>
                           <div className="meta-line">{ref.locator_type ?? "source"}</div>
-                          <button type="button" className="btn-ghost" style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }} onClick={() => viewRecord(ref.evidence_id, ref.locator)}>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{ padding: "4px 10px", fontSize: 11, marginTop: 4 }}
+                            onClick={() => viewRecord(ref.evidence_id, ref.locator, ref.locator_type === "csv_logical_record")}
+                          >
                             View raw record
                           </button>
                           {openRecord?.locator === ref.locator && (
                             <>
-                              <pre>{JSON.stringify(openRecord.record, null, 2)}</pre>
+                              <div style={{ marginTop: 6 }}>
+                                <RecordPreview record={openRecord.record} isCsv={openRecord.isCsv} />
+                              </div>
                               <button
                                 type="button"
                                 className="btn-ghost"
@@ -234,21 +253,24 @@ export function EvidencePackage() {
                   {filteredCounterRefs.length === 0 ? (
                     <p className="coverage-note" style={{ padding: "8px 0" }}>No records match "{counterSearch}".</p>
                   ) : (
-                    filteredCounterRefs.map((ref, index) => (
-                      <label key={index} style={{ display: "flex", gap: 6, fontSize: 11, marginBottom: 4 }}>
-                        <input
-                          type="checkbox"
-                          checked={counterRefs.has(ref.evidence_id)}
-                          onChange={(e) => {
-                            const next = new Set(counterRefs);
-                            if (e.target.checked) next.add(ref.evidence_id);
-                            else next.delete(ref.evidence_id);
-                            setCounterRefs(next);
-                          }}
-                        />
-                        <span className="mono-id">{ref.locator}</span>
-                      </label>
-                    ))
+                    filteredCounterRefs.map((ref) => {
+                      const key = refKey(ref);
+                      return (
+                        <label key={key} style={{ display: "flex", gap: 6, fontSize: 11, marginBottom: 4 }}>
+                          <input
+                            type="checkbox"
+                            checked={counterRefs.has(key)}
+                            onChange={(e) => {
+                              const next = new Set(counterRefs);
+                              if (e.target.checked) next.add(key);
+                              else next.delete(key);
+                              setCounterRefs(next);
+                            }}
+                          />
+                          <span className="mono-id">{ref.locator}</span>
+                        </label>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -282,7 +304,7 @@ export function EvidencePackage() {
         wide
       >
         <div className="modal-body-scroll">
-          <pre className="fullscreen-record-pre">{JSON.stringify(fullscreenRecord?.record, null, 2)}</pre>
+          <RecordPreview record={fullscreenRecord?.record} isCsv={fullscreenRecord?.isCsv ?? false} preClassName="fullscreen-record-pre" />
         </div>
       </Modal>
     </Shell>

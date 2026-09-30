@@ -8,13 +8,26 @@ import "./FindingsFeed.css";
 type MlReleaseInfo = { releaseId: string; modelRunId: string; layers: string[] };
 
 type FilterId = "all" | "deterministic" | "ml" | "reviewed";
+type PriorityId = "all" | "high" | "medium" | "low";
 
-function priorityOf(rank: number | null, total: number): { label: string; tone: "danger" | "warning" | "muted" } {
-  if (rank === null || total === 0) return { label: "LOW PRIORITY", tone: "muted" };
+const PRIORITY_META: Record<Exclude<PriorityId, "all">, { label: string; tone: "danger" | "warning" | "muted" }> = {
+  high: { label: "HIGH PRIORITY", tone: "danger" },
+  medium: { label: "MEDIUM PRIORITY", tone: "warning" },
+  low: { label: "LOW PRIORITY", tone: "muted" },
+};
+
+/** Same percentile-of-rank tiering used everywhere on this page, whether ranking
+ * a single finding's badge or counting how many findings fall in each tier. */
+function priorityTier(rank: number | null, total: number): Exclude<PriorityId, "all"> {
+  if (rank === null || total === 0) return "low";
   const percentile = rank / total;
-  if (percentile <= 0.33) return { label: "HIGH PRIORITY", tone: "danger" };
-  if (percentile <= 0.66) return { label: "MEDIUM PRIORITY", tone: "warning" };
-  return { label: "LOW PRIORITY", tone: "muted" };
+  if (percentile <= 0.33) return "high";
+  if (percentile <= 0.66) return "medium";
+  return "low";
+}
+
+function priorityOf(rank: number | null, total: number) {
+  return PRIORITY_META[priorityTier(rank, total)];
 }
 
 export function FindingsFeed() {
@@ -22,6 +35,7 @@ export function FindingsFeed() {
   const navigate = useNavigate();
   const [response, setResponse] = useState<FindingsListResponse | null>(null);
   const [filter, setFilter] = useState<FilterId>("all");
+  const [priorityFilter, setPriorityFilter] = useState<PriorityId>("all");
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const [mlInfo, setMlInfo] = useState<MlReleaseInfo | null>(null);
 
@@ -57,18 +71,33 @@ export function FindingsFeed() {
   const findings = response?.findings ?? [];
   const total = findings.length;
 
-  const filtered = useMemo(() => {
-    switch (filter) {
-      case "deterministic":
-        return findings.filter((f) => f.rule_version !== ML_RULE_VERSION);
-      case "ml":
-        return findings.filter((f) => f.rule_version === ML_RULE_VERSION);
-      case "reviewed":
-        return findings.filter((f) => f.status !== "open");
-      default:
-        return findings;
-    }
-  }, [findings, filter]);
+  const byCategory = useMemo(
+    () => ({
+      all: findings,
+      deterministic: findings.filter((f) => f.rule_version !== ML_RULE_VERSION),
+      ml: findings.filter((f) => f.rule_version === ML_RULE_VERSION),
+      reviewed: findings.filter((f) => f.status !== "open"),
+    }),
+    [findings]
+  );
+
+  const filtered = byCategory[filter];
+
+  const priorityCounts = useMemo(() => {
+    const counts = { high: 0, medium: 0, low: 0 };
+    for (const f of filtered) counts[priorityTier(f.rank, total)]++;
+    return counts;
+  }, [filtered, total]);
+
+  const filteredByPriority = useMemo(() => {
+    if (priorityFilter === "all") return filtered;
+    return filtered.filter((f) => priorityTier(f.rank, total) === priorityFilter);
+  }, [filtered, priorityFilter, total]);
+
+  function selectCategory(next: FilterId) {
+    setFilter(next);
+    setPriorityFilter("all");
+  }
 
   return (
     <Shell>
@@ -81,24 +110,36 @@ export function FindingsFeed() {
 
       <div className="two-col">
         <div>
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 10 }}>
             <FilterPills
               active={filter}
-              onChange={setFilter}
+              onChange={selectCategory}
               options={[
-                { id: "all", label: "All" },
-                { id: "deterministic", label: "Deterministic" },
-                { id: "ml", label: "ML-Flagged" },
-                { id: "reviewed", label: "Reviewed" },
+                { id: "all", label: `All (${byCategory.all.length})` },
+                { id: "deterministic", label: `Deterministic (${byCategory.deterministic.length})` },
+                { id: "ml", label: `ML-Flagged (${byCategory.ml.length})` },
+                { id: "reviewed", label: `Reviewed (${byCategory.reviewed.length})` },
+              ]}
+            />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterPills
+              active={priorityFilter}
+              onChange={setPriorityFilter}
+              options={[
+                { id: "all", label: `All priorities (${filtered.length})` },
+                { id: "high", label: `High (${priorityCounts.high})` },
+                { id: "medium", label: `Medium (${priorityCounts.medium})` },
+                { id: "low", label: `Low (${priorityCounts.low})` },
               ]}
             />
           </div>
           {response === null ? (
             <p className="coverage-note">Loading…</p>
-          ) : filtered.length === 0 ? (
+          ) : filteredByPriority.length === 0 ? (
             <p className="coverage-note">No findings match this filter.</p>
           ) : (
-            filtered.map((finding) => {
+            filteredByPriority.map((finding) => {
               const priority = priorityOf(finding.rank, total);
               return (
                 <NeoCard key={finding.finding_id} variant="neo-sm" className="finding-card">
