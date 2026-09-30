@@ -19,6 +19,8 @@ from app.auth.security import hash_password, issue_session_token, verify_passwor
 from app.config import settings
 from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
+from app.engine.chat import ChatTurn, ChatUnavailable, build_finding_context
+from app.engine.chat import ask as ask_chat
 from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphQueryError, query_neighbourhood
 from app.events import append_event, event_envelope
@@ -561,6 +563,41 @@ def finding_evidence(
             "model_run_id": (finding.coverage or {}).get("model_run_id"),
         },
     }
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    # Prior turns of *this same conversation*, sent back by the client each time
+    # (no server-side chat session state) -- capped so one request can't be used
+    # to smuggle an unbounded prompt into the model.
+    history: list[ChatMessage] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/findings/{finding_id}/chat")
+def finding_chat(
+    finding_id: str,
+    body: ChatRequest,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Answers a question about ONE finding, grounded only in that finding's own
+    evidence (see app.engine.chat) -- never a general-purpose chatbot."""
+    finding = session.get(FindingRecord, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    require_case_member(finding.case_id, user, session)
+    context = build_finding_context(finding_view(finding), finding.feature_vector)
+    history = [ChatTurn(role=m.role, content=m.content) for m in body.history]
+    try:
+        answer = ask_chat(body.question, context, history)
+    except ChatUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"answer": answer, "model": settings.ollama_model}
 
 
 @router.get("/cases/{case_id}/findings/export")

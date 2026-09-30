@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.security import verify_session_token
+from app.config import settings
 from app.db import get_session
 from app.models import Case, CaseMembership, User
 
@@ -18,7 +19,8 @@ def current_user(
     session: Session = Depends(get_session),
 ) -> User:
     """Real signed-in identity via `Authorization: Bearer <token>`, falling back to the
-    dev-only `X-TraceX-Actor` header for anyone who hasn't signed up (no password set)."""
+    dev-only `X-TraceX-Actor` header only when TRACEX_ALLOW_DEV_ACTOR_HEADER=1 -- without
+    that gate, anyone could name any actor via a header and skip login entirely."""
     if authorization and authorization.startswith("Bearer "):
         subject = verify_session_token(authorization.removeprefix("Bearer "))
         if subject is None:
@@ -27,6 +29,8 @@ def current_user(
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
         return user
+    if not settings.allow_dev_actor_header:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization Bearer token is required")
     if not x_tracex_actor or len(x_tracex_actor) > 128:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="X-TraceX-Actor is required")
     user = session.scalar(select(User).where(User.external_subject == x_tracex_actor))

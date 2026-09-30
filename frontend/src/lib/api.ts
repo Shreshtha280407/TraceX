@@ -149,6 +149,8 @@ export type FindingEvidence = {
   };
 };
 
+export type ChatMessage = { role: "user" | "assistant"; content: string };
+
 export type FindingsExportBundle = {
   case_id: string;
   method: string;
@@ -241,6 +243,11 @@ export const api = {
     body: { expected_finding_version: number; disposition: string; reason: string; counterevidence_refs: { evidence_id: string; locator: string }[] }
   ) => request<{ review_id: string; finding: Finding }>(`/findings/${findingId}/reviews`, { method: "POST", body: JSON.stringify(body) }),
   exportFindings: (caseId: string) => request<FindingsExportBundle>(`/cases/${caseId}/findings/export`),
+  chatAboutFinding: (findingId: string, question: string, history: ChatMessage[]) =>
+    request<{ answer: string; model: string }>(`/findings/${findingId}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ question, history }),
+    }),
 
   // ---- Features (Phase 5A) ----
   exportFeatures: (caseId: string, snapshotId?: string) =>

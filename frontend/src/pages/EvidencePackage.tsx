@@ -4,6 +4,7 @@ import { Shell } from "../components/Shell";
 import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primitives";
 import { Modal } from "../components/Modal";
 import { RecordPreview } from "../components/RecordPreview";
+import { ChatPanel } from "../components/ChatPanel";
 import { api, ApiError, type FindingEvidence } from "../lib/api";
 import { recordReview } from "../lib/sessionStats";
 import "./EvidencePackage.css";
@@ -35,6 +36,7 @@ export function EvidencePackage() {
   const [evidenceSearch, setEvidenceSearch] = useState("");
   const [counterSearch, setCounterSearch] = useState("");
   const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   function load() {
     if (!findingId) return;
@@ -98,7 +100,12 @@ export function EvidencePackage() {
   return (
     <Shell>
       <div className="evidence-header">
-        <span className="back-link" onClick={() => navigate(-1)}>← Back</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <span className="back-link" onClick={() => navigate(-1)}>← Back</span>
+          <button type="button" className="btn-ghost" onClick={() => setChatOpen(true)}>
+            💬 Chat
+          </button>
+        </div>
         <div className="pill-row" style={{ marginBottom: 6 }}>
           <Badge tone="deterministic">{finding.finding_type}</Badge>
           <Badge tone="warning">{finding.status}</Badge>
@@ -307,6 +314,8 @@ export function EvidencePackage() {
           <RecordPreview record={fullscreenRecord?.record} isCsv={fullscreenRecord?.isCsv ?? false} preClassName="fullscreen-record-pre" />
         </div>
       </Modal>
+
+      {chatOpen && findingId && <ChatPanel findingId={findingId} onClose={() => setChatOpen(false)} />}
     </Shell>
   );
 }

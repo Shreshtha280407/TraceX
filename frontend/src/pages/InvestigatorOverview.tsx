@@ -170,9 +170,17 @@ export function InvestigatorOverview() {
                         {item.caseName} · window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}
                       </span>
                     </div>
-                    <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
-                      Review
-                    </a>
+                    <div style={{ display: "flex", gap: 14 }}>
+                      <a
+                        href={`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.entity_ref)}`}
+                        onClick={(e) => { e.preventDefault(); navigate(`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.entity_ref)}`); }}
+                      >
+                        Graph
+                      </a>
+                      <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
+                        Review
+                      </a>
+                    </div>
                   </li>
                 ))}
               </ul>

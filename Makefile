@@ -1,5 +1,11 @@
 .PHONY: phase-zero phase-one phase-two phase-two-100k phase-three phase-four phase-five-a-smoke phase-five-b-compare verify-fixture test dataset anomaly-stack anomaly-stack-demo anomaly-stack-holdout anomaly-stack-test phase-six phase-six-throughput phase-six-throughput-1m phase-six-query-latency phase-six-test phase-seven phase-seven-test phase-seven-walkthrough
 
+# Local-dev-only convenience: lets every recipe below authenticate scripts/tests
+# via the X-TraceX-Actor header instead of a real signup/login round trip. A
+# real deployment must never set this -- app.config.Settings.from_environment()
+# defaults it to disabled precisely so this Makefile is the only place it's on.
+export TRACEX_ALLOW_DEV_ACTOR_HEADER := 1
+
 phase-zero: verify-fixture test
 
 verify-fixture:

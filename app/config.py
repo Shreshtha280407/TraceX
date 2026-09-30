@@ -9,6 +9,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+DEV_ONLY_SECRET_KEY = "tracex-dev-only-secret"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -19,14 +21,30 @@ class Settings:
     event_heartbeat_seconds: int
     worker_health_seconds: int = 60
     ingestion_batch_records: int = 32768
-    secret_key: str = "tracex-dev-only-secret"
+    secret_key: str = DEV_ONLY_SECRET_KEY
     token_ttl_seconds: int = 86400
+    # app.auth.dependencies.current_user always reads the process-wide `settings`
+    # singleton below (built once via from_environment()), never a Settings
+    # instance a test/script constructs locally -- so this field's default has
+    # no effect on who X-TraceX-Actor works for; from_environment() is the only
+    # path that matters, and it defaults this to False. See tests/conftest.py
+    # and the Makefile's TRACEX_ALLOW_DEV_ACTOR_HEADER export for how the many
+    # dev scripts/tests that pass X-TraceX-Actor keep working without touching
+    # each call site individually.
+    allow_dev_actor_header: bool = False
+    environment: str = "development"
     # The anomaly stack runs after the deterministic findings on every completed
     # snapshot. It needs the optional `ml` extra; without it the run is skipped
     # and recorded, never fatal, so a deployment without scikit-learn still
     # ingests and still produces the Phase 4 findings.
     ml_findings_enabled: bool = True
     ml_review_budget: float = 0.01
+    # Chat is a separate, optional local model call (Ollama), never a hosted API --
+    # matches the offline posture everywhere else in this app. See docs/final_report.md
+    # for how to run qwen3:8b on a dedicated LAN machine.
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3:8b"
+    ollama_timeout_seconds: int = 60
 
     @staticmethod
     def _parse_ml_review_budget(raw: str) -> float:
@@ -53,6 +71,16 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> Settings:
+        environment = os.environ.get("TRACEX_ENV", "development")
+        secret_key = os.environ.get("TRACEX_SECRET_KEY", DEV_ONLY_SECRET_KEY)
+        if environment != "development" and secret_key == DEV_ONLY_SECRET_KEY:
+            raise RuntimeError(
+                f"TRACEX_ENV={environment!r} but TRACEX_SECRET_KEY is unset (or still the public "
+                "default). That secret HMAC-signs every session token -- anyone who reads this "
+                "open-source repo could forge a valid login for any user. Set a unique "
+                "TRACEX_SECRET_KEY (e.g. `openssl rand -hex 32`) before starting this process "
+                "outside development."
+            )
         return cls(
             database_url=os.environ.get(
                 "TRACEX_DATABASE_URL", "postgresql+psycopg://tracex:tracex-dev-only@127.0.0.1:5432/tracex"
@@ -63,10 +91,15 @@ class Settings:
             event_heartbeat_seconds=int(os.environ.get("TRACEX_EVENT_HEARTBEAT_SECONDS", "15")),
             worker_health_seconds=int(os.environ.get("TRACEX_WORKER_HEALTH_SECONDS", "60")),
             ingestion_batch_records=int(os.environ.get("TRACEX_INGESTION_BATCH_RECORDS", "32768")),
-            secret_key=os.environ.get("TRACEX_SECRET_KEY", "tracex-dev-only-secret"),
+            secret_key=secret_key,
+            allow_dev_actor_header=os.environ.get("TRACEX_ALLOW_DEV_ACTOR_HEADER", "0").lower() in {"1", "true", "yes"},
+            environment=environment,
             token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
             ml_findings_enabled=os.environ.get("TRACEX_ML_FINDINGS", "1").lower() not in {"0", "false", "no"},
             ml_review_budget=cls._parse_ml_review_budget(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
+            ollama_base_url=os.environ.get("TRACEX_OLLAMA_BASE_URL", "http://localhost:11434"),
+            ollama_model=os.environ.get("TRACEX_OLLAMA_MODEL", "qwen3:8b"),
+            ollama_timeout_seconds=int(os.environ.get("TRACEX_OLLAMA_TIMEOUT_SECONDS", "60")),
         )
 
 
