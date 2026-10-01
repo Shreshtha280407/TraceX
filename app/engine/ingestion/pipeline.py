@@ -43,7 +43,7 @@ def _chunks(rows: Iterator[ParsedRow], size: int) -> Iterator[list[ParsedRow]]:
 ML_BUDGET_SAFE_RANGE = (0.0, 0.5)
 
 
-def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None) -> dict[str, object]:
+def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None, store=None) -> dict[str, object]:
     """Run the anomaly stack on the completed snapshot, if it is available.
 
     Deliberately non-fatal. The stack lives behind the optional `ml` extra, and an
@@ -80,7 +80,7 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
     try:
         result = materialize_ml_findings(
             session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, budget=float(budget),
-            records=records,
+            records=records, store=store,
         )
     except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
         logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
@@ -277,8 +277,14 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     # re-decoding every fragment. Checkpoint and receipts commit together, so
     # no checkpoint means no receipted fragment from an earlier attempt. A
     # resumed job falls back to reading the committed fragments.
+    # The machine decides how the post-parse stages run: fully in memory
+    # (fastest) when the whole snapshot fits its budget, otherwise bounded --
+    # staged on disk and processed a chunk/partition at a time (app.engine.bounded).
+    execution_mode = plan.execution_mode(records=job.total_records, source_bytes=source.byte_size)
     collected: FactRecords | None = (
-        {"transactions": [], "inputs": [], "outputs": [], "network_observations": []} if last_record == 0 else None
+        {"transactions": [], "inputs": [], "outputs": [], "network_observations": []}
+        if last_record == 0 and execution_mode == "memory"
+        else None
     )
     for batch in _chunks(
         (row for row in row_iterator if row.logical_record > last_record), batch_records
@@ -361,23 +367,43 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     snapshot = _snapshot_for_job(session, job, source)
     snapshot.state = "graph_building"
     _stage("graph_building")
-    # Loaded once and shared: graph build, deterministic findings and the
-    # anomaly stack each used to re-read and re-parse every committed fragment.
-    records = collected if collected is not None else load_facts(session, settings.evidence_root, snapshot.id)
-    collected = None
-    graph = build_graph_snapshot(session, evidence_root=settings.evidence_root, snapshot=snapshot, records=records)
-    graph_record = session.get(GraphSnapshot, graph.graph_snapshot_id)
-    if graph_record is None:
-        raise RuntimeError("graph snapshot receipt was not persisted")
-    _stage("findings")
-    finding_count = materialize_findings(
-        session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record, records=records
-    )
-    _stage("ml_scoring")
-    ml_result = _materialize_ml_findings(
-        session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
-    )
-    del records
+    # Re-check with the exact accepted count now that parsing is done.
+    execution_mode = plan.execution_mode(records=job.rows_accepted or job.total_records, source_bytes=source.byte_size)
+    if execution_mode == "memory":
+        # Loaded once and shared: graph build, deterministic findings and the
+        # anomaly stack each used to re-read and re-parse every committed fragment.
+        records = collected if collected is not None else load_facts(session, settings.evidence_root, snapshot.id)
+        collected = None
+        graph = build_graph_snapshot(session, evidence_root=settings.evidence_root, snapshot=snapshot, records=records)
+        graph_record = session.get(GraphSnapshot, graph.graph_snapshot_id)
+        if graph_record is None:
+            raise RuntimeError("graph snapshot receipt was not persisted")
+        _stage("findings")
+        finding_count = materialize_findings(
+            session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record, records=records
+        )
+        _stage("ml_scoring")
+        ml_result = _materialize_ml_findings(
+            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
+        )
+        del records
+    else:
+        collected = None
+        from app.engine.bounded import FactStore, build_graph_bounded, materialize_findings_bounded
+
+        with FactStore.build(session, evidence_root=settings.evidence_root, snapshot=snapshot) as store:
+            graph = build_graph_bounded(session, store=store, evidence_root=settings.evidence_root, snapshot=snapshot)
+            graph_record = session.get(GraphSnapshot, graph.graph_snapshot_id)
+            if graph_record is None:
+                raise RuntimeError("graph snapshot receipt was not persisted")
+            _stage("findings")
+            finding_count = materialize_findings_bounded(
+                session, store=store, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph_record
+            )
+            _stage("ml_scoring")
+            ml_result = _materialize_ml_findings(
+                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store
+            )
     snapshot.provisional = False
     snapshot.state = "complete"
     snapshot.completed_at = utcnow()
@@ -404,6 +430,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "ml_status": ml_result["status"],
             "ml_model_run_id": ml_result.get("model_run_id"),
             "ml_release_id": ml_result.get("release_id"),
+            "execution_mode": execution_mode,
             "provisional": False,
         },
     )

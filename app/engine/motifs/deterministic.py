@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
+from collections.abc import Container, Mapping
 from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
@@ -71,6 +72,216 @@ def resolved_spenders(inputs: list[dict[str, Any]], outputs: dict[tuple[str, int
     return result
 
 
+def address_of_output(output: dict[str, Any] | None) -> str | None:
+    if output is None:
+        return None
+    value = output.get("address") or output.get("script_id")
+    return str(value) if value else None
+
+
+def _hop_detail(
+    spending_txid: str,
+    previous: dict[str, Any],
+    continuation: dict[str, Any] | None,
+    *,
+    outputs_by_tx: Mapping[str, list[dict[str, Any]]],
+    inputs_by_tx: Mapping[str, list[dict[str, Any]]],
+    spenders: Container[tuple[str, int]],
+) -> dict[str, Any]:
+    """Per-hop context a reviewer needs to read the chain without re-querying
+    the graph: which addresses each hop moved between, the transaction's own
+    in/out arity, the sibling outputs actually peeled off at this hop, and the
+    co-spent input addresses behind the common-input-ownership signal."""
+    tx_inputs = inputs_by_tx.get(spending_txid, [])
+    tx_outputs = outputs_by_tx.get(spending_txid, [])
+    continuation_key = (continuation["txid"], continuation["vout"]) if continuation else None
+    peels = [
+        {
+            "output_id": f"out:{item['txid']}:{item['vout']}",
+            "address": address_of_output(item),
+            "amount_sats": item["amount_sats"],
+            # "spent" here means a uniquely-resolved onward spend exists in
+            # this snapshot -- an unspent peel is a real terminal output.
+            "is_spent": (item["txid"], item["vout"]) in spenders,
+        }
+        for item in sorted(tx_outputs, key=lambda o: (-o["amount_sats"], o["vout"]))
+        if (item["txid"], item["vout"]) != continuation_key
+    ]
+    co_spend_addresses = sorted({addr for item in tx_inputs if (addr := item.get("address"))})
+    return {
+        "previous_address": address_of_output(previous),
+        "previous_script_type": previous.get("script_type"),
+        "continuing_address": address_of_output(continuation),
+        "continuing_script_type": continuation.get("script_type") if continuation else None,
+        "input_count": len(tx_inputs),
+        "output_count": len(tx_outputs),
+        # Bounded so a wide transaction can't bloat the stored finding row.
+        "peel_outputs": peels[:4],
+        "peel_output_total": len(peels),
+        "co_spend_addresses": co_spend_addresses[:6],
+        "co_spend_input_address_count": len(co_spend_addresses),
+    }
+
+
+#: One walk: (outpoint, spending txid, continuation output or None) per hop.
+PeelingWalk = list[tuple[tuple[str, int], str, "dict[str, Any] | None"]]
+
+
+def build_peeling_signal(
+    start_outpoint: tuple[str, int],
+    walk: PeelingWalk,
+    *,
+    outputs_by_outpoint: Mapping[tuple[str, int], dict[str, Any]],
+    outputs_by_tx: Mapping[str, list[dict[str, Any]]],
+    inputs_by_tx: Mapping[str, list[dict[str, Any]]],
+    spenders: Container[tuple[str, int]],
+    transactions: Mapping[str, dict[str, Any]],
+    tx_times: Mapping[str, datetime | None],
+    max_hops: int = DEFAULT_MAX_PEELING_HOPS,
+) -> dict[str, Any]:
+    """The full reviewable signal for one emitted walk.
+
+    Shared by the in-memory detector and the bounded-memory path, which hands
+    it lookups restricted to the walk's own transactions -- so both produce
+    the same signal from the same facts.
+    """
+    def hop_detail(spending_txid: str, previous: dict[str, Any], continuation: dict[str, Any] | None) -> dict[str, Any]:
+        return _hop_detail(
+            spending_txid, previous, continuation,
+            outputs_by_tx=outputs_by_tx, inputs_by_tx=inputs_by_tx, spenders=spenders,
+        )
+
+    steps: list[dict[str, Any]] = []
+    for outpoint, spending_txid, continuation in walk:
+        previous = outputs_by_outpoint[outpoint]
+        if continuation is None:
+            # The current output's spend is itself a verified transaction
+            # in the chain.  Do not nominate an unspent terminal output as
+            # a continuation; only preceding continuation outputs were
+            # selected because their later spend is real.
+            steps.append(
+                {
+                    "previous_output_id": f"out:{previous['txid']}:{previous['vout']}",
+                    "spending_transaction_id": spending_txid,
+                    "continuing_output_id": None,
+                    "previous_value_sats": previous["amount_sats"],
+                    "continuing_value_sats": None,
+                    "timestamp": (tx_times.get(spending_txid).isoformat() if tx_times.get(spending_txid) else None),
+                    "edge_ids": [edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY")],
+                    **hop_detail(spending_txid, previous, None),
+                }
+            )
+            break
+        steps.append(
+            {
+                "previous_output_id": f"out:{previous['txid']}:{previous['vout']}",
+                "spending_transaction_id": spending_txid,
+                "continuing_output_id": f"out:{continuation['txid']}:{continuation['vout']}",
+                "previous_value_sats": previous["amount_sats"],
+                "continuing_value_sats": continuation["amount_sats"],
+                "timestamp": (tx_times.get(spending_txid).isoformat() if tx_times.get(spending_txid) else None),
+                "edge_ids": [
+                    edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY"),
+                    edge_id(f"tx:{spending_txid}", f"out:{continuation['txid']}:{continuation['vout']}", "CREATES_OUTPUT"),
+                ],
+                **hop_detail(spending_txid, previous, continuation),
+            }
+        )
+    txids = tuple(step["spending_transaction_id"] for step in steps)
+    known_times = [tx_times[txid] for txid in txids if tx_times.get(txid)]
+    duration = (max(known_times) - min(known_times)).total_seconds() if len(known_times) >= 2 else 0.0
+    reductions = [
+        1 - (step["continuing_value_sats"] / step["previous_value_sats"])
+        for step in steps
+        if step["previous_value_sats"] > 0 and step["continuing_value_sats"] is not None
+    ]
+    regularity = sum(1 for value in reductions if value > 0) / len(steps)
+    gaps = [
+        (later - earlier).total_seconds() for earlier, later in pairwise(known_times) if later >= earlier
+    ]
+    time_continuity = (1 / (1 + (median(gaps) / 86400))) if gaps else 0.0
+    evidence_facts: list[dict[str, Any]] = []
+    for step in steps:
+        previous_txid, previous_vout = step["previous_output_id"].removeprefix("out:").rsplit(":", 1)
+        evidence_facts.extend([outputs_by_outpoint[(previous_txid, int(previous_vout))], transactions[step["spending_transaction_id"]]])
+        if step["continuing_output_id"]:
+            continuation_txid, continuation_vout = step["continuing_output_id"].removeprefix("out:").rsplit(":", 1)
+            evidence_facts.append(outputs_by_outpoint[(continuation_txid, int(continuation_vout))])
+    refs = dedupe_refs(*evidence_facts)
+    evidence_coverage = min(1.0, len(refs) / max(1, len(steps)))
+    score = max(0.0, min(1.0, (min(1.0, len(steps) / max_hops) + regularity + time_continuity + evidence_coverage) / 4))
+    # Real, deterministic common-input-ownership signal (see _hop_detail):
+    # fraction of hops whose spending tx combines >=2 distinct input addresses
+    # in one signature set. Kept alongside score's own components rather than
+    # recomputed downstream from raw steps -- one source of truth per signal.
+    cluster_link_ratio = sum(1 for step in steps if step["co_spend_input_address_count"] >= 2) / len(steps)
+    start_output = outputs_by_outpoint[start_outpoint]
+    return (
+        {
+            "finding_type": "peeling_chain_candidate",
+            "entity_ref": f"address:{start_output.get('address') or start_output.get('script_id')}"
+            if (start_output.get("address") or start_output.get("script_id"))
+            else f"out:{start_output['txid']}:{start_output['vout']}",
+            "transaction_ids": list(txids),
+            "output_ids": [steps[0]["previous_output_id"]] + [step["continuing_output_id"] for step in steps if step["continuing_output_id"]],
+            "steps": steps,
+            "hop_count": len(steps),
+            "total_duration_sec": float(duration),
+            "peel_ratio": regularity,
+            "velocity": time_continuity,
+            "cluster_link": cluster_link_ratio,
+            "score": score,
+            "coverage": {
+                "verified_utxo_hops": len(steps),
+                "timestamps_available": len(known_times),
+                "evidence_coverage": evidence_coverage,
+            },
+            "uncertainty": {
+                "time_continuity_unavailable": len(known_times) < 2,
+                "scope": "Only supplied and uniquely resolved UTXO spends were examined.",
+            },
+            "reason_codes": ["verified_prevout_chain", "strict_output_reduction", "spent_continuation_output"],
+            "explanation": (
+                f"{len(steps)} sequential verified UTXO spends have a strictly smaller, later-spent continuation output. "
+                "This is a review signal and does not establish laundering or common ownership."
+            ),
+            "evidence_refs": refs,
+            "graph_path": {
+                "nodes": [node for step in steps for node in (step["previous_output_id"], f"tx:{step['spending_transaction_id']}") if node]
+                + [step["continuing_output_id"] for step in steps if step["continuing_output_id"]],
+                "edge_ids": [edge for step in steps for edge in step["edge_ids"]],
+            },
+        }
+    )
+
+
+def peeling_hop(
+    outpoint: tuple[str, int],
+    *,
+    spenders: Mapping[tuple[str, int], dict[str, Any]],
+    outputs_by_outpoint: Mapping[tuple[str, int], dict[str, Any]],
+    outputs_by_tx: Mapping[str, list[dict[str, Any]]],
+    ranked_cache: dict[str, list[dict[str, Any]]],
+) -> tuple[str, dict[str, Any] | None] | None:
+    """The hop taken from an outpoint: (spending txid, continuation or None),
+    or None when the outpoint ends the walk. Continuation selection: the
+    largest uniquely-spent output of the spending transaction strictly smaller
+    than the spent one (ties by vout)."""
+    spending_input = spenders.get(outpoint)
+    previous = outputs_by_outpoint.get(outpoint)
+    if spending_input is None or previous is None:
+        return None
+    spending_txid = spending_input["txid"]
+    ranked = ranked_cache.get(spending_txid)
+    if ranked is None:
+        ranked = ranked_cache[spending_txid] = sorted(
+            (item for item in outputs_by_tx.get(spending_txid, []) if (item["txid"], item["vout"]) in spenders),
+            key=lambda item: (-item["amount_sats"], item["vout"]),
+        )
+    continuation = next((item for item in ranked if item["amount_sats"] < previous["amount_sats"]), None)
+    return (spending_txid, continuation)
+
+
 def detect_peeling_chains(
     *,
     transactions: dict[str, dict[str, Any]],
@@ -95,48 +306,6 @@ def detect_peeling_chains(
     inputs_by_tx: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for tx_input in inputs:
         inputs_by_tx[tx_input["txid"]].append(tx_input)
-
-    def _address_of(output: dict[str, Any] | None) -> str | None:
-        if output is None:
-            return None
-        value = output.get("address") or output.get("script_id")
-        return str(value) if value else None
-
-    def _hop_detail(spending_txid: str, previous: dict[str, Any], continuation: dict[str, Any] | None) -> dict[str, Any]:
-        """Per-hop context a reviewer needs to read the chain without re-querying
-        the graph: which addresses each hop moved between, the transaction's own
-        in/out arity, the sibling outputs actually peeled off at this hop, and the
-        co-spent input addresses behind the common-input-ownership signal."""
-        tx_inputs = inputs_by_tx.get(spending_txid, [])
-        tx_outputs = outputs_by_tx.get(spending_txid, [])
-        continuation_key = (continuation["txid"], continuation["vout"]) if continuation else None
-        peels = [
-            {
-                "output_id": f"out:{item['txid']}:{item['vout']}",
-                "address": _address_of(item),
-                "amount_sats": item["amount_sats"],
-                # "spent" here means a uniquely-resolved onward spend exists in
-                # this snapshot -- an unspent peel is a real terminal output.
-                "is_spent": (item["txid"], item["vout"]) in spenders,
-            }
-            for item in sorted(tx_outputs, key=lambda o: (-o["amount_sats"], o["vout"]))
-            if (item["txid"], item["vout"]) != continuation_key
-        ]
-        co_spend_addresses = sorted({addr for item in tx_inputs if (addr := item.get("address"))})
-        return {
-            "previous_address": _address_of(previous),
-            "previous_script_type": previous.get("script_type"),
-            "continuing_address": _address_of(continuation),
-            "continuing_script_type": continuation.get("script_type") if continuation else None,
-            "input_count": len(tx_inputs),
-            "output_count": len(tx_outputs),
-            # Bounded so a wide transaction can't bloat the stored finding row.
-            "peel_outputs": peels[:4],
-            "peel_output_total": len(peels),
-            "co_spend_addresses": co_spend_addresses[:6],
-            "co_spend_input_address_count": len(co_spend_addresses),
-        }
-
     spenders = resolved_spenders(inputs, outputs_by_outpoint)
     tx_times = {
         txid: _time(fact.get("block_time") or fact.get("source_timestamp")) for txid, fact in transactions.items()
@@ -145,37 +314,22 @@ def detect_peeling_chains(
     emitted: set[tuple[str, ...]] = set()
     # The hop taken from an outpoint depends only on that outpoint, and chains
     # started from neighbouring outpoints share their suffixes, so each hop is
-    # resolved once and memoised: (spending txid, continuation or None), or
-    # None when the outpoint ends the walk.
+    # resolved once and memoised.
     hop_cache: dict[tuple[str, int], tuple[str, dict[str, Any] | None] | None] = {}
-    # A transaction's uniquely-spent outputs in continuation preference order
-    # (largest amount first, ties by vout) -- the same order `min` over
-    # (-amount, vout) selects from.
-    spent_outputs_by_tx: dict[str, list[dict[str, Any]]] = {}
+    ranked_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _next_hop(outpoint: tuple[str, int]) -> tuple[str, dict[str, Any] | None] | None:
-        if outpoint in hop_cache:
-            return hop_cache[outpoint]
-        spending_input = spenders.get(outpoint)
-        previous = outputs_by_outpoint.get(outpoint)
-        hop: tuple[str, dict[str, Any] | None] | None = None
-        if spending_input is not None and previous is not None:
-            spending_txid = spending_input["txid"]
-            ranked = spent_outputs_by_tx.get(spending_txid)
-            if ranked is None:
-                ranked = spent_outputs_by_tx[spending_txid] = sorted(
-                    (item for item in outputs_by_tx.get(spending_txid, []) if (item["txid"], item["vout"]) in spenders),
-                    key=lambda item: (-item["amount_sats"], item["vout"]),
-                )
-            continuation = next((item for item in ranked if item["amount_sats"] < previous["amount_sats"]), None)
-            hop = (spending_txid, continuation)
-        hop_cache[outpoint] = hop
-        return hop
+        if outpoint not in hop_cache:
+            hop_cache[outpoint] = peeling_hop(
+                outpoint, spenders=spenders, outputs_by_outpoint=outputs_by_outpoint,
+                outputs_by_tx=outputs_by_tx, ranked_cache=ranked_cache,
+            )
+        return hop_cache[outpoint]
 
     for start_outpoint in sorted(spenders):
         # Walk first, cheaply; per-hop detail is only built for a chain that is
         # long enough and not already emitted (most walks are neither).
-        walk: list[tuple[tuple[str, int], str, dict[str, Any] | None]] = []
+        walk: PeelingWalk = []
         current = start_outpoint
         for _ in range(max_hops):
             hop = _next_hop(current)
@@ -187,110 +341,16 @@ def detect_peeling_chains(
             current = (hop[1]["txid"], hop[1]["vout"])
         if len(walk) < min_chain_length:
             continue
-        if tuple(spending_txid for _, spending_txid, _ in walk) in emitted:
+        txids = tuple(spending_txid for _, spending_txid, _ in walk)
+        if txids in emitted:
             continue
-        steps: list[dict[str, Any]] = []
-        for outpoint, spending_txid, continuation in walk:
-            previous = outputs_by_outpoint[outpoint]
-            if continuation is None:
-                # The current output's spend is itself a verified transaction
-                # in the chain.  Do not nominate an unspent terminal output as
-                # a continuation; only preceding continuation outputs were
-                # selected because their later spend is real.
-                steps.append(
-                    {
-                        "previous_output_id": f"out:{previous['txid']}:{previous['vout']}",
-                        "spending_transaction_id": spending_txid,
-                        "continuing_output_id": None,
-                        "previous_value_sats": previous["amount_sats"],
-                        "continuing_value_sats": None,
-                        "timestamp": (tx_times.get(spending_txid).isoformat() if tx_times.get(spending_txid) else None),
-                        "edge_ids": [edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY")],
-                        **_hop_detail(spending_txid, previous, None),
-                    }
-                )
-                break
-            steps.append(
-                {
-                    "previous_output_id": f"out:{previous['txid']}:{previous['vout']}",
-                    "spending_transaction_id": spending_txid,
-                    "continuing_output_id": f"out:{continuation['txid']}:{continuation['vout']}",
-                    "previous_value_sats": previous["amount_sats"],
-                    "continuing_value_sats": continuation["amount_sats"],
-                    "timestamp": (tx_times.get(spending_txid).isoformat() if tx_times.get(spending_txid) else None),
-                    "edge_ids": [
-                        edge_id(f"out:{previous['txid']}:{previous['vout']}", f"tx:{spending_txid}", "SPENT_BY"),
-                        edge_id(f"tx:{spending_txid}", f"out:{continuation['txid']}:{continuation['vout']}", "CREATES_OUTPUT"),
-                    ],
-                    **_hop_detail(spending_txid, previous, continuation),
-                }
-            )
-        txids = tuple(step["spending_transaction_id"] for step in steps)
         emitted.add(txids)
-        known_times = [tx_times[txid] for txid in txids if tx_times.get(txid)]
-        duration = (max(known_times) - min(known_times)).total_seconds() if len(known_times) >= 2 else 0.0
-        reductions = [
-            1 - (step["continuing_value_sats"] / step["previous_value_sats"])
-            for step in steps
-            if step["previous_value_sats"] > 0 and step["continuing_value_sats"] is not None
-        ]
-        regularity = sum(1 for value in reductions if value > 0) / len(steps)
-        gaps = [
-            (later - earlier).total_seconds() for earlier, later in pairwise(known_times) if later >= earlier
-        ]
-        time_continuity = (1 / (1 + (median(gaps) / 86400))) if gaps else 0.0
-        evidence_facts: list[dict[str, Any]] = []
-        for step in steps:
-            previous_txid, previous_vout = step["previous_output_id"].removeprefix("out:").rsplit(":", 1)
-            evidence_facts.extend([outputs_by_outpoint[(previous_txid, int(previous_vout))], transactions[step["spending_transaction_id"]]])
-            if step["continuing_output_id"]:
-                continuation_txid, continuation_vout = step["continuing_output_id"].removeprefix("out:").rsplit(":", 1)
-                evidence_facts.append(outputs_by_outpoint[(continuation_txid, int(continuation_vout))])
-        refs = dedupe_refs(*evidence_facts)
-        evidence_coverage = min(1.0, len(refs) / max(1, len(steps)))
-        score = max(0.0, min(1.0, (min(1.0, len(steps) / max_hops) + regularity + time_continuity + evidence_coverage) / 4))
-        # Real, deterministic common-input-ownership signal (see _hop_detail):
-        # fraction of hops whose spending tx combines >=2 distinct input addresses
-        # in one signature set. Kept alongside score's own components rather than
-        # recomputed downstream from raw steps -- one source of truth per signal.
-        cluster_link_ratio = sum(1 for step in steps if step["co_spend_input_address_count"] >= 2) / len(steps)
-        start_output = outputs_by_outpoint[start_outpoint]
         results.append(
-            {
-                "finding_type": "peeling_chain_candidate",
-                "entity_ref": f"address:{start_output.get('address') or start_output.get('script_id')}"
-                if (start_output.get("address") or start_output.get("script_id"))
-                else f"out:{start_output['txid']}:{start_output['vout']}",
-                "transaction_ids": list(txids),
-                "output_ids": [steps[0]["previous_output_id"]] + [step["continuing_output_id"] for step in steps if step["continuing_output_id"]],
-                "steps": steps,
-                "hop_count": len(steps),
-                "total_duration_sec": float(duration),
-                "peel_ratio": regularity,
-                "velocity": time_continuity,
-                "cluster_link": cluster_link_ratio,
-                "score": score,
-                "coverage": {
-                    "verified_utxo_hops": len(steps),
-                    "timestamps_available": len(known_times),
-                    "evidence_coverage": evidence_coverage,
-                },
-                "uncertainty": {
-                    "time_continuity_unavailable": len(known_times) < 2,
-                    "scope": "Only supplied and uniquely resolved UTXO spends were examined.",
-                },
-                "reason_codes": ["verified_prevout_chain", "strict_output_reduction", "spent_continuation_output"],
-                "explanation": (
-                    f"{len(steps)} sequential verified UTXO spends have a strictly smaller, later-spent continuation output. "
-                    "This is a review signal and does not establish laundering or common ownership."
-                ),
-                "evidence_refs": refs,
-                "graph_path": {
-                    "nodes": [node for step in steps for node in (step["previous_output_id"], f"tx:{step['spending_transaction_id']}") if node]
-                    + [step["continuing_output_id"] for step in steps if step["continuing_output_id"]],
-                    "edge_ids": [edge for step in steps for edge in step["edge_ids"]],
-                },
-            }
+            build_peeling_signal(
+                start_outpoint, walk, outputs_by_outpoint=outputs_by_outpoint, outputs_by_tx=outputs_by_tx,
+                inputs_by_tx=inputs_by_tx, spenders=spenders, transactions=transactions, tx_times=tx_times,
+                max_hops=max_hops,
+            )
         )
     return results
 

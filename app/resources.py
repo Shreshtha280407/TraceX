@@ -33,6 +33,16 @@ FALLBACK_BUDGET_BYTES = 2048 * MB
 # with its normalized facts and Parquet staging is ~6 KB.
 _FEATURE_ROW_BYTES = 4 * 1024
 _PARSE_RECORD_BYTES = 6 * 1024
+#: Peak working set of the in-memory (fastest) post-parse path per accepted
+#: source record: measured 19.5 KB on the 100K generator-v2 fixture (2.2 GB
+#: peak over a 270 MB idle process), rounded up for headroom. An import whose
+#: estimate fits the budget runs fully in memory; one that does not runs the
+#: bounded path, which keeps only one partition of the snapshot resident.
+IN_MEMORY_BYTES_PER_RECORD = 24 * 1024
+#: Fallback when the record count is unknown: in-memory bytes per source byte
+#: (1.95 GB over a 126 MB NDJSON source), rounded up.
+IN_MEMORY_BYTES_PER_SOURCE_BYTE = 20
+EXECUTION_MODES = ("memory", "bounded")
 
 
 def _read_int(path: str) -> int | None:
@@ -128,6 +138,27 @@ class ResourcePlan:
     #: DuckDB working memory for the graph build; beyond it DuckDB spills to disk.
     duckdb_memory_limit_mb: int
     duckdb_threads: int
+
+    def estimated_in_memory_bytes(self, *, records: int | None, source_bytes: int | None = None) -> int:
+        if records:
+            return records * IN_MEMORY_BYTES_PER_RECORD
+        return (source_bytes or 0) * IN_MEMORY_BYTES_PER_SOURCE_BYTE
+
+    def execution_mode(self, *, records: int | None, source_bytes: int | None = None) -> str:
+        """`memory` when the whole snapshot fits this machine's budget, else
+        `bounded`. `TRACEX_EXECUTION_MODE=memory|bounded` pins it (`auto` or
+        unset lets the machine decide)."""
+        forced = os.environ.get("TRACEX_EXECUTION_MODE", "auto").strip().lower()
+        if forced in EXECUTION_MODES:
+            return forced
+        needed = self.estimated_in_memory_bytes(records=records, source_bytes=source_bytes)
+        return "memory" if needed <= self.memory_budget_bytes else "bounded"
+
+    def partitions(self, *, records: int | None, source_bytes: int | None = None) -> int:
+        """Address partitions for the bounded path: each holds at most ~40% of
+        the budget's worth of the snapshot, so it fits with room to spare."""
+        needed = self.estimated_in_memory_bytes(records=records, source_bytes=source_bytes)
+        return max(1, -(-needed // max(1, int(self.memory_budget_bytes * 0.4))))
 
     def ingestion_batch_records(self, configured: int) -> int:
         return max(1, min(configured, self.max_ingestion_batch_records))

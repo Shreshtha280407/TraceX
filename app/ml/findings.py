@@ -183,6 +183,7 @@ def materialize_ml_findings(
     budget: float = DEFAULT_BUDGET,
     reference_fraction: float = 0.7,
     records: dict[str, list[dict]] | None = None,
+    store=None,
 ) -> MLFindingResult:
     """Score a committed snapshot and store the flagged transactions as findings.
 
@@ -203,9 +204,14 @@ def materialize_ml_findings(
             snapshot_id=snapshot.id, budget=budget
         ))
 
-    if records is None:
-        records = load_facts(session, evidence_root, snapshot.id)
-    facts = facts_from_records(records)
+    if store is not None:
+        # Bounded-memory path: arrays are streamed from the on-disk fact store
+        # and source refs are looked up only for the flagged transactions.
+        facts = store.ml_facts()
+    else:
+        if records is None:
+            records = load_facts(session, evidence_root, snapshot.id)
+        facts = facts_from_records(records)
     if facts.transaction_count < 50:
         # Too little committed evidence for a reference distribution to mean
         # anything; store nothing rather than rank noise.
@@ -256,7 +262,10 @@ def materialize_ml_findings(
 
     flagged = np.flatnonzero(score >= threshold)
     order = flagged[np.argsort(-score[flagged], kind="stable")]
-    refs_by_txid = _source_refs_by_txid(records)
+    if store is not None:
+        refs_by_txid = store.source_refs_by_txid([facts.txids[transaction] for transaction in order])
+    else:
+        refs_by_txid = _source_refs_by_txid(records)
     run_id = model_run_id(snapshot_id=snapshot.id, budget=budget)
     coverage = _coverage(
         graph, facts.transaction_count, int(flagged.size), budget, release_id=RELEASE_ID, run_id=run_id

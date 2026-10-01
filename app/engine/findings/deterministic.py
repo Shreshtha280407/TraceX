@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from collections import defaultdict
-from collections.abc import Hashable, Iterator
+from collections.abc import Hashable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from statistics import median
@@ -23,7 +23,7 @@ from app.engine.motifs.deterministic import (
     propagate_synthetic_review_seeds,
 )
 from app.events import append_event
-from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed, new_id
+from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed
 from app.resources import current_plan
 
 RULE_VERSION = "deterministic-v1"
@@ -53,6 +53,18 @@ def _phase41_defaults() -> dict[str, Any]:
     }
 
 
+def _evidence_count(signal: dict[str, Any]) -> int:
+    # Compact signal summaries (bounded path) carry the count, not the refs.
+    return signal["evidence_count"] if "evidence_count" in signal else len(signal["evidence_refs"])
+
+
+def signal_summary(signal: dict[str, Any]) -> dict[str, Any]:
+    """Only what _signal_feature reads: what a window's feature vector needs from a detector signal."""
+    keys = ("finding_type", "score", "hop_count", "total_duration_sec", "equal_output_count",
+            "equal_output_value_sats", "risk_seed_distance", "risk_seed_count")
+    return {**{key: signal[key] for key in keys if key in signal}, "evidence_count": len(signal["evidence_refs"])}
+
+
 def _signal_feature(signal: dict[str, Any]) -> dict[str, Any]:
     """Translate a detector result into the eight frozen flat features."""
     values = _phase41_defaults()
@@ -62,7 +74,7 @@ def _signal_feature(signal: dict[str, Any]) -> dict[str, Any]:
                 "peeling_chain_score": signal["score"],
                 "peeling_chain_length": signal["hop_count"],
                 "peeling_chain_total_duration_sec": signal["total_duration_sec"],
-                "peeling_chain_evidence_count": len(signal["evidence_refs"]),
+                "peeling_chain_evidence_count": _evidence_count(signal),
             }
         )
     elif signal["finding_type"] == "coinjoin_like_structure":
@@ -71,7 +83,7 @@ def _signal_feature(signal: dict[str, Any]) -> dict[str, Any]:
                 "coinjoin_like_score": signal["score"],
                 "equal_output_count": signal["equal_output_count"],
                 "equal_output_value_sats": signal["equal_output_value_sats"],
-                "coinjoin_like_evidence_count": len(signal["evidence_refs"]),
+                "coinjoin_like_evidence_count": _evidence_count(signal),
             }
         )
     elif signal["finding_type"] == "synthetic_seed_proximity":
@@ -79,7 +91,7 @@ def _signal_feature(signal: dict[str, Any]) -> dict[str, Any]:
             {
                 "risk_propagation_score": signal["score"],
                 "risk_seed_distance": signal["risk_seed_distance"],
-                "risk_path_evidence_count": len(signal["evidence_refs"]),
+                "risk_path_evidence_count": _evidence_count(signal),
                 "risk_seed_count": signal["risk_seed_count"],
             }
         )
@@ -144,6 +156,12 @@ def _dedupe_refs(facts: list[dict]) -> list[dict]:
 
 
 def _coverage(graph: GraphSnapshot, transactions: dict[str, dict]) -> dict:
+    timed = sum(bool(_time(fact.get("block_time") or fact.get("source_timestamp"))) for fact in transactions.values())
+    block_timed = sum(bool(fact.get("block_time")) for fact in transactions.values())
+    return coverage_from_counts(graph, total=len(transactions), timed=timed, block_timed=block_timed)
+
+
+def coverage_from_counts(graph: GraphSnapshot, *, total: int, timed: int, block_timed: int) -> dict:
     graph_coverage = graph.coverage or {}
     notes = []
     if graph_coverage.get("missing_outpoint_inputs"):
@@ -152,16 +170,14 @@ def _coverage(graph: GraphSnapshot, transactions: dict[str, dict]) -> dict:
         notes.append("Some supplied outpoints refer to outputs outside committed coverage.")
     if graph_coverage.get("double_spend_conflicts"):
         notes.append("Conflicting spenders were excluded from accepted spend edges.")
-    timed = sum(bool(_time(fact.get("block_time") or fact.get("source_timestamp"))) for fact in transactions.values())
-    block_timed = sum(bool(fact.get("block_time")) for fact in transactions.values())
-    if timed != len(transactions):
+    if timed != total:
         notes.append("Transactions without a usable source or block timestamp are excluded from time-window features.")
     notes.append("Windows are bounded by the committed snapshot; activity outside supplied evidence is unknown.")
     return {
         "complete": bool(graph_coverage.get("spend_lineage_complete")),
         "spend_lineage_complete": bool(graph_coverage.get("spend_lineage_complete")),
         "time_coverage": {
-            "transactions_total": len(transactions),
+            "transactions_total": total,
             "transactions_with_usable_time": timed,
             "transactions_with_block_time": block_timed,
             "source_time_used_when_block_time_missing": timed - block_timed,
@@ -537,22 +553,7 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
     event_outpoints: dict[tuple[str, int, datetime], set[tuple[str, int]]] = {}
 
     def add_signal(address: str | None, observed: datetime | None, signal: dict[str, Any], output: dict[str, Any] | None = None) -> None:
-        if not address or not observed:
-            return
-        for seconds in WINDOW_SECONDS:
-            start, _ = _window(observed, seconds)
-            key = (str(address), seconds, start)
-            if output is not None:
-                present = event_outpoints.get(key)
-                if present is None:
-                    present = event_outpoints[key] = {(item["txid"], item["vout"]) for item in output_events[key]}
-                outpoint = (output["txid"], output["vout"])
-                if outpoint not in present:
-                    # A detector can key a row to the verified spend time; preserve
-                    # the actual output fact rather than inventing a transfer.
-                    present.add(outpoint)
-                    output_events[key].append(output)
-            signal_by_key[key].append(signal)
+        add_window_signal(output_events, event_outpoints, signal_by_key, address, observed, signal, output)
 
     peeling = detect_peeling_chains(transactions=transactions, inputs=records["inputs"], outputs=records["outputs"])
     coinjoin = detect_coinjoin_like_transactions(
@@ -591,30 +592,16 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
             add_signal(address, transaction_times.get(output["txid"]), signal, output)
 
     # Keys whose feature vector a detector finding borrows, resolved up front
-    # so the address-window loop below can stream every other feature row
-    # straight to the database instead of holding ~800K of them in memory.
+    # so the address-window pass can stream every other feature row straight
+    # to the database instead of holding ~800K of them in memory.
     peeling_patterns = _group_peeling_patterns(peeling, transaction_times)
     detector_keys: dict[int, tuple[str, int, datetime] | None] = {}
     for pattern in peeling_patterns:
-        observed = transaction_times.get(pattern["transaction_ids"][0])
-        address = pattern["entity_ref"].removeprefix("address:")
-        detector_keys[id(pattern)] = (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
+        detector_keys[id(pattern)] = peeling_detector_key(pattern, transaction_times)
     for signal in coinjoin:
-        # coinjoin has no single owning address (that's the point of the shape) — its
-        # entity_ref stays transaction-scoped, but the finding still borrows the real
-        # address-window feature vector already computed for one of its own outputs
-        # (via add_signal above) instead of falling back to an near-empty stub.
-        observed = transaction_times.get(signal["transaction_id"])
-        key = None
-        if observed:
-            window_start = _window(observed, WINDOW_SECONDS[0])[0]
-            for output in outputs_by_tx.get(signal["transaction_id"], []):
-                candidate_address = output.get("address") or output.get("script_id")
-                candidate_key = (str(candidate_address), WINDOW_SECONDS[0], window_start) if candidate_address else None
-                if candidate_key in output_events:
-                    key = candidate_key
-                    break
-        detector_keys[id(signal)] = key
+        detector_keys[id(signal)] = coinjoin_detector_key(
+            signal, transaction_times, outputs_by_tx.get(signal["transaction_id"], [])
+        )
     if propagation:
         earliest_key_by_address: dict[str, tuple[str, int, datetime]] = {}
         for feature_key in output_events:
@@ -625,20 +612,181 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
             detector_keys[id(signal)] = earliest_key_by_address.get(signal["entity_ref"].removeprefix("address:"))
     needed_keys = {key for key in detector_keys.values() if key is not None}
 
-    # A real 20K-row import produces ~190K feature rows (100K rows: ~830K).
-    # They are written with Core bulk INSERTs of plain dicts whose JSON columns
-    # are serialized here -- the shared coverage document exactly once -- and
-    # flushed in chunks sized to this machine's memory (app.resources), so the
-    # stage's working set no longer grows with the number of feature rows.
     plan = current_plan()
     coverage_json = json.dumps(coverage)
-    chunk: list[dict[str, Any]] = []
+    writer = FeatureRowWriter(session, snapshot=snapshot, graph=graph, coverage_json=coverage_json, chunk_rows=plan.insert_chunk_rows)
+    window_candidates, kept_features = address_window_pass(
+        output_events=output_events,
+        rapid_events=rapid_events,
+        signal_by_key=signal_by_key,
+        transaction_times=transaction_times,
+        outputs_by_tx=outputs_by_tx,
+        needed_keys=needed_keys,
+        writer=writer,
+    )
+    writer.flush()
+    candidates.extend(window_candidates)
 
-    def flush_features() -> None:
-        if chunk:
-            bulk_insert_serialized(session, FeatureRecord, chunk, _FEATURE_JSON_COLUMNS)
-            chunk.clear()
+    # Detector finding records are separate from the address-window export but
+    # share its snapshot, graph, source locators, coverage, and explanation.
+    for signal in [*peeling_patterns, *coinjoin, *propagation]:
+        key = detector_keys.get(id(signal))
+        kept = kept_features.get(key) if key else None
+        candidates.append(detector_candidate(signal, key, kept[0] if kept else None, transaction_times, coverage))
+    del kept_features
+    candidates = dedupe_and_rank(candidates)
+    opposing_json = opposing_evidence_json()
+    rows: list[dict[str, Any]] = []
+    row_ids = _uuid4_strings()
+    for rank, candidate in enumerate(candidates, 1):
+        rows.append(
+            finding_row(
+                candidate, rank=rank, row_id=next(row_ids), snapshot=snapshot, graph=graph,
+                coverage_json=coverage_json, opposing_json=opposing_json,
+            )
+        )
+        if len(rows) >= plan.insert_chunk_rows:
+            bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
+            rows = []
+    bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
+    record_findings_event(session, snapshot, len(candidates))
+    return len(candidates)
 
+
+# --------------------------------------------------------------------------- #
+# Building blocks shared by the in-memory pass above and the bounded-memory
+# pass (app.engine.bounded), which runs them per address partition.
+# --------------------------------------------------------------------------- #
+
+def add_window_signal(
+    output_events: dict[tuple[str, int, datetime], list[dict]],
+    event_outpoints: dict[tuple[str, int, datetime], set[tuple[str, int]]],
+    signal_by_key: dict[tuple[str, int, datetime], list[dict[str, Any]]],
+    address: str | None,
+    observed: datetime | None,
+    signal: dict[str, Any],
+    output: dict[str, Any] | None = None,
+) -> None:
+    """Attach a detector signal (and the output it keys on) to its windows."""
+    if not address or not observed:
+        return
+    for seconds in WINDOW_SECONDS:
+        start, _ = _window(observed, seconds)
+        key = (str(address), seconds, start)
+        if output is not None:
+            present = event_outpoints.get(key)
+            if present is None:
+                present = event_outpoints[key] = {(item["txid"], item["vout"]) for item in output_events[key]}
+            outpoint = (output["txid"], output["vout"])
+            if outpoint not in present:
+                # A detector can key a row to the verified spend time; preserve
+                # the actual output fact rather than inventing a transfer.
+                present.add(outpoint)
+                output_events[key].append(output)
+        signal_by_key[key].append(signal)
+
+
+def peeling_detector_key(pattern: dict[str, Any], transaction_times: Mapping[str, datetime | None]) -> tuple[str, int, datetime] | None:
+    observed = transaction_times.get(pattern["transaction_ids"][0])
+    address = pattern["entity_ref"].removeprefix("address:")
+    return (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
+
+
+def coinjoin_detector_key(
+    signal: dict[str, Any], transaction_times: Mapping[str, datetime | None], tx_outputs: list[dict]
+) -> tuple[str, int, datetime] | None:
+    """coinjoin has no single owning address (that's the point of the shape) — its
+    entity_ref stays transaction-scoped, but the finding still borrows the real
+    address-window feature vector computed for its first addressed output (that
+    window always exists: the signal itself adds the output to it)."""
+    observed = transaction_times.get(signal["transaction_id"])
+    if not observed:
+        return None
+    window_start = _window(observed, WINDOW_SECONDS[0])[0]
+    for output in tx_outputs:
+        candidate_address = output.get("address") or output.get("script_id")
+        if candidate_address:
+            return (str(candidate_address), WINDOW_SECONDS[0], window_start)
+    return None
+
+
+class FeatureRowWriter:
+    """Streams address-window feature rows to the database in bounded chunks.
+
+    JSON columns are serialized here -- the shared coverage document exactly
+    once -- and each source reference's JSON text is cached by identity while
+    the facts holding it are alive; `end_pass()` drops that cache before the
+    facts of a pass are released, so a recycled object id is never reused.
+    """
+
+    def __init__(self, session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, coverage_json: str, chunk_rows: int) -> None:
+        self._session = session
+        self._snapshot = snapshot
+        self._graph = graph
+        self._coverage_json = coverage_json
+        self._chunk_rows = chunk_rows
+        self._rows: list[dict[str, Any]] = []
+        self._ref_json: dict[int, str] = {}
+        self._ids = _uuid4_strings()
+        self.written = 0
+
+    def _refs_json(self, references: list[dict]) -> str:
+        parts = []
+        for reference in references:
+            encoded = self._ref_json.get(id(reference))
+            if encoded is None:
+                encoded = self._ref_json[id(reference)] = json.dumps(reference)
+            parts.append(encoded)
+        # Byte-identical to json.dumps(references) with its default separators.
+        return f"[{', '.join(parts)}]"
+
+    def add(self, address: str, seconds: int, start: datetime, feature_json: str, outputs: list[dict]) -> None:
+        self._rows.append(
+            {
+                "id": next(self._ids),
+                "case_id": self._snapshot.case_id,
+                "snapshot_id": self._snapshot.id,
+                "graph_snapshot_id": self._graph.id,
+                "entity_ref": f"address:{address}",
+                "window_start": start,
+                "window_end": start + timedelta(seconds=seconds),
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "feature_vector": feature_json,
+                "coverage": self._coverage_json,
+                "source_refs": self._refs_json(_dedupe_refs(outputs)),
+            }
+        )
+        if len(self._rows) >= self._chunk_rows:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._rows:
+            bulk_insert_serialized(self._session, FeatureRecord, self._rows, _FEATURE_JSON_COLUMNS)
+            self.written += len(self._rows)
+            self._rows = []
+
+    def end_pass(self) -> None:
+        self.flush()
+        self._ref_json.clear()
+
+
+def address_window_pass(
+    *,
+    output_events: dict[tuple[str, int, datetime], list[dict]],
+    rapid_events: Mapping[tuple[str, int, datetime], list[tuple[dict, dict, float]]],
+    signal_by_key: Mapping[tuple[str, int, datetime], list[dict[str, Any]]],
+    transaction_times: Mapping[str, datetime | None],
+    outputs_by_tx: Mapping[str, list[dict]],
+    needed_keys: set[tuple[str, int, datetime]],
+    writer: FeatureRowWriter,
+) -> tuple[list[dict[str, Any]], dict[tuple[str, int, datetime], tuple[dict[str, Any], str]]]:
+    """Every address-window feature row plus the address-window rule candidates.
+
+    Everything here is local to one address, so the bounded path can run it on
+    one partition of addresses at a time and get exactly the same rows.
+    Returns (grouped candidates in key order, features kept for detectors).
+    """
+    candidates: list[dict[str, Any]] = []
     thresholds = {
         "concentrated_collection_min_source_transactions": COLLECTION_MIN_SOURCE_TRANSACTIONS,
         "emerging_hub_min_source_transactions": HUB_MIN_SOURCE_TRANSACTIONS,
@@ -646,22 +794,6 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
         "rapid_redistribution_max_delay_seconds": RAPID_MAX_DELAY_SECONDS,
     }
     history = _history_features(output_events)
-    # Each source reference is one shared dict per source row; its JSON text is
-    # cached by identity (the facts keep every one alive for this whole call),
-    # so a feature row's reference list is joined, not re-encoded, each time.
-    ref_json: dict[int, str] = {}
-
-    def refs_json(references: list[dict]) -> str:
-        parts = []
-        for reference in references:
-            encoded = ref_json.get(id(reference))
-            if encoded is None:
-                encoded = ref_json[id(reference)] = json.dumps(reference)
-            parts.append(encoded)
-        # Byte-identical to json.dumps(references) with its default separators.
-        return f"[{', '.join(parts)}]"
-
-    row_ids = _uuid4_strings()
     kept_features: dict[tuple[str, int, datetime], tuple[dict[str, Any], str]] = {}
     for (address, seconds, start), outputs in output_events.items():
         key = (address, seconds, start)
@@ -681,23 +813,7 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
         for signal in signal_by_key.get(key, []):
             _merge_signal_features(feature, signal)
         feature_json = json.dumps(feature)
-        chunk.append(
-            {
-                "id": next(row_ids),
-                "case_id": snapshot.case_id,
-                "snapshot_id": snapshot.id,
-                "graph_snapshot_id": graph.id,
-                "entity_ref": f"address:{address}",
-                "window_start": start,
-                "window_end": start + timedelta(seconds=seconds),
-                "feature_schema_version": FEATURE_SCHEMA_VERSION,
-                "feature_vector": feature_json,
-                "coverage": coverage_json,
-                "source_refs": refs_json(_dedupe_refs(outputs)),
-            }
-        )
-        if len(chunk) >= plan.insert_chunk_rows:
-            flush_features()
+        writer.add(address, seconds, start, feature_json, outputs)
         if key in needed_keys:
             kept_features[key] = (feature, feature_json)
         if len(distinct_transactions) >= COLLECTION_MIN_SOURCE_TRANSACTIONS:
@@ -738,7 +854,6 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                     "facts": outputs,
                 }
             )
-    flush_features()
     del history
     for (address, seconds, start), events in rapid_events.items():
         inbound = output_events.get((address, seconds, start), [])
@@ -786,67 +901,73 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
     # One review finding per address, rule and day: the same burst also meets
     # the rule in every enclosing window (15 min inside 1 h inside 24 h), which
     # used to put the same evidence in front of a reviewer up to three times.
-    candidates = _group_window_candidates(candidates)
+    return _group_window_candidates(candidates), kept_features
 
-    # Detector finding records are separate from the address-window export but
-    # share its snapshot, graph, source locators, coverage, and explanation.
-    for signal in [*peeling_patterns, *coinjoin, *propagation]:
-        key = detector_keys.get(id(signal))
-        if signal["finding_type"] == "peeling_chain_candidate":
-            observed = transaction_times.get(signal["transaction_ids"][0])
-        elif signal["finding_type"] == "coinjoin_like_structure":
-            observed = transaction_times.get(signal["transaction_id"])
-        else:
-            observed = key[2] if key else None
-        start = key[2] if key else (_window(observed, WINDOW_SECONDS[0])[0] if observed else datetime(1970, 1, 1, tzinfo=UTC))
-        kept = kept_features.get(key) if key else None
-        feature = dict(kept[0]) if kept else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
-        feature.update(_signal_feature(signal))
-        feature["detector_result"] = {
-            "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
-            "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal.get("graph_path"),
-            # peeling_chain_candidate-only fields (None for other signal types): the
-            # per-hop breakdown and its already-computed real signal components were
-            # being thrown away here even though the detector fully computes them --
-            # this is the one place a UI wanting hop-level detail can read them back.
-            "steps": signal.get("steps"),
-            "hop_count": signal.get("hop_count"),
-            "total_duration_sec": signal.get("total_duration_sec"),
-            "peel_ratio": signal.get("peel_ratio"),
-            "velocity": signal.get("velocity"),
-            "cluster_link": signal.get("cluster_link"),
-            # The whole reviewable pattern (every merged chain), for the graph to
-            # highlight as one unit; None for single-transaction detectors.
-            "pattern": signal.get("pattern"),
-        }
-        candidates.append(
-            {
-                "entity_ref": signal["entity_ref"], "start": start, "end": start + timedelta(seconds=WINDOW_SECONDS[0]),
-                "rule_id": signal["finding_type"], "score": signal["score"], "feature": feature,
-                "explanations": [signal["explanation"]],
-                "alternatives": ["This deterministic review signal has benign explanations and does not establish ownership, origin, or wrongdoing."],
-                "facts": [], "source_refs": signal["evidence_refs"], "coverage": {**coverage, **signal["coverage"]},
-            }
-        )
-    del kept_features
-    # Two distinct detector signals (e.g. a peeling pattern and a synthetic-seed
-    # propagation) can resolve to the same address and the same window bucket.
-    # `entity_ref`/window/rule_id is the table's unique key, so appending one
-    # candidate per signal unchecked can attempt two rows with an identical key
-    # and abort the whole snapshot's commit on the resulting IntegrityError.
-    # Keep the highest-scoring candidate per key; ties keep whichever was
-    # constructed first, which is deterministic given the deterministic
-    # fact/signal ordering above. (Peeling chains sharing a key are already
-    # merged into one pattern by _group_peeling_patterns, so none is lost here.)
-    deduped_candidates: dict[tuple[str, datetime, datetime, str], dict[str, Any]] = {}
+
+def detector_candidate(
+    signal: dict[str, Any],
+    key: tuple[str, int, datetime] | None,
+    kept_feature: dict[str, Any] | None,
+    transaction_times: Mapping[str, datetime | None],
+    coverage: dict[str, Any],
+) -> dict[str, Any]:
+    if signal["finding_type"] == "peeling_chain_candidate":
+        observed = transaction_times.get(signal["transaction_ids"][0])
+    elif signal["finding_type"] == "coinjoin_like_structure":
+        observed = transaction_times.get(signal["transaction_id"])
+    else:
+        observed = key[2] if key else None
+    start = key[2] if key else (_window(observed, WINDOW_SECONDS[0])[0] if observed else datetime(1970, 1, 1, tzinfo=UTC))
+    feature = dict(kept_feature) if kept_feature is not None else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
+    feature.update(_signal_feature(signal))
+    feature["detector_result"] = {
+        "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
+        "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal.get("graph_path"),
+        # peeling_chain_candidate-only fields (None for other signal types): the
+        # per-hop breakdown and its already-computed real signal components were
+        # being thrown away here even though the detector fully computes them --
+        # this is the one place a UI wanting hop-level detail can read them back.
+        "steps": signal.get("steps"),
+        "hop_count": signal.get("hop_count"),
+        "total_duration_sec": signal.get("total_duration_sec"),
+        "peel_ratio": signal.get("peel_ratio"),
+        "velocity": signal.get("velocity"),
+        "cluster_link": signal.get("cluster_link"),
+        # The whole reviewable pattern (every merged chain), for the graph to
+        # highlight as one unit; None for single-transaction detectors.
+        "pattern": signal.get("pattern"),
+    }
+    return {
+        "entity_ref": signal["entity_ref"], "start": start, "end": start + timedelta(seconds=WINDOW_SECONDS[0]),
+        "rule_id": signal["finding_type"], "score": signal["score"], "feature": feature,
+        "explanations": [signal["explanation"]],
+        "alternatives": ["This deterministic review signal has benign explanations and does not establish ownership, origin, or wrongdoing."],
+        "facts": [], "source_refs": signal["evidence_refs"], "coverage": {**coverage, **signal["coverage"]},
+    }
+
+
+def dedupe_and_rank(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Unique (entity, window, rule) keys, highest score first.
+
+    Two distinct detector signals (e.g. a peeling pattern and a synthetic-seed
+    propagation) can resolve to the same address and window bucket, the
+    table's unique key. Keep the highest-scoring candidate per key; ties keep
+    whichever was constructed first. (Peeling chains sharing a key are already
+    merged into one pattern by _group_peeling_patterns, so none is lost here.)
+    """
+    deduped: dict[tuple[str, datetime, datetime, str], dict[str, Any]] = {}
     for candidate in candidates:
         key = (candidate["entity_ref"], candidate["start"], candidate["end"], candidate["rule_id"])
-        current = deduped_candidates.get(key)
+        current = deduped.get(key)
         if current is None or candidate["score"] > current["score"]:
-            deduped_candidates[key] = candidate
-    candidates = list(deduped_candidates.values())
-    candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
-    opposing_json = json.dumps(
+            deduped[key] = candidate
+    ranked = list(deduped.values())
+    ranked.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
+    return ranked
+
+
+def opposing_evidence_json() -> str:
+    return json.dumps(
         [
             {
                 "kind": "coverage_limitation",
@@ -858,57 +979,52 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
             }
         ]
     )
-    rows: list[dict[str, Any]] = []
-    for rank, candidate in enumerate(candidates, 1):
-        candidate_coverage = candidate.get("coverage")
-        rows.append(
-            {
-                "id": new_id(),
-                "case_id": snapshot.case_id,
-                "snapshot_id": snapshot.id,
-                "graph_snapshot_id": graph.id,
-                "entity_ref": candidate["entity_ref"],
-                "window_start": candidate["start"],
-                "window_end": candidate["end"],
-                "rule_id": candidate["rule_id"],
-                "rule_version": RULE_VERSION,
-                "claim": (
-                    f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
-                    f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
-                ),
-                "finding_version": 1,
-                "raw_score": candidate["score"],
-                "rank": rank,
-                "coverage": coverage_json if candidate_coverage is None else json.dumps(candidate_coverage),
-                "feature_vector": candidate.get("feature_json") or json.dumps(candidate["feature"]),
-                "feature_vector_hash": _hash(candidate["feature"]),
-                "explanations": json.dumps(candidate["explanations"]),
-                "benign_alternatives": json.dumps(candidate["alternatives"]),
-                "opposing_evidence": opposing_json,
-                "source_refs": json.dumps(
-                    candidate["source_refs"] if "source_refs" in candidate else _dedupe_refs(candidate["facts"])
-                ),
-                "status": "open",
-            }
-        )
-        if len(rows) >= plan.insert_chunk_rows:
-            bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
-            rows = []
-    bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
-    if candidates:
+
+
+def finding_row(
+    candidate: dict[str, Any], *, rank: int, row_id: str, snapshot: Snapshot, graph: GraphSnapshot,
+    coverage_json: str, opposing_json: str,
+) -> dict[str, Any]:
+    candidate_coverage = candidate.get("coverage")
+    return {
+        "id": row_id,
+        "case_id": snapshot.case_id,
+        "snapshot_id": snapshot.id,
+        "graph_snapshot_id": graph.id,
+        "entity_ref": candidate["entity_ref"],
+        "window_start": candidate["start"],
+        "window_end": candidate["end"],
+        "rule_id": candidate["rule_id"],
+        "rule_version": RULE_VERSION,
+        "claim": (
+            f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
+            f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
+        ),
+        "finding_version": 1,
+        "raw_score": candidate["score"],
+        "rank": rank,
+        "coverage": coverage_json if candidate_coverage is None else json.dumps(candidate_coverage),
+        "feature_vector": candidate.get("feature_json") or json.dumps(candidate["feature"]),
+        "feature_vector_hash": _hash(candidate["feature"]),
+        "explanations": json.dumps(candidate["explanations"]),
+        "benign_alternatives": json.dumps(candidate["alternatives"]),
+        "opposing_evidence": opposing_json,
+        "source_refs": json.dumps(
+            candidate["source_refs"] if "source_refs" in candidate else _dedupe_refs(candidate["facts"])
+        ),
+        "status": "open",
+    }
+
+
+def record_findings_event(session: Session, snapshot: Snapshot, count: int) -> None:
+    if count:
         append_event(
             session,
             case_id=snapshot.case_id,
             event_type="finding.updated",
             stage="findings_ready",
-            payload={
-                "snapshot_id": snapshot.id,
-                "finding_count": len(candidates),
-                "method": RULE_VERSION,
-                "ml_enabled": False,
-            },
+            payload={"snapshot_id": snapshot.id, "finding_count": count, "method": RULE_VERSION, "ml_enabled": False},
         )
-    return len(candidates)
 
 
 def refresh_synthetic_seed_proximity(

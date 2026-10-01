@@ -212,3 +212,79 @@ def test_healthz_reports_the_machine_profile(tmp_path: Path, monkeypatch) -> Non
     assert body["status"] == "ok"
     assert body["resources"]["cpu_count"] >= 1
     assert body["resources"]["insert_chunk_rows"] >= 2_000
+
+
+def _mixed_rows() -> list[dict]:
+    """Every detector family at once: a peeling chain, a collection burst, an
+    equal-output (coinjoin-like) transaction, and a rapid re-spend."""
+    rows = _peeling_chain(6) + _collection_rows()
+    funding = [
+        {
+            "txid": _tx(300 + index),
+            "network": "bitcoin-regtest",
+            "timestamp": f"2026-03-01T09:0{index}:00Z",
+            "inputs": [],
+            "outputs": [{"address": f"bcrt1qmix{index}", "amount_sats": 500_000}],
+            "fee_sats": 0,
+        }
+        for index in range(3)
+    ]
+    mixer = {
+        "txid": _tx(400),
+        "network": "bitcoin-regtest",
+        "timestamp": "2026-03-01T09:30:00Z",
+        "inputs": [
+            {"prev_txid": _tx(300 + index), "prev_vout": 0, "address": f"bcrt1qmix{index}", "amount_sats": 500_000}
+            for index in range(3)
+        ],
+        "outputs": [{"address": f"bcrt1qeq{index}", "amount_sats": 400_000} for index in range(3)],
+        "fee_sats": 300_000,
+    }
+    sweep = {
+        "txid": _tx(500),
+        "network": "bitcoin-regtest",
+        "timestamp": "2026-02-01T10:20:00Z",
+        "inputs": [
+            {"prev_txid": _tx(100 + index), "prev_vout": 0, "address": "bcrt1qsink", "amount_sats": 10_000 + index}
+            for index in range(3)
+        ],
+        "outputs": [{"address": "bcrt1qonward", "amount_sats": 29_000}],
+        "fee_sats": 3,
+    }
+    return rows + funding + [mixer, sweep]
+
+
+def test_bounded_and_in_memory_execution_produce_identical_results(tmp_path: Path, monkeypatch) -> None:
+    import duckdb
+
+    from app.models import GraphSnapshot
+
+    def graph_content(name: str) -> list:
+        engine = make_engine(f"sqlite:///{tmp_path / f'{name}.db'}")
+        with sessionmaker(bind=engine)() as session:
+            graph = session.query(GraphSnapshot).one()
+            path = tmp_path / f"{name}-evidence" / graph.storage_relative_path
+            coverage, counts = graph.coverage, (graph.node_count, graph.edge_count)
+        connection = duckdb.connect(str(path), read_only=True)
+        try:
+            return [
+                coverage, counts,
+                connection.execute("SELECT * FROM nodes ORDER BY node_id").fetchall(),
+                connection.execute("SELECT * FROM edges ORDER BY edge_id").fetchall(),
+            ]
+        finally:
+            connection.close()
+
+    rows = _mixed_rows()
+    monkeypatch.setenv("TRACEX_EXECUTION_MODE", "memory")
+    memory_findings, memory_features, memory_rows = _run(tmp_path, monkeypatch, rows, "memory")
+    monkeypatch.setenv("TRACEX_EXECUTION_MODE", "bounded")
+    _, bounded_features, bounded_rows = _run(tmp_path, monkeypatch, rows, "bounded")
+
+    rules = {item["rule_id"] for item in memory_findings["findings"]}
+    assert {"peeling_chain_candidate", "concentrated_collection", "coinjoin_like_structure", "rapid_redistribution"} <= rules
+    assert bounded_features == memory_features
+    assert bounded_rows == memory_rows
+    # No network observations in this data, so no node id embeds the
+    # per-import source id: the two graphs must match exactly.
+    assert graph_content("bounded") == graph_content("memory")

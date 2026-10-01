@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -42,7 +43,7 @@ from app.models import (
     User,
     WorkerHeartbeat,
 )
-from app.resources import current_plan
+from app.resources import IN_MEMORY_BYTES_PER_RECORD, current_plan
 from app.storage.raw import UploadRejected, store_upload
 
 router = APIRouter(prefix="/v1")
@@ -190,6 +191,10 @@ def health(session: Session = Depends(get_session)) -> dict:
             "insert_chunk_rows": plan.insert_chunk_rows,
             "max_ingestion_batch_records": plan.max_ingestion_batch_records,
             "duckdb_memory_limit_mb": plan.duckdb_memory_limit_mb,
+            # Imports up to this many records run fully in memory (fastest);
+            # larger ones run the bounded path (app.engine.bounded).
+            "in_memory_record_limit": plan.memory_budget_bytes // IN_MEMORY_BYTES_PER_RECORD,
+            "execution_mode_override": os.environ.get("TRACEX_EXECUTION_MODE") or None,
         },
     }
 

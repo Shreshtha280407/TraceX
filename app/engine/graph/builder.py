@@ -126,13 +126,85 @@ def build_graph_snapshot(
         return _build(session, evidence_root=evidence_root, snapshot=snapshot, records=records)
 
 
-def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records: FactRecords) -> GraphBuildResult:
-    root = evidence_root.resolve()
+NODES_TABLE_SQL = "CREATE TABLE nodes (node_id VARCHAR, node_type VARCHAR, label VARCHAR, attributes_json VARCHAR)"
+EDGES_TABLE_SQL = (
+    "CREATE TABLE edges (edge_id VARCHAR, from_node VARCHAR, to_node VARCHAR, edge_type VARCHAR, "
+    "attributes_json VARCHAR, uncertainty DOUBLE)"
+)
+
+
+@dataclass(frozen=True)
+class GraphPaths:
+    relative: Path
+    target: Path
+    staging: Path
+    temporary: Path
+
+
+def graph_paths(evidence_root: Path, snapshot: Snapshot) -> GraphPaths:
     relative = Path(snapshot.case_id) / "graphs" / f"snapshot-{_safe_name(snapshot.id)}.duckdb"
-    target = root / relative
+    target = evidence_root.resolve() / relative
     staging = target.parent / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
-    temporary = staging / f"{target.name}.{uuid.uuid4().hex}.part"
+    return GraphPaths(relative, target, staging, staging / f"{target.name}.{uuid.uuid4().hex}.part")
+
+
+def duckdb_config(spill_directory: Path) -> dict[str, Any]:
+    """Bounded working memory sized to this machine; DuckDB spills sorts and
+    joins to `spill_directory` instead of exhausting RAM."""
+    plan = current_plan()
+    return {
+        "memory_limit": f"{plan.duckdb_memory_limit_mb}MB",
+        "threads": plan.duckdb_threads,
+        "temp_directory": str(spill_directory),
+    }
+
+
+def publish_graph(
+    session: Session, *, snapshot: Snapshot, paths: GraphPaths, node_count: int, edge_count: int, coverage: dict[str, Any]
+) -> GraphBuildResult:
+    """Make a finished temporary graph file immutable and record it."""
+    temporary, target = paths.temporary, paths.target
+    with temporary.open("rb") as handle:
+        os.fsync(handle.fileno())
+    digest = _hash(temporary)
+    if target.exists():
+        if _hash(target) != digest:
+            raise RuntimeError("immutable graph snapshot conflict")
+        temporary.unlink()
+    else:
+        os.replace(temporary, target)
+    graph = GraphSnapshot(
+        case_id=snapshot.case_id,
+        snapshot_id=snapshot.id,
+        storage_relative_path=paths.relative.as_posix(),
+        sha256=digest,
+        node_count=node_count,
+        edge_count=edge_count,
+        coverage=coverage,
+        state="complete",
+    )
+    session.add(graph)
+    session.flush()
+    append_event(
+        session,
+        case_id=snapshot.case_id,
+        event_type="graph.delta_ready",
+        stage="graph_ready",
+        payload={
+            "snapshot_id": snapshot.id,
+            "graph_snapshot_id": graph.id,
+            "nodes": node_count,
+            "edges": edge_count,
+            "coverage": coverage,
+        },
+    )
+    return GraphBuildResult(graph.id, node_count, edge_count, coverage)
+
+
+def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records: FactRecords) -> GraphBuildResult:
+    paths = graph_paths(evidence_root, snapshot)
+    target, staging, temporary = paths.target, paths.staging, paths.temporary
     nodes: dict[str, tuple[str, str, dict[str, Any]]] = {}
     edges: dict[str, tuple[str, str, str, dict[str, Any], float | None]] = {}
 
@@ -282,17 +354,7 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
     node_count, edge_count = len(nodes), len(edges)
     nodes.clear()
     edges.clear()
-    plan = current_plan()
-    connection = duckdb.connect(
-        str(temporary),
-        config={
-            # Bounded working memory sized to this machine; DuckDB spills its
-            # sort to the staging directory instead of exhausting RAM.
-            "memory_limit": f"{plan.duckdb_memory_limit_mb}MB",
-            "threads": plan.duckdb_threads,
-            "temp_directory": str(staging / "duckdb-spill"),
-        },
-    )
+    connection = duckdb.connect(str(temporary), config=duckdb_config(staging / "duckdb-spill"))
     try:
         # No PRIMARY KEY / secondary indexes: ids are unique by construction
         # (dict keys above), and measured on the 100K fixture the ART indexes
@@ -300,12 +362,8 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
         # ~350 MB per snapshot. Rows are stored sorted instead, so DuckDB's
         # per-row-group min/max zone maps prune point lookups on node_id and
         # from_node.
-        connection.execute(
-            "CREATE TABLE nodes (node_id VARCHAR, node_type VARCHAR, label VARCHAR, attributes_json VARCHAR)"
-        )
-        connection.execute(
-            "CREATE TABLE edges (edge_id VARCHAR, from_node VARCHAR, to_node VARCHAR, edge_type VARCHAR, attributes_json VARCHAR, uncertainty DOUBLE)"
-        )
+        connection.execute(NODES_TABLE_SQL)
+        connection.execute(EDGES_TABLE_SQL)
         connection.register("node_batch", node_table)
         connection.execute("INSERT INTO nodes SELECT * FROM node_batch ORDER BY node_id")
         connection.unregister("node_batch")
@@ -316,38 +374,6 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
     finally:
         connection.close()
     del node_table, edge_table
-    with temporary.open("rb") as handle:
-        os.fsync(handle.fileno())
-    digest = _hash(temporary)
-    if target.exists():
-        if _hash(target) != digest:
-            raise RuntimeError("immutable graph snapshot conflict")
-        temporary.unlink()
-    else:
-        os.replace(temporary, target)
-    graph = GraphSnapshot(
-        case_id=snapshot.case_id,
-        snapshot_id=snapshot.id,
-        storage_relative_path=relative.as_posix(),
-        sha256=digest,
-        node_count=node_count,
-        edge_count=edge_count,
-        coverage=coverage,
-        state="complete",
+    return publish_graph(
+        session, snapshot=snapshot, paths=paths, node_count=node_count, edge_count=edge_count, coverage=coverage
     )
-    session.add(graph)
-    session.flush()
-    append_event(
-        session,
-        case_id=snapshot.case_id,
-        event_type="graph.delta_ready",
-        stage="graph_ready",
-        payload={
-            "snapshot_id": snapshot.id,
-            "graph_snapshot_id": graph.id,
-            "nodes": node_count,
-            "edges": edge_count,
-            "coverage": coverage,
-        },
-    )
-    return GraphBuildResult(graph.id, node_count, edge_count, coverage)

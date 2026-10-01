@@ -13,6 +13,7 @@ Nothing here reads `evaluation_truth.json`.  Labels are loaded separately by
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -261,7 +262,17 @@ SPLIT_NAMES = ("train_reference", "validation", "final_holdout")
 
 
 def facts_from_records(records: dict[str, list[dict]]) -> Facts:
-    """Build `Facts` from committed canonical fragments.
+    """Build `Facts` from committed canonical fragments held in memory."""
+    return facts_from_streams(
+        records.get("transactions", []), records.get("outputs", []), records.get("inputs", [])
+    )
+
+
+def facts_from_streams(transactions_in: Iterable[dict], outputs_in: Iterable[dict], inputs_in: Iterable[dict]) -> Facts:
+    """Build `Facts` from committed canonical facts, each kind read once in order.
+
+    The three iterables may be lazy (the bounded-memory path streams them from
+    disk in chunks), so only the compact integer arrays below are ever held.
 
     `records` is exactly what `app.engine.graph.builder._facts` returns for a
     receipt-approved snapshot, so the stack can run on the same evidence the
@@ -272,7 +283,7 @@ def facts_from_records(records: dict[str, list[dict]]) -> Facts:
     of the evidence rather than of fragment read order.
     """
     transactions = []
-    for fact in records.get("transactions", []):
+    for fact in transactions_in:
         stamp = fact.get("block_time") or fact.get("source_timestamp")
         if not stamp:
             continue  # no usable time: it cannot be placed in any causal window
@@ -293,7 +304,7 @@ def facts_from_records(records: dict[str, list[dict]]) -> Facts:
     out_addr: list[int] = []
     out_script: list[int] = []
     outpoint_index: dict[tuple[int, int], int] = {}
-    for fact in records.get("outputs", []):
+    for fact in outputs_in:
         transaction = tx_index.get(str(fact["txid"]), -1)
         if transaction < 0:
             continue
@@ -319,7 +330,7 @@ def facts_from_records(records: dict[str, list[dict]]) -> Facts:
     in_tx: list[int] = []
     in_prev: list[int] = []
     spent_by = np.full(len(out_tx), -1, dtype=np.int32)
-    for fact in records.get("inputs", []):
+    for fact in inputs_in:
         transaction = tx_index.get(str(fact["txid"]), -1)
         if transaction < 0:
             continue

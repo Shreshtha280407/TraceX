@@ -413,6 +413,8 @@ export const api = {
         insert_chunk_rows: number;
         max_ingestion_batch_records: number;
         duckdb_memory_limit_mb: number;
+        in_memory_record_limit: number;
+        execution_mode_override: string | null;
       };
     }>("/healthz"),
   ready: () => request<{ status: string; worker_id: string; heartbeat_at: string }>("/readyz"),
