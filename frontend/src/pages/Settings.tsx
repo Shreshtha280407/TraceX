@@ -72,7 +72,12 @@ export function Settings() {
       results.push({
         label: "Database + evidence vault",
         ok: health.status === "ok",
-        detail: `database: ${health.database} · evidence_vault: ${health.evidence_vault}`,
+        detail:
+          `database: ${health.database} · evidence_vault: ${health.evidence_vault}` +
+          (health.resources
+            ? ` · host: ${health.resources.cpu_count} CPU, ${health.resources.available_memory_mb ?? "?"} MB free → ` +
+              `${health.resources.memory_budget_mb} MB import budget (${health.resources.insert_chunk_rows.toLocaleString()}-row writes)`
+            : ""),
       });
     } catch (err) {
       results.push({ label: "Database + evidence vault", ok: false, detail: err instanceof ApiError ? String(err.detail) : "unreachable" });

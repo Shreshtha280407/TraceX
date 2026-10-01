@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import defaultdict
-from collections.abc import Hashable
+from collections.abc import Hashable, Iterator
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from statistics import median
@@ -23,6 +24,7 @@ from app.engine.motifs.deterministic import (
 )
 from app.events import append_event
 from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed, new_id
+from app.resources import current_plan
 
 RULE_VERSION = "deterministic-v1"
 FEATURE_SCHEMA_VERSION = "phase4.1-feature-v1"
@@ -246,8 +248,10 @@ def _window_features(
     transaction_times: dict[str, datetime | None],
     rapid_events: list[tuple[dict, dict, float]],
     outputs_by_tx: dict[str, list[dict]],
+    inbound_txids: set[str] | None = None,
 ) -> dict[str, Any]:
-    inbound_txids = {output["txid"] for output in outputs}
+    if inbound_txids is None:
+        inbound_txids = {output["txid"] for output in outputs}
     inbound_times = [transaction_times[txid] for txid in inbound_txids if transaction_times.get(txid)]
     outgoing_txids = {tx_input["txid"] for tx_input, _, _ in rapid_events}
     outgoing_outputs = [output for txid in outgoing_txids for output in outputs_by_tx.get(txid, [])]
@@ -288,24 +292,192 @@ _FINDING_JSON_COLUMNS = frozenset(
 )
 
 
-class _JSONCache:
-    """Serialize each distinct Python object once.
+_WINDOW_LABEL = {15 * 60: "15-minute", 60 * 60: "1-hour", 24 * 60 * 60: "24-hour"}
+_PATTERN_LIST_CAP = 500
+_PATTERN_CHAIN_CAP = 25
 
-    Hundreds of thousands of rows share the same snapshot `coverage` dict, and
-    an address-window finding shares its feature dict with the feature row.
-    Keyed by identity; every cached object is kept alive by the rows that hold
-    it for as long as this cache exists, so an id cannot be reused meanwhile.
+
+def _group_peeling_patterns(
+    chains: list[dict[str, Any]], transaction_times: dict[str, datetime | None]
+) -> list[dict[str, Any]]:
+    """Merge overlapping peeling-chain candidates into one reviewable pattern.
+
+    The detector starts a walk at every spent outpoint, so a 7-hop chain also
+    yields its 6-, 5-, 4- and 3-hop tails, and chains that converge on a shared
+    transaction come out separately -- the same transactions then appeared in
+    up to dozens of findings. Chains are connected when they share a
+    transaction, or would be keyed to the same finding (same origin address and
+    window). Each connected group becomes one finding: the longest chain is its
+    readable path, its score is the strongest member's, and its graph path,
+    transactions and evidence are the union of every member, so nothing a
+    member showed is lost. Detector output and the feature vectors built from
+    it are unchanged; only the review queue is grouped.
     """
+    if not chains:
+        return []
+    parent = list(range(len(chains)))
 
-    def __init__(self) -> None:
-        self._by_id: dict[int, str] = {}
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
 
-    def __call__(self, value: Any) -> str:
-        key = id(value)
-        cached = self._by_id.get(key)
-        if cached is None:
-            cached = self._by_id[key] = json.dumps(value)
-        return cached
+    def union(left: int, right: int) -> None:
+        left, right = find(left), find(right)
+        if left != right:
+            parent[max(left, right)] = min(left, right)
+
+    owner_by_tx: dict[str, int] = {}
+    owner_by_key: dict[tuple[str, datetime | None], int] = {}
+    for index, chain in enumerate(chains):
+        observed = transaction_times.get(chain["transaction_ids"][0])
+        key = (chain["entity_ref"], _window(observed, WINDOW_SECONDS[0])[0] if observed else None)
+        union(index, owner_by_key.setdefault(key, index))
+        for txid in chain["transaction_ids"]:
+            union(index, owner_by_tx.setdefault(txid, index))
+    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for index, chain in enumerate(chains):
+        groups[find(index)].append(chain)
+
+    patterns: list[dict[str, Any]] = []
+    for members in groups.values():
+        members.sort(key=lambda item: (-item["hop_count"], -item["score"], item["transaction_ids"]))
+        primary = members[0]
+        transaction_ids: dict[str, None] = {}
+        nodes: dict[str, None] = {}
+        edges: dict[str, None] = {}
+        addresses: dict[str, None] = {}
+        references: list[dict] = []
+        seen_refs: set[Hashable] = set()
+        for member in members:
+            transaction_ids.update(dict.fromkeys(member["transaction_ids"]))
+            nodes.update(dict.fromkeys(member["graph_path"]["nodes"]))
+            edges.update(dict.fromkeys(member["graph_path"]["edge_ids"]))
+            for step in member["steps"]:
+                for address in (step.get("previous_address"), step.get("continuing_address")):
+                    if address:
+                        addresses[f"address:{address}"] = None
+            for reference in member["evidence_refs"]:
+                ref_key = _ref_key(reference)
+                if ref_key not in seen_refs:
+                    seen_refs.add(ref_key)
+                    references.append(reference)
+        merged = dict(primary)
+        merged["score"] = max(member["score"] for member in members)
+        merged["transaction_ids"] = list(transaction_ids)
+        merged["evidence_refs"] = references
+        merged["graph_path"] = {"nodes": list(nodes), "edge_ids": list(edges)}
+        merged["coverage"] = {
+            **primary["coverage"],
+            "pattern_chain_count": len(members),
+            "pattern_transaction_count": len(transaction_ids),
+        }
+        merged["pattern"] = {
+            "chain_count": len(members),
+            "transaction_count": len(transaction_ids),
+            "address_count": len(addresses),
+            "transaction_ids": [f"tx:{txid}" for txid in list(transaction_ids)[:_PATTERN_LIST_CAP]],
+            "addresses": list(addresses)[:_PATTERN_LIST_CAP],
+            "chains": [
+                {
+                    "entity_ref": member["entity_ref"],
+                    "hop_count": member["hop_count"],
+                    "score": member["score"],
+                    "transaction_ids": member["transaction_ids"],
+                }
+                for member in members[:_PATTERN_CHAIN_CAP]
+            ],
+        }
+        if len(members) > 1:
+            merged["reason_codes"] = [*primary["reason_codes"], "merged_overlapping_chains"]
+            merged["explanation"] = (
+                f"{primary['explanation']} {len(members) - 1} overlapping chain candidate(s) sharing its transactions "
+                f"or origin are merged into this one pattern ({len(transaction_ids)} transactions in total), so it is "
+                "reviewed once."
+            )
+        patterns.append(merged)
+    return patterns
+
+
+def _uuid4_strings(batch: int = 4096) -> Iterator[str]:
+    """Random (version 4) UUID strings, the same format as `str(uuid.uuid4())`.
+
+    Draws entropy in blocks and formats the hex directly, which avoids
+    building a UUID object per row -- measurable at ~850K ids per snapshot.
+    """
+    while True:
+        block = bytearray(os.urandom(16 * batch))
+        for offset in range(0, len(block), 16):
+            block[offset + 6] = (block[offset + 6] & 0x0F) | 0x40  # version 4
+            block[offset + 8] = (block[offset + 8] & 0x3F) | 0x80  # RFC 4122 variant
+        text = block.hex()
+        for start in range(0, len(text), 32):
+            h = text[start : start + 32]
+            yield f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+
+def _evidence_size(candidate: dict[str, Any]) -> int:
+    return len({fact.get("txid") for fact in candidate["facts"]})
+
+
+def _group_window_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse one address-window rule's nested windows into one finding per day.
+
+    Windows are epoch-aligned, so each 15-minute and 1-hour window sits inside
+    exactly one 24-hour window, and these rules only count events -- a burst
+    that meets a rule in a short window meets it in every enclosing one too.
+    The kept finding is the strongest window (most evidence on a tie, then the
+    narrowest); the others are listed on it, with their evidence, rather than
+    queued as separate reviews of the same activity.
+    """
+    groups: dict[tuple[str, str, datetime], list[dict[str, Any]]] = {}
+    day = WINDOW_SECONDS[-1]
+    for candidate in candidates:
+        day_start = datetime.fromtimestamp(int(candidate["start"].timestamp()) // day * day, tz=UTC)
+        groups.setdefault((candidate["entity_ref"], candidate["rule_id"], day_start), []).append(candidate)
+    grouped: list[dict[str, Any]] = []
+    for members in groups.values():
+        if len(members) == 1:
+            grouped.append(members[0])
+            continue
+        members.sort(
+            key=lambda item: (-item["score"], -_evidence_size(item), (item["end"] - item["start"]).total_seconds())
+        )
+        primary = dict(members[0])
+        windows = sorted(members, key=lambda item: ((item["end"] - item["start"]).total_seconds(), item["start"]))
+        feature = dict(primary["feature"])
+        feature["matched_windows"] = [
+            {
+                "window_seconds": int((item["end"] - item["start"]).total_seconds()),
+                "window_start": item["start"].isoformat(),
+                "window_end": item["end"].isoformat(),
+                "score": item["score"],
+            }
+            for item in windows
+        ]
+        primary["feature"] = feature
+        primary.pop("feature_json", None)
+        labels = ", ".join(
+            _WINDOW_LABEL.get(int((item["end"] - item["start"]).total_seconds()), "other") for item in windows if item is not members[0]
+        )
+        primary["explanations"] = [
+            *primary["explanations"],
+            (
+                f"The same rule was also met in {len(members) - 1} other window(s) of this day ({labels}); "
+                "they are merged into this finding so the activity is reviewed once."
+            ),
+        ]
+        seen: set[int] = set()
+        facts: list[dict] = []
+        for member in members:
+            for fact in member["facts"]:
+                if id(fact) not in seen:
+                    seen.add(id(fact))
+                    facts.append(fact)
+        primary["facts"] = facts
+        grouped.append(primary)
+    return grouped
 
 
 def materialize_findings(
@@ -418,30 +590,116 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
         for output in outputs_by_address.get(address, []):
             add_signal(address, transaction_times.get(output["txid"]), signal, output)
 
+    # Keys whose feature vector a detector finding borrows, resolved up front
+    # so the address-window loop below can stream every other feature row
+    # straight to the database instead of holding ~800K of them in memory.
+    peeling_patterns = _group_peeling_patterns(peeling, transaction_times)
+    detector_keys: dict[int, tuple[str, int, datetime] | None] = {}
+    for pattern in peeling_patterns:
+        observed = transaction_times.get(pattern["transaction_ids"][0])
+        address = pattern["entity_ref"].removeprefix("address:")
+        detector_keys[id(pattern)] = (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
+    for signal in coinjoin:
+        # coinjoin has no single owning address (that's the point of the shape) — its
+        # entity_ref stays transaction-scoped, but the finding still borrows the real
+        # address-window feature vector already computed for one of its own outputs
+        # (via add_signal above) instead of falling back to an near-empty stub.
+        observed = transaction_times.get(signal["transaction_id"])
+        key = None
+        if observed:
+            window_start = _window(observed, WINDOW_SECONDS[0])[0]
+            for output in outputs_by_tx.get(signal["transaction_id"], []):
+                candidate_address = output.get("address") or output.get("script_id")
+                candidate_key = (str(candidate_address), WINDOW_SECONDS[0], window_start) if candidate_address else None
+                if candidate_key in output_events:
+                    key = candidate_key
+                    break
+        detector_keys[id(signal)] = key
+    if propagation:
+        earliest_key_by_address: dict[str, tuple[str, int, datetime]] = {}
+        for feature_key in output_events:
+            current = earliest_key_by_address.get(feature_key[0])
+            if current is None or feature_key[2] < current[2]:
+                earliest_key_by_address[feature_key[0]] = feature_key
+        for signal in propagation:
+            detector_keys[id(signal)] = earliest_key_by_address.get(signal["entity_ref"].removeprefix("address:"))
+    needed_keys = {key for key in detector_keys.values() if key is not None}
+
+    # A real 20K-row import produces ~190K feature rows (100K rows: ~830K).
+    # They are written with Core bulk INSERTs of plain dicts whose JSON columns
+    # are serialized here -- the shared coverage document exactly once -- and
+    # flushed in chunks sized to this machine's memory (app.resources), so the
+    # stage's working set no longer grows with the number of feature rows.
+    plan = current_plan()
+    coverage_json = json.dumps(coverage)
+    chunk: list[dict[str, Any]] = []
+
+    def flush_features() -> None:
+        if chunk:
+            bulk_insert_serialized(session, FeatureRecord, chunk, _FEATURE_JSON_COLUMNS)
+            chunk.clear()
+
+    thresholds = {
+        "concentrated_collection_min_source_transactions": COLLECTION_MIN_SOURCE_TRANSACTIONS,
+        "emerging_hub_min_source_transactions": HUB_MIN_SOURCE_TRANSACTIONS,
+        "rapid_redistribution_min_inbound_transactions": RAPID_MIN_INBOUND_TRANSACTIONS,
+        "rapid_redistribution_max_delay_seconds": RAPID_MAX_DELAY_SECONDS,
+    }
     history = _history_features(output_events)
-    features_by_key: dict[tuple[str, int, datetime], dict[str, Any]] = {}
+    # Each source reference is one shared dict per source row; its JSON text is
+    # cached by identity (the facts keep every one alive for this whole call),
+    # so a feature row's reference list is joined, not re-encoded, each time.
+    ref_json: dict[int, str] = {}
+
+    def refs_json(references: list[dict]) -> str:
+        parts = []
+        for reference in references:
+            encoded = ref_json.get(id(reference))
+            if encoded is None:
+                encoded = ref_json[id(reference)] = json.dumps(reference)
+            parts.append(encoded)
+        # Byte-identical to json.dumps(references) with its default separators.
+        return f"[{', '.join(parts)}]"
+
+    row_ids = _uuid4_strings()
+    kept_features: dict[tuple[str, int, datetime], tuple[dict[str, Any], str]] = {}
     for (address, seconds, start), outputs in output_events.items():
+        key = (address, seconds, start)
         distinct_transactions = {output["txid"] for output in outputs}
-        rapid = rapid_events.get((address, seconds, start), [])
         feature = _window_features(
             address=address,
             seconds=seconds,
             outputs=outputs,
             transaction_times=transaction_times,
-            rapid_events=rapid,
+            rapid_events=rapid_events.get(key, []),
             outputs_by_tx=outputs_by_tx,
+            inbound_txids=distinct_transactions,
         )
-        feature.update(history[(address, seconds, start)])
-        feature["rule_thresholds"] = {
-            "concentrated_collection_min_source_transactions": COLLECTION_MIN_SOURCE_TRANSACTIONS,
-            "emerging_hub_min_source_transactions": HUB_MIN_SOURCE_TRANSACTIONS,
-            "rapid_redistribution_min_inbound_transactions": RAPID_MIN_INBOUND_TRANSACTIONS,
-            "rapid_redistribution_max_delay_seconds": RAPID_MAX_DELAY_SECONDS,
-        }
+        feature.update(history.pop(key))
+        feature["rule_thresholds"] = dict(thresholds)
         feature.update(_phase41_defaults())
-        for signal in signal_by_key.get((address, seconds, start), []):
+        for signal in signal_by_key.get(key, []):
             _merge_signal_features(feature, signal)
-        features_by_key[(address, seconds, start)] = feature
+        feature_json = json.dumps(feature)
+        chunk.append(
+            {
+                "id": next(row_ids),
+                "case_id": snapshot.case_id,
+                "snapshot_id": snapshot.id,
+                "graph_snapshot_id": graph.id,
+                "entity_ref": f"address:{address}",
+                "window_start": start,
+                "window_end": start + timedelta(seconds=seconds),
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "feature_vector": feature_json,
+                "coverage": coverage_json,
+                "source_refs": refs_json(_dedupe_refs(outputs)),
+            }
+        )
+        if len(chunk) >= plan.insert_chunk_rows:
+            flush_features()
+        if key in needed_keys:
+            kept_features[key] = (feature, feature_json)
         if len(distinct_transactions) >= COLLECTION_MIN_SOURCE_TRANSACTIONS:
             candidates.append(
                 {
@@ -451,6 +709,7 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                     "rule_id": "concentrated_collection",
                     "score": float(min(100, 25 + 15 * len(distinct_transactions))),
                     "feature": feature,
+                    "feature_json": feature_json,
                     "explanations": [
                         f"{len(outputs)} outputs from {len(distinct_transactions)} transactions reached this address in the {seconds}-second window."
                     ],
@@ -469,6 +728,7 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                     "rule_id": "emerging_hub",
                     "score": float(min(100, 20 + 10 * len(distinct_transactions))),
                     "feature": feature,
+                    "feature_json": feature_json,
                     "explanations": [
                         f"Address activity reached {len(distinct_transactions)} distinct source transactions in a bounded window."
                     ],
@@ -478,6 +738,8 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                     "facts": outputs,
                 }
             )
+    flush_features()
+    del history
     for (address, seconds, start), events in rapid_events.items():
         inbound = output_events.get((address, seconds, start), [])
         inbound_transactions = {output["txid"] for output in inbound}
@@ -521,43 +783,24 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                 "facts": [fact for event in events for fact in event[:2]],
             }
         )
+    # One review finding per address, rule and day: the same burst also meets
+    # the rule in every enclosing window (15 min inside 1 h inside 24 h), which
+    # used to put the same evidence in front of a reviewer up to three times.
+    candidates = _group_window_candidates(candidates)
+
     # Detector finding records are separate from the address-window export but
     # share its snapshot, graph, source locators, coverage, and explanation.
-    earliest_key_by_address: dict[str, tuple[str, int, datetime]] = {}
-    if propagation:
-        for feature_key in features_by_key:
-            current = earliest_key_by_address.get(feature_key[0])
-            if current is None or feature_key[2] < current[2]:
-                earliest_key_by_address[feature_key[0]] = feature_key
-    for signal in [*peeling, *coinjoin, *propagation]:
+    for signal in [*peeling_patterns, *coinjoin, *propagation]:
+        key = detector_keys.get(id(signal))
         if signal["finding_type"] == "peeling_chain_candidate":
-            txid = signal["transaction_ids"][0]
-            observed = transaction_times.get(txid)
-            address = signal["entity_ref"].removeprefix("address:")
-            key = (address, WINDOW_SECONDS[0], _window(observed, WINDOW_SECONDS[0])[0]) if observed else None
+            observed = transaction_times.get(signal["transaction_ids"][0])
         elif signal["finding_type"] == "coinjoin_like_structure":
-            # coinjoin has no single owning address (that's the point of the shape) — its
-            # entity_ref stays transaction-scoped, but the finding still borrows the real
-            # address-window feature vector already computed for one of its own outputs
-            # (via add_signal above) instead of falling back to an near-empty stub.
-            txid = signal["transaction_id"]
-            observed = transaction_times.get(txid)
-            key = None
-            address = None
-            if observed:
-                window_start = _window(observed, WINDOW_SECONDS[0])[0]
-                for output in outputs_by_tx.get(txid, []):
-                    candidate_address = output.get("address") or output.get("script_id")
-                    candidate_key = (str(candidate_address), WINDOW_SECONDS[0], window_start) if candidate_address else None
-                    if candidate_key in features_by_key:
-                        key, address = candidate_key, str(candidate_address)
-                        break
+            observed = transaction_times.get(signal["transaction_id"])
         else:
-            address = signal["entity_ref"].removeprefix("address:")
-            key = earliest_key_by_address.get(address)
             observed = key[2] if key else None
         start = key[2] if key else (_window(observed, WINDOW_SECONDS[0])[0] if observed else datetime(1970, 1, 1, tzinfo=UTC))
-        feature = dict(features_by_key[key]) if key in features_by_key else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
+        kept = kept_features.get(key) if key else None
+        feature = dict(kept[0]) if kept else {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_phase41_defaults()}
         feature.update(_signal_feature(signal))
         feature["detector_result"] = {
             "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
@@ -572,6 +815,9 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
             "peel_ratio": signal.get("peel_ratio"),
             "velocity": signal.get("velocity"),
             "cluster_link": signal.get("cluster_link"),
+            # The whole reviewable pattern (every merged chain), for the graph to
+            # highlight as one unit; None for single-transaction detectors.
+            "pattern": signal.get("pattern"),
         }
         candidates.append(
             {
@@ -582,42 +828,16 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
                 "facts": [], "source_refs": signal["evidence_refs"], "coverage": {**coverage, **signal["coverage"]},
             }
         )
-    # A real 20K-row import produces ~190K feature rows. Building that many ORM
-    # instances and letting the unit of work flush them one at a time dominated
-    # ingestion (measured: 51.8s of a ~80s import). A single bulk insert of plain
-    # dicts skips the identity map and per-object flush entirely for rows that
-    # are written once and never mutated in this transaction.
-    #
-    # JSON columns are serialized here, once per distinct object (see
-    # _JSONCache): every feature row shares the same coverage dict, which the
-    # ORM path re-serialized ~800K times per 100K-row snapshot.
-    to_json = _JSONCache()
-    feature_rows = [
-        {
-            "id": new_id(),
-            "case_id": snapshot.case_id,
-            "snapshot_id": snapshot.id,
-            "graph_snapshot_id": graph.id,
-            "entity_ref": f"address:{address}",
-            "window_start": start,
-            "window_end": start + timedelta(seconds=seconds),
-            "feature_schema_version": FEATURE_SCHEMA_VERSION,
-            "feature_vector": to_json(feature),
-            "coverage": to_json(coverage),
-            "source_refs": json.dumps(_dedupe_refs(output_events[(address, seconds, start)])),
-        }
-        for (address, seconds, start), feature in features_by_key.items()
-    ]
-    bulk_insert_serialized(session, FeatureRecord, feature_rows, _FEATURE_JSON_COLUMNS)
-    del feature_rows
-    # Two distinct detector signals (e.g. two independent peeling chains, or a
-    # peeling chain and a synthetic-seed propagation) can resolve to the same
-    # address and the same window bucket. `entity_ref`/window/rule_id is the
-    # table's unique key, so appending one candidate per signal unchecked can
-    # attempt two rows with an identical key and abort the whole snapshot's
-    # commit on the resulting IntegrityError. Keep the highest-scoring
-    # candidate per key; ties keep whichever was constructed first, which is
-    # deterministic given the deterministic fact/signal ordering above.
+    del kept_features
+    # Two distinct detector signals (e.g. a peeling pattern and a synthetic-seed
+    # propagation) can resolve to the same address and the same window bucket.
+    # `entity_ref`/window/rule_id is the table's unique key, so appending one
+    # candidate per signal unchecked can attempt two rows with an identical key
+    # and abort the whole snapshot's commit on the resulting IntegrityError.
+    # Keep the highest-scoring candidate per key; ties keep whichever was
+    # constructed first, which is deterministic given the deterministic
+    # fact/signal ordering above. (Peeling chains sharing a key are already
+    # merged into one pattern by _group_peeling_patterns, so none is lost here.)
     deduped_candidates: dict[tuple[str, datetime, datetime, str], dict[str, Any]] = {}
     for candidate in candidates:
         key = (candidate["entity_ref"], candidate["start"], candidate["end"], candidate["rule_id"])
@@ -626,48 +846,55 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
             deduped_candidates[key] = candidate
     candidates = list(deduped_candidates.values())
     candidates.sort(key=lambda candidate: (-candidate["score"], candidate["rule_id"], candidate["entity_ref"]))
-    opposing_evidence = [
-        {
-            "kind": "coverage_limitation",
-            "statement": (
-                "This committed snapshot contains no ownership attribution or independently "
-                "verified benign context; the pattern alone cannot establish either."
-            ),
-            "source_refs": [],
-        }
-    ]
-    finding_rows = [
-        {
-            "id": new_id(),
-            "case_id": snapshot.case_id,
-            "snapshot_id": snapshot.id,
-            "graph_snapshot_id": graph.id,
-            "entity_ref": candidate["entity_ref"],
-            "window_start": candidate["start"],
-            "window_end": candidate["end"],
-            "rule_id": candidate["rule_id"],
-            "rule_version": RULE_VERSION,
-            "claim": (
-                f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
-                f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
-            ),
-            "finding_version": 1,
-            "raw_score": candidate["score"],
-            "rank": rank,
-            "coverage": to_json(candidate.get("coverage", coverage)),
-            "feature_vector": to_json(candidate["feature"]),
-            "feature_vector_hash": _hash(candidate["feature"]),
-            "explanations": json.dumps(candidate["explanations"]),
-            "benign_alternatives": json.dumps(candidate["alternatives"]),
-            "opposing_evidence": to_json(opposing_evidence),
-            "source_refs": json.dumps(
-                candidate["source_refs"] if "source_refs" in candidate else _dedupe_refs(candidate["facts"])
-            ),
-            "status": "open",
-        }
-        for rank, candidate in enumerate(candidates, 1)
-    ]
-    bulk_insert_serialized(session, FindingRecord, finding_rows, _FINDING_JSON_COLUMNS)
+    opposing_json = json.dumps(
+        [
+            {
+                "kind": "coverage_limitation",
+                "statement": (
+                    "This committed snapshot contains no ownership attribution or independently "
+                    "verified benign context; the pattern alone cannot establish either."
+                ),
+                "source_refs": [],
+            }
+        ]
+    )
+    rows: list[dict[str, Any]] = []
+    for rank, candidate in enumerate(candidates, 1):
+        candidate_coverage = candidate.get("coverage")
+        rows.append(
+            {
+                "id": new_id(),
+                "case_id": snapshot.case_id,
+                "snapshot_id": snapshot.id,
+                "graph_snapshot_id": graph.id,
+                "entity_ref": candidate["entity_ref"],
+                "window_start": candidate["start"],
+                "window_end": candidate["end"],
+                "rule_id": candidate["rule_id"],
+                "rule_version": RULE_VERSION,
+                "claim": (
+                    f"Observed {candidate['rule_id']} pattern for {candidate['entity_ref']} in a committed "
+                    f"{candidate['feature'].get('window_seconds', WINDOW_SECONDS[0])}-second window; prioritize it for reviewer assessment."
+                ),
+                "finding_version": 1,
+                "raw_score": candidate["score"],
+                "rank": rank,
+                "coverage": coverage_json if candidate_coverage is None else json.dumps(candidate_coverage),
+                "feature_vector": candidate.get("feature_json") or json.dumps(candidate["feature"]),
+                "feature_vector_hash": _hash(candidate["feature"]),
+                "explanations": json.dumps(candidate["explanations"]),
+                "benign_alternatives": json.dumps(candidate["alternatives"]),
+                "opposing_evidence": opposing_json,
+                "source_refs": json.dumps(
+                    candidate["source_refs"] if "source_refs" in candidate else _dedupe_refs(candidate["facts"])
+                ),
+                "status": "open",
+            }
+        )
+        if len(rows) >= plan.insert_chunk_rows:
+            bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
+            rows = []
+    bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
     if candidates:
         append_event(
             session,

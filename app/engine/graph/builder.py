@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.events import append_event
 from app.models import FragmentReceipt, GraphSnapshot, Snapshot
+from app.resources import current_plan
 
 
 @dataclass(frozen=True)
@@ -276,7 +277,22 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
             "uncertainty": pa.array([item[4] for item in edges.values()], pa.float64()),
         }
     )
-    connection = duckdb.connect(str(temporary))
+    # The Python maps are no longer needed once columnar: drop them before the
+    # DuckDB load so the two copies are never both resident.
+    node_count, edge_count = len(nodes), len(edges)
+    nodes.clear()
+    edges.clear()
+    plan = current_plan()
+    connection = duckdb.connect(
+        str(temporary),
+        config={
+            # Bounded working memory sized to this machine; DuckDB spills its
+            # sort to the staging directory instead of exhausting RAM.
+            "memory_limit": f"{plan.duckdb_memory_limit_mb}MB",
+            "threads": plan.duckdb_threads,
+            "temp_directory": str(staging / "duckdb-spill"),
+        },
+    )
     try:
         # No PRIMARY KEY / secondary indexes: ids are unique by construction
         # (dict keys above), and measured on the 100K fixture the ART indexes
@@ -314,8 +330,8 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
         snapshot_id=snapshot.id,
         storage_relative_path=relative.as_posix(),
         sha256=digest,
-        node_count=len(nodes),
-        edge_count=len(edges),
+        node_count=node_count,
+        edge_count=edge_count,
         coverage=coverage,
         state="complete",
     )
@@ -329,9 +345,9 @@ def _build(session: Session, *, evidence_root: Path, snapshot: Snapshot, records
         payload={
             "snapshot_id": snapshot.id,
             "graph_snapshot_id": graph.id,
-            "nodes": len(nodes),
-            "edges": len(edges),
+            "nodes": node_count,
+            "edges": edge_count,
             "coverage": coverage,
         },
     )
-    return GraphBuildResult(graph.id, len(nodes), len(edges), coverage)
+    return GraphBuildResult(graph.id, node_count, edge_count, coverage)

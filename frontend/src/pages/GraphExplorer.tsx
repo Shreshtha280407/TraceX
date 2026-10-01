@@ -301,6 +301,23 @@ export function GraphExplorer() {
     });
   }
 
+  // Every graph node of the selected flagged pattern (all merged chains), so
+  // the flow view can paint the whole pattern red when you walk through it.
+  const patternNodes = useMemo(() => {
+    const ids = new Set<string>();
+    if (!selected) return ids;
+    selected.graph_path?.nodes.forEach((id) => ids.add(id));
+    selected.pattern?.transaction_ids.forEach((id) => ids.add(id));
+    selected.pattern?.addresses.forEach((id) => ids.add(id));
+    for (const step of selected.steps ?? []) {
+      ids.add(`tx:${step.spending_transaction_id}`);
+      if (step.previous_address) ids.add(`address:${step.previous_address}`);
+      if (step.continuing_address) ids.add(`address:${step.continuing_address}`);
+    }
+    if (selected.entity_ref) ids.add(selected.entity_ref);
+    return ids;
+  }, [selected]);
+
   const risk = selected ? riskTier(selected.score) : null;
   const steps = selected?.steps ?? [];
   const hasSteps = steps.length > 0;
@@ -478,6 +495,7 @@ export function GraphExplorer() {
                 onSelect={(c, side) => setFlowPick({ c, side })}
                 onSelectCenter={() => setFlowPick(null)}
                 onSetSource={setSourceFromFlow}
+                patternNodes={patternNodes}
               />
             ) : unresolvedSeed ? (
               <NeoCard>
@@ -587,7 +605,7 @@ export function GraphExplorer() {
                 <div className="ff-kv"><span>Observed at</span><b>{stampUtc(flow.center.timestamp)}</b></div>
                 {(flow.totals.dead_end_inputs > 0 || flow.totals.dead_end_outputs > 0) && (
                   <div className="ff-deadend" role="note">
-                    <b>{flow.totals.dead_end_inputs + flow.totals.dead_end_outputs} dead end(s)</b> shown in red have no further
+                    <b>{flow.totals.dead_end_inputs + flow.totals.dead_end_outputs} dead end(s)</b> shown in orange have no further
                     transactions and can't be selected as source.
                   </div>
                 )}
@@ -606,7 +624,8 @@ export function GraphExplorer() {
                   </button>
                 </div>
                 <p className="ff-footnote">
-                  Arrow weight follows the amount moved. Blue = funds in, amber = funds out, red dashed = dead end.
+                  Arrow weight follows the amount moved. Blue = funds in, amber = funds out, red = the flagged
+                  pattern{selected ? ` ${pathCode(selected)}` : ""} or a node with its own open finding, orange dashed = dead end.
                 </p>
               </>
             ) : node ? (
@@ -641,6 +660,16 @@ export function GraphExplorer() {
                 <div className="ff-kv"><span>Pattern</span><b>{humanizeFindingType(selected.rule_id)}</b></div>
                 <div className="ff-kv"><span>Amount</span><b>{btc(startSats)}</b></div>
                 <div className="ff-kv"><span>Hops</span><b>{selected.hop_count ?? steps.length}</b></div>
+                {selected.pattern && (
+                  <div className="ff-kv">
+                    <span>Pattern</span>
+                    <b>
+                      {selected.pattern.chain_count > 1
+                        ? `${selected.pattern.chain_count} chains merged · ${selected.pattern.transaction_count} txs`
+                        : `single chain · ${selected.pattern.transaction_count} txs`}
+                    </b>
+                  </div>
+                )}
                 <div className="ff-kv"><span>Time window</span><b>{timeUnavailable ? "not available" : formatDuration(selected.total_duration_sec)}</b></div>
                 <div className="ff-kv ff-kv-bar">
                   <span>Confidence</span>

@@ -65,7 +65,15 @@ def test_process_boot_and_readiness_make_no_outbound_network_call(tmp_path, monk
 
         health = client.get("/v1/healthz")
         assert health.status_code == 200
-        assert health.json() == {"status": "ok", "database": "ok", "evidence_vault": "ok"}
+        body = health.json()
+        assert {key: body[key] for key in ("status", "database", "evidence_vault")} == {
+            "status": "ok",
+            "database": "ok",
+            "evidence_vault": "ok",
+        }
+        # The machine profile is read from local OS files only -- reaching this
+        # line at all proves it opened no socket under the guard above.
+        assert body["resources"]["cpu_count"] >= 1
 
         # readyz additionally needs a live worker heartbeat -- write one directly,
         # the way the real worker process would, no HTTP call involved.

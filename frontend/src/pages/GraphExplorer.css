@@ -79,10 +79,10 @@
 /* "Can't be source" has to be unmissable, same weight as the danger note. */
 .ff-deadend {
   margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5;
-  color: #f08a72; border: 1px solid var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, var(--surface-3));
+  color: #f0b070; border: 1px solid #d9822b;
+  background: color-mix(in srgb, #d9822b 12%, var(--surface-3));
 }
-.ff-deadend b { color: #ffb29c; }
+.ff-deadend b { color: #ffd0a0; }
 .ff-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---- Searchable path picker ---- */

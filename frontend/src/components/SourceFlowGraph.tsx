@@ -4,7 +4,8 @@
  *
  * Counterparties with nothing beyond the source (no further transactions) are
  * drawn as dead ends with a highlighted label, so they are never offered as the
- * next source. Palette matches FundFlowGraph. The canvas takes the width of its
+ * next source. Nodes of the selected flagged pattern -- or with open findings of
+ * their own -- are outlined in red, and edges inside the pattern are red. Palette matches FundFlowGraph. The canvas takes the width of its
  * panel, so all three columns are visible at 100% zoom. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FlowCounterparty, FlowResponse } from "../lib/api";
@@ -23,9 +24,13 @@ const C = {
   inflow: "#5f8fa3",
   inflowText: "#9cc6d8",
   outflow: "#e8a935",
-  dead: "#e3572f",
-  deadFill: "#2a1410",
-  deadText: "#f08a72",
+  // Dead ends are orange so red keeps one meaning on this canvas: flagged.
+  dead: "#d9822b",
+  deadFill: "#2a1d10",
+  deadText: "#f0b070",
+  flag: "#e0442f",
+  flagFill: "#2a1410",
+  flagText: "#ff9b85",
   pill: "#17150f",
 };
 
@@ -104,14 +109,20 @@ export function SourceFlowGraph({
   onSelect,
   onSelectCenter,
   onSetSource,
+  patternNodes,
 }: {
   flow: FlowResponse;
+  /** Graph node ids of the flagged pattern currently selected, if any. */
+  patternNodes?: ReadonlySet<string>;
   zoom: number;
   selectedId: string | null;
   onSelect: (counterparty: FlowCounterparty, side: FlowSide) => void;
   onSelectCenter: () => void;
   onSetSource: (counterparty: FlowCounterparty) => void;
 }) {
+  const inPattern = (id: string) => patternNodes?.has(id) ?? false;
+  const flaggedLabel = (id: string, openFindings: number | undefined): string | null =>
+    inPattern(id) ? "⚑ in flagged pattern" : (openFindings ?? 0) > 0 ? `⚑ ${openFindings} open finding${openFindings === 1 ? "" : "s"}` : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [panelWidth, setPanelWidth] = useState(0);
   const [hovered, setHovered] = useState<Placed | null>(null);
@@ -221,6 +232,9 @@ export function SourceFlowGraph({
           <marker id="sf-out" markerUnits="userSpaceOnUse" markerWidth={12} markerHeight={12} refX={11} refY={6} orient="auto">
             <path d="M0 0L12 6L0 12z" fill={C.outflow} />
           </marker>
+          <marker id="sf-flag" markerUnits="userSpaceOnUse" markerWidth={12} markerHeight={12} refX={11} refY={6} orient="auto">
+            <path d="M0 0L12 6L0 12z" fill={C.flag} />
+          </marker>
           <marker id="sf-dead" markerUnits="userSpaceOnUse" markerWidth={10} markerHeight={10} refX={9} refY={5} orient="auto">
             <path d="M0 0L10 5L0 10z" fill={C.dead} />
           </marker>
@@ -249,7 +263,8 @@ export function SourceFlowGraph({
             const [x0, y0, x1, y1, x2, y2, x3, y3] = p.path;
             const d = `M${x0} ${y0} C${x1} ${y1} ${x2} ${y2} ${x3} ${y3}`;
             const dead = !p.c.selectable;
-            const stroke = dead ? C.dead : p.side === "input" ? C.inflow : C.outflow;
+            const patternEdge = inPattern(centre.id) && inPattern(p.c.id);
+            const stroke = patternEdge ? C.flag : dead ? C.dead : p.side === "input" ? C.inflow : C.outflow;
             const active = selectedId === p.c.id || hoveredNow === p;
             return (
               <g key={`edge-${p.side}-${p.c.id}`} pointerEvents="none">
@@ -259,9 +274,9 @@ export function SourceFlowGraph({
                   fill="none"
                   stroke={stroke}
                   strokeWidth={p.width}
-                  strokeDasharray={dead ? "6 5" : undefined}
-                  opacity={dead ? 0.6 : active ? 1 : 0.82}
-                  markerEnd={dead ? "url(#sf-dead)" : p.side === "input" ? "url(#sf-in)" : "url(#sf-out)"}
+                  strokeDasharray={dead && !patternEdge ? "6 5" : undefined}
+                  opacity={dead && !patternEdge ? 0.6 : active || patternEdge ? 1 : 0.82}
+                  markerEnd={patternEdge ? "url(#sf-flag)" : dead ? "url(#sf-dead)" : p.side === "input" ? "url(#sf-in)" : "url(#sf-out)"}
                 />
               </g>
             );
@@ -287,6 +302,7 @@ export function SourceFlowGraph({
             const dead = !c.selectable;
             const sel = selectedId === c.id;
             const rx = c.type === "transaction" ? CARD_H / 2 : 7;
+            const flag = flaggedLabel(c.id, c.open_finding_count);
             return (
               <g
                 key={`node-${p.side}-${c.id}`}
@@ -306,11 +322,17 @@ export function SourceFlowGraph({
                   width={CARD_W}
                   height={CARD_H}
                   rx={rx}
-                  fill={dead ? C.deadFill : c.type === "transaction" ? C.nodeFill : C.boxFill}
-                  stroke={dead ? C.dead : c.type === "transaction" ? C.nodeStroke : C.boxStroke}
-                  strokeWidth={1.4}
-                  strokeDasharray={dead ? "5 4" : undefined}
+                  fill={flag ? C.flagFill : dead ? C.deadFill : c.type === "transaction" ? C.nodeFill : C.boxFill}
+                  stroke={flag ? C.flag : dead ? C.dead : c.type === "transaction" ? C.nodeStroke : C.boxStroke}
+                  strokeWidth={flag ? 2 : 1.4}
+                  strokeDasharray={dead && !flag ? "5 4" : undefined}
                 />
+                {flag && (
+                  <g transform={`translate(${x}, ${y - CARD_H / 2 - 9})`} pointerEvents="none">
+                    <rect x={-62} y={-8} width={124} height={16} rx={8} fill={C.flag} />
+                    <text x={0} y={4} textAnchor="middle" fontSize={10} fontWeight={700} fill="#fff3ee">{flag}</text>
+                  </g>
+                )}
                 <text x={x} y={y - 3} textAnchor="middle" fontSize={12} fontFamily={MONO} fill={C.ink} fontWeight={500}>{cardTitle(c)}</text>
                 <text x={x} y={y + 12} textAnchor="middle" fontSize={10.5} fill={C.inkDim}>{cardSub(c, p.side)}</text>
                 {dead ? (
@@ -349,6 +371,18 @@ export function SourceFlowGraph({
           {/* The source, centred */}
           <g style={{ cursor: "pointer" }} onClick={onSelectCenter}>
             <title>{`Source: ${centre.label}`}</title>
+            {flaggedLabel(centre.id, centre.open_finding_count) && (
+              <>
+                {isTx ? (
+                  <circle cx={cx} cy={cy} r={centreHalfW + 12} fill="none" stroke={C.flag} strokeWidth={2.5} strokeDasharray="7 4" />
+                ) : (
+                  <rect x={cx - centreHalfW - 12} y={cy - centreHalfH - 12} width={(centreHalfW + 12) * 2} height={(centreHalfH + 12) * 2} rx={18} fill="none" stroke={C.flag} strokeWidth={2.5} strokeDasharray="7 4" />
+                )}
+                <text x={cx} y={cy + centreHalfH + 46} textAnchor="middle" fontSize={11} fontWeight={700} fill={C.flagText}>
+                  {flaggedLabel(centre.id, centre.open_finding_count)}
+                </text>
+              </>
+            )}
             {isTx ? (
               <>
                 <circle cx={cx} cy={cy} r={centreHalfW + 22} fill={C.mustard} fillOpacity={0.07} />

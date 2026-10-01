@@ -22,6 +22,7 @@ from app.engine.graph.builder import FactRecords, build_graph_snapshot, load_fac
 from app.events import append_event
 from app.jobs.service import utcnow
 from app.models import EvidenceSource, FragmentReceipt, GraphSnapshot, ImportCheckpoint, ImportJob, Snapshot
+from app.resources import current_plan
 from app.storage.raw import resolve_source
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,14 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         job.total_records = count_records(source_path, source.source_format)
     session.commit()
     parsed_any = False
-    batch_number = last_record // settings.ingestion_batch_records
+    # Batch size adapts to this machine's free memory (never above the
+    # configured size, so a well-provisioned host keeps the shipped default).
+    plan = current_plan()
+    batch_records = plan.ingestion_batch_records(settings.ingestion_batch_records)
+    # Continue after the highest committed batch rather than dividing by the
+    # batch size: a resumed attempt may run with a different size.
+    last_batch = session.scalar(select(func.max(FragmentReceipt.logical_batch)).where(FragmentReceipt.job_id == job.id))
+    batch_number = 0 if last_record == 0 or last_batch is None else last_batch + 1
     row_iterator = rows_for_source(source_path, source.source_format)
     seen_txids: dict[str, str | None] = {
         txid: None for txid in _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id)
@@ -273,7 +281,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         {"transactions": [], "inputs": [], "outputs": [], "network_observations": []} if last_record == 0 else None
     )
     for batch in _chunks(
-        (row for row in row_iterator if row.logical_record > last_record), settings.ingestion_batch_records
+        (row for row in row_iterator if row.logical_record > last_record), batch_records
     ):
         parsed_any = True
         facts: dict[str, list[dict]] = {

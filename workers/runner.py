@@ -12,6 +12,7 @@ from app.db import SessionLocal, ensure_schema
 from app.engine.ingestion import ingest_source
 from app.jobs.service import claim_next_job, fail_job, record_worker_heartbeat
 from app.models import EvidenceSource
+from app.resources import current_plan
 from app.storage.raw import resolve_source
 
 
@@ -55,6 +56,13 @@ def main() -> None:
     # Bring an older database forward (e.g. import_jobs.total_records) before the
     # first claim query selects every ImportJob column.
     ensure_schema()
+    plan = current_plan()
+    print(
+        f"tracex-worker {args.worker_id}: {plan.cpu_count} CPU(s), "
+        f"{(plan.available_memory_bytes or 0) >> 20} MB available, budget {plan.memory_budget_bytes >> 20} MB, "
+        f"insert chunk {plan.insert_chunk_rows} rows, parse batch <= {plan.max_ingestion_batch_records} records",
+        flush=True,
+    )
     while True:
         processed = process_one(args.worker_id)
         if args.once:

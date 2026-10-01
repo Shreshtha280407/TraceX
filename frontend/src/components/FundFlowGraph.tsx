@@ -35,6 +35,8 @@ const C = {
   riskReview: "#d6c14a",
   riskSuspicious: "#e0802f",
   riskHigh: "#d9482f",
+  // The flagged pattern itself: one colour for the whole reviewable unit.
+  flag: "#e0442f",
 };
 
 const MONO = "'IBM Plex Mono',ui-monospace,Consolas,monospace";
@@ -222,8 +224,8 @@ function FlaggedEdge({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y
   const d = `M${x1} ${y1} L${x2} ${y2}`;
   return (
     <>
-      <path d={d} fill="none" stroke={C.mustard} strokeWidth={10} opacity={0.1} strokeLinecap="round" />
-      <path d={d} fill="none" stroke={C.mustard} strokeWidth={2.2} markerEnd="url(#ff-ma)" />
+      <path d={d} fill="none" stroke={C.flag} strokeWidth={10} opacity={0.1} strokeLinecap="round" />
+      <path d={d} fill="none" stroke={C.flag} strokeWidth={2.2} markerEnd="url(#ff-ma)" />
     </>
   );
 }
@@ -387,7 +389,7 @@ export function FundFlowGraph({
     >
       <defs>
         <marker id="ff-ma" markerUnits="userSpaceOnUse" markerWidth={12} markerHeight={12} refX={11} refY={6} orient="auto">
-          <path d="M0 0L12 6L0 12z" fill={C.mustard} />
+          <path d="M0 0L12 6L0 12z" fill={C.flag} />
         </marker>
         <marker id="ff-mc" markerUnits="userSpaceOnUse" markerWidth={9} markerHeight={9} refX={8} refY={4.5} orient="auto">
           <path d="M0 0L9 4.5L0 9z" fill={C.observed} />
@@ -413,18 +415,22 @@ export function FundFlowGraph({
 
       {/* Flagged-path banner + span bracket (left-anchored so it stays on screen
           on a long chain, where the canvas is far wider than the viewport) */}
-      <rect x={20} y={BANNER_Y - 16} width={420} height={BANNER_H} rx={12} fill="#2a2110" stroke={C.mustard} strokeWidth={1} />
-      <text x={230} y={BANNER_Y} textAnchor="middle" fontSize={12} fontFamily={SANS} fill={C.mustard} fontWeight={600}>
-        {`PEELING CHAIN · ${sats(ladder[0])} → ${sats(ladder[ladder.length - 1])} · ${steps.length} hops`}
+      <rect x={20} y={BANNER_Y - 16} width={560} height={BANNER_H} rx={12} fill="#2a1410" stroke={C.flag} strokeWidth={1} />
+      <text x={300} y={BANNER_Y} textAnchor="middle" fontSize={12} fontFamily={SANS} fill={C.flag} fontWeight={600}>
+        {`FLAGGED PATTERN · ${sats(ladder[0])} → ${sats(ladder[ladder.length - 1])} · ${steps.length} hops${
+          (finding.pattern?.chain_count ?? 1) > 1
+            ? ` · ${finding.pattern!.chain_count} chains / ${finding.pattern!.transaction_count} txs merged`
+            : ""
+        }`}
       </text>
-      <line x1={cxOf(0)} y1={BRACKET_Y} x2={cxOf(cols.length - 1)} y2={BRACKET_Y} stroke={C.mustard} strokeWidth={1} opacity={0.45} />
+      <line x1={cxOf(0)} y1={BRACKET_Y} x2={cxOf(cols.length - 1)} y2={BRACKET_Y} stroke={C.flag} strokeWidth={1} opacity={0.45} />
       {cols.map((_, i) => (
-        <line key={`tick-${i}`} x1={cxOf(i)} y1={BRACKET_Y} x2={cxOf(i)} y2={BRACKET_Y + 8} stroke={C.mustard} strokeWidth={1} opacity={0.45} />
+        <line key={`tick-${i}`} x1={cxOf(i)} y1={BRACKET_Y} x2={cxOf(i)} y2={BRACKET_Y + 8} stroke={C.flag} strokeWidth={1} opacity={0.45} />
       ))}
 
       {/* Highlighted flagged-path band behind the main flow row */}
       {firstTx >= 0 && (
-        <rect x={cxOf(firstTx) - 82} y={ROW_Y - BAND_H / 2} width={cxOf(lastTx) + 82 - (cxOf(firstTx) - 82)} height={BAND_H} rx={BAND_H / 2} fill={C.mustard} fillOpacity={0.05} />
+        <rect x={cxOf(firstTx) - 82} y={ROW_Y - BAND_H / 2} width={cxOf(lastTx) + 82 - (cxOf(firstTx) - 82)} height={BAND_H} rx={BAND_H / 2} fill={C.flag} fillOpacity={0.05} />
       )}
 
       {/* Co-spend cluster boxes (dashed) behind their stacked member addresses */}
@@ -453,7 +459,7 @@ export function FundFlowGraph({
         return (
           <g key={`edge-${i}`}>
             <FlaggedEdge x1={fromEdge} y1={ROW_Y} x2={toEdge} y2={ROW_Y} />
-            <text x={(fromEdge + toEdge) / 2} y={ROW_Y - 10} textAnchor="middle" fontSize={12} fontFamily={SANS} fill={C.mustard} fontWeight={600}>{sats(value)}</text>
+            <text x={(fromEdge + toEdge) / 2} y={ROW_Y - 10} textAnchor="middle" fontSize={12} fontFamily={SANS} fill={C.flag} fontWeight={600}>{sats(value)}</text>
             <text x={(fromEdge + toEdge) / 2} y={ROW_Y + 17} textAnchor="middle" fontSize={11} fontFamily={SANS} fill={C.inkDim}>{col.kind === "tx" ? "output" : "spent by"}</text>
           </g>
         );
@@ -577,8 +583,8 @@ export function FundFlowGraph({
 
       <line x1={300} y1={LEGEND_Y + 10} x2={300} y2={LEGEND_Y + LEGEND_H - 10} stroke={C.panelStroke} />
       <text x={316} y={LEGEND_Y + 18} fontSize={11} fontFamily={SANS} fill={C.inkDim} fontWeight={600} letterSpacing="0.08em">RELATIONSHIPS</text>
-      <path d={`M316 ${LEGEND_Y + 39} H340`} stroke={C.mustard} strokeWidth={2.2} markerEnd="url(#ff-ma)" fill="none" />
-      <text x={356} y={LEGEND_Y + 43} fontSize={12} fontFamily={SANS} fill={C.ink}>Flagged path</text>
+      <path d={`M316 ${LEGEND_Y + 39} H340`} stroke={C.flag} strokeWidth={2.2} markerEnd="url(#ff-ma)" fill="none" />
+      <text x={356} y={LEGEND_Y + 43} fontSize={12} fontFamily={SANS} fill={C.ink}>Flagged pattern</text>
       <path d={`M316 ${LEGEND_Y + 64} H340`} stroke={C.observed} strokeWidth={1.4} markerEnd="url(#ff-mc)" fill="none" />
       <text x={356} y={LEGEND_Y + 68} fontSize={12} fontFamily={SANS} fill={C.ink}>Peel · unspent</text>
       <path d={`M470 ${LEGEND_Y + 39} H494`} stroke={C.suspected} strokeWidth={1.4} markerEnd="url(#ff-mo)" fill="none" />

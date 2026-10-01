@@ -151,6 +151,14 @@ export function FindingsFeed() {
                       <Badge tone={priority.tone}>{priority.label}</Badge>
                     </div>
                     <span className="mono-id addr">{finding.entity_ref}</span>
+                    {(finding.pattern?.chain_count ?? 1) > 1 && (
+                      <div className="meta">
+                        One pattern: {finding.pattern!.chain_count} overlapping chains · {finding.pattern!.transaction_count} transactions
+                      </div>
+                    )}
+                    {(finding.matched_windows?.length ?? 0) > 1 && (
+                      <div className="meta">One finding for {finding.matched_windows!.length} matching windows of the same day</div>
+                    )}
                     <div className="meta">
                       {finding.case_id} · {relativeTime(finding.window_end)}
                       {finding.benign_alternatives[0] ? ` · benign alternative: ${finding.benign_alternatives[0]}` : ""}

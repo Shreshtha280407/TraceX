@@ -50,6 +50,39 @@ def bulk_insert_serialized(session: Session, model, rows: list[dict], json_colum
     if not rows:
         return
     table = model.__table__
+    connection = session.connection()
+    if connection.dialect.name == "postgresql" and connection.dialect.driver == "psycopg":
+        # PostgreSQL: COPY streams the rows in one protocol operation instead of
+        # thousands of multi-row INSERT statements, inside the same transaction.
+        # JSON columns already hold JSON text, which COPY's text format accepts
+        # for a json column as-is.
+        columns = list(rows[0])
+        cursor = connection.connection.driver_connection.cursor()
+        with cursor.copy(f'COPY {table.name} ({", ".join(columns)}) FROM STDIN') as copy:
+            for row in rows:
+                copy.write_row([row[name] for name in columns])
+        return
+    if connection.dialect.name == "sqlite":
+        # SQLite: one prepared statement and the driver's own executemany. Each
+        # non-JSON column still goes through its SQLAlchemy type's bind
+        # processor (so e.g. datetimes are stored in exactly the same format);
+        # only the per-row statement compilation is skipped.
+        columns = list(rows[0])
+        dialect = connection.dialect
+        processors = [
+            None if name in json_columns else table.c[name].type.dialect_impl(dialect).bind_processor(dialect)
+            for name in columns
+        ]
+        prepared = [
+            tuple(value if process is None else process(value) for value, process in zip(
+                (row[name] for name in columns), processors, strict=True
+            ))
+            for row in rows
+        ]
+        connection.exec_driver_sql(
+            f'INSERT INTO {table.name} ({", ".join(columns)}) VALUES ({", ".join("?" for _ in columns)})', prepared
+        )
+        return
     statement = insert(table).values(
         {
             name: bindparam(name, type_=SerializedJSON() if name in json_columns else table.c[name].type)

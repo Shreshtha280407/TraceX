@@ -107,6 +107,19 @@ export type PeelingStep = {
   co_spend_addresses: string[];
 };
 
+/** The whole reviewable peeling pattern: overlapping chain candidates that share
+ * transactions (or an origin) merged into one finding. Ids are graph node ids. */
+export type FindingPattern = {
+  chain_count: number;
+  transaction_count: number;
+  address_count: number;
+  transaction_ids: string[];
+  addresses: string[];
+  chains: { entity_ref: string; hop_count: number; score: number; transaction_ids: string[] }[];
+};
+
+export type MatchedWindow = { window_seconds: number; window_start: string; window_end: string; score: number };
+
 export type Finding = {
   finding_id: string;
   finding_type: string;
@@ -141,6 +154,10 @@ export type Finding = {
   hop_count: number | null;
   total_duration_sec: number | null;
   steps: PeelingStep[] | null;
+  /** Present on grouped peeling patterns (findings materialized after grouping). */
+  pattern?: FindingPattern | null;
+  /** Other windows of the same day that met the same rule, merged into this finding. */
+  matched_windows?: MatchedWindow[] | null;
 };
 
 export type PathSignals = {
@@ -273,6 +290,8 @@ export type FlowCounterparty = {
   onward_count: number;
   selectable: boolean;
   reason: string | null;
+  /** Open findings in this snapshot whose subject is this node. */
+  open_finding_count?: number;
 };
 
 export type FlowResponse = {
@@ -289,6 +308,7 @@ export type FlowResponse = {
     transaction_count: number | null;
     selectable: boolean;
     reason: string | null;
+    open_finding_count?: number;
   };
   inputs: FlowCounterparty[];
   outputs: FlowCounterparty[];
@@ -379,7 +399,22 @@ export const api = {
     request<FeatureExportResponse>(`/cases/${caseId}/features/export${snapshotId ? `?snapshot_id=${snapshotId}` : ""}`),
 
   // ---- System (Settings page) ----
-  health: () => request<{ status: string; database: string; evidence_vault: string }>("/healthz"),
+  health: () =>
+    request<{
+      status: string;
+      database: string;
+      evidence_vault: string;
+      /** What this host can give an import now, and the sizes derived from it (app/resources.py). */
+      resources?: {
+        total_memory_mb: number | null;
+        available_memory_mb: number | null;
+        memory_budget_mb: number;
+        cpu_count: number;
+        insert_chunk_rows: number;
+        max_ingestion_batch_records: number;
+        duckdb_memory_limit_mb: number;
+      };
+    }>("/healthz"),
   ready: () => request<{ status: string; worker_id: string; heartbeat_at: string }>("/readyz"),
 };
 

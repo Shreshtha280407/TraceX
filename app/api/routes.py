@@ -42,6 +42,7 @@ from app.models import (
     User,
     WorkerHeartbeat,
 )
+from app.resources import current_plan
 from app.storage.raw import UploadRejected, store_upload
 
 router = APIRouter(prefix="/v1")
@@ -174,7 +175,23 @@ def health(session: Session = Depends(get_session)) -> dict:
         probe.unlink()
     except OSError as exc:
         raise HTTPException(status_code=503, detail=f"evidence vault unavailable: {exc}") from exc
-    return {"status": "ok", "database": "ok", "evidence_vault": "ok"}
+    plan = current_plan()
+    return {
+        "status": "ok",
+        "database": "ok",
+        "evidence_vault": "ok",
+        # What this host can give an import right now, and the sizes the
+        # pipeline derives from it (see app/resources.py).
+        "resources": {
+            "total_memory_mb": plan.total_memory_bytes // (1 << 20) if plan.total_memory_bytes else None,
+            "available_memory_mb": plan.available_memory_bytes // (1 << 20) if plan.available_memory_bytes else None,
+            "memory_budget_mb": plan.memory_budget_bytes // (1 << 20),
+            "cpu_count": plan.cpu_count,
+            "insert_chunk_rows": plan.insert_chunk_rows,
+            "max_ingestion_batch_records": plan.max_ingestion_batch_records,
+            "duckdb_memory_limit_mb": plan.duckdb_memory_limit_mb,
+        },
+    }
 
 
 @router.get("/readyz")
@@ -393,11 +410,28 @@ def get_graph_flow(
     require_case_member(case_id, user, session)
     graph = _latest_graph(session, case_id, graph_snapshot_id)
     try:
-        return query_flow(evidence_root=settings.evidence_root, graph=graph, node=node, limit=limit)
+        flow = query_flow(evidence_root=settings.evidence_root, graph=graph, node=node, limit=limit)
     except GraphNodeNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except GraphQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Mark every drawn node that is itself the subject of an open finding in
+    # this snapshot, so flagged activity stands out in the flow view.
+    drawn = [flow["center"], *flow["inputs"], *flow["outputs"]]
+    flagged = dict(
+        session.execute(
+            select(FindingRecord.entity_ref, func.count())
+            .where(
+                FindingRecord.snapshot_id == graph.snapshot_id,
+                FindingRecord.status == "open",
+                FindingRecord.entity_ref.in_({item["id"] for item in drawn}),
+            )
+            .group_by(FindingRecord.entity_ref)
+        ).all()
+    )
+    for item in drawn:
+        item["open_finding_count"] = int(flagged.get(item["id"], 0))
+    return flow
 
 
 @router.post("/cases/{case_id}/synthetic-review-seeds", status_code=status.HTTP_201_CREATED)
@@ -477,6 +511,10 @@ def finding_view(finding: FindingRecord) -> dict:
         "hop_count": detector.get("hop_count"),
         "total_duration_sec": detector.get("total_duration_sec"),
         "steps": detector.get("steps"),
+        # Every transaction/address of the reviewable pattern (merged chains),
+        # so the graph can highlight it as one unit.
+        "pattern": detector.get("pattern"),
+        "matched_windows": (finding.feature_vector or {}).get("matched_windows"),
         "feature_vector_hash": finding.feature_vector_hash,
         "explanations": finding.explanations,
         "benign_alternatives": finding.benign_alternatives,
