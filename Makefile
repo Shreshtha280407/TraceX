@@ -143,3 +143,26 @@ phase-seven-test:
 # their source record. See docs/phase7.md.
 phase-seven-walkthrough: | datasets/phase5a_100k
 	uv run --extra ml python scripts/phase7_case_walkthrough.py --output experiments/runs/phase7_case_walkthrough.json
+
+# ---------------------------------------------------------------------------
+# Offline Geo-IP database, dataset intake, offline Linux appliance
+# ---------------------------------------------------------------------------
+.PHONY: geoip appliance offline-bundle calibrate-confidence
+
+# Fetch DB-IP country lite (CC BY 4.0) + IPtoASN (PDDL) once and compile them into
+# var/geoip (TRACEX_GEOIP_DIR). Offline hosts: `tracex-geoip import FILE...` instead.
+geoip:
+	uv run python -m app.engine.geoip download
+
+# Build the appliance image (API + worker + web UI + ML + Geo-IP).
+appliance:
+	docker build -t tracex-appliance:latest .
+
+# Image + compose stack + installer in one tarball for air-gapped Linux hosts.
+offline-bundle:
+	scripts/build_offline_bundle.sh
+
+# Refit app/engine/calibration/confidence-v1.json from a database produced by
+# importing datasets/phase5a_100k/ingestion_rows.ndjson (labels are read only here).
+calibrate-confidence:
+	uv run --extra ml python scripts/calibrate_confidence.py --database $(DB) --dataset datasets/phase5a_100k

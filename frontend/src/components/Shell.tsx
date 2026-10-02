@@ -3,11 +3,12 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { useAuth, initials } from "../lib/auth";
 import { setLastCaseId, useLastCaseId } from "../lib/lastCase";
 import { CaseSwitcher } from "./CaseSwitcher";
-import { ExportIcon, FlagIcon, GraphIcon, GridIcon, HomeIcon, UploadIcon } from "./icons";
+import { EntityIcon, ExportIcon, FlagIcon, GlobeIcon, GraphIcon, GridIcon, HomeIcon, UploadIcon } from "./icons";
 import tracexLogo from "../assets/tracex-logo.png";
 
 /** 88px icon rail + avatar badge, present on every authenticated page. Nav order:
- * Home → Dashboard → Evidence Intake → Graph Explorer → Findings Feed → Export & Deployment.
+ * Home → Dashboard → Evidence Intake → Graph Explorer → Findings Feed → Entities & Risk →
+ * Network Intelligence → Export & Deployment.
  * Home (/overview) is the first icon, unscoped, and the post-login landing page.
  * Dashboard and every item after it are case-scoped (/cases/:caseId/...), falling
  * back to the last case visited, or to /overview if none is known yet. "Active" is
@@ -37,6 +38,8 @@ export function Shell({ children }: { children: ReactNode }) {
     { to: scoped("/ingestion"), icon: <UploadIcon />, label: "Evidence Intake", active: caseScoped("/ingestion") },
     { to: scoped("/graph"), icon: <GraphIcon />, label: "UTXO Graph Explorer", active: caseScoped("/graph") },
     { to: scoped("/findings"), icon: <FlagIcon />, label: "Findings Feed", active: caseScoped("/findings") },
+    { to: scoped("/entities"), icon: <EntityIcon />, label: "Entities & Risk", active: caseScoped("/entities") },
+    { to: scoped("/network"), icon: <GlobeIcon />, label: "Network Intelligence", active: caseScoped("/network") },
     { to: scoped("/export"), icon: <ExportIcon />, label: "Export & Deployment", active: caseScoped("/export") },
   ];
 

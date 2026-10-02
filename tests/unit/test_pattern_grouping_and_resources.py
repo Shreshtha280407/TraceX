@@ -13,10 +13,11 @@ from app import resources
 from app.api import routes
 from app.config import Settings
 from app.db import Base, get_session, make_engine
+from app.engine.feature_store import iter_feature_rows
 from app.engine.findings import deterministic as findings_module
 from app.engine.ingestion import pipeline as pipeline_module
 from app.main import app
-from app.models import FeatureRecord, FindingRecord
+from app.models import FindingRecord
 from workers import runner
 
 
@@ -24,16 +25,17 @@ def _tx(n: int) -> str:
     return f"{n:064x}"
 
 
-def _peeling_chain(hops: int) -> list[dict]:
+def _peeling_chain(hops: int, base: int = 0, tag: str = "") -> list[dict]:
     """A fund transaction, then `hops` spends that each peel a small payment and
-    carry the rest forward; the last continuation is never spent."""
+    carry the rest forward; the last continuation is never spent. `base` and
+    `tag` give a second, unrelated chain its own txids and addresses."""
     rows = [
         {
-            "txid": _tx(1),
+            "txid": _tx(base + 1),
             "network": "bitcoin-regtest",
             "timestamp": "2026-01-01T00:00:00Z",
             "inputs": [],
-            "outputs": [{"address": "bcrt1qorigin", "amount_sats": 1_000_000}],
+            "outputs": [{"address": f"bcrt1q{tag}origin", "amount_sats": 1_000_000}],
             "fee_sats": 0,
         }
     ]
@@ -41,13 +43,13 @@ def _peeling_chain(hops: int) -> list[dict]:
     for hop in range(1, hops + 1):
         rows.append(
             {
-                "txid": _tx(hop + 1),
+                "txid": _tx(base + hop + 1),
                 "network": "bitcoin-regtest",
                 "timestamp": f"2026-01-01T00:{hop:02d}:00Z",
-                "inputs": [{"prev_txid": _tx(hop), "prev_vout": 0, "address": f"bcrt1qhop{hop - 1}", "amount_sats": amount}],
+                "inputs": [{"prev_txid": _tx(base + hop), "prev_vout": 0, "address": f"bcrt1q{tag}hop{hop - 1}", "amount_sats": amount}],
                 "outputs": [
-                    {"address": f"bcrt1qhop{hop}", "amount_sats": amount - 60_000},
-                    {"address": f"bcrt1qpay{hop}", "amount_sats": 50_000},
+                    {"address": f"bcrt1q{tag}hop{hop}", "amount_sats": amount - 60_000},
+                    {"address": f"bcrt1q{tag}pay{hop}", "amount_sats": 50_000},
                 ],
                 "fee_sats": 10_000,
             }
@@ -108,8 +110,8 @@ def _run(tmp_path: Path, monkeypatch, rows: list[dict], name: str):
     findings = client.get(f"/v1/cases/{case_id}/findings", headers=headers, params={"limit": 200}).json()
     with sessions() as session:
         features = sorted(
-            (row.entity_ref, row.window_start.isoformat(), row.window_end.isoformat(), json.dumps(row.feature_vector, sort_keys=True))
-            for row in session.query(FeatureRecord)
+            (row["entity_ref"], row["window_start"], row["window_end"], json.dumps(row["features"], sort_keys=True))
+            for row in iter_feature_rows(session, settings.evidence_root, case_id=case_id)
         )
         # Detector evidence refs carry the per-import source id; normalise it so
         # two imports of the same bytes compare equal.
@@ -288,3 +290,23 @@ def test_bounded_and_in_memory_execution_produce_identical_results(tmp_path: Pat
     # No network observations in this data, so no node id embeds the
     # per-import source id: the two graphs must match exactly.
     assert graph_content("bounded") == graph_content("memory")
+
+
+def test_worker_processes_give_identical_results(tmp_path: Path, monkeypatch) -> None:
+    """Bounded execution split over worker processes -- peeling chunks, address
+    partitions and detector slices, each as small as possible -- stores exactly
+    what the in-memory path stores."""
+    from app.engine import bounded
+
+    rows = _mixed_rows() + _peeling_chain(5, base=1_000, tag="b")
+    monkeypatch.setenv("TRACEX_EXECUTION_MODE", "memory")
+    memory_findings, memory_features, memory_rows = _run(tmp_path, monkeypatch, rows, "memory")
+    monkeypatch.setenv("TRACEX_EXECUTION_MODE", "bounded")
+    monkeypatch.setenv("TRACEX_FINDINGS_WORKERS", "2")
+    monkeypatch.setattr(bounded, "_chain_chunk", lambda plan: 1)
+    monkeypatch.setattr(bounded, "_MIN_PARALLEL_CHUNK", 1)
+    _, parallel_features, parallel_rows = _run(tmp_path, monkeypatch, rows, "parallel")
+
+    assert sum(1 for item in memory_findings["findings"] if item["rule_id"] == "peeling_chain_candidate") == 2
+    assert parallel_features == memory_features
+    assert parallel_rows == memory_rows

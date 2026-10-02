@@ -285,3 +285,82 @@ class AuditRecord(Base):
     target_id: Mapped[str] = mapped_column(String(128))
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalyticsSnapshot(Base):
+    """Entity clusters, Geo-IP enrichment, network correlation, flow arrays and
+    graph embeddings for one completed snapshot (app.engine.analytics).
+
+    Stored beside the immutable graph file rather than inside it, so the graph
+    snapshot's content hash is unchanged by this derived layer.
+    """
+
+    __tablename__ = "analytics_snapshots"
+    __table_args__ = (UniqueConstraint("snapshot_id", name="uq_analytics_snapshot_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    graph_snapshot_id: Mapped[str] = mapped_column(ForeignKey("graph_snapshots.id", ondelete="CASCADE"), index=True)
+    storage_relative_path: Mapped[str] = mapped_column(String(1024), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    analytics_version: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(32), default="complete")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RiskSeed(Base):
+    """An analyst-asserted starting point for risk propagation (e.g. a wallet
+    named in a ransomware report). A seed is an input assumption with a stated
+    reason and provenance, never a conclusion TraceX drew itself."""
+
+    __tablename__ = "risk_seeds"
+    __table_args__ = (UniqueConstraint("case_id", "wallet_ref", name="uq_case_risk_seed"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    wallet_ref: Mapped[str] = mapped_column(String(512), index=True)
+    label: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text)
+    weight: Mapped[float] = mapped_column(default=1.0)
+    source: Mapped[str] = mapped_column(String(64), default="analyst")
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RiskRun(Base):
+    """One propagation of the case's seeds over one analytics snapshot."""
+
+    __tablename__ = "risk_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    method_version: Mapped[str] = mapped_column(String(64))
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    seeds: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    scores: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeatureStoreRecord(Base):
+    """One snapshot's address-window feature rows, stored as a Parquet file.
+
+    These are write-once analytical rows -- ~8 per transaction, so ~25 million
+    for a 3-million-row import -- which is why they live in a compressed
+    columnar file in the evidence vault (app.engine.feature_store) rather than
+    as JSON rows in the control-plane database.
+    """
+
+    __tablename__ = "feature_stores"
+    __table_args__ = (UniqueConstraint("snapshot_id", name="uq_feature_store_snapshot"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    graph_snapshot_id: Mapped[str] = mapped_column(ForeignKey("graph_snapshots.id", ondelete="CASCADE"), index=True)
+    storage_relative_path: Mapped[str] = mapped_column(String(1024), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    row_count: Mapped[int] = mapped_column(Integer)
+    feature_schema_version: Mapped[str] = mapped_column(String(64))
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

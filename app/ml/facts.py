@@ -355,6 +355,41 @@ def facts_from_streams(transactions_in: Iterable[dict], outputs_in: Iterable[dic
     )
 
 
+def attach_network_observations(facts: Facts, observations: Iterable[dict]) -> None:
+    """Attach the PS network fields (relay endpoint, ASN, reported country) from
+    committed canonical `network_observation` facts, first observation per
+    transaction. Observations of a relay only -- never an origin or owner."""
+    count = facts.transaction_count
+    tx_asn = np.full(count, -1, dtype=np.int32)
+    tx_country = np.full(count, -1, dtype=np.int32)
+    tx_src_ip = np.full(count, -1, dtype=np.int32)
+    tables: dict[str, tuple[list[str], dict[str, int]]] = {"asn": ([], {}), "country": ([], {}), "ip": ([], {})}
+
+    def intern(value, name: str) -> int:
+        if value in (None, ""):
+            return -1
+        table, index = tables[name]
+        value = str(value)
+        slot = index.get(value, -1)
+        if slot < 0:
+            slot = len(table)
+            index[value] = slot
+            table.append(value)
+        return slot
+
+    seen = np.zeros(count, dtype=bool)
+    for fact in observations:
+        transaction = facts.tx_index.get(str(fact.get("txid") or ""), -1)
+        if transaction < 0 or seen[transaction]:
+            continue
+        seen[transaction] = True
+        tx_asn[transaction] = intern(fact.get("asn"), "asn")
+        tx_country[transaction] = intern(fact.get("geo_country"), "country")
+        tx_src_ip[transaction] = intern(fact.get("src_ip"), "ip")
+    facts.tx_asn, facts.tx_country, facts.tx_src_ip = tx_asn, tx_country, tx_src_ip
+    facts.asns, facts.countries, facts.src_ips = tables["asn"][0], tables["country"][0], tables["ip"][0]
+
+
 def load_facts_from_snapshot(session, evidence_root, snapshot_id: str) -> Facts:
     """Read one receipt-approved snapshot's committed facts through the real path."""
     from app.engine.graph.builder import _facts

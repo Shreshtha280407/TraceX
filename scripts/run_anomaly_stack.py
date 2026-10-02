@@ -39,6 +39,8 @@ def main() -> int:
     parser.add_argument("--max-combination", type=int, default=None, help="cap the combination size")
     parser.add_argument("--no-stratify", action="store_true", help="score layer A globally instead of per shape family")
     parser.add_argument("--with-hbos", action="store_true", help="add the HBOS third opinion on grain A")
+    parser.add_argument("--a-score", default="isolation_forest", choices=("isolation_forest", "isolation_forest+ecod"),
+                        help="detectors ranking layer A (v2 release: isolation_forest; v1: isolation_forest+ecod)")
     parser.add_argument("--with-supervised", action="store_true",
                         help="add the supervised gradient-boosted ranker (layer S). On this fixture its "
                              "labels are generator truth, which is close to circular for the motif task "
@@ -69,6 +71,7 @@ def main() -> int:
         with_hbos=args.with_hbos,
         with_bocpd=not args.no_bocpd,
         budget=args.budget,
+        a_score_with=tuple(args.a_score.split("+")),
     )
     print(f"TraceX anomaly stack — dataset={args.dataset}  layers={','.join(config.layers)}  "
           f"budget={args.budget:.3%}  threads={config.threads}")

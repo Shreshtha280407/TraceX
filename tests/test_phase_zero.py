@@ -30,8 +30,12 @@ class PhaseZeroContractTests(unittest.TestCase):
 
     def test_manifest_is_honest_about_unavailable_official_data(self) -> None:
         data_manifest = json.loads((REPO / "data_manifest.json").read_text(encoding="utf-8"))
-        pending = next(item for item in data_manifest["sources"] if item["source_id"] == "src-sih-ps-linked-material")
-        self.assertEqual("public_minimum_field_list_reviewed_dataset_bytes_pending", pending["status"])
+        official = next(item for item in data_manifest["sources"] if item["source_id"] == "src-sih-ps-linked-material")
+        # The PS document itself was reviewed: it publishes no dataset (synthetic data is expected),
+        # so no official bytes or labels may be claimed.
+        self.assertEqual("reviewed_no_official_dataset_published", official["status"])
+        self.assertIn("Dataset Link: Nil", official["dataset_statement"])
+        self.assertNotIn("sha256", official)
         synthetic = next(item for item in data_manifest["sources"] if item["source_id"] == "src-demo-100k-config")
         self.assertEqual(hashlib.sha256((FIXTURE / "fixture_config.json").read_bytes()).hexdigest(), synthetic["sha256"])
 

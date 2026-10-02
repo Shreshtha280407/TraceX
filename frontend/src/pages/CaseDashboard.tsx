@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ML_RULE_VERSION, type CaseDetail, type FindingsSummary } from "../lib/api";
+import { api, ML_RULE_PREFIX, type CaseDetail, type FindingsSummary } from "../lib/api";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -97,7 +97,7 @@ export function CaseDashboard() {
         <StatTile
           label="Model status"
           value={findings === null ? "—" : mlEnabled ? "Active" : "No ML findings yet"}
-          sub={mlEnabled ? "anomaly-stack-v1" : "unsupervised layer runs automatically on ingest"}
+          sub={mlEnabled ? "anomaly-stack-v2" : "unsupervised layer runs automatically on ingest"}
         />
       </div>
 
@@ -113,7 +113,7 @@ export function CaseDashboard() {
               {pendingReview.slice(0, 10).map((item) => (
                 <li key={item.finding_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Badge tone={item.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>{item.finding_type}</Badge>
+                    <Badge tone={item.rule_version.startsWith(ML_RULE_PREFIX) ? "ml" : "deterministic"}>{item.finding_type}</Badge>
                     <span className="mono-id">{item.entity_ref}</span>
                     <span className="coverage-note">
                       window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}

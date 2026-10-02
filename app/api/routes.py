@@ -22,18 +22,18 @@ from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
 from app.engine.chat import ChatTurn, ChatUnavailable, build_finding_context
 from app.engine.chat import ask as ask_chat
+from app.engine.confidence import confidence_for
 from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphNodeNotFound, GraphQueryError, query_flow, query_neighbourhood
 from app.events import append_event, event_envelope
 from app.jobs.service import create_or_reuse_job, job_view
-from app.ml_release_constants import ML_RULE_VERSION
+from app.ml_release_constants import ML_RULE_PREFIX
 from app.models import (
     AuditRecord,
     Case,
     CaseEvent,
     CaseMembership,
     EvidenceSource,
-    FeatureRecord,
     FindingRecord,
     GraphSnapshot,
     ImportJob,
@@ -436,7 +436,40 @@ def get_graph_flow(
     )
     for item in drawn:
         item["open_finding_count"] = int(flagged.get(item["id"], 0))
+    _annotate_wallets(session, case_id, graph.snapshot_id, drawn)
     return flow
+
+
+def _annotate_wallets(session: Session, case_id: str, snapshot_id: str, drawn: list[dict]) -> None:
+    """Entity cluster and propagated risk for every drawn address, when the
+    case's analytics snapshot covers this graph snapshot."""
+    from app.api.analytics_routes import risk_lookup
+    from app.engine import analytics
+
+    record = analytics.latest_analytics(session, case_id, snapshot_id)
+    addresses = [item["id"].removeprefix("address:") for item in drawn if item["id"].startswith("address:")]
+    if record is None or not addresses:
+        return
+    cursor = analytics.cursor_for(settings.evidence_root, record)
+    try:
+        entities = analytics.wallet_for_addresses(cursor, addresses)
+        entity_ids = sorted(set(entities.values()))
+        placeholders = ",".join("?" for _ in entity_ids)
+        sizes = dict(cursor.execute(
+            f"SELECT entity_id, address_count FROM entities WHERE entity_id IN ({placeholders})", entity_ids
+        ).fetchall()) if entity_ids else {}
+    finally:
+        cursor.close()
+    risk = risk_lookup(session, case_id, snapshot_id)
+    for item in drawn:
+        if not item["id"].startswith("address:"):
+            continue
+        address = item["id"].removeprefix("address:")
+        entity = entities.get(address)
+        item["entity_id"] = entity
+        item["entity_address_count"] = sizes.get(entity) if entity else None
+        score = risk.get(entity or address)
+        item["risk"] = score["risk"] if score else None
 
 
 @router.post("/cases/{case_id}/synthetic-review-seeds", status_code=status.HTTP_201_CREATED)
@@ -506,6 +539,7 @@ def finding_view(finding: FindingRecord) -> dict:
         "claim": finding.claim,
         "raw_score": finding.raw_score,
         "score": finding.raw_score,
+        "confidence": confidence_for(finding.rule_id, finding.rule_version, finding.raw_score, finding.feature_vector),
         "rank": finding.rank,
         "coverage": finding.coverage,
         "uncertainty": detector.get("uncertainty", {"scope": "See coverage and source evidence."}),
@@ -596,12 +630,12 @@ def list_findings(
     # "always deterministic-v1, ml_enabled always False" was simply wrong the
     # moment an ML finding existed. `methods` lists every rule_version present.
     #
-    # `ML_RULE_VERSION` comes from `app.ml_release_constants`, not `app.ml.findings`:
+    # `ML_RULE_PREFIX` comes from `app.ml_release_constants`, not `app.ml.findings`:
     # that package's `__init__.py` imports numpy/scikit-learn at module load, and
     # this route must keep working -- cases, deterministic findings, everything --
     # on a deployment that never installed the optional `ml` extra.
     methods = sorted({record.rule_version for record in records})
-    ml_present = any(record.rule_version == ML_RULE_VERSION for record in records)
+    ml_present = any(record.rule_version.startswith(ML_RULE_PREFIX) for record in records)
     # Real totals, not the length of this page. Callers were treating `limit`
     # (200) or a client-side slice as if it were the number of findings, which
     # misreported the review workload by orders of magnitude.
@@ -664,7 +698,7 @@ def finding_evidence(
             "graph_snapshot_id": finding.graph_snapshot_id,
             "rule_id": finding.rule_id,
             "rule_version": finding.rule_version,
-            "ml_enabled": finding.rule_version == ML_RULE_VERSION,
+            "ml_enabled": finding.rule_version.startswith(ML_RULE_PREFIX),
             "release_id": (finding.coverage or {}).get("release_id"),
             "model_run_id": (finding.coverage or {}).get("model_run_id"),
         },
@@ -709,7 +743,9 @@ def finding_path_signals(
         "entity_risk": entity_risk,
         "entity_risk_matches": sorted(matches),
         "entity_risk_path_node_count": len(path_nodes),
-        "confidence": finding.raw_score,
+        "confidence": confidence_for(
+            finding.rule_id, finding.rule_version, finding.raw_score, finding.feature_vector
+        )["value"],
     }
 
 
@@ -760,7 +796,7 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
     # versions actually produced these rows, never a hardcoded label. A case can
     # hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix.
     methods = sorted({finding.rule_version for finding in findings})
-    ml_present = any(finding.rule_version == ML_RULE_VERSION for finding in findings)
+    ml_present = any(finding.rule_version.startswith(ML_RULE_PREFIX) for finding in findings)
     # Review/audit history is batched into two queries grouped by finding_id.
     # Calling the per-finding helpers inside the comprehension below issued two
     # round-trips per finding -- on a case with a few thousand findings that is
@@ -815,30 +851,63 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
 def export_features(
     case_id: str,
     snapshot_id: str | None = Query(default=None, min_length=1, max_length=128),
+    limit: int | None = Query(default=None, ge=1, le=100_000),
+    offset: int = Query(default=0, ge=0),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
-) -> dict:
-    """Export every persisted address-plus-time-window feature row for Phase 5A handoff."""
+):
+    """Export persisted address-plus-time-window feature rows for Phase 5A handoff.
+
+    Without `limit`, every row is streamed as one JSON document (a large case can
+    hold tens of millions); with `limit`/`offset`, one page plus the real total.
+    The same rows are available as the snapshot's Parquet file from
+    `/features/export.parquet`.
+    """
     require_case_member(case_id, user, session)
-    statement = select(FeatureRecord).where(FeatureRecord.case_id == case_id)
-    if snapshot_id:
-        statement = statement.where(FeatureRecord.snapshot_id == snapshot_id)
-    rows = list(session.scalars(statement.order_by(FeatureRecord.snapshot_id, FeatureRecord.window_start, FeatureRecord.entity_ref)))
-    return {
-        "case_id": case_id,
-        "snapshot_id": snapshot_id,
-        "feature_schema_version": "phase4.1-feature-v1",
-        "ml_enabled": False,
-        "rows": [
-            {
-                "feature_row_id": row.id, "entity_ref": row.entity_ref, "snapshot_id": row.snapshot_id,
-                "graph_snapshot_id": row.graph_snapshot_id, "window_start": row.window_start.isoformat(),
-                "window_end": row.window_end.isoformat(), "coverage": row.coverage, "source_refs": row.source_refs,
-                "features": row.feature_vector,
-            }
-            for row in rows
-        ],
+    from app.engine.feature_store import feature_count, iter_feature_rows
+
+    total = feature_count(session, case_id=case_id, snapshot_id=snapshot_id)
+    header = {
+        "case_id": case_id, "snapshot_id": snapshot_id, "feature_schema_version": "phase4.1-feature-v1",
+        "ml_enabled": False, "total": total,
     }
+    rows = iter_feature_rows(session, settings.evidence_root, case_id=case_id, snapshot_id=snapshot_id,
+                             offset=offset, limit=limit)
+    if limit is not None:
+        return {**header, "limit": limit, "offset": offset, "rows": list(rows)}
+
+    def document():
+        opening = json.dumps(header)
+        yield opening[:-1] + ', "rows": ['
+        first = True
+        for row in rows:
+            yield ("" if first else ",") + json.dumps(row)
+            first = False
+        yield "]}"
+
+    return StreamingResponse(document(), media_type="application/json")
+
+
+@router.get("/cases/{case_id}/features/export.parquet")
+def export_features_parquet(
+    case_id: str,
+    snapshot_id: str = Query(min_length=1, max_length=128),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    """The snapshot's feature store file itself (zstd Parquet)."""
+    require_case_member(case_id, user, session)
+    from fastapi.responses import FileResponse
+
+    from app.engine.feature_store import store_path
+
+    snapshot = session.get(Snapshot, snapshot_id)
+    if snapshot is None or snapshot.case_id != case_id:
+        raise HTTPException(status_code=404, detail="Snapshot not found in this case")
+    path = store_path(session, settings.evidence_root, snapshot_id)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="This snapshot has no Parquet feature store")
+    return FileResponse(path, media_type="application/vnd.apache.parquet", filename=f"features-{snapshot_id}.parquet")
 
 
 @router.post("/findings/{finding_id}/reviews", status_code=status.HTTP_201_CREATED)

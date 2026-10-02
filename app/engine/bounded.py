@@ -25,12 +25,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import uuid
 from collections import defaultdict
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Self
 
 import duckdb
@@ -39,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import bulk_insert_serialized
+from app.engine.feature_store import has_features
 from app.engine.findings import deterministic as det
 from app.engine.graph.builder import (
     EDGES_TABLE_SQL,
@@ -56,7 +59,8 @@ from app.engine.motifs.deterministic import (
     build_peeling_signal,
     detect_coinjoin_like_transactions,
 )
-from app.models import FeatureRecord, FindingRecord, FragmentReceipt, GraphSnapshot, Snapshot, SyntheticReviewSeed
+from app.engine.process_pool import ProcessPool
+from app.models import FindingRecord, FragmentReceipt, GraphSnapshot, Snapshot, SyntheticReviewSeed
 from app.resources import ResourcePlan, current_plan
 
 logger = logging.getLogger(__name__)
@@ -67,6 +71,8 @@ _FETCH_ROWS = 20_000
 #: Peeling chains / coinjoin candidates whose signals are built per chunk,
 #: at most; scaled down with the memory budget (see _chain_chunk()).
 _CHAIN_CHUNK = 4_000
+#: Smallest peeling chunk handed to a worker process.
+_MIN_PARALLEL_CHUNK = 250
 _KINDS = ("transactions", "inputs", "outputs", "network_observations")
 
 
@@ -130,14 +136,49 @@ class FactStore:
         # Every read whose order matters says ORDER BY; not tracking insertion
         # order lets DuckDB stream and spill large results in less memory.
         config["preserve_insertion_order"] = False
-        self.con = duckdb.connect(str(work_dir / "facts.duckdb"), config=config)
+        self._config = config
+        self.path = work_dir / "facts.duckdb"
+        self.con = duckdb.connect(str(self.path), config=config)
+        self._owned = True
+
+    @classmethod
+    def attach(cls, path: Path, *, memory_limit_mb: int, plan: ResourcePlan, tables: tuple[str, ...]) -> FactStore:
+        """A worker's read-only view of a staged store (see _address_partitions_parallel).
+
+        The staged `tables` are reached through views over the attached file,
+        so any number of worker processes can read it at once; everything the
+        worker creates (`with_keys` tables, its outputs) goes to its own
+        in-memory database."""
+        store = cls.__new__(cls)
+        store.work_dir = path.parent
+        store.plan = plan
+        store.path = path
+        store._owned = False
+        store._config = {
+            "memory_limit": f"{memory_limit_mb}MB", "threads": 1, "preserve_insertion_order": False,
+            "temp_directory": str(path.parent / "spill"),
+        }
+        store.con = duckdb.connect(":memory:", config=store._config)
+        store.con.execute(f"ATTACH {_quote(path)} AS facts (READ_ONLY)")
+        for table in tables:
+            store.con.execute(f'CREATE VIEW "{table}" AS SELECT * FROM facts."{table}"')
+        return store
+
+    def suspend(self) -> None:
+        """Checkpoint and release the file so worker processes can attach it."""
+        self.con.execute("CHECKPOINT")
+        self.con.close()
+
+    def resume(self) -> None:
+        self.con = duckdb.connect(str(self.path), config=self._config)
 
     # ---- lifecycle ---------------------------------------------------------
     def close(self) -> None:
         try:
             self.con.close()
         finally:
-            shutil.rmtree(self.work_dir, ignore_errors=True)
+            if self._owned:
+                shutil.rmtree(self.work_dir, ignore_errors=True)
 
     def __enter__(self) -> Self:
         return self
@@ -260,28 +301,96 @@ class FactStore:
 
     # ---- ML -----------------------------------------------------------------
     def ml_facts(self):
-        from app.ml.facts import facts_from_streams
+        """The anomaly stack's integer-indexed arrays, built in DuckDB.
 
-        def transactions() -> Iterator[dict]:
-            for txid, block_time, source_timestamp, fee in self.rows(
-                "SELECT txid, block_time, source_timestamp, fee_sats FROM tx ORDER BY seq"
-            ):
-                yield {"txid": txid, "block_time": block_time, "source_timestamp": source_timestamp, "fee_sats": fee}
+        Exactly what `app.ml.facts.facts_from_streams` builds from the same
+        facts -- transactions ordered by (epoch second, txid); addresses and
+        script types numbered by first appearance among outputs in commit
+        order; an input's prevout resolved to its output position; the last
+        spender (in commit order) of an output recorded as its spender -- but
+        set-wise, so no per-row Python objects are created for millions of
+        outputs. Asserted equal by tests on both execution paths.
+        """
+        import numpy as np
 
-        def outputs() -> Iterator[dict]:
-            for txid, vout, amount, address, script_id, script_type in self.rows(
-                "SELECT txid, vout, amount, address, script_id, script_type FROM outputs ORDER BY seq"
-            ):
-                yield {
-                    "txid": txid, "vout": vout, "amount_sats": amount,
-                    "address": address, "script_id": script_id, "script_type": script_type,
-                }
+        from app.ml.facts import Facts
 
-        def inputs() -> Iterator[dict]:
-            for txid, prev_txid, prev_vout in self.rows("SELECT txid, prev_txid, prev_vout FROM inputs ORDER BY seq"):
-                yield {"txid": txid, "prev_txid": prev_txid, "prev_vout": prev_vout}
+        con = self.con
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ml_tx AS
+            SELECT (row_number() OVER (ORDER BY tt.us // 1000000, t.txid) - 1)::INTEGER AS slot,
+                   t.txid, tt.us // 1000000 AS t, COALESCE(t.fee_sats, 0) AS fee
+            FROM tx t JOIN tx_time tt USING (txid) WHERE tt.us IS NOT NULL
+            """
+        )
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ml_out AS
+            WITH base AS (
+                SELECT o.seq, m.slot AS tx, o.vout, o.amount, o.addr_key, COALESCE(o.script_type, '') AS script,
+                       (row_number() OVER (ORDER BY o.seq) - 1)::INTEGER AS pos
+                FROM outputs o JOIN ml_tx m USING (txid)),
+                 addr_first AS (SELECT addr_key, min(pos) AS first FROM base WHERE addr_key IS NOT NULL GROUP BY 1),
+                 addr_slot AS (SELECT addr_key, (row_number() OVER (ORDER BY first) - 1)::INTEGER AS slot
+                               FROM addr_first),
+                 script_first AS (SELECT script, min(pos) AS first FROM base GROUP BY 1),
+                 script_slot AS (SELECT script, (row_number() OVER (ORDER BY first) - 1)::INTEGER AS slot
+                                 FROM script_first)
+            SELECT b.pos, b.tx, b.vout, b.amount, b.addr_key, COALESCE(a.slot, -1) AS addr, s.slot AS script
+            FROM base b LEFT JOIN addr_slot a USING (addr_key) JOIN script_slot s USING (script)
+            """
+        )
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE ml_in AS
+            WITH resolved AS (
+                SELECT i.seq, m.slot AS tx, p.slot AS prev_tx, i.prev_vout
+                FROM inputs i JOIN ml_tx m USING (txid) LEFT JOIN ml_tx p ON p.txid = i.prev_txid)
+            -- Equality-only join (a NULL prev_vout simply finds no output), so
+            -- DuckDB uses a hash join rather than a nested loop.
+            SELECT r.seq, r.tx, COALESCE(o.pos, -1) AS prev
+            FROM resolved r LEFT JOIN ml_out o ON o.tx = r.prev_tx AND o.vout = r.prev_vout
+            """
+        )
 
-        return facts_from_streams(transactions(), outputs(), inputs())
+        def arrays(sql: str) -> list:
+            table = con.execute(sql).to_arrow_reader(1 << 20).read_all()
+            return [column.to_numpy(zero_copy_only=False) for column in table.columns]
+
+        tx_table = con.execute("SELECT txid FROM ml_tx ORDER BY slot").to_arrow_reader(1 << 20).read_all()
+        txids = tx_table.column(0).to_pylist()
+        del tx_table
+        tx_time, tx_fee = arrays("SELECT t, fee FROM ml_tx ORDER BY slot")
+        out_tx, out_vout, out_value, out_addr, out_script = arrays(
+            "SELECT tx, vout, amount, addr, script FROM ml_out ORDER BY pos"
+        )
+        in_tx, in_prev = arrays("SELECT tx, prev FROM ml_in ORDER BY seq")
+        spent_by = np.full(out_tx.shape[0], -1, dtype=np.int32)
+        spender_pos, spender_tx = arrays("SELECT prev, arg_max(tx, seq) FROM ml_in WHERE prev >= 0 GROUP BY prev")
+        spent_by[spender_pos.astype(np.int64)] = spender_tx
+        address_table = con.execute(
+            "SELECT addr_key FROM (SELECT DISTINCT addr, addr_key FROM ml_out WHERE addr >= 0) ORDER BY addr"
+        ).to_arrow_reader(1 << 20).read_all()
+        addresses = address_table.column(0).to_pylist()
+        del address_table
+        for table in ("ml_tx", "ml_out", "ml_in"):
+            con.execute(f"DROP TABLE {table}")
+        return Facts(
+            txids=txids, tx_index={txid: slot for slot, txid in enumerate(txids)},
+            tx_time=tx_time.astype(np.int64), tx_fee=tx_fee.astype(np.int64),
+            out_tx=out_tx.astype(np.int32), out_vout=out_vout.astype(np.int32),
+            out_value=out_value.astype(np.int64), out_addr=out_addr.astype(np.int32),
+            out_script=out_script.astype(np.int8), out_spent_by=spent_by,
+            in_tx=in_tx.astype(np.int32), in_prev=in_prev.astype(np.int32),
+            addresses=addresses, addr_index={address: slot for slot, address in enumerate(addresses)},
+        )
+
+    def network_observations(self) -> Iterator[dict]:
+        for txid, src_ip, asn, country in self.rows(
+            "SELECT j ->> '$.txid', j ->> '$.src_ip', j ->> '$.asn', j ->> '$.geo_country' FROM observations ORDER BY seq"
+        ):
+            yield {"txid": txid, "src_ip": src_ip, "asn": asn, "geo_country": country}
 
     def source_refs_by_txid(self, txids: list[str]) -> dict[str, list[dict]]:
         from app.ml.findings import _source_refs_by_txid
@@ -639,7 +748,7 @@ def materialize_findings_bounded(
     session: Session, *, store: FactStore, evidence_root: Path, snapshot: Snapshot, graph: GraphSnapshot
 ) -> int:
     """`materialize_findings` with only one chunk/partition of the snapshot resident."""
-    if session.scalar(select(FeatureRecord.id).where(FeatureRecord.snapshot_id == snapshot.id).limit(1)):
+    if has_features(session, snapshot.id):
         return 0
     if session.scalar(select(SyntheticReviewSeed.id).where(SyntheticReviewSeed.snapshot_id == snapshot.id).limit(1)):
         # Seeds are added only to completed snapshots, so an import never has
@@ -650,83 +759,49 @@ def materialize_findings_bounded(
             session, evidence_root=evidence_root, snapshot=snapshot, graph=graph,
             records=load_facts(session, evidence_root, snapshot.id),
         )
-    con, plan = store.con, store.plan
+    plan = store.plan
+    # Worker pools release and reopen the store's connection: always use store.con.
     string, integer = pa.string(), pa.int64()
-    con.execute("CREATE TABLE contrib (ord BIGINT, addr VARCHAR, us BIGINT, out_seq BIGINT, summary VARCHAR)")
-    con.execute("CREATE TABLE det (ord BIGINT, key_addr VARCHAR, key_seconds BIGINT, key_us BIGINT, signal VARCHAR)")
+    store.con.execute(_CONTRIB_DDL)
+    store.con.execute(_DET_DDL)
+    workers = _partition_workers(plan, store.record_count)
+    chain_chunk = _chain_chunk(plan)
 
     # ---- peeling: walks in SQL, signals per chunk of whole clusters ---------
     walks = _peeling(store, DEFAULT_MAX_PEELING_HOPS, DEFAULT_MIN_PEELING_LENGTH)
     clusters = _chain_clusters(store, walks)
-    pattern_ord = 0
-    chunk: list[list[int]] = []
-
-    def run_chunk(cluster_chunk: list[list[int]]) -> None:
-        nonlocal pattern_ord
-        indices = sorted(index for cluster in cluster_chunk for index in cluster)
-        spend_txids = sorted({txid for index in indices for txid, _ in walks[index][1]})
-        outputs_by_tx, outputs_by_seq = _facts_by_tx(store, "outputs", spend_txids)
-        inputs_by_tx, _ = _facts_by_tx(store, "inputs", spend_txids)
-        transactions_by_tx, _ = _facts_by_tx(store, "tx", spend_txids)
-        transactions = {txid: facts[-1] for txid, facts in transactions_by_tx.items()}
-        starts = sorted({walks[index][0] for index in indices})
-        store.with_keys("starts", {"txid": pa.array([t for t, _ in starts], pa.string()), "vout": pa.array([v for _, v in starts], pa.int64())})
-        start_facts = {
-            (fact["txid"], fact["vout"]): (seq, fact)
-            for seq, fact in ((seq, json.loads(raw)) for seq, raw in store.rows(
-                "SELECT o.seq, o.j FROM outputs o SEMI JOIN starts s ON s.txid = o.txid AND s.vout = o.vout ORDER BY o.seq"
-            ))
-        }
-        outputs_by_outpoint = {(fact["txid"], fact["vout"]): fact for facts in outputs_by_tx.values() for fact in facts}
-        for outpoint, (_, fact) in start_facts.items():
-            outputs_by_outpoint.setdefault(outpoint, fact)
-        seq_of = {(fact["txid"], fact["vout"]): seq for seq, fact in outputs_by_seq.items()}
-        for outpoint, (seq, _) in start_facts.items():
-            seq_of.setdefault(outpoint, seq)
-        store.with_keys("chunk_tx", {"txid": pa.array(spend_txids, pa.string())})
-        spent = {(txid, vout) for txid, vout in store.rows("SELECT s.txid, s.vout FROM sp s SEMI JOIN chunk_tx c ON c.txid = s.txid")}
-        tx_times = _times(store, spend_txids)
-        signals: list[dict[str, Any]] = []
-        contrib_rows: list[tuple] = []
-        for index in indices:
-            start, hops = walks[index]
-            walk = []
-            outpoint = start
-            for spend_txid, cont_vout in hops:
-                continuation = outputs_by_outpoint[(spend_txid, cont_vout)] if cont_vout is not None else None
-                walk.append((outpoint, spend_txid, continuation))
-                outpoint = (spend_txid, cont_vout)
-            signal = build_peeling_signal(
-                start, walk, outputs_by_outpoint=outputs_by_outpoint, outputs_by_tx=outputs_by_tx,
-                inputs_by_tx=inputs_by_tx, spenders=spent, transactions=transactions, tx_times=tx_times,
-            )
-            signals.append(signal)
-            origin = outputs_by_outpoint[start]
-            locked = origin.get("address") or origin.get("script_id")
-            observed = tx_times.get(signal["transaction_ids"][0])
-            if locked and observed:
-                contrib_rows.append((index, str(locked), _to_micros(observed), seq_of[start], json.dumps(det.signal_summary(signal))))
-        _store_rows(store, "contrib", contrib_rows, _CONTRIB_COLUMNS, (integer, string, integer, integer, string))
-        det_rows = []
-        for pattern in det._group_peeling_patterns(signals, tx_times):
-            key = det.peeling_detector_key(pattern, tx_times)
-            det_rows.append((pattern_ord, *(_key_columns(key)), json.dumps(pattern)))
-            pattern_ord += 1
-        _store_rows(store, "det", det_rows, _DET_COLUMNS, (integer, string, integer, integer, string))
-
-    chain_chunk = _chain_chunk(plan)
-    pending = 0
+    # Smaller chunks when they are spread over workers, so all of them get work.
+    per_chunk = chain_chunk if workers == 1 else max(_MIN_PARALLEL_CHUNK, min(chain_chunk, -(-len(walks) // (4 * workers))))
+    chunks: list[list[tuple[int, Any]]] = []
+    chunk: list[int] = []
     for cluster in clusters:
-        chunk.append(cluster)
-        pending += len(cluster)
-        if pending >= chain_chunk:
-            run_chunk(chunk)
-            chunk, pending = [], 0
-            _release_freed_memory()
+        chunk.extend(cluster)
+        if len(chunk) >= per_chunk:
+            chunks.append([(index, walks[index]) for index in sorted(chunk)])
+            chunk = []
     if chunk:
-        run_chunk(chunk)
+        chunks.append([(index, walks[index]) for index in sorted(chunk)])
     walks.clear()
     clusters.clear()
+    pattern_ord = 0
+    if workers > 1 and len(chunks) > 1:
+        results = _parallel_map(
+            store, _peeling_job, [_job(store, workers, walks=chunk) for chunk in chunks], workers,
+        )
+        for result in results:
+            store.con.execute(f"INSERT INTO contrib SELECT * FROM read_parquet({_quote(Path(result['contrib']))})")
+            store.con.execute(
+                "INSERT INTO det SELECT ord + ?, key_addr, key_seconds, key_us, signal "
+                f"FROM read_parquet({_quote(Path(result['det']))})",
+                [pattern_ord],
+            )
+            pattern_ord += result["count"]
+        _remove_job_files(results)
+    else:
+        for chunk in chunks:
+            pattern_ord += _peeling_chunk(store, chunk, pattern_base=pattern_ord)
+            _release_freed_memory()
+    chunks.clear()
 
     # ---- coinjoin-like: per transaction, prefiltered in SQL ------------------
     candidates = [txid for (txid,) in store.rows(
@@ -772,59 +847,72 @@ def materialize_findings_bounded(
     # ---- address-window features, one partition of addresses at a time -----
     coverage = det.coverage_from_counts(graph, total=store.transactions_total, timed=store.timed, block_timed=store.block_timed)
     coverage_json = json.dumps(coverage)
-    writer = det.FeatureRowWriter(session, snapshot=snapshot, graph=graph, coverage_json=coverage_json, chunk_rows=plan.insert_chunk_rows)
-    con.execute(
+    writer = det.FeatureRowWriter(
+        session, snapshot=snapshot, graph=graph, coverage_json=coverage_json, chunk_rows=plan.insert_chunk_rows,
+        evidence_root=evidence_root,
+    )
+    store.con.execute(
         "CREATE TABLE needed AS SELECT DISTINCT key_addr AS addr, key_seconds AS seconds, key_us AS us "
         "FROM det WHERE key_addr IS NOT NULL"
     )
-    con.execute("CREATE TABLE kept (addr VARCHAR, seconds BIGINT, us BIGINT, feature VARCHAR)")
-    con.execute(
-        "CREATE TABLE cand (score DOUBLE, rule_id VARCHAR, entity_ref VARCHAR, start_us BIGINT, end_us BIGINT, pos BIGINT, row VARCHAR)"
-    )
+    store.con.execute(_KEPT_DDL)
+    store.con.execute(_CAND_DDL)
     partitions = plan.partitions(records=store.record_count)
+    workers = _partition_workers(plan, store.record_count)
     opposing_json = det.opposing_evidence_json()
     position = 0
-    for partition in range(partitions):
-        position = _address_partition(
-            store, partition=partition, partitions=partitions, writer=writer, snapshot=snapshot, graph=graph,
-            coverage_json=coverage_json, opposing_json=opposing_json, position=position,
-        )
-        _release_freed_memory()
-    writer.flush()
+    try:
+        if workers > 1:
+            # Same partition function, each of `workers` processes holding one
+            # partition of 1/workers the size, so the budget still holds.
+            _address_partitions_parallel(
+                store, partitions=partitions * workers, workers=workers, writer=writer, snapshot=snapshot, graph=graph,
+                evidence_root=evidence_root, coverage_json=coverage_json, opposing_json=opposing_json,
+            )
+        else:
+            for partition in range(partitions):
+                position = _address_partition(
+                    store, partition=partition, partitions=partitions, writer=writer, snapshot=snapshot, graph=graph,
+                    coverage_json=coverage_json, opposing_json=opposing_json, position=position,
+                )
+                _release_freed_memory()
+        writer.publish()
+    except BaseException:
+        writer.abort()
+        raise
 
     # ---- detector findings, borrowing their window's feature vector ---------
+    # Ordinals are dense (patterns 0..n, coinjoin from contrib_base), so the
+    # wide signal payloads are read a slice at a time and never sorted by
+    # DuckDB as one result, which would need them all in its memory.
+    slices = [
+        (low, min(low + chain_chunk, first + count) - 1)
+        for first, count in ((0, pattern_ord), (contrib_base, coinjoin_ord))
+        for low in range(first, first + count, chain_chunk)
+    ]
     detector_position = 1 << 50
-    def detector_slices() -> Iterator[dict[str, list]]:
-        # Ordinals are dense (patterns 0..n, coinjoin from contrib_base), so the
-        # wide signal payloads are read a slice at a time and never sorted by
-        # DuckDB as one result, which would need them all in its memory.
-        for first, count in ((0, pattern_ord), (contrib_base, coinjoin_ord)):
-            for low in range(first, first + count, chain_chunk):
-                rows = sorted(
-                    store.rows(
-                        "SELECT d.ord, d.key_addr, d.key_seconds, d.key_us, d.signal, k.feature FROM det d "
-                        "LEFT JOIN kept k ON k.addr = d.key_addr AND k.seconds = d.key_seconds AND k.us = d.key_us "
-                        "WHERE d.ord BETWEEN ? AND ?",
-                        [low, min(low + chain_chunk, first + count) - 1],
-                    ),
-                    key=lambda row: row[0],
-                )
-                yield {name: [row[index] for row in rows] for index, name in enumerate(
-                    ("ord", "key_addr", "key_seconds", "key_us", "signal", "feature")
-                )}
-
-    for batch in detector_slices():
-        signals = [json.loads(raw) for raw in batch["signal"]]
-        times = _times(store, [s["transaction_ids"][0] if s["finding_type"] == "peeling_chain_candidate" else s["transaction_id"] for s in signals])
-        rows = []
-        for signal, addr, seconds, us, feature in zip(signals, batch["key_addr"], batch["key_seconds"], batch["key_us"], batch["feature"], strict=True):
-            key = (addr, seconds, _to_datetime(us)) if addr is not None else None
-            candidate = det.detector_candidate(signal, key, json.loads(feature) if feature else None, times, coverage)
-            rows.append(_candidate_row(candidate, detector_position, snapshot, graph, coverage_json, opposing_json))
-            detector_position += 1
-        _store_rows(store, "cand", rows, ("score", "rule_id", "entity_ref", "start_us", "end_us", "pos", "row"),
-                    (pa.float64(), string, string, integer, integer, integer, string))
-        _release_freed_memory()
+    if workers > 1 and len(slices) > 1:
+        jobs = [
+            _job(store, workers, low=low, high=high, coverage=coverage, snapshot_id=snapshot.id, case_id=snapshot.case_id,
+                 graph_id=graph.id, coverage_json=coverage_json, opposing_json=opposing_json)
+            for low, high in slices
+        ]
+        results = _parallel_map(store, _detector_job, jobs, workers)
+        for result in results:
+            store.con.execute(
+                "INSERT INTO cand SELECT score, rule_id, entity_ref, start_us, end_us, pos + ?, row "
+                f"FROM read_parquet({_quote(Path(result['cand']))})",
+                [detector_position],
+            )
+            detector_position += result["count"]
+        _remove_job_files(results)
+    else:
+        for low, high in slices:
+            detector_position += _detector_slice(
+                store, low, high, position=detector_position, coverage=coverage, snapshot=snapshot, graph=graph,
+                coverage_json=coverage_json, opposing_json=opposing_json,
+            )
+            _release_freed_memory()
 
     # ---- de-duplicate, rank and write (same order as dedupe_and_rank) -------
     total = 0
@@ -833,7 +921,7 @@ def materialize_findings_bounded(
     # Rank on the narrow key columns only (window functions over the wide
     # row payloads would need it all in memory), then stream the payloads in
     # rank order through a join and an external sort.
-    con.execute(
+    store.con.execute(
         """
         CREATE TABLE ranked AS
         SELECT pos, row_number() OVER (ORDER BY score DESC, rule_id, entity_ref, first_pos) AS rank FROM (
@@ -846,7 +934,7 @@ def materialize_findings_bounded(
     )
     # Payloads are fetched a rank slice at a time and ordered here: sorting
     # the wide rows inside DuckDB would pin far more than its memory limit.
-    ranked_total = con.execute("SELECT count(*) FROM ranked").fetchone()[0]
+    ranked_total = store.con.execute("SELECT count(*) FROM ranked").fetchone()[0]
     for low in range(1, ranked_total + 1, plan.insert_chunk_rows):
         high = low + plan.insert_chunk_rows - 1
         by_rank = {
@@ -887,6 +975,256 @@ def _candidate_row(candidate, pos, snapshot, graph, coverage_json, opposing_json
         candidate["score"], candidate["rule_id"], candidate["entity_ref"],
         row["window_start_us"], row["window_end_us"], pos, json.dumps(row),
     )
+
+
+_CONTRIB_DDL = "CREATE TABLE contrib (ord BIGINT, addr VARCHAR, us BIGINT, out_seq BIGINT, summary VARCHAR)"
+_DET_DDL = "CREATE TABLE det (ord BIGINT, key_addr VARCHAR, key_seconds BIGINT, key_us BIGINT, signal VARCHAR)"
+
+
+def _peeling_chunk(store: FactStore, walks: list[tuple[int, Any]], *, pattern_base: int) -> int:
+    """Signals for one chunk of whole chain clusters ([(walk index, walk)]):
+    their window contributions go to `contrib`, their merged patterns to `det`
+    numbered from `pattern_base`. Returns the number of patterns."""
+    string, integer = pa.string(), pa.int64()
+    by_index = dict(walks)
+    indices = [index for index, _ in walks]
+    spend_txids = sorted({txid for index in indices for txid, _ in by_index[index][1]})
+    outputs_by_tx, outputs_by_seq = _facts_by_tx(store, "outputs", spend_txids)
+    inputs_by_tx, _ = _facts_by_tx(store, "inputs", spend_txids)
+    transactions_by_tx, _ = _facts_by_tx(store, "tx", spend_txids)
+    transactions = {txid: facts[-1] for txid, facts in transactions_by_tx.items()}
+    starts = sorted({by_index[index][0] for index in indices})
+    store.with_keys("starts", {"txid": pa.array([t for t, _ in starts], pa.string()), "vout": pa.array([v for _, v in starts], pa.int64())})
+    start_facts = {
+        (fact["txid"], fact["vout"]): (seq, fact)
+        for seq, fact in ((seq, json.loads(raw)) for seq, raw in store.rows(
+            "SELECT o.seq, o.j FROM outputs o SEMI JOIN starts s ON s.txid = o.txid AND s.vout = o.vout ORDER BY o.seq"
+        ))
+    }
+    outputs_by_outpoint = {(fact["txid"], fact["vout"]): fact for facts in outputs_by_tx.values() for fact in facts}
+    for outpoint, (_, fact) in start_facts.items():
+        outputs_by_outpoint.setdefault(outpoint, fact)
+    seq_of = {(fact["txid"], fact["vout"]): seq for seq, fact in outputs_by_seq.items()}
+    for outpoint, (seq, _) in start_facts.items():
+        seq_of.setdefault(outpoint, seq)
+    store.with_keys("chunk_tx", {"txid": pa.array(spend_txids, pa.string())})
+    spent = {(txid, vout) for txid, vout in store.rows("SELECT s.txid, s.vout FROM sp s SEMI JOIN chunk_tx c ON c.txid = s.txid")}
+    tx_times = _times(store, spend_txids)
+    signals: list[dict[str, Any]] = []
+    contrib_rows: list[tuple] = []
+    for index in indices:
+        start, hops = by_index[index]
+        walk = []
+        outpoint = start
+        for spend_txid, cont_vout in hops:
+            continuation = outputs_by_outpoint[(spend_txid, cont_vout)] if cont_vout is not None else None
+            walk.append((outpoint, spend_txid, continuation))
+            outpoint = (spend_txid, cont_vout)
+        signal = build_peeling_signal(
+            start, walk, outputs_by_outpoint=outputs_by_outpoint, outputs_by_tx=outputs_by_tx,
+            inputs_by_tx=inputs_by_tx, spenders=spent, transactions=transactions, tx_times=tx_times,
+        )
+        signals.append(signal)
+        origin = outputs_by_outpoint[start]
+        locked = origin.get("address") or origin.get("script_id")
+        observed = tx_times.get(signal["transaction_ids"][0])
+        if locked and observed:
+            contrib_rows.append((index, str(locked), _to_micros(observed), seq_of[start], json.dumps(det.signal_summary(signal))))
+    _store_rows(store, "contrib", contrib_rows, _CONTRIB_COLUMNS, (integer, string, integer, integer, string))
+    det_rows = []
+    for ordinal, pattern in enumerate(det._group_peeling_patterns(signals, tx_times), pattern_base):
+        key = det.peeling_detector_key(pattern, tx_times)
+        det_rows.append((ordinal, *(_key_columns(key)), json.dumps(pattern)))
+    _store_rows(store, "det", det_rows, _DET_COLUMNS, (integer, string, integer, integer, string))
+    return len(det_rows)
+
+
+def _detector_slice(
+    store: FactStore, low: int, high: int, *, position: int, coverage: dict, snapshot, graph, coverage_json: str,
+    opposing_json: str,
+) -> int:
+    """Finding candidates for the detector signals with ordinals low..high,
+    each borrowing its window's kept feature vector; positions from `position`."""
+    rows = sorted(
+        store.rows(
+            "SELECT d.ord, d.key_addr, d.key_seconds, d.key_us, d.signal, k.feature FROM det d "
+            "LEFT JOIN kept k ON k.addr = d.key_addr AND k.seconds = d.key_seconds AND k.us = d.key_us "
+            "WHERE d.ord BETWEEN ? AND ?",
+            [low, high],
+        ),
+        key=lambda row: row[0],
+    )
+    signals = [json.loads(row[4]) for row in rows]
+    times = _times(store, [s["transaction_ids"][0] if s["finding_type"] == "peeling_chain_candidate" else s["transaction_id"] for s in signals])
+    candidates = []
+    for signal, (_, addr, seconds, us, _, feature) in zip(signals, rows, strict=True):
+        key = (addr, seconds, _to_datetime(us)) if addr is not None else None
+        candidate = det.detector_candidate(signal, key, json.loads(feature) if feature else None, times, coverage)
+        candidates.append(_candidate_row(candidate, position + len(candidates), snapshot, graph, coverage_json, opposing_json))
+    _store_rows(store, "cand", candidates, ("score", "rule_id", "entity_ref", "start_us", "end_us", "pos", "row"),
+                (pa.float64(), pa.string(), pa.string(), pa.int64(), pa.int64(), pa.int64(), pa.string()))
+    return len(candidates)
+
+
+# --------------------------------------------------------------------------- #
+# Worker processes. Peeling chunks, address partitions and detector slices are
+# independent of one another, so on a machine with cores and memory to spare
+# they run in a pool of processes that each attach the staged store read-only
+# and write their rows to files; the parent merges them in job order with the
+# same ordinals/positions the in-process loops assign, so the stored result is
+# identical however many workers ran.
+# --------------------------------------------------------------------------- #
+
+def _job(store: FactStore, workers: int, **fields: Any) -> dict[str, Any]:
+    out_dir = store.work_dir / "jobs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "db": str(store.path), "plan": store.plan, "out_dir": str(out_dir), "id": uuid.uuid4().hex,
+        "memory_limit_mb": max(128, store.plan.memory_budget_bytes // (4 << 20) // workers), **fields,
+    }
+
+
+def _attach(job: dict[str, Any], tables: tuple[str, ...], local: tuple[str, ...]) -> FactStore:
+    store = FactStore.attach(Path(job["db"]), memory_limit_mb=job["memory_limit_mb"], plan=job["plan"], tables=tables)
+    for ddl in local:
+        store.con.execute(ddl)
+    return store
+
+
+def _export(store: FactStore, job: dict[str, Any], table: str) -> str:
+    path = Path(job["out_dir"]) / f"{table}-{job['id']}.parquet"
+    store.con.execute(f"COPY {table} TO {_quote(path)} (FORMAT parquet)")
+    return str(path)
+
+
+def _parallel_map(store: FactStore, fn, jobs: list[dict[str, Any]], workers: int, on_result=None) -> list[dict[str, Any]]:
+    """fn(job) for every job in `workers` processes, results in job order.
+    The store's file is released meanwhile, so nothing may use `store.con`."""
+    results: list[dict[str, Any]] = []
+    store.suspend()
+    try:
+        with ProcessPool(min(workers, len(jobs))) as pool:
+            for result in pool.imap(f"{__name__}:{fn.__name__}", jobs):
+                if on_result is not None:
+                    on_result(result)
+                results.append(result)
+    except BaseException:
+        _remove_job_files(results)
+        raise
+    finally:
+        store.resume()
+    return results
+
+
+def _remove_job_files(results: list[dict[str, Any]]) -> None:
+    for result in results:
+        for key in ("contrib", "det", "kept", "cand", "features"):
+            if result.get(key):
+                Path(result[key]).unlink(missing_ok=True)
+
+
+def _peeling_job(job: dict[str, Any]) -> dict[str, Any]:
+    store = _attach(job, ("outputs", "inputs", "tx", "sp", "tx_time"), (_CONTRIB_DDL, _DET_DDL))
+    try:
+        count = _peeling_chunk(store, job["walks"], pattern_base=0)
+        return {"count": count, "contrib": _export(store, job, "contrib"), "det": _export(store, job, "det")}
+    finally:
+        store.con.close()
+
+
+def _detector_job(job: dict[str, Any]) -> dict[str, Any]:
+    store = _attach(job, ("det", "kept", "tx_time"), (_CAND_DDL,))
+    try:
+        count = _detector_slice(
+            store, job["low"], job["high"], position=0, coverage=job["coverage"],
+            snapshot=SimpleNamespace(id=job["snapshot_id"], case_id=job["case_id"]), graph=SimpleNamespace(id=job["graph_id"]),
+            coverage_json=job["coverage_json"], opposing_json=job["opposing_json"],
+        )
+        return {"count": count, "cand": _export(store, job, "cand")}
+    finally:
+        store.con.close()
+
+
+#: Snapshots smaller than this run the address partitions in-process: a
+#: worker process costs ~1 s to start, more than such a snapshot saves.
+_PARALLEL_MIN_RECORDS = 50_000
+#: Memory one partition worker may use (its partition, DuckDB and imports).
+_WORKER_BUDGET_BYTES = 1 << 30
+_CAND_DDL = "CREATE TABLE cand (score DOUBLE, rule_id VARCHAR, entity_ref VARCHAR, start_us BIGINT, end_us BIGINT, pos BIGINT, row VARCHAR)"
+_KEPT_DDL = "CREATE TABLE kept (addr VARCHAR, seconds BIGINT, us BIGINT, feature VARCHAR)"
+
+
+def _partition_workers(plan: ResourcePlan, records: int) -> int:
+    """Processes for the address-window pass: one per core the budget can feed
+    (TRACEX_FINDINGS_WORKERS overrides; 1 keeps it in-process)."""
+    override = os.environ.get("TRACEX_FINDINGS_WORKERS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            logger.warning("TRACEX_FINDINGS_WORKERS=%r is not a number; ignoring it", override)
+    if records < _PARALLEL_MIN_RECORDS:
+        return 1
+    return max(1, min(plan.cpu_count, plan.memory_budget_bytes // _WORKER_BUDGET_BYTES))
+
+
+def _partition_job(job: dict[str, Any]) -> dict[str, Any]:
+    """One address partition in a worker process; its outputs go to files."""
+    store = _attach(job, ("outputs", "inputs", "tx_time", "contrib", "needed"), (_KEPT_DDL, _CAND_DDL))
+    snapshot = SimpleNamespace(id=job["snapshot_id"], case_id=job["case_id"])
+    graph = SimpleNamespace(id=job["graph_id"])
+    try:
+        writer = det.FeatureRowWriter(
+            None, snapshot=snapshot, graph=graph, coverage_json=job["coverage_json"], chunk_rows=job["chunk_rows"],
+            evidence_root=job["evidence_root"], part=True,
+        )
+        try:
+            count = _address_partition(
+                store, partition=job["partition"], partitions=job["partitions"], writer=writer, snapshot=snapshot,
+                graph=graph, coverage_json=job["coverage_json"], opposing_json=job["opposing_json"], position=0,
+            )
+            features, feature_rows, schema_version = writer.close_part()
+        except BaseException:
+            writer.abort()
+            raise
+        return {
+            "count": count, "features": str(features), "feature_rows": feature_rows, "schema_version": schema_version,
+            "kept": _export(store, job, "kept"), "cand": _export(store, job, "cand"),
+        }
+    finally:
+        store.con.close()
+
+
+def _address_partitions_parallel(
+    store: FactStore, *, partitions: int, workers: int, writer, snapshot, graph, evidence_root: Path,
+    coverage_json: str, opposing_json: str,
+) -> None:
+    """`_address_partition` for every partition in worker processes. Feature
+    rows are appended to the snapshot's store as partitions finish, in
+    partition order; candidate positions are offset exactly as the in-process
+    loop numbers them, so ranking ties resolve identically."""
+    jobs = [
+        _job(store, workers, partition=partition, partitions=partitions, snapshot_id=snapshot.id, case_id=snapshot.case_id,
+             graph_id=graph.id, evidence_root=str(evidence_root), coverage_json=coverage_json,
+             opposing_json=opposing_json, chunk_rows=store.plan.insert_chunk_rows)
+        for partition in range(partitions)
+    ]
+
+    def append(result: dict[str, Any]) -> None:
+        writer.append_part(Path(result["features"]), result["feature_rows"], result["schema_version"])
+        result["features"] = None
+
+    results = _parallel_map(store, _partition_job, jobs, workers, on_result=append)
+    position = 0
+    for result in results:
+        store.con.execute(f"INSERT INTO kept SELECT * FROM read_parquet({_quote(Path(result['kept']))})")
+        store.con.execute(
+            "INSERT INTO cand SELECT score, rule_id, entity_ref, start_us, end_us, pos + ?, row "
+            f"FROM read_parquet({_quote(Path(result['cand']))})",
+            [position],
+        )
+        position += result["count"]
+    _remove_job_files(results)
 
 
 def _address_partition(

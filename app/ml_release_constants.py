@@ -12,4 +12,7 @@ from __future__ import annotations
 #: Must stay identical to the finding rows the anomaly stack writes via
 #: `app.ml.findings`; imported from here by both that module and `app.api.routes`
 #: so the two can never drift apart.
-ML_RULE_VERSION = "anomaly-stack-v1"
+ML_RULE_VERSION = "anomaly-stack-v2"
+#: Every anomaly-stack release writes rule versions with this prefix; findings
+#: from an earlier release stay recognisable as ML findings.
+ML_RULE_PREFIX = "anomaly-stack-"

@@ -34,10 +34,10 @@ from sqlalchemy.orm import Session
 
 from app.events import append_event
 from app.ml import grains, layers
-from app.ml.facts import facts_from_records
+from app.ml.facts import attach_network_observations, facts_from_records
 from app.ml.fusion import stouffer_fuse
 from app.ml_release_constants import ML_RULE_VERSION
-from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot
+from app.models import FindingRecord, GraphSnapshot, Snapshot
 
 WINDOW_SECONDS = 900
 #: The combination the ablation selected on the fixture, using unsupervised layers
@@ -45,6 +45,9 @@ WINDOW_SECONDS = 900
 #: names the configuration that produced it. This is the Phase 5B frozen decision
 #: (`experiments/model_decision.md`) and must not change without a new release ID.
 DEFAULT_LAYERS = ("A_global", "D_burst")
+#: Layer A is ranked by Isolation Forest alone from release v2 (ECOD stays as
+#: the attribution); see experiments/model_decision_v2.md for the study.
+A_SCORE_WITH = ("isolation_forest",)
 DEFAULT_BUDGET = 0.01
 FUSION_METHOD = "stouffer"
 #: The scoring release identity. There is no static model artifact -- the stack
@@ -53,7 +56,7 @@ FUSION_METHOD = "stouffer"
 #: rather than a `.joblib` file. Bump it whenever any of `release_identity()`'s
 #: fields change; the bump automatically changes `model_run_id` for every finding
 #: scored afterward, so a reviewer can always tell which procedure produced a row.
-RELEASE_ID = "anomaly-stack-v1"
+RELEASE_ID = "anomaly-stack-v2"
 
 
 def release_identity() -> dict[str, Any]:
@@ -73,6 +76,7 @@ def release_identity() -> dict[str, Any]:
         "fusion_method": FUSION_METHOD,
         "default_review_budget": DEFAULT_BUDGET,
         "training_seed": layers.SEED,
+        "layer_a_score": "+".join(A_SCORE_WITH) + " ranks; ECOD per-feature contributions as attribution",
         "feature_contract_version": ML_RULE_VERSION,
         "feature_columns_sha256": hashlib.sha256(",".join(grains.TRANSACTION_COLUMNS).encode("utf-8")).hexdigest(),
         "fitting_strategy": (
@@ -212,6 +216,10 @@ def materialize_ml_findings(
         if records is None:
             records = load_facts(session, evidence_root, snapshot.id)
         facts = facts_from_records(records)
+    # PS network layer: relay endpoint / ASN / reported country per transaction.
+    attach_network_observations(
+        facts, store.network_observations() if store is not None else records.get("network_observations", [])
+    )
     if facts.transaction_count < 50:
         # Too little committed evidence for a reference distribution to mean
         # anything; store nothing rather than rank noise.
@@ -228,10 +236,12 @@ def materialize_ml_findings(
 
     available: dict[str, layers.LayerScore] = {}
     if any(name.startswith("A_") for name in layer_names):
-        structure = layers.layer_a_structure(transaction_table, reference, stratified=False)
+        structure = layers.layer_a_structure(transaction_table, reference, stratified=False, score_with=A_SCORE_WITH)
         structure.name = "A_global"
         available["A_global"] = structure
-        available["A_structure"] = layers.layer_a_structure(transaction_table, reference, stratified=True)
+        available["A_structure"] = layers.layer_a_structure(
+            transaction_table, reference, stratified=True, score_with=A_SCORE_WITH
+        )
     if "B_latency" in layer_names:
         horizon = int(facts.tx_time[reference].max())
         available["B_latency"] = layers.layer_b_latency(
@@ -271,6 +281,18 @@ def materialize_ml_findings(
         graph, facts.transaction_count, int(flagged.size), budget, release_id=RELEASE_ID, run_id=run_id
     )
 
+    # Network context corroborates a flagged transaction; it never re-ranks the
+    # frozen release (the ablation found network features do not improve the
+    # ranking on the fixture), but every ML finding now states it.
+    network_table = grains.build_network_context(facts)
+    network_score = None
+    if network_table is not None:
+        normalised = [
+            layers._rank_normalise(network_table.matrix[:, column], reference)
+            for column in range(network_table.matrix.shape[1])
+        ]
+        network_score = np.mean(normalised, axis=0)
+
     out_starts, out_order = facts.outputs_of()
     attribution = available.get("A_global") or next(iter(available.values()))
     columns = attribution.attribution_columns
@@ -303,6 +325,29 @@ def materialize_ml_findings(
                 for index, name in enumerate(transaction_table.columns)
             },
         }
+        network_context = None
+        network_lines: list[str] = []
+        if network_table is not None and facts.tx_src_ip[transaction] >= 0:
+            endpoint = facts.src_ips[facts.tx_src_ip[transaction]]
+            asn = facts.asns[facts.tx_asn[transaction]] if facts.tx_asn[transaction] >= 0 else None
+            country = facts.countries[facts.tx_country[transaction]] if facts.tx_country[transaction] >= 0 else None
+            recent_endpoint = round(float(np.expm1(network_table.matrix[transaction, 0])))
+            recent_asn = round(float(np.expm1(network_table.matrix[transaction, 1])))
+            percentile = float(network_score[transaction])
+            network_context = {
+                "src_ip": endpoint, "asn": asn, "reported_country": country,
+                "endpoint_tx_previous_hour": recent_endpoint, "asn_tx_previous_hour": recent_asn,
+                "country_rarity": float(network_table.matrix[transaction, 2]),
+                "score": percentile, "corroborates": percentile >= 0.95,
+            }
+            network_lines.append(
+                f"Network context: first relayed by {endpoint}"
+                + (f" ({asn}" + (f", reported {country}" if country else "") + ")" if asn else "")
+                + f"; that endpoint relayed {recent_endpoint} other transaction(s) in the preceding hour. "
+                + f"Network-context percentile {percentile:.0%}"
+                + (" -- unusual relay activity corroborates this lead." if percentile >= 0.95 else ".")
+            )
+        feature_vector["network_context"] = network_context
         outs = out_order[out_starts[transaction]:out_starts[transaction + 1]]
         addresses = sorted({
             facts.addresses[slot] for slot in facts.out_addr[outs] if slot >= 0
@@ -330,6 +375,7 @@ def materialize_ml_findings(
                     "Ranked by " + " + ".join(layer_names)
                     + (f"; strongest feature contributions: {', '.join(drivers)}" if drivers else ""),
                     f"Observed at {observed.isoformat()}; {len(addresses)} output address(es) in this transaction.",
+                    *network_lines,
                 ],
                 benign_alternatives=[
                     ("Unusual transaction structure has ordinary explanations: exchange batching, "
@@ -423,6 +469,6 @@ def review_decision_labels(session: Session, *, case_id: str, facts) -> np.ndarr
 
 def feature_record_count(session: Session, snapshot_id: str) -> int:
     """Phase 4 feature rows for this snapshot, for reconciliation in smoke tests."""
-    return int(session.scalar(
-        select(FeatureRecord.id).where(FeatureRecord.snapshot_id == snapshot_id).limit(1)
-    ) is not None)
+    from app.engine.feature_store import has_features
+
+    return int(has_features(session, snapshot_id))

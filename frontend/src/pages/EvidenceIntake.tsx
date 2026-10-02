@@ -67,7 +67,7 @@ async function fetchPreviewSample(source: EvidenceSourceRow): Promise<PreviewRec
   return results;
 }
 
-const STAGE_LABELS = ["Staging", "Parsing", "Graph", "Findings", "Anomaly Stack", "Ready"];
+const STAGE_LABELS = ["Staging", "Parsing", "Graph", "Findings", "Anomaly Stack", "Entities & Network", "Ready"];
 
 // Now that the pipeline commits a distinct stage for each phase, the tracker
 // can follow the real one instead of lighting up four boxes at once.
@@ -77,14 +77,15 @@ const STAGE_INDEX: Record<string, number> = {
   graph_building: 2,
   findings: 3,
   ml_scoring: 4,
-  ingested: 5,
+  analytics: 5,
+  ingested: 6,
 };
 
 function visualStage(job: ImportJob | null): { doneCount: number; activeIndexes: number[]; failed: boolean } {
   if (!job) return { doneCount: 0, activeIndexes: [], failed: false };
   const index = STAGE_INDEX[job.stage] ?? 1;
   if (job.state === "failed") return { doneCount: index, activeIndexes: [], failed: true };
-  if (job.state === "completed") return { doneCount: 6, activeIndexes: [], failed: false };
+  if (job.state === "completed") return { doneCount: STAGE_LABELS.length, activeIndexes: [], failed: false };
   return { doneCount: index, activeIndexes: [index], failed: false };
 }
 

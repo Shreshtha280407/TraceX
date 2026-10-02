@@ -79,3 +79,22 @@ export const ExportIcon = () => (
     <path d="M4.5 15v3.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V15" />
   </Svg>
 );
+
+export const EntityIcon = () => (
+  <Svg>
+    <circle cx="8" cy="8" r="2.6" />
+    <circle cx="16.5" cy="7" r="2.1" />
+    <circle cx="13" cy="16.5" r="2.6" />
+    <path d="M10.4 8.8 13 14" />
+    <path d="M10.6 7.6 14.4 7.2" />
+    <path d="M15.8 9 14.2 14" />
+  </Svg>
+);
+
+export const GlobeIcon = () => (
+  <Svg>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M3.5 12h17" />
+    <path d="M12 3.5c2.6 2.4 3.6 5.3 3.6 8.5s-1 6.1-3.6 8.5c-2.6-2.4-3.6-5.3-3.6-8.5s1-6.1 3.6-8.5Z" />
+  </Svg>
+);

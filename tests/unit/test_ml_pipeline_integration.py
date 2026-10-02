@@ -322,10 +322,12 @@ def test_ml_findings_are_ranked_evidenced_and_hedged(committed_snapshot) -> None
             assert forbidden not in text
 
 
-def test_release_identity_is_the_frozen_phase5b_decision() -> None:
-    """A_global + D_burst, 1% budget, stouffer fusion -- the decision must not drift."""
+def test_release_identity_is_the_frozen_v2_decision() -> None:
+    """A_global + D_burst, 1% budget, stouffer fusion, layer A ranked by Isolation
+    Forest (experiments/model_decision_v2.md) -- the decision must not drift."""
     identity = release_identity()
-    assert identity["release_id"] == RELEASE_ID == "anomaly-stack-v1"
+    assert identity["release_id"] == RELEASE_ID == "anomaly-stack-v2"
+    assert identity["layer_a_score"].startswith("isolation_forest ranks")
     assert tuple(identity["layers"]) == ("A_global", "D_burst")
     assert identity["fusion_method"] == "stouffer"
     assert identity["default_review_budget"] == 0.01

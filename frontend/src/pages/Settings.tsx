@@ -14,12 +14,12 @@ const FORWARD_COMMITMENTS = [
   "The rule-only baseline stays the live comparator on every task, always shown alongside the model",
 ];
 
-/** Frozen at Phase 5B selection — generator-v2 100K fixture, final holdout, tie-aware
- * average precision. Not recomputed per request: these are a versioned decision
+/** Release anomaly-stack-v2 (layer A ranked by Isolation Forest; experiments/model_decision_v2.md)
+ * on the generator-v2 100K fixture's final holdout, tie-aware average precision. Not recomputed per request: these are a versioned decision
  * (experiments/model_decision.md), not a live metric. See docs/anomaly_stack.md. */
 const HOLDOUT_RESULTS = [
-  { task: "surge", candidate: "A_global+D_burst", ap: 0.5927, rule: 0.2388, lift: "2.48x" },
-  { task: "motif", candidate: "A_global+D_burst", ap: 0.6282, rule: 0.3799, lift: "1.65x" },
+  { task: "surge", candidate: "A_global+D_burst", ap: 0.6235, rule: 0.2388, lift: "2.61x" },
+  { task: "motif", candidate: "A_global+D_burst", ap: 0.626, rule: 0.3799, lift: "1.65x" },
   { task: "discrimination", candidate: "rule baseline wins", ap: 0.9569, rule: 0.9569, lift: "1.00x" },
 ];
 
@@ -162,7 +162,7 @@ export function Settings() {
 
           <NeoCard>
             <h2>Deployed Model</h2>
-            <div className="kv-row"><span className="k">Release ID</span><span className="mono-id">anomaly-stack-v1</span></div>
+            <div className="kv-row"><span className="k">Release ID</span><span className="mono-id">anomaly-stack-v2</span></div>
             <div className="kv-row"><span className="k">Layers</span><span>A_global + D_burst</span></div>
             <div className="kv-row"><span className="k">Fusion</span><span>Stouffer (equal-weight ECDF p-values)</span></div>
             <div className="kv-row"><span className="k">Review budget</span><span>1% (TRACEX_ML_REVIEW_BUDGET)</span></div>
@@ -198,8 +198,9 @@ export function Settings() {
             </table>
             <p className="coverage-note" style={{ marginTop: 10 }}>
               No unsupervised combination beats the rule on discrimination — that decision stays with the reviewer.
-              Frozen at Phase 5B selection, evaluated once on the held-out split. Full methodology in{" "}
-              <span className="mono-id">docs/anomaly_stack.md</span>.
+              Release v2 was chosen on validation splits of three independently seeded datasets (100K fixture,
+              300K and 1M generator runs) and confirmed on their held-out splits. Full methodology in{" "}
+              <span className="mono-id">experiments/model_decision_v2.md</span>.
             </p>
           </NeoCard>
         </div>

@@ -22,6 +22,8 @@ function saveBlob(filename: string, blob: Blob) {
   }, 2000);
 }
 
+const FEATURE_PREVIEW_ROWS = 50_000;
+
 function downloadJson(filename: string, data: unknown) {
   saveBlob(filename, new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
 }
@@ -107,7 +109,8 @@ export function ExportDeployment() {
     setFeaturesBusy(true);
     setError(null);
     try {
-      setFeaturesBundle(await api.exportFeatures(caseId));
+      // A browser-sized page for JSON/CSV; the full set downloads as Parquet.
+      setFeaturesBundle(await api.exportFeatures(caseId, undefined, FEATURE_PREVIEW_ROWS));
       recordExport();
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail) : "Could not reach the TraceX backend.");
@@ -149,7 +152,13 @@ export function ExportDeployment() {
               <div className="kv-row"><span className="k">ML enabled</span><span>{String(findingsBundle.ml_enabled)}</span></div>
               <div className="kv-row"><span className="k">Findings in bundle</span><span>{findingsBundle.findings.length}</span></div>
               {featuresBundle && (
-                <div className="kv-row"><span className="k">Feature rows</span><span>{featuresBundle.rows.length}</span></div>
+                <div className="kv-row">
+                  <span className="k">Feature rows</span>
+                  <span>
+                    {(featuresBundle.total ?? featuresBundle.rows.length).toLocaleString()}
+                    {(featuresBundle.total ?? 0) > featuresBundle.rows.length ? ` (first ${featuresBundle.rows.length.toLocaleString()} in JSON/CSV)` : ""}
+                  </span>
+                </div>
               )}
 
               <p className="coverage-note" style={{ margin: "14px 0 6px" }}>Findings</p>
@@ -173,6 +182,19 @@ export function ExportDeployment() {
                   <button type="button" className="btn-ghost" onClick={() => downloadCsv(`${caseId}-features-export.csv`, featuresToRows(featuresBundle))}>
                     CSV
                   </button>
+                  {featuresBundle.rows[0]?.snapshot_id && (
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={async () => {
+                        const snapshotId = featuresBundle.rows[0].snapshot_id;
+                        if (!caseId) return;
+                        saveBlob(`${caseId}-features-${snapshotId}.parquet`, await api.downloadFeaturesParquet(caseId, snapshotId));
+                      }}
+                    >
+                      Parquet (all rows)
+                    </button>
+                  )}
                 </div>
               ) : (
                 <button type="button" className="btn-ghost" disabled={featuresBusy} onClick={loadFeatures}>

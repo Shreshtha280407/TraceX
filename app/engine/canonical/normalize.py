@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.engine.adapters.source import ParsedRow
+from app.engine.canonical.profiles import canonicalize
 
 TXID = re.compile(r"^[a-f0-9]{64}$")
 MAX_SATS = 2_100_000_000_000_000
@@ -22,6 +25,14 @@ class NormalizationError(ValueError):
 @dataclass(frozen=True)
 class NormalizedRow:
     facts: dict[str, list[dict[str, Any]]]
+    #: Source column -> canonical field renames applied (empty for v1 input).
+    field_mapping: dict[str, str] = field(default_factory=dict)
+
+
+#: Opt-in: read timezone-less timestamps as UTC (recorded as an assumption).
+#: Off by default -- R-08 forbids inventing a timezone silently.
+NAIVE_TIMESTAMPS_AS_UTC = os.environ.get("TRACEX_NAIVE_TIMESTAMPS_AS_UTC", "0").lower() in {"1", "true", "yes"}
+_LIST_SPLIT = re.compile(r"\s*[;|]\s*|\s*,\s*|\s+")
 
 
 def _source_refs(*, source_id: str, source_sha256: str, row: ParsedRow) -> list[dict[str, Any]]:
@@ -38,17 +49,31 @@ def _source_refs(*, source_id: str, source_sha256: str, row: ParsedRow) -> list[
 
 
 def _list(value: Any, *, field: str) -> list[Any]:
+    """An array field. Accepts a real array, a JSON array string, a Python-style
+    list string (`['a', 'b']`), or -- common in CSV exports -- a `;`, `|`,
+    `,` or whitespace separated cell. A single scalar is a one-element list."""
     if value is None or value == "":
         return []
     if isinstance(value, list):
         return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return [value]
     if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise NormalizationError(f"{field} must be a JSON array") from exc
-        if isinstance(parsed, list):
-            return parsed
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    parsed = ast.literal_eval(text)
+                except (ValueError, SyntaxError) as exc:
+                    raise NormalizationError(f"{field} must be an array") from exc
+            if isinstance(parsed, (list, tuple)):
+                return list(parsed)
+            raise NormalizationError(f"{field} must be an array")
+        if not text:
+            return []
+        return [part for part in _LIST_SPLIT.split(text) if part]
     raise NormalizationError(f"{field} must be an array")
 
 
@@ -77,17 +102,32 @@ def _sats(value: Any, *, field: str, is_sats: bool = False) -> int | None:
     return int(sats)
 
 
+_EPOCH_NUMBER = re.compile(r"^\d{9,13}(\.\d+)?$")
+
+
 def _timestamp(value: Any) -> tuple[str | None, str | None]:
+    """ISO-8601 with a zone, `... UTC`, or Unix epoch seconds/milliseconds (UTC
+    by definition). Timezone-less text is rejected unless the deployment opted
+    in to TRACEX_NAIVE_TIMESTAMPS_AS_UTC."""
     original = _optional_text(value)
     if original is None:
         return None, None
-    candidate = original.replace("Z", "+00:00")
+    text = original.strip()
+    if _EPOCH_NUMBER.fullmatch(text):
+        number = float(text)
+        if number >= 1e11:  # milliseconds
+            number /= 1000.0
+        parsed = datetime.fromtimestamp(number, tz=UTC)
+        return parsed.isoformat().replace("+00:00", "Z"), original
+    candidate = re.sub(r"\s*(UTC|GMT)$", "+00:00", text, flags=re.IGNORECASE).replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(candidate)
     except ValueError as exc:
-        raise NormalizationError("timestamp must be ISO-8601") from exc
+        raise NormalizationError("timestamp must be ISO-8601 or Unix epoch seconds") from exc
     if parsed.tzinfo is None:
-        raise NormalizationError("timestamp must include a timezone")
+        if not NAIVE_TIMESTAMPS_AS_UTC:
+            raise NormalizationError("timestamp must include a timezone")
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z"), original
 
 
@@ -104,7 +144,7 @@ def _endpoint_port(value: Any, *, field: str) -> int | None:
 
 
 def normalize_row(*, case_id: str, source_id: str, source_sha256: str, row: ParsedRow) -> NormalizedRow:
-    raw = row.value
+    raw, field_mapping = canonicalize(row.value)
     raw_txid = _optional_text(raw.get("txid"))
     txid = raw_txid.lower() if raw_txid else None
     if not txid or not TXID.fullmatch(txid):
@@ -146,12 +186,21 @@ def normalize_row(*, case_id: str, source_id: str, source_sha256: str, row: Pars
         transaction["source_timestamp_meaning"] = "block_time"
     source_inputs = _list(raw.get("inputs"), field="inputs") if raw.get("inputs") not in (None, "") else []
     input_addresses = _list(raw.get("input_addresses"), field="input_addresses")
-    input_amounts = _list(raw.get("input_amounts"), field="input_amounts")
+    if source_inputs and not input_addresses and all(isinstance(item, str) for item in source_inputs):
+        # `inputs` given as a plain address list rather than outpoint objects.
+        input_addresses, source_inputs = source_inputs, []
+    inputs_in_sats = raw.get("input_amounts") in (None, "") and raw.get("input_amounts_sats") not in (None, "")
+    input_amounts = _list(raw.get("input_amounts_sats" if inputs_in_sats else "input_amounts"), field="input_amounts")
     if input_amounts and len(input_addresses) != len(input_amounts):
         raise NormalizationError("input_addresses and input_amounts lengths differ")
     source_outputs = _list(raw.get("outputs"), field="outputs") if raw.get("outputs") not in (None, "") else []
     output_addresses = _list(raw.get("output_addresses"), field="output_addresses")
-    output_amounts = _list(raw.get("output_amounts"), field="output_amounts")
+    if source_outputs and not output_addresses and all(isinstance(item, str) for item in source_outputs):
+        output_addresses, source_outputs = source_outputs, []
+    outputs_in_sats = raw.get("output_amounts") in (None, "") and raw.get("output_amounts_sats") not in (None, "")
+    output_amounts = _list(
+        raw.get("output_amounts_sats" if outputs_in_sats else "output_amounts"), field="output_amounts"
+    )
     if not source_outputs and (len(output_addresses) != len(output_amounts) or not output_amounts):
         raise NormalizationError("output_addresses/output_amounts must be non-empty arrays of equal length")
     inputs = []
@@ -202,7 +251,8 @@ def normalize_row(*, case_id: str, source_id: str, source_sha256: str, row: Pars
                 "prev_txid": None,
                 "prev_vout": None,
                 "address": _optional_text(address),
-                "amount_sats": _sats(input_amounts[vin], field=f"input_amounts[{vin}]") if input_amounts else None,
+                "amount_sats": _sats(input_amounts[vin], field=f"input_amounts[{vin}]", is_sats=inputs_in_sats)
+                if input_amounts else None,
                 "sequence": None,
                 "source_refs": refs,
             }
@@ -241,7 +291,7 @@ def normalize_row(*, case_id: str, source_id: str, source_sha256: str, row: Pars
                 "network": network,
                 "txid": txid,
                 "vout": vout,
-                "amount_sats": _sats(output_amounts[vout], field=f"output_amounts[{vout}]"),
+                "amount_sats": _sats(output_amounts[vout], field=f"output_amounts[{vout}]", is_sats=outputs_in_sats),
                 "script_id": None,
                 "script_type": script_type,
                 "address": _optional_text(address),
@@ -276,5 +326,6 @@ def normalize_row(*, case_id: str, source_id: str, source_sha256: str, row: Pars
             }
         )
     return NormalizedRow(
-        {"transactions": [transaction], "inputs": inputs, "outputs": outputs, "network_observations": observations}
+        {"transactions": [transaction], "inputs": inputs, "outputs": outputs, "network_observations": observations},
+        field_mapping,
     )

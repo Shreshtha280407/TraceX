@@ -41,6 +41,13 @@ function humanizeReasonCode(code: string): string {
  * Rank orders every rule type together even though their raw_score scales
  * genuinely differ, which produced the incoherent "Confidence 1.00 / LOW
  * PRIORITY" pairing on a maximal-confidence chain. */
+/** Calibrated probabilities are never 0 or 1; say so at the extremes. */
+function formatConfidence(value: number): string {
+  if (value >= 0.995) return ">99%";
+  if (value > 0 && value < 0.005) return "<1%";
+  return `${Math.round(value * 100)}%`;
+}
+
 function riskTier(score: number): { label: string; tone: "danger" | "warning" | "muted" } {
   if (score >= 0.75) return { label: "HIGH RISK", tone: "danger" };
   if (score >= 0.5) return { label: "MEDIUM RISK", tone: "warning" };
@@ -380,7 +387,10 @@ export function GraphExplorer() {
           <div className="ff-counters">
             <span>Hops <b>{selected.hop_count ?? "—"}</b></span>
             <span>Evidence <b>{selected.evidence_refs.length}</b></span>
-            <span>Confidence <b>{selected.score.toFixed(2)}</b></span>
+            <span>Pattern score <b>{selected.score.toFixed(2)}</b></span>
+            {selected.confidence?.value !== undefined && selected.confidence?.value !== null && (
+              <span>Confidence <b>{formatConfidence(selected.confidence.value)}</b></span>
+            )}
           </div>
         )}
       </div>
@@ -672,10 +682,16 @@ export function GraphExplorer() {
                 )}
                 <div className="ff-kv"><span>Time window</span><b>{timeUnavailable ? "not available" : formatDuration(selected.total_duration_sec)}</b></div>
                 <div className="ff-kv ff-kv-bar">
-                  <span>Confidence</span>
+                  <span>Pattern score</span>
                   <span className="ff-conf-track"><span className="ff-conf-fill" style={{ width: `${Math.round(selected.score * 100)}%` }} /></span>
                   <b>{selected.score.toFixed(2)}</b>
                 </div>
+                {selected.confidence?.value !== undefined && selected.confidence?.value !== null && (
+                  <div className="ff-kv">
+                    <span>Calibrated confidence</span>
+                    <b>{formatConfidence(selected.confidence.value)}{selected.confidence.grade === "weak" ? " (weak calibration)" : ""}</b>
+                  </div>
+                )}
 
                 <div className="ff-panel-label ff-section">WHY FLAGGED</div>
                 <ul className="ff-reasons">

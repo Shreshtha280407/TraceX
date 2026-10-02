@@ -93,6 +93,32 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
     }
 
 
+def _materialize_analytics(session, *, settings, snapshot, graph, records=None, store=None) -> dict[str, object]:
+    """Entity clusters, Geo-IP enrichment, network correlation, embeddings.
+
+    Non-fatal for the same reason as the anomaly stack: the evidence, graph and
+    findings are already correct and committed; a failure here is recorded on
+    the completion event instead of losing the import.
+    """
+    try:
+        from app.engine.analytics import build_analytics
+
+        result = build_analytics(
+            session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, records=records,
+            store=store,
+        )
+    except Exception as error:
+        session.rollback()
+        logger.warning("analytics did not run for snapshot %s: %s", snapshot.id, error, exc_info=True)
+        return {"status": f"error:{type(error).__name__}", "network_findings": 0}
+    return {
+        "status": "complete",
+        "analytics_snapshot_id": result.analytics_snapshot_id,
+        "network_findings": result.network_finding_count,
+        "entity_count": result.summary.get("entity_count"),
+    }
+
+
 def _snapshot_for_job(session: Session, job: ImportJob, source: EvidenceSource) -> Snapshot:
     existing = session.scalar(select(Snapshot).where(Snapshot.job_id == job.id))
     if existing:
@@ -269,8 +295,11 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     last_batch = session.scalar(select(func.max(FragmentReceipt.logical_batch)).where(FragmentReceipt.job_id == job.id))
     batch_number = 0 if last_record == 0 or last_batch is None else last_batch + 1
     row_iterator = rows_for_source(source_path, source.source_format)
-    seen_txids: dict[str, str | None] = {
-        txid: None for txid in _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id)
+    # Binary txid -> 16-byte digest of the first source variant: about half the
+    # memory of hex-string keys and values, which matters at millions of rows.
+    seen_txids: dict[bytes, bytes | None] = {
+        bytes.fromhex(txid): None
+        for txid in _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id)
     }
     # On a fresh (non-resumed) run every receipted fact is produced right here,
     # so the later stages can take them from memory instead of re-reading and
@@ -286,6 +315,9 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         if last_record == 0 and execution_mode == "memory"
         else None
     )
+    # Source column -> canonical field renames applied by the schema profile
+    # (app.engine.canonical.profiles); reported on the completion event.
+    field_mapping: dict[str, str] = {}
     for batch in _chunks(
         (row for row in row_iterator if row.logical_record > last_record), batch_records
     ):
@@ -304,10 +336,13 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
                 normalized = normalize_row(
                     case_id=job.case_id, source_id=source.id, source_sha256=source.sha256, row=row
                 )
-                txid = normalized.facts["transactions"][0]["txid"]
-                variant_hash = hashlib.sha256(
-                    json.dumps(row.value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-                ).hexdigest()
+                if normalized.field_mapping:
+                    field_mapping.update(normalized.field_mapping)
+                txid = bytes.fromhex(normalized.facts["transactions"][0]["txid"])
+                variant_hash = hashlib.blake2b(
+                    json.dumps(row.value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(),
+                    digest_size=16,
+                ).digest()
                 if txid in seen_txids:
                     reason = (
                         "conflicting transaction variant for canonical txid"
@@ -386,6 +421,11 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         ml_result = _materialize_ml_findings(
             session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
         )
+        session.commit()
+        _stage("analytics")
+        analytics_result = _materialize_analytics(
+            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
+        )
         del records
     else:
         collected = None
@@ -402,6 +442,11 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             )
             _stage("ml_scoring")
             ml_result = _materialize_ml_findings(
+                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store
+            )
+            session.commit()
+            _stage("analytics")
+            analytics_result = _materialize_analytics(
                 session, settings=settings, snapshot=snapshot, graph=graph_record, store=store
             )
     snapshot.provisional = False
@@ -431,6 +476,11 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "ml_model_run_id": ml_result.get("model_run_id"),
             "ml_release_id": ml_result.get("release_id"),
             "execution_mode": execution_mode,
+            "field_mapping": field_mapping,
+            "analytics_status": analytics_result["status"],
+            "analytics_snapshot_id": analytics_result.get("analytics_snapshot_id"),
+            "network_finding_count": analytics_result.get("network_findings", 0),
+            "entity_count": analytics_result.get("entity_count"),
             "provisional": False,
         },
     )

@@ -1,0 +1,17 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+var
+datasets
+experiments/runs
+frontend/node_modules
+frontend/dist
+frontend/e2e
+fixtures/demo_100k/*.ndjson
+dist
+*.egg-info
+.env
+.env.*
+secrets

@@ -329,8 +329,21 @@ export function SourceFlowGraph({
                 />
                 {flag && (
                   <g transform={`translate(${x}, ${y - CARD_H / 2 - 9})`} pointerEvents="none">
-                    <rect x={-62} y={-8} width={124} height={16} rx={8} fill={C.flag} />
-                    <text x={0} y={4} textAnchor="middle" fontSize={10} fontWeight={700} fill="#fff3ee">{flag}</text>
+                    <rect x={-56} y={-8} width={112} height={16} rx={8} fill={C.flag} />
+                    <text x={0} y={4} textAnchor="middle" fontSize={9.5} fontWeight={700} fill="#fff3ee">{flag}</text>
+                  </g>
+                )}
+                {c.entity_id && (
+                  <g transform={`translate(${x - CARD_W / 2 - 4}, ${y - CARD_H / 2 - 9})`} pointerEvents="none">
+                    <title>{`Entity ${c.entity_id}: ${c.entity_address_count ?? "?"} addresses (common-input-ownership)`}</title>
+                    <rect x={0} y={-8} width={34} height={16} rx={8} fill={C.nodeFill} stroke={C.inflow} />
+                    <text x={17} y={4} textAnchor="middle" fontSize={9.5} fontWeight={700} fill={C.inflowText}>E·{c.entity_address_count ?? "?"}</text>
+                  </g>
+                )}
+                {(c.risk ?? 0) >= 0.05 && (
+                  <g transform={`translate(${x + CARD_W / 2 - 30}, ${y - CARD_H / 2 - 9})`} pointerEvents="none">
+                    <rect x={0} y={-8} width={34} height={16} rx={8} fill={(c.risk ?? 0) >= 0.5 ? C.flag : C.deadFill} stroke={C.flag} />
+                    <text x={17} y={4} textAnchor="middle" fontSize={9.5} fontWeight={700} fill="#fff3ee">{Math.round((c.risk ?? 0) * 100)}%</text>
                   </g>
                 )}
                 <text x={x} y={y - 3} textAnchor="middle" fontSize={12} fontFamily={MONO} fill={C.ink} fontWeight={500}>{cardTitle(c)}</text>

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { FindingConfidence } from "../lib/api";
 
 export function NeoCard({
   variant = "neo",
@@ -108,4 +109,31 @@ export function relativeTime(iso: string | null | undefined): string {
   if (hours < 24) return `${hours} hr ago`;
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/** Calibrated / statistical confidence of a finding, with how much to trust it. */
+export function ConfidenceBadge({ confidence }: { confidence?: FindingConfidence }) {
+  if (!confidence) return null;
+  if (confidence.value === null) {
+    return (
+      <span data-tooltip={confidence.basis ?? confidence.method}>
+        <Badge tone="muted">{confidence.method === "evidence_check" ? "data check" : "uncalibrated"}</Badge>
+      </span>
+    );
+  }
+  const value = confidence.value >= 0.995 ? ">99" : confidence.value < 0.005 ? "<1" : String(Math.round(confidence.value * 100));
+  const tone: BadgeTone = confidence.value >= 0.6 ? "danger" : confidence.value >= 0.25 ? "warning" : "muted";
+  const grade = confidence.grade === "good" ? "" : confidence.grade === "weak" ? " · weak calibration" : "";
+  const tooltip = confidence.method === "statistical" ? "1 − adjusted p-value of the correlation test" : "Calibrated on labelled synthetic ground truth";
+  return (
+    <span data-tooltip={tooltip}>
+      <Badge tone={tone}>CONF {value}%{grade}</Badge>
+    </span>
+  );
+}
+
+export function methodOf(ruleVersion: string): { label: string; tone: BadgeTone } {
+  if (ruleVersion.startsWith("anomaly-stack-")) return { label: "ml", tone: "ml" };
+  if (ruleVersion === "network-correlation-v1") return { label: "network", tone: "warning" };
+  return { label: "deterministic", tone: "deterministic" };
 }

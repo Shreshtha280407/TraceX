@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, Badge, FilterPills, relativeTime, priorityTier, priorityOf, type PriorityId } from "../components/primitives";
-import { api, ML_RULE_VERSION, type Finding, type FindingsListResponse } from "../lib/api";
+import { NeoCard, Badge, ConfidenceBadge, FilterPills, methodOf, relativeTime, priorityTier, priorityOf, type PriorityId } from "../components/primitives";
+import { api, ML_RULE_PREFIX, type Finding, type FindingsListResponse } from "../lib/api";
 import "./FindingsFeed.css";
 
 type MlReleaseInfo = { releaseId: string; modelRunId: string; layers: string[] };
 
-type FilterId = "all" | "deterministic" | "ml" | "reviewed";
+type FilterId = "all" | "deterministic" | "ml" | "network" | "reviewed";
+const NETWORK_RULE_VERSION = "network-correlation-v1";
 
 export function FindingsFeed() {
   const { caseId } = useParams<{ caseId: string }>();
@@ -58,8 +59,9 @@ export function FindingsFeed() {
   const byCategory = useMemo(
     () => ({
       all: findings,
-      deterministic: findings.filter((f) => f.rule_version !== ML_RULE_VERSION),
-      ml: findings.filter((f) => f.rule_version === ML_RULE_VERSION),
+      deterministic: findings.filter((f) => !f.rule_version.startsWith(ML_RULE_PREFIX) && f.rule_version !== NETWORK_RULE_VERSION),
+      ml: findings.filter((f) => f.rule_version.startsWith(ML_RULE_PREFIX)),
+      network: findings.filter((f) => f.rule_version === NETWORK_RULE_VERSION),
       reviewed: findings.filter((f) => f.status !== "open"),
     }),
     [findings]
@@ -115,6 +117,7 @@ export function FindingsFeed() {
                 { id: "all", label: `All (${byCategory.all.length})` },
                 { id: "deterministic", label: `Deterministic (${byCategory.deterministic.length})` },
                 { id: "ml", label: `ML-Flagged (${byCategory.ml.length})` },
+                { id: "network", label: `Network (${byCategory.network.length})` },
                 { id: "reviewed", label: `Reviewed (${byCategory.reviewed.length})` },
               ]}
             />
@@ -144,11 +147,12 @@ export function FindingsFeed() {
                     <div className="finding-card-top">
                       <div className="finding-card-left">
                         <strong>{finding.finding_type.replace(/_/g, " ")}</strong>
-                        <Badge tone={finding.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}>
-                          {finding.rule_version === ML_RULE_VERSION ? "ml" : "deterministic"}
-                        </Badge>
+                        <Badge tone={methodOf(finding.rule_version).tone}>{methodOf(finding.rule_version).label}</Badge>
                       </div>
-                      <Badge tone={priority.tone}>{priority.label}</Badge>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <ConfidenceBadge confidence={finding.confidence} />
+                        <Badge tone={priority.tone}>{priority.label}</Badge>
+                      </div>
                     </div>
                     <span className="mono-id addr">{finding.entity_ref}</span>
                     {(finding.pattern?.chain_count ?? 1) > 1 && (

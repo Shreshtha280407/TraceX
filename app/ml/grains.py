@@ -505,3 +505,26 @@ def build_graph_table(facts: Facts, *, window_seconds: int = 3600) -> Table:
     return Table(GRAPH_COLUMNS, matrix)
 
 
+
+
+NETWORK_CONTEXT_COLUMNS = ("endpoint_cooccurrence_trailing", "asn_cooccurrence_trailing", "country_rarity_prior")
+
+
+def build_network_context(facts: Facts, *, window_seconds: int = 3600) -> Table | None:
+    """The PS network-layer columns of grain E alone, fully vectorised.
+
+    Used by the deployed stack to corroborate (not re-rank) a flagged
+    transaction: how busy its relay endpoint and ASN had been in the preceding
+    hour, and how rare its reported country had been so far. None when the
+    snapshot carries no network observations.
+    """
+    if facts.tx_src_ip is None or not (facts.tx_src_ip >= 0).any():
+        return None
+    count = facts.transaction_count
+    matrix = np.zeros((count, len(NETWORK_CONTEXT_COLUMNS)), dtype=np.float32)
+    matrix[:, 0] = _trailing_cooccurrence(facts.tx_src_ip, facts.tx_time, window_seconds)
+    matrix[:, 1] = _trailing_cooccurrence(facts.tx_asn, facts.tx_time, window_seconds)
+    matrix[:, 2] = _expanding_rarity(
+        facts.tx_country, facts.tx_time, np.arange(count, dtype=np.int64), len(facts.countries or []) or 1
+    )
+    return Table(NETWORK_CONTEXT_COLUMNS, matrix)

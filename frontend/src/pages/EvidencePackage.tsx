@@ -279,6 +279,33 @@ export function EvidencePackage() {
             <h2>Observed Indicators</h2>
             <div className="kv-row"><span className="k">Rank</span><span>{finding.rank ? `#${finding.rank}` : "unranked"}</span></div>
             <div className="kv-row"><span className="k">Score</span><span>{finding.score}</span></div>
+            {finding.confidence && (
+              <>
+                <div className="kv-row">
+                  <span className="k">Confidence</span>
+                  <span>
+                    {finding.confidence.value === null ? finding.confidence.method.replace("_", " ") : `${(finding.confidence.value * 100).toFixed(1)}%`}
+                    {" · "}{finding.confidence.method}{finding.confidence.grade !== "statistical" ? ` (${finding.confidence.grade})` : ""}
+                  </span>
+                </div>
+                {finding.confidence.reliability?.brier !== undefined && (
+                  <div className="kv-row">
+                    <span className="k">Calibration reliability</span>
+                    <span className="mono-id">
+                      Brier {finding.confidence.reliability.brier?.toFixed(3)} · ECE {finding.confidence.reliability.ece?.toFixed(3)}
+                      {finding.confidence.reliability.auc !== null && finding.confidence.reliability.auc !== undefined ? ` · AUC ${finding.confidence.reliability.auc.toFixed(2)}` : ""}
+                    </span>
+                  </div>
+                )}
+                {finding.confidence.anomaly_p_value !== undefined && finding.confidence.anomaly_p_value !== null && (
+                  <div className="kv-row"><span className="k">Anomaly p-value</span><span className="mono-id">{finding.confidence.anomaly_p_value.toExponential(2)}</span></div>
+                )}
+                {finding.confidence.network_corroboration !== undefined && finding.confidence.network_corroboration !== null && (
+                  <div className="kv-row"><span className="k">Network context percentile</span><span>{Math.round(finding.confidence.network_corroboration * 100)}%</span></div>
+                )}
+                {finding.confidence.basis && <p className="coverage-note" style={{ marginTop: 6 }}>{finding.confidence.basis}</p>}
+              </>
+            )}
             {finding.reason_codes.length > 0 && (
               <p className="coverage-note" style={{ marginTop: 8 }}>Reason codes: {finding.reason_codes.join(", ")}</p>
             )}

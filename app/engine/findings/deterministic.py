@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import bulk_insert_serialized
+from app.engine.feature_store import FeatureStoreWriter, has_features, rewrite_vectors
 from app.engine.graph.builder import FactRecords, bulk_allocation, load_facts
 from app.engine.motifs.deterministic import (
     detect_coinjoin_like_transactions,
@@ -503,15 +504,17 @@ def materialize_findings(
 
     `records` lets the ingestion pipeline pass facts it already decoded.
     """
-    if session.scalar(select(FeatureRecord.id).where(FeatureRecord.snapshot_id == snapshot.id).limit(1)):
+    if has_features(session, snapshot.id):
         return 0
     if records is None:
         records = load_facts(session, evidence_root, snapshot.id)
     with bulk_allocation():
-        return _materialize(session, snapshot=snapshot, graph=graph, records=records)
+        return _materialize(session, evidence_root=evidence_root, snapshot=snapshot, graph=graph, records=records)
 
 
-def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, records: FactRecords) -> int:
+def _materialize(
+    session: Session, *, evidence_root, snapshot: Snapshot, graph: GraphSnapshot, records: FactRecords
+) -> int:
     transactions = {fact["txid"]: fact for fact in records["transactions"]}
     transaction_times = {
         txid: _time(fact.get("block_time") or fact.get("source_timestamp")) for txid, fact in transactions.items()
@@ -614,17 +617,24 @@ def _materialize(session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, 
 
     plan = current_plan()
     coverage_json = json.dumps(coverage)
-    writer = FeatureRowWriter(session, snapshot=snapshot, graph=graph, coverage_json=coverage_json, chunk_rows=plan.insert_chunk_rows)
-    window_candidates, kept_features = address_window_pass(
-        output_events=output_events,
-        rapid_events=rapid_events,
-        signal_by_key=signal_by_key,
-        transaction_times=transaction_times,
-        outputs_by_tx=outputs_by_tx,
-        needed_keys=needed_keys,
-        writer=writer,
+    writer = FeatureRowWriter(
+        session, snapshot=snapshot, graph=graph, coverage_json=coverage_json, chunk_rows=plan.insert_chunk_rows,
+        evidence_root=evidence_root,
     )
-    writer.flush()
+    try:
+        window_candidates, kept_features = address_window_pass(
+            output_events=output_events,
+            rapid_events=rapid_events,
+            signal_by_key=signal_by_key,
+            transaction_times=transaction_times,
+            outputs_by_tx=outputs_by_tx,
+            needed_keys=needed_keys,
+            writer=writer,
+        )
+        writer.publish()
+    except BaseException:
+        writer.abort()
+        raise
     candidates.extend(window_candidates)
 
     # Detector finding records are separate from the address-window export but
@@ -719,7 +729,10 @@ class FeatureRowWriter:
     facts of a pass are released, so a recycled object id is never reused.
     """
 
-    def __init__(self, session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, coverage_json: str, chunk_rows: int) -> None:
+    def __init__(
+        self, session: Session | None, *, snapshot: Snapshot, graph: GraphSnapshot, coverage_json: str, chunk_rows: int,
+        evidence_root, part: bool = False,
+    ) -> None:
         self._session = session
         self._snapshot = snapshot
         self._graph = graph
@@ -728,6 +741,7 @@ class FeatureRowWriter:
         self._rows: list[dict[str, Any]] = []
         self._ref_json: dict[int, str] = {}
         self._ids = _uuid4_strings()
+        self._store = FeatureStoreWriter(evidence_root, snapshot, graph, coverage_json, part=part)
         self.written = 0
 
     def _refs_json(self, references: list[dict]) -> str:
@@ -761,9 +775,27 @@ class FeatureRowWriter:
 
     def flush(self) -> None:
         if self._rows:
-            bulk_insert_serialized(self._session, FeatureRecord, self._rows, _FEATURE_JSON_COLUMNS)
+            self._store.write(self._rows)
             self.written += len(self._rows)
             self._rows = []
+
+    def publish(self) -> None:
+        """Seal the snapshot's feature store (app.engine.feature_store) and record it."""
+        self.flush()
+        self._store.publish(self._session, FEATURE_SCHEMA_VERSION)
+
+    def close_part(self):
+        """A worker's share of the rows (see app.engine.bounded): flush and close it."""
+        self.flush()
+        return self._store.close_part()
+
+    def append_part(self, path, rows: int, schema_version: str | None) -> None:
+        self.flush()
+        self._store.append_part(path, rows, schema_version)
+        self.written += rows
+
+    def abort(self) -> None:
+        self._store.abort()
 
     def end_pass(self) -> None:
         self.flush()
@@ -1049,19 +1081,32 @@ def refresh_synthetic_seed_proximity(
         seeds=[{"id": item.id, "seed_entity_ref": item.seed_entity_ref, "seed_reason": item.seed_reason, "synthetic": item.synthetic} for item in seeds],
         transactions=transactions, inputs=records["inputs"], outputs=records["outputs"],
     )
-    rows = list(session.scalars(select(FeatureRecord).where(FeatureRecord.snapshot_id == snapshot.id)))
-    updated = 0
+    # Keep seed identity/path evidence on the case finding, not in the Phase 5A
+    # address-window feature vector. The four flat risk fields are evaluation
+    # metadata only and cannot carry a seed identity.
+    signals_by_ref: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for signal in signals:
-        for row in rows:
-            if row.entity_ref != signal["entity_ref"]:
-                continue
-            vector = dict(row.feature_vector)
+        signals_by_ref[signal["entity_ref"]].append(signal)
+    earliest_window: dict[str, datetime] = {}
+
+    def merge(entity_ref: str, window_start: datetime, vector: dict[str, Any]) -> dict[str, Any]:
+        if window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=UTC)
+        earliest_window[entity_ref] = min(earliest_window.get(entity_ref, window_start), window_start)
+        for signal in signals_by_ref[entity_ref]:
             _merge_signal_features(vector, signal)
-            # Keep seed identity/path evidence on the case finding, not in the
-            # Phase 5A address-window feature vector. The four flat risk fields
-            # are evaluation metadata only and cannot carry a seed identity.
-            row.feature_vector = vector
-            updated += 1
+        return vector
+
+    updated = rewrite_vectors(
+        session, evidence_root, snapshot_id=snapshot.id, entity_refs=set(signals_by_ref), transform=merge
+    )
+    # Snapshots imported before the Parquet feature store keep database rows.
+    for row in session.scalars(select(FeatureRecord).where(
+        FeatureRecord.snapshot_id == snapshot.id, FeatureRecord.entity_ref.in_(list(signals_by_ref))
+    )):
+        row.feature_vector = merge(row.entity_ref, row.window_start, dict(row.feature_vector))
+        updated += 1
+    for signal in signals:
         existing = session.scalar(
             select(FindingRecord.id).where(
                 FindingRecord.snapshot_id == snapshot.id,
@@ -1071,7 +1116,7 @@ def refresh_synthetic_seed_proximity(
         )
         if existing is not None:
             continue
-        start = min((row.window_start for row in rows if row.entity_ref == signal["entity_ref"]), default=datetime(1970, 1, 1, tzinfo=UTC))
+        start = earliest_window.get(signal["entity_ref"], datetime(1970, 1, 1, tzinfo=UTC))
         feature = {"feature_contract_version": FEATURE_SCHEMA_VERSION, **_signal_feature(signal), "detector_result": {
             "finding_type": signal["finding_type"], "reason_codes": signal["reason_codes"], "uncertainty": signal["uncertainty"],
             "explanation": signal["explanation"], "evidence_refs": signal["evidence_refs"], "graph_path": signal["graph_path"],

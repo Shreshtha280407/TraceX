@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import JSON, bindparam, create_engine, insert, inspect, text
+from sqlalchemy import JSON, bindparam, create_engine, event, insert, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -17,8 +17,22 @@ class Base(DeclarativeBase):
 
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+    if not url.startswith("sqlite"):
+        return create_engine(url, future=True, pool_pre_ping=True)
+    # SQLite: the worker holds long write transactions (bulk findings inserts)
+    # while the API keeps answering job-status polls. WAL lets those readers
+    # proceed alongside the single writer instead of failing with "database is
+    # locked", and a longer busy timeout absorbs the brief checkpoint locks.
+    engine = create_engine(
+        url, future=True, pool_pre_ping=True, connect_args={"check_same_thread": False, "timeout": 60}
+    )
+    if ":memory:" not in url and url not in {"sqlite://", "sqlite:///"}:
+        @event.listens_for(engine, "connect")
+        def _sqlite_wal(dbapi_connection, _record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+    return engine
 
 
 engine = make_engine()

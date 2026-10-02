@@ -26,6 +26,8 @@ ml = ["scikit-learn>=1.5,<2", "numpy>=1.26,<3", "scipy>=1.11,<2"]
 [project.scripts]
 tracex-init-db = "app.db:init_database"
 tracex-worker = "workers.runner:main"
+tracex-geoip = "app.engine.geoip:main"
+tracex-dataset = "app.engine.dataset_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -33,6 +35,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*", "workers*"]
+
+[tool.setuptools.package-data]
+app = ["engine/calibration/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

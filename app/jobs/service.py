@@ -17,7 +17,8 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-# An import is parse -> graph build -> deterministic findings -> ML scoring.
+# An import is parse -> graph build -> deterministic findings -> ML scoring ->
+# entity/network analytics.
 # Parsing is the only stage with a natural row-level denominator, so the others
 # are represented as the share of total wall time they actually take on a
 # measured run rather than being averaged into a meaningless single bar.
@@ -27,7 +28,8 @@ _STAGE_SPAN: dict[str, tuple[float, float]] = {
     "ingesting": (0.0, 0.55),
     "graph_building": (0.55, 0.70),
     "findings": (0.70, 0.92),
-    "ml_scoring": (0.92, 0.99),
+    "ml_scoring": (0.92, 0.97),
+    "analytics": (0.97, 0.995),
     "ingested": (1.0, 1.0),
 }
 
@@ -62,6 +64,7 @@ def job_progress(job: ImportJob) -> dict:
             "graph_building": "building graph snapshot",
             "findings": "scoring deterministic findings",
             "ml_scoring": "running anomaly stack",
+            "analytics": "clustering entities and correlating network observations",
         }.get(job.stage, job.stage),
         "determinate": True,
     }

@@ -353,9 +353,13 @@ def main() -> None:
     parser.add_argument("--with-ml", action="store_true", help="also run the unsupervised anomaly stack (needs the ml extra)")
     parser.add_argument("--output", type=Path, default=None, help="write JSON result here")
     parser.add_argument("--keep-synthetic", type=Path, default=None, help="persist the generated synthetic NDJSON at this path instead of a temp file")
+    parser.add_argument("--source", type=Path, default=None, help="benchmark an existing NDJSON file (e.g. scripts/scale_fixture.py output)")
     args = parser.parse_args()
 
-    if args.scale == "100k":
+    if args.source is not None:
+        source_path = args.source
+        scale_label = source_path.stem
+    elif args.scale == "100k":
         source_path = REPO / "datasets" / "phase5a_100k" / "ingestion_rows.ndjson"
         if not source_path.exists():
             raise SystemExit(f"missing {source_path} -- run `make dataset` first")

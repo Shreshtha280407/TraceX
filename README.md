@@ -105,17 +105,24 @@ Status values: **Implemented** (present in source and covered by a committed tes
 | Anomaly scoring and ranking (layers A and D deployed) | Implemented, optional (`ml` extra); evaluated on synthetic data only | `app/ml/` |
 | Layers B, C, E and supervised layer S | Layers B, C, E: implemented in the offline harness, not part of the deployed release. Layer S: **Research-only** | `app/ml/layers.py` |
 | Evidence references and record replay by locator | Implemented | `GET /v1/evidence/{source_id}/records` |
+| Offline Geo-IP / ASN enrichment from open downloadable databases (DB-IP country lite CC BY 4.0, IPtoASN PDDL) | Implemented | `app/engine/geoip.py`, `tracex-geoip`; `tests/unit/test_entities_network_risk.py` |
+| Entity clustering (common-input-ownership, CoinJoin-shaped inputs excluded) | Implemented | `app/engine/analytics.py`; `GET /v1/cases/{id}/entities` |
+| Graph embeddings (spectral, wallet x transaction) and similar-wallet search | Implemented | `app/engine/analytics.py`; `GET /v1/cases/{id}/entities/{wallet}/similar` |
+| Network <-> blockchain correlation (relay concentration tests, Geo-IP mismatch, network context on every ML finding) | Implemented | `app/engine/analytics.py`, `app/ml/findings.py`; `GET /v1/cases/{id}/network` |
+| Risk propagation from analyst-seeded illicit wallets (UTXO haircut taint, downstream + upstream) | Implemented | `app/engine/analytics.py`; `/v1/cases/{id}/risk*` |
+| Calibrated confidence per finding (isotonic on labelled synthetic truth; statistical for network tests; anomaly p-value) | Implemented | `app/engine/confidence.py`, `scripts/calibrate_confidence.py` |
+| Memory-adaptive execution (in-memory or bounded on-disk) for multi-million-row imports | Implemented | `app/resources.py`, `app/engine/bounded.py` |
 | Analyst review with optimistic concurrency | Implemented | `POST /v1/findings/{id}/reviews` |
 | Case-scoped evidence export with review and audit history | Implemented | `GET /v1/cases/{id}/findings/export` |
-| Feature export | Implemented | `GET /v1/cases/{id}/features/export` |
+| Feature export | Implemented (streamed JSON, paged JSON, or the snapshot's Parquet feature store) | `GET /v1/cases/{id}/features/export[.parquet]`, `app/engine/feature_store.py` |
 | Durable job leasing, crash and retry recovery | Implemented (tested against SQLite, Section 14) | `tests/unit/test_phase_six_crash_retry.py` |
 | Server-sent case events with replay | Implemented | `GET /v1/cases/{id}/events` |
 | Single-finding chat assistant using a locally hosted Ollama model | Implemented, optional, **no committed test located**; requires a reachable Ollama endpoint | `app/engine/chat/assistant.py` |
 | Web frontend (React, 9 routes) | Implemented; Playwright smoke script provided, not executed here | `frontend/` |
 | Agentic or autonomous AI workflow | **Not implemented.** The chat feature is single-turn question answering over one finding's stored evidence, with no tools or actions | — |
 | Incremental or provisional graph per ingestion batch | **Not implemented** (documented gap in `docs/phase6.md`) | — |
-| Container images for API and worker | **Not implemented** — no `Dockerfile` in the repository | — |
-| Ingestion of the official SIH-linked dataset | **Not verified** — dataset bytes unavailable | `docs/requirements.md` |
+| Offline Linux appliance (container image + compose + air-gapped installer) | Implemented; verified by building the image, an air-gapped install from the bundle, an end-to-end import, and a no-egress check on the worker | `Dockerfile`, `deploy/appliance/`, `scripts/build_offline_bundle.sh` |
+| Ingestion of PS-shaped datasets | Implemented. The PS publishes no dataset ("Dataset Link: Nil"; participants use synthetic data); header aliases, list encodings and epoch timestamps are mapped, and `tracex-dataset inspect` verifies any supplied file | `app/engine/canonical/profiles.py`, `app/engine/dataset_cli.py`, `data_manifest.json` |
 
 ## 6. System architecture
 
@@ -510,6 +517,23 @@ Versions below are version constraints from `pyproject.toml` and `frontend/packa
 ```
 
 ## 11. Installation and deployment
+
+### 11.0 Fastest path: the offline Linux appliance
+
+For a complete offline installation (PostgreSQL, API + web UI, worker, ML stack
+and the open Geo-IP database in one image), build the bundle once on a connected
+machine and install it on any Linux host with Docker — no network needed there:
+
+```bash
+scripts/build_offline_bundle.sh                 # -> dist/tracex-offline-<version>.tar.gz
+# on the target host
+tar xzf tracex-offline-<version>.tar.gz && ./tracex-offline/install.sh
+# open http://127.0.0.1:8000/
+```
+
+Details: `deploy/appliance/README.md`. For development, follow 11.1 onwards. The
+Geo-IP database for a source checkout is installed with `make geoip` (or, offline,
+`uv run tracex-geoip import <DB-IP / IPtoASN files>`).
 
 ### 11.1 Prerequisites
 

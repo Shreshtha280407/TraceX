@@ -84,8 +84,15 @@ def layer_a_structure(
     n_clusters: int = 8,
     stratified: bool = True,
     n_jobs: int = 1,
+    score_with: tuple[str, ...] = ("isolation_forest", "ecod"),
 ) -> LayerScore:
     """Isolation Forest + ECOD, optionally scored *within* a shape family.
+
+    `score_with` names the detectors whose ranks form the layer score. ECOD is
+    always fitted, because its per-column contributions are the explanation a
+    reviewer sees; release anomaly-stack-v2 ranks by Isolation Forest alone
+    (it beat IF+ECOD on every task, split and dataset in the v2 study,
+    experiments/model_decision_v2.md).
 
     Two detectors rather than one: Isolation Forest ranks well but its score is a
     path length with no per-feature meaning, while ECOD's score is literally a sum
@@ -130,16 +137,18 @@ def layer_a_structure(
         ecod_score[members] = contributions.sum(axis=1)
         attribution[members] = contributions.astype(np.float32)
 
-    combined = 0.5 * (
-        _rank_normalise(forest_score, train_mask) + _rank_normalise(ecod_score, train_mask)
-    )
+    ranked = {"isolation_forest": forest_score, "ecod": ecod_score}
+    unknown = set(score_with) - set(ranked)
+    if unknown or not score_with:
+        raise ValueError(f"score_with must name isolation_forest and/or ecod, got {score_with}")
+    combined = np.mean([_rank_normalise(ranked[name], train_mask) for name in score_with], axis=0)
     return LayerScore(
         name="A_structure",
         score=combined,
         detail={"isolation_forest": forest_score, "ecod": ecod_score, "shape_family": family},
         attribution=attribution,
         attribution_columns=table.columns,
-        notes={"stratified": stratified, "clusters": int(np.unique(family).size)},
+        notes={"stratified": stratified, "clusters": int(np.unique(family).size), "score_with": list(score_with)},
     )
 
 

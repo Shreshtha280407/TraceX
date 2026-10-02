@@ -56,6 +56,8 @@ class StackConfig:
     bucket_seconds: int = 900
     shrinkage: float = 4.0
     clusters: int = 8
+    #: Detectors whose ranks form layer A's score (v2: Isolation Forest alone).
+    a_score_with: tuple[str, ...] = ("isolation_forest",)
     threads: int = field(default_factory=configure_threads)
 
 
@@ -120,6 +122,7 @@ def run_stack(
         layer_objects["A_structure"] = layers.layer_a_structure(
             transaction_table, train_mask,
             n_clusters=config.clusters, stratified=config.stratified, n_jobs=config.threads,
+            score_with=config.a_score_with,
         )
         timings["layer_a"] = time.perf_counter() - start
         if config.stratified and config.with_global_variant:
@@ -132,6 +135,7 @@ def run_stack(
             globals_ = layers.layer_a_structure(
                 transaction_table, train_mask,
                 n_clusters=config.clusters, stratified=False, n_jobs=config.threads,
+                score_with=config.a_score_with,
             )
             globals_.name = "A_global"
             layer_objects["A_global"] = globals_

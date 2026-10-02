@@ -1,0 +1,63 @@
+# TraceX offline appliance: PostgreSQL + API (serves the web UI) + worker.
+#
+# Every service sits on `tracex_internal`, a network with no route to the
+# internet. Only the API is additionally attached to `tracex_ui` so its port
+# can be published to the host; the worker and the database never leave the
+# internal network, so analysis provably runs offline.
+name: tracex
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tracex
+      POSTGRES_USER: tracex
+      POSTGRES_PASSWORD: ${TRACEX_DB_PASSWORD:?set TRACEX_DB_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracex -d tracex"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - tracex_postgres:/var/lib/postgresql/data
+    networks: [tracex_internal]
+    restart: unless-stopped
+
+  api:
+    image: ${TRACEX_IMAGE:-tracex-appliance:latest}
+    env_file: .env
+    environment:
+      TRACEX_DATABASE_URL: postgresql+psycopg://tracex:${TRACEX_DB_PASSWORD}@postgres:5432/tracex
+    command: ["sh", "-c", "tracex-init-db && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "${TRACEX_BIND:-127.0.0.1}:${TRACEX_PORT:-8000}:8000"
+    volumes:
+      - tracex_evidence:/data/evidence
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [tracex_internal, tracex_ui]
+    restart: unless-stopped
+
+  worker:
+    image: ${TRACEX_IMAGE:-tracex-appliance:latest}
+    env_file: .env
+    environment:
+      TRACEX_DATABASE_URL: postgresql+psycopg://tracex:${TRACEX_DB_PASSWORD}@postgres:5432/tracex
+    command: ["tracex-worker", "--worker-id", "appliance-worker"]
+    healthcheck:
+      disable: true
+    volumes:
+      - tracex_evidence:/data/evidence
+    depends_on:
+      api: {condition: service_healthy}
+    networks: [tracex_internal]
+    restart: unless-stopped
+
+networks:
+  tracex_internal:
+    internal: true
+  tracex_ui: {}
+
+volumes:
+  tracex_postgres:
+  tracex_evidence:

@@ -134,6 +134,19 @@ def test_phase41_api_response_shape_feature_export_and_synthetic_seed_isolation(
         assert seeded.status_code == 201, seeded.text
         after_seed = client.get(f"/v1/cases/{case['case_id']}/findings", headers=headers).json()["findings"]
         assert any(item["finding_type"] == "synthetic_seed_proximity" for item in after_seed)
+        # The seed context is merged into the frozen feature rows (Parquet feature store).
+        reexported = client.get(f"/v1/cases/{case['case_id']}/features/export", headers=headers).json()["rows"]
+        seeded_rows = [row for row in reexported if row["features"]["risk_seed_count"]]
+        assert seeded_rows and all(row["features"]["risk_propagation_score"] > 0 for row in seeded_rows)
+        assert len(reexported) == len(exported["rows"])
+        paged = client.get(f"/v1/cases/{case['case_id']}/features/export", headers=headers,
+                           params={"limit": 2, "offset": 1}).json()
+        assert paged["total"] == len(reexported) and [row["feature_row_id"] for row in paged["rows"]] == [
+            row["feature_row_id"] for row in reexported[1:3]
+        ]
+        parquet = client.get(f"/v1/cases/{case['case_id']}/features/export.parquet", headers=headers,
+                             params={"snapshot_id": snapshot_id})
+        assert parquet.status_code == 200 and parquet.content[:4] == b"PAR1"
         non_synthetic = client.post("/v1/cases", headers=headers, json={"name": "real"}).json()
         rejected = client.post(
             f"/v1/cases/{non_synthetic['case_id']}/synthetic-review-seeds", headers=headers,
