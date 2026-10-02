@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
+import os
 import socket
 import time
 
@@ -53,6 +55,9 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--worker-id", default=f"{socket.gethostname()}-phase1")
     args = parser.parse_args()
+    # Stage-level progress (e.g. the bounded findings' per-section timings) at INFO.
+    logging.basicConfig(level=os.environ.get("TRACEX_LOG_LEVEL", "INFO").upper(),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Bring an older database forward (e.g. import_jobs.total_records) before the
     # first claim query selects every ImportJob column.
     ensure_schema()

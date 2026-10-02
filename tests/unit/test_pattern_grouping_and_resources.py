@@ -302,7 +302,7 @@ def test_worker_processes_give_identical_results(tmp_path: Path, monkeypatch) ->
     monkeypatch.setenv("TRACEX_EXECUTION_MODE", "memory")
     memory_findings, memory_features, memory_rows = _run(tmp_path, monkeypatch, rows, "memory")
     monkeypatch.setenv("TRACEX_EXECUTION_MODE", "bounded")
-    monkeypatch.setenv("TRACEX_FINDINGS_WORKERS", "2")
+    monkeypatch.setenv("TRACEX_WORKERS", "2")
     monkeypatch.setattr(bounded, "_chain_chunk", lambda plan: 1)
     monkeypatch.setattr(bounded, "_MIN_PARALLEL_CHUNK", 1)
     _, parallel_features, parallel_rows = _run(tmp_path, monkeypatch, rows, "parallel")

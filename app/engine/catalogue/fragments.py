@@ -35,9 +35,12 @@ def _envelope(
     source_id: str,
     source_sha256: str,
     logical_record: int | None = None,
+    canonical: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """`canonical`, when given, is each fact's canonical JSON already
+    serialized (app.engine.canonical.batch), in the same order."""
     rows = []
-    for fact in facts:
+    for position, fact in enumerate(facts):
         refs = fact.get("source_refs", [])
         locator = refs[0]["locator"] if refs else None
         rows.append(
@@ -49,7 +52,8 @@ def _envelope(
                 "txid": fact.get("txid"),
                 "logical_record": logical_record or _logical_record(locator),
                 "source_locator": locator,
-                "canonical_json": json.dumps(fact, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+                "canonical_json": canonical[position] if canonical is not None
+                else json.dumps(fact, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
             }
         )
     return rows
@@ -99,14 +103,22 @@ def publish_batch(
     source_id: str,
     logical_batch: int,
     facts: dict[str, list[dict[str, Any]]],
+    canonical: dict[str, list[str]] | None = None,
 ) -> list[FragmentArtifact]:
-    """Write a batch's non-empty fact groups before their DB receipts are committed."""
+    """Write a batch's non-empty fact groups before their DB receipts are committed.
+
+    `canonical` optionally carries each group's facts already serialized; a
+    group whose list does not match its facts one-to-one is serialized here."""
     base = evidence_root / case_id / "derived" / source_sha256 / f"batch-{logical_batch:08d}"
     artifacts = []
     for record_type, records in facts.items():
         if not records:
             continue
-        rows = _envelope(record_type, records, source_id=source_id, source_sha256=source_sha256)
+        serialized = (canonical or {}).get(record_type)
+        rows = _envelope(
+            record_type, records, source_id=source_id, source_sha256=source_sha256,
+            canonical=serialized if serialized is not None and len(serialized) == len(records) else None,
+        )
         relative = Path(case_id) / "derived" / source_sha256 / f"batch-{logical_batch:08d}" / f"{record_type}.parquet"
         digest, size = _write_immutable(base / f"{record_type}.parquet", rows)
         artifacts.append(FragmentArtifact(record_type, len(rows), digest, size, relative.as_posix()))

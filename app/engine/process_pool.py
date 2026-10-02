@@ -75,44 +75,87 @@ class ProcessPool:
             for _ in range(workers)
         ]
 
-    def imap(self, target: str, jobs: Iterable[Any]) -> Iterator[Any]:
-        """target(job) for every job ("module:function"), yielded in job order."""
-        jobs = list(jobs)
-        results: dict[int, tuple[bool, Any]] = {}
+    def imap(self, target: str, jobs: Iterable[Any], *, window: int | None = None) -> Iterator[Any]:
+        """target(job) for every job ("module:function"), yielded in job order.
+
+        `jobs` may be a lazy iterator: it is drawn on only as workers free up,
+        and at most `window` jobs (default: two per worker) are in flight or
+        waiting to be yielded, so memory stays bounded however many there are.
+        An exception raised while drawing the next job is re-raised here, in
+        order, after every earlier result."""
+        window = max(len(self._processes), window or 2 * len(self._processes))
+        source = iter(jobs)
+        slots = threading.Semaphore(window)
+        draw = threading.Lock()
         condition = threading.Condition()
-        next_job = iter(range(len(jobs)))
-        lock = threading.Lock()
+        results: dict[int, tuple[str, Any]] = {}
+        state = {"next": 0, "end": None, "stop": False}
 
         def drive(process: subprocess.Popen) -> None:
             while True:
-                with lock:
-                    index = next(next_job, None)
-                if index is None:
+                slots.acquire()
+                with draw:
+                    if state["end"] is not None or state["stop"]:
+                        slots.release()
+                        return
+                    index = state["next"]
+                    try:
+                        job = next(source)
+                    except StopIteration:
+                        state["end"] = index
+                        job = None
+                    except BaseException as exc:  # noqa: BLE001 - re-raised in order by the consumer
+                        state["end"] = index + 1
+                        with condition:
+                            results[index] = ("raise", exc)
+                            condition.notify_all()
+                        return
+                    else:
+                        state["next"] = index + 1
+                if job is None:
+                    slots.release()
+                    with condition:
+                        condition.notify_all()
                     return
                 try:
-                    _send(process.stdin, (target, jobs[index]))
-                    outcome = _receive(process.stdout)
+                    _send(process.stdin, (target, job))
+                    ok, value = _receive(process.stdout)
+                    outcome = ("ok", value) if ok else ("error", value)
                 except (EOFError, BrokenPipeError, OSError):
-                    outcome = (False, f"worker process exited (code {process.poll()}) during job {index}")
+                    outcome = ("error", f"worker process exited (code {process.poll()}) during job {index}")
+                del job
                 with condition:
                     results[index] = outcome
                     condition.notify_all()
-                if not outcome[0]:
+                if outcome[0] != "ok":
                     return
 
         threads = [threading.Thread(target=drive, args=(process,), daemon=True) for process in self._processes]
         for thread in threads:
             thread.start()
-        for index in range(len(jobs)):
-            with condition:
-                while index not in results:
-                    if not any(thread.is_alive() for thread in threads) and index not in results:
-                        raise WorkerError(f"no worker left to run job {index}")
-                    condition.wait(timeout=1.0)
-                ok, value = results.pop(index)
-            if not ok:
-                raise WorkerError(value)
-            yield value
+        index = 0
+        try:
+            while True:
+                with condition:
+                    while index not in results:
+                        if state["end"] is not None and index >= state["end"]:
+                            return
+                        if not any(thread.is_alive() for thread in threads):
+                            raise WorkerError(f"no worker left to run job {index}")
+                        condition.wait(timeout=1.0)
+                    kind, value = results.pop(index)
+                slots.release()
+                if kind == "raise":
+                    raise value
+                if kind == "error":
+                    raise WorkerError(value)
+                index += 1
+                yield value
+        finally:
+            state["stop"] = True
+            # Unblock drivers waiting for a slot so they can see `stop` and exit.
+            for _ in threads:
+                slots.release()
 
     def close(self) -> None:
         for process in self._processes:

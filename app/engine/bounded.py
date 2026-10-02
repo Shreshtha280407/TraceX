@@ -25,8 +25,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import shutil
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Iterator
@@ -113,6 +113,20 @@ def _to_micros(value: datetime | None) -> int | None:
         return None
     delta = value - _EPOCH
     return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+class _Clock:
+    """Seconds per named section, for the log line a long stage ends with."""
+
+    def __init__(self) -> None:
+        self.laps: dict[str, float] = {}
+        self._last = time.perf_counter()
+
+    def lap(self, name: str | None = None) -> None:
+        now = time.perf_counter()
+        if name is not None:
+            self.laps[name] = round(now - self._last, 1)
+        self._last = now
 
 
 def _quote(path: Path) -> str:
@@ -764,9 +778,10 @@ def materialize_findings_bounded(
     string, integer = pa.string(), pa.int64()
     store.con.execute(_CONTRIB_DDL)
     store.con.execute(_DET_DDL)
-    workers = _partition_workers(plan, store.record_count)
+    workers = plan.worker_processes(records=store.record_count)
     chain_chunk = _chain_chunk(plan)
 
+    clock = _Clock()
     # ---- peeling: walks in SQL, signals per chunk of whole clusters ---------
     walks = _peeling(store, DEFAULT_MAX_PEELING_HOPS, DEFAULT_MIN_PEELING_LENGTH)
     clusters = _chain_clusters(store, walks)
@@ -803,6 +818,7 @@ def materialize_findings_bounded(
             _release_freed_memory()
     chunks.clear()
 
+    clock.lap("peeling")
     # ---- coinjoin-like: per transaction, prefiltered in SQL ------------------
     candidates = [txid for (txid,) in store.rows(
         """
@@ -844,6 +860,7 @@ def materialize_findings_bounded(
         _store_rows(store, "det", det_rows, _DET_COLUMNS, (integer, string, integer, integer, string))
         _release_freed_memory()
 
+    clock.lap("coinjoin")
     # ---- address-window features, one partition of addresses at a time -----
     coverage = det.coverage_from_counts(graph, total=store.transactions_total, timed=store.timed, block_timed=store.block_timed)
     coverage_json = json.dumps(coverage)
@@ -858,7 +875,7 @@ def materialize_findings_bounded(
     store.con.execute(_KEPT_DDL)
     store.con.execute(_CAND_DDL)
     partitions = plan.partitions(records=store.record_count)
-    workers = _partition_workers(plan, store.record_count)
+    workers = plan.worker_processes(records=store.record_count)
     opposing_json = det.opposing_evidence_json()
     position = 0
     try:
@@ -881,6 +898,7 @@ def materialize_findings_bounded(
         writer.abort()
         raise
 
+    clock.lap("address_windows")
     # ---- detector findings, borrowing their window's feature vector ---------
     # Ordinals are dense (patterns 0..n, coinjoin from contrib_base), so the
     # wide signal payloads are read a slice at a time and never sorted by
@@ -914,6 +932,7 @@ def materialize_findings_bounded(
             )
             _release_freed_memory()
 
+    clock.lap("detector_findings")
     # ---- de-duplicate, rank and write (same order as dedupe_and_rank) -------
     total = 0
     ids = det._uuid4_strings()
@@ -956,6 +975,8 @@ def materialize_findings_bounded(
         _release_freed_memory()
     bulk_insert_serialized(session, FindingRecord, finding_rows, det._FINDING_JSON_COLUMNS)
     det.record_findings_event(session, snapshot, total)
+    clock.lap("rank_and_write")
+    logger.info("bounded findings: %d findings, %d worker process(es), seconds %s", total, workers, clock.laps)
     return total
 
 
@@ -1145,27 +1166,8 @@ def _detector_job(job: dict[str, Any]) -> dict[str, Any]:
         store.con.close()
 
 
-#: Snapshots smaller than this run the address partitions in-process: a
-#: worker process costs ~1 s to start, more than such a snapshot saves.
-_PARALLEL_MIN_RECORDS = 50_000
-#: Memory one partition worker may use (its partition, DuckDB and imports).
-_WORKER_BUDGET_BYTES = 1 << 30
 _CAND_DDL = "CREATE TABLE cand (score DOUBLE, rule_id VARCHAR, entity_ref VARCHAR, start_us BIGINT, end_us BIGINT, pos BIGINT, row VARCHAR)"
 _KEPT_DDL = "CREATE TABLE kept (addr VARCHAR, seconds BIGINT, us BIGINT, feature VARCHAR)"
-
-
-def _partition_workers(plan: ResourcePlan, records: int) -> int:
-    """Processes for the address-window pass: one per core the budget can feed
-    (TRACEX_FINDINGS_WORKERS overrides; 1 keeps it in-process)."""
-    override = os.environ.get("TRACEX_FINDINGS_WORKERS")
-    if override:
-        try:
-            return max(1, int(override))
-        except ValueError:
-            logger.warning("TRACEX_FINDINGS_WORKERS=%r is not a number; ignoring it", override)
-    if records < _PARALLEL_MIN_RECORDS:
-        return 1
-    return max(1, min(plan.cpu_count, plan.memory_budget_bytes // _WORKER_BUDGET_BYTES))
 
 
 def _partition_job(job: dict[str, Any]) -> dict[str, Any]:

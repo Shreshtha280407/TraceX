@@ -37,6 +37,25 @@ def _rss_mb(pid: int) -> int:
     return 0
 
 
+def _tree_rss_mb(pid: int) -> int:
+    """Resident memory of a process plus all its descendants (worker pools)."""
+    children: dict[int, list[int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        children.setdefault(int(fields[1]), []).append(int(entry.name))
+    total, stack = 0, [pid]
+    while stack:
+        current = stack.pop()
+        total += _rss_mb(current)
+        stack.extend(children.get(current, []))
+    return total
+
+
 def _get(base: str, path: str, headers: dict, attempts: int = 10) -> dict:
     for attempt in range(attempts):
         request = urllib.request.Request(base + path, headers=headers)
@@ -104,10 +123,11 @@ def main() -> int:
         job_id = json.loads(upload.stdout)["job_id"]
         upload_seconds = time.time() - started
         stages: dict[str, float] = {}
-        peak = 0
+        peak = tree_peak = 0
         job: dict = {}
         while True:
             peak = max(peak, _rss_mb(worker.pid))
+            tree_peak = max(tree_peak, _tree_rss_mb(worker.pid))
             job = _get(base, f"/v1/jobs/{job_id}", headers)
             stages.setdefault(job["stage"], round(time.time() - started, 1))
             if job["state"] in {"completed", "failed"}:
@@ -123,6 +143,7 @@ def main() -> int:
             "rows_seen": job.get("rows_seen"), "rows_accepted": job.get("rows_accepted"),
             "rows_quarantined": job.get("rows_quarantined"), "upload_seconds": round(upload_seconds, 1),
             "total_seconds": total, "stage_started_at_seconds": stages, "worker_peak_rss_mb": peak,
+            "worker_tree_peak_rss_mb": tree_peak,
             "machine": _get(base, "/v1/healthz", headers).get("resources"),
         }
         if job.get("state") == "completed":

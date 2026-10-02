@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
+from collections import deque
 from collections.abc import Iterator
 from datetime import timedelta
 from itertools import islice
@@ -15,10 +15,11 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.engine.adapters import ParsedRow, SourceParseError, count_records, rows_for_source
-from app.engine.canonical import NormalizationError, normalize_row
+from app.engine.canonical.batch import RowOutcome, normalize_one
 from app.engine.catalogue import publish_batch
 from app.engine.findings import materialize_findings
 from app.engine.graph.builder import FactRecords, build_graph_snapshot, load_facts
+from app.engine.process_pool import ProcessPool
 from app.events import append_event
 from app.jobs.service import utcnow
 from app.models import EvidenceSource, FragmentReceipt, GraphSnapshot, ImportCheckpoint, ImportJob, Snapshot
@@ -33,6 +34,30 @@ PARSER_REVISION = "phase2-ingestion-v1"
 def _chunks(rows: Iterator[ParsedRow], size: int) -> Iterator[list[ParsedRow]]:
     while batch := list(islice(rows, size)):
         yield batch
+
+
+def _normalized_batches(
+    batches: Iterator[list[ParsedRow]], *, workers: int, case_id: str, source_id: str, source_sha256: str,
+) -> Iterator[tuple[list[ParsedRow], list[RowOutcome]]]:
+    """(batch, per-row normalization outcome) in source order; the outcomes
+    are computed by `workers` processes when there is more than one."""
+    ids = {"case_id": case_id, "source_id": source_id, "source_sha256": source_sha256}
+    if workers <= 1:
+        for batch in batches:
+            yield batch, [normalize_one(row, **ids) for row in batch]
+        return
+    pending: deque[list[ParsedRow]] = deque()
+
+    def jobs() -> Iterator[dict]:
+        for batch in batches:
+            pending.append(batch)
+            yield {"rows": batch, **ids}
+
+    with ProcessPool(workers) as pool:
+        # One batch ahead per worker plus one: enough to keep them busy while
+        # this process commits, without holding the source in memory.
+        for outcomes in pool.imap("app.engine.canonical.batch:normalize_batch", jobs(), window=workers + 1):
+            yield pending.popleft(), outcomes
 
 
 #: A review budget outside this fraction of the snapshot is not a safe
@@ -199,6 +224,7 @@ def _commit_batch(
     facts: dict[str, list[dict]],
     accepted: int,
     quarantined: int,
+    canonical: dict[str, list[str]] | None = None,
 ) -> None:
     artifacts = publish_batch(
         evidence_root=settings.evidence_root,
@@ -207,6 +233,7 @@ def _commit_batch(
         source_id=source.id,
         logical_batch=batch_number,
         facts=facts,
+        canonical=canonical,
     )
     snapshot = _snapshot_for_job(session, job, source)
     for artifact in artifacts:
@@ -318,9 +345,15 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     # Source column -> canonical field renames applied by the schema profile
     # (app.engine.canonical.profiles); reported on the completion event.
     field_mapping: dict[str, str] = {}
-    for batch in _chunks(
-        (row for row in row_iterator if row.logical_record > last_record), batch_records
-    ):
+    # Normalizing rows is the CPU-heavy half of parsing; on a large import it
+    # runs in worker processes while this one deduplicates and commits, in
+    # source order, exactly as the in-process loop does.
+    batches = _normalized_batches(
+        _chunks((row for row in row_iterator if row.logical_record > last_record), batch_records),
+        workers=plan.worker_processes(records=job.total_records),
+        case_id=job.case_id, source_id=source.id, source_sha256=source.sha256,
+    )
+    for batch, outcomes in batches:
         parsed_any = True
         facts: dict[str, list[dict]] = {
             "transactions": [],
@@ -329,48 +362,44 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "network_observations": [],
             "quarantine": [],
         }
+        canonical: dict[str, list[str]] = {record_type: [] for record_type in facts}
         accepted = 0
         quarantined = 0
-        for row in batch:
-            try:
-                normalized = normalize_row(
-                    case_id=job.case_id, source_id=source.id, source_sha256=source.sha256, row=row
-                )
-                if normalized.field_mapping:
-                    field_mapping.update(normalized.field_mapping)
-                txid = bytes.fromhex(normalized.facts["transactions"][0]["txid"])
-                variant_hash = hashlib.blake2b(
-                    json.dumps(row.value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(),
-                    digest_size=16,
-                ).digest()
-                if txid in seen_txids:
-                    reason = (
-                        "conflicting transaction variant for canonical txid"
-                        if seen_txids[txid] not in (None, variant_hash)
-                        else "duplicate transaction row for canonical txid"
-                    )
-                    facts["quarantine"].append(
-                        _quarantine(
-                            case_id=job.case_id,
-                            source_id=source.id,
-                            source_sha256=source.sha256,
-                            row=row,
-                            reason=reason,
-                        )
-                    )
-                    quarantined += 1
-                    continue
-                for record_type, records in normalized.facts.items():
-                    facts[record_type].extend(records)
-                seen_txids[txid] = variant_hash
-                accepted += 1
-            except NormalizationError as exc:
+        for row, outcome in zip(batch, outcomes, strict=True):
+            if outcome.error is not None:
                 facts["quarantine"].append(
                     _quarantine(
-                        case_id=job.case_id, source_id=source.id, source_sha256=source.sha256, row=row, reason=str(exc)
+                        case_id=job.case_id, source_id=source.id, source_sha256=source.sha256, row=row,
+                        reason=outcome.error,
                     )
                 )
                 quarantined += 1
+                continue
+            if outcome.field_mapping:
+                field_mapping.update(outcome.field_mapping)
+            txid, variant_hash = outcome.txid, outcome.variant_hash
+            if txid in seen_txids:
+                reason = (
+                    "conflicting transaction variant for canonical txid"
+                    if seen_txids[txid] not in (None, variant_hash)
+                    else "duplicate transaction row for canonical txid"
+                )
+                facts["quarantine"].append(
+                    _quarantine(
+                        case_id=job.case_id,
+                        source_id=source.id,
+                        source_sha256=source.sha256,
+                        row=row,
+                        reason=reason,
+                    )
+                )
+                quarantined += 1
+                continue
+            for record_type, records in outcome.facts.items():
+                facts[record_type].extend(records)
+                canonical[record_type].extend(outcome.canonical[record_type])
+            seen_txids[txid] = variant_hash
+            accepted += 1
         _commit_batch(
             session,
             settings=settings,
@@ -381,6 +410,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             facts=facts,
             accepted=accepted,
             quarantined=quarantined,
+            canonical=canonical,
         )
         if collected is not None:
             # Same order load_facts reads them back in: per record type, by batch.
