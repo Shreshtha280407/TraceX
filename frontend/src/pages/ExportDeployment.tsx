@@ -146,11 +146,12 @@ export function ExportDeployment() {
 
           {findingsBundle && (
             <NeoCard>
-              <h2>Signed Export Manifest</h2>
+              <h2>Evidence Export Preview</h2>
               <div className="kv-row"><span className="k">Case</span><span>{findingsBundle.case_id}</span></div>
               <div className="kv-row"><span className="k">Method</span><span>{findingsBundle.method}</span></div>
               <div className="kv-row"><span className="k">ML enabled</span><span>{String(findingsBundle.ml_enabled)}</span></div>
               <div className="kv-row"><span className="k">Findings in bundle</span><span>{findingsBundle.findings.length}</span></div>
+              <p>Bounded preview: {findingsBundle.findings.length} of {findingsBundle.total} findings. Use the authenticated export.ndjson endpoint or the documented case export command for all findings. This JSON is not a cryptographically signed export.</p>
               {featuresBundle && (
                 <div className="kv-row">
                   <span className="k">Feature rows</span>

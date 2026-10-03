@@ -42,6 +42,7 @@ export function CaseSwitcher({ caseId, pathname }: { caseId: string; pathname: s
         options={options}
       />
       {current && <span className="badge tone-muted">{current.role.toUpperCase().replace("_", " ")}</span>}
+      {current && <span className="badge tone-muted">{current.scoring_mode ?? "unsupervised"}{current.synthetic ? " · DEMO" : ""}</span>}
     </div>
   );
 }

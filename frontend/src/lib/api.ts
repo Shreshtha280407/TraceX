@@ -37,7 +37,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // ---- Types (field names match app/api/routes.py exactly) ----
 
-export type Case = { case_id: string; name: string; synthetic: boolean; created_at: string | null };
+export type ScoringMode = "unsupervised" | "synthetic_demo" | "validated_candidate";
+export type Case = { case_id: string; name: string; synthetic: boolean; created_at: string | null; scoring_mode?: ScoringMode; candidate_domain?: string | null };
 export type CaseWithRole = Case & { role: "case_lead" | "analyst" | "reviewer" };
 export type CaseMember = { actor: string; role: "case_lead" | "analyst" | "reviewer" };
 export type CaseDetail = Case & { members: CaseMember[] };
@@ -60,7 +61,7 @@ export type JobProgress = {
 
 export type ImportJob = {
   analysis?: { state: "running" | "complete" | "degraded" | "failed" | "unknown"; retry_supported: boolean;
-    stages: { name: string; status: string; reason: string | null; duration_seconds: number | null }[] } | null;
+    stages: { name: string; status: string; reason: string | null; duration_seconds: number | null; details?: Record<string, unknown> }[] } | null;
   job_id: string;
   case_id: string;
   source_id: string;
@@ -155,6 +156,9 @@ export type Finding = {
   raw_score: number;
   score: number;
   rank: number | null;
+  family_rank?: number;
+  family_total?: number;
+  interpretation?: { category: string; review_disposition: string; scope: string };
   coverage: Record<string, unknown>;
   uncertainty: Record<string, unknown>;
   reason_codes: string[];
@@ -349,6 +353,7 @@ export type FindingsSummary = {
 };
 
 export type FindingsListResponse = {
+  review_policy?: { version: string; order: string; meaning: string };
   findings: Finding[];
   /** Real totals for the whole case — NOT the length of this page. */
   total: number;
@@ -380,6 +385,7 @@ export type ReviewRecord = {
 export type AuditEntry = { audit_id: string; action: string; detail: Record<string, unknown>; created_at: string | null };
 
 export type FindingEvidence = {
+  structured_evidence: StructuredFindingEvidence;
   finding: Finding;
   feature_vector: Record<string, unknown>;
   source_refs: unknown[];
@@ -398,10 +404,28 @@ export type FindingEvidence = {
   };
 };
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+export type EvidenceReference = { evidence_id: string; locator: string; locator_type?: string;
+  source_sha256?: string; reference_status?: string };
+export type StructuredFindingEvidence = {
+  schema: string; proposition: string; responsible_procedure: Record<string, unknown>;
+  interpretation: { category: string; review_disposition: string; scope: string };
+  supporting_observations: { statement: string; source_refs: EvidenceReference[] }[];
+  supporting_refs: EvidenceReference[];
+  observed_counter_evidence: { kind: string; statement: string; basis?: string; source_refs: EvidenceReference[] }[];
+  counter_evidence_summary: string; unverified_opposing_references: unknown[];
+  benign_alternatives: { statement: string; basis: string }[];
+  missing_evidence: string[]; coverage: Record<string, unknown>; graph_associations: GraphPath;
+  features: Record<string, unknown>; comparison_baselines: Record<string, unknown>;
+  review_decisions: ReviewRecord[]; score_provenance: Record<string, unknown>;
+  explanation_labels: Record<string, unknown>; contextual_review: Record<string, unknown>;
+};
+
 
 export type FindingsExportBundle = {
   case_id: string;
+  total: number;
+  limit: number;
+  offset: number;
   method: string;
   methods: string[];
   ml_enabled: boolean;
@@ -523,8 +547,8 @@ export const api = {
   // ---- Cases ----
   listCases: () => request<{ cases: CaseWithRole[] }>("/cases"),
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${caseId}`),
-  createCase: (name: string, synthetic: boolean) =>
-    request<Case>("/cases", { method: "POST", body: JSON.stringify({ name, synthetic }) }),
+  createCase: (name: string, synthetic: boolean, scoring_mode: ScoringMode = "unsupervised", candidate_domain?: string) =>
+    request<Case>("/cases", { method: "POST", body: JSON.stringify({ name, synthetic, scoring_mode, candidate_domain }) }),
   addMember: (caseId: string, actor: string, role: "case_lead" | "analyst" | "reviewer") =>
     request<{ case_id: string; actor: string; role: string }>(`/cases/${caseId}/members`, {
       method: "POST",
@@ -565,10 +589,10 @@ export const api = {
     ),
 
   // ---- Findings ----
-  listFindings: (caseId: string, limit = 50, offset = 0, ruleIds?: string[]) => {
+  listFindings: (caseId: string, limit = 50, offset = 0, ruleIds?: string[], reviewState?: string) => {
     const ruleParams = (ruleIds ?? []).map((id) => `rule_id=${encodeURIComponent(id)}`).join("&");
     return request<FindingsListResponse>(
-      `/cases/${caseId}/findings?limit=${limit}&offset=${offset}${ruleParams ? `&${ruleParams}` : ""}`
+      `/cases/${caseId}/findings?limit=${limit}&offset=${offset}${ruleParams ? `&${ruleParams}` : ""}${reviewState ? `&review_state=${encodeURIComponent(reviewState)}` : ""}`
     );
   },
   getFindingsSummary: (caseId: string) => request<FindingsSummary>(`/cases/${caseId}/findings/summary`),
@@ -576,14 +600,9 @@ export const api = {
   getPathSignals: (findingId: string) => request<PathSignals>(`/findings/${findingId}/path-signals`),
   submitReview: (
     findingId: string,
-    body: { expected_finding_version: number; disposition: string; reason: string; counterevidence_refs: { evidence_id: string; locator: string }[] }
+    body: { expected_finding_version: number; disposition: string; reason: string; counterevidence_refs: { evidence_id: string; locator: string; source_sha256?: string }[] }
   ) => request<{ review_id: string; finding: Finding }>(`/findings/${findingId}/reviews`, { method: "POST", body: JSON.stringify(body) }),
   exportFindings: (caseId: string) => request<FindingsExportBundle>(`/cases/${caseId}/findings/export`),
-  chatAboutFinding: (findingId: string, question: string, history: ChatMessage[]) =>
-    request<{ answer: string; model: string }>(`/findings/${findingId}/chat`, {
-      method: "POST",
-      body: JSON.stringify({ question, history }),
-    }),
 
   // ---- Entities, network correlation, Geo-IP, risk ----
   listEntities: (caseId: string, limit = 50, offset = 0) =>

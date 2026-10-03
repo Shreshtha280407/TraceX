@@ -335,7 +335,7 @@ class FactStore:
         self.con.unregister("_keys")
 
     # ---- ML -----------------------------------------------------------------
-    def ml_facts(self):
+    def ml_facts(self, *, extra_model_bytes=0):
         """The anomaly stack's integer-indexed arrays, built in DuckDB.
 
         Exactly what `app.ml.facts.facts_from_streams` builds from the same
@@ -353,11 +353,15 @@ class FactStore:
         con = self.con
         nt, no, ni = con.execute("SELECT (SELECT count(*) FROM tx), (SELECT count(*) FROM outputs), "
                                 "(SELECT count(*) FROM inputs)").fetchone()
+        if max(nt, no, ni) >= 2 ** 31:
+            raise RuntimeError("Compact int32 fact indexing supports fewer than 2^31 transactions/inputs/outputs; partition the case")
         # Includes ID dictionaries, feature matrices and fitting/scoring scratch
         # arrays, not just the compact Facts arrays. This is a conservative
         # supported limit and is recorded with the scoring stage.
-        self.ml_memory_estimate_bytes = int(nt * 1600 + no * 384 + ni * 80)
-        admit_global_allocation("ML", self.ml_memory_estimate_bytes, plan=self.plan)
+        self.ml_memory_estimate_bytes = int(nt * 1600 + no * 384 + ni * 80 + extra_model_bytes)
+        native_bytes = max(256, self.plan.memory_budget_bytes // (4 << 20)) * (1 << 20)
+        self.ml_joint_memory_estimate_bytes = self.ml_memory_estimate_bytes + native_bytes + (128 << 20)
+        admit_global_allocation("ML", self.ml_memory_estimate_bytes, plan=self.plan, native_bytes=native_bytes)
         con.execute(
             """
             CREATE OR REPLACE TABLE ml_tx AS
@@ -396,14 +400,16 @@ class FactStore:
             """
         )
 
-        def arrays(sql: str) -> list:
+        def arrays(sql: str, dtypes) -> list:
             count = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]
             reader = con.execute(sql).to_arrow_reader(_FETCH_ROWS)
             # These projections are integer-only. Arrow's to_pandas_dtype()
             # imports pandas even though the runtime intentionally has none.
             if any(not pa.types.is_integer(field.type) for field in reader.schema):
                 raise TypeError("ML numeric projection must contain only integer columns")
-            values = [np.empty(count, dtype=np.int64) for _ in reader.schema]
+            # Allocate the final widths, not simultaneous int64 intermediates
+            # and cast copies. Arrow conversion is bounded by _FETCH_ROWS.
+            values = [np.empty(count, dtype=dtype) for dtype in dtypes]
             offset = 0
             for batch in reader:
                 for target, column in zip(values, batch.columns, strict=True):
@@ -412,14 +418,15 @@ class FactStore:
             return values
 
         txids = [txid for (txid,) in self.rows("SELECT txid FROM ml_tx ORDER BY slot")]
-        tx_time, tx_fee = arrays("SELECT t, fee FROM ml_tx ORDER BY slot")
+        tx_time, tx_fee = arrays("SELECT t, fee FROM ml_tx ORDER BY slot", (np.int64, np.int64))
         out_tx, out_vout, out_value, out_addr, out_script = arrays(
-            "SELECT tx, vout, amount, addr, script FROM ml_out ORDER BY pos"
+            "SELECT tx, vout, amount, addr, script FROM ml_out ORDER BY pos",
+            (np.int32, np.int32, np.int64, np.int32, np.int8),
         )
-        in_tx, in_prev = arrays("SELECT tx, prev FROM ml_in ORDER BY seq")
+        in_tx, in_prev = arrays("SELECT tx, prev FROM ml_in ORDER BY seq", (np.int32, np.int32))
         spent_by = np.full(out_tx.shape[0], -1, dtype=np.int32)
-        spender_pos, spender_tx = arrays("SELECT prev, arg_max(tx, seq) FROM ml_in WHERE prev >= 0 GROUP BY prev")
-        spent_by[spender_pos.astype(np.int64)] = spender_tx
+        spender_pos, spender_tx = arrays("SELECT prev, arg_max(tx, seq) FROM ml_in WHERE prev >= 0 GROUP BY prev", (np.int32, np.int32))
+        spent_by[spender_pos] = spender_tx
         addresses = [address for (address,) in self.rows(
             "SELECT addr_key FROM (SELECT DISTINCT addr, addr_key FROM ml_out WHERE addr >= 0) ORDER BY addr"
         )]
@@ -427,13 +434,13 @@ class FactStore:
             con.execute(f"DROP TABLE {table}")
         return Facts(
             txids=txids, tx_index={txid: slot for slot, txid in enumerate(txids)},
-            tx_time=tx_time.astype(np.int64), tx_fee=tx_fee.astype(np.int64),
-            out_tx=out_tx.astype(np.int32), out_vout=out_vout.astype(np.int32),
-            out_value=out_value.astype(np.int64), out_addr=out_addr.astype(np.int32),
-            out_script=out_script.astype(np.int8), out_spent_by=spent_by,
-            in_tx=in_tx.astype(np.int32), in_prev=in_prev.astype(np.int32),
+            tx_time=tx_time, tx_fee=tx_fee,
+            out_tx=out_tx, out_vout=out_vout,
+            out_value=out_value, out_addr=out_addr,
+            out_script=out_script, out_spent_by=spent_by,
+            in_tx=in_tx, in_prev=in_prev,
             addresses=addresses, addr_index={address: slot for slot, address in enumerate(addresses)},
-        )
+        ).freeze_indexes()
 
     def network_observations(self) -> Iterator[dict]:
         for txid, src_ip, asn, country in self.rows(

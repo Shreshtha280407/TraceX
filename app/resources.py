@@ -20,6 +20,8 @@ import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.telemetry import memory_info
+
 logger = logging.getLogger(__name__)
 
 MB = 1 << 20
@@ -46,14 +48,17 @@ IN_MEMORY_BYTES_PER_SOURCE_BYTE = 20
 EXECUTION_MODES = ("memory", "bounded")
 
 
-def admit_global_allocation(stage: str, estimated_bytes: int, *, plan=None) -> None:
+def admit_global_allocation(stage: str, estimated_bytes: int, *, plan=None, native_bytes=0) -> None:
     """Algorithms with global arrays have a supported limit, not constant memory."""
     selected = plan or current_plan()
     available = available_memory_bytes()
-    ceiling = min(selected.memory_budget_bytes, int(available * .8)) if available else selected.memory_budget_bytes
-    if estimated_bytes > ceiling:
-        raise RuntimeError(f"{stage} admission failed: estimated global working set {estimated_bytes >> 20} MiB "
-                           f"exceeds supported budget {ceiling >> 20} MiB; increase memory or reduce snapshot size")
+    ceiling = min(selected.memory_budget_bytes, int(available * .8)) if available is not None else selected.memory_budget_bytes
+    required = estimated_bytes + native_bytes + (128 * MB if native_bytes else 0)
+    if required > ceiling:
+        raise RuntimeError(f"{stage} admission failed: estimated joint working set {required >> 20} MiB "
+                           f"(global {estimated_bytes >> 20}, native SQL {native_bytes >> 20}) exceeds "
+                           f"budget/available-memory ceiling {ceiling >> 20} MiB; inspect worker/container RAM, "
+                           "reduce concurrent load or use a supported snapshot; no stage was disabled")
 
 
 def admit_disk_allocation(stage: str, root: Path, estimated_bytes: int, *, reserve_bytes: int = 512 * MB) -> None:
@@ -109,6 +114,9 @@ def _cgroup_limit_and_usage() -> tuple[int | None, int | None]:
 def total_memory_bytes() -> int | None:
     """Physical memory, capped by this process's cgroup/container limit."""
     candidates: list[int] = []
+    observed = memory_info()["physical_bytes"]
+    if observed is not None:
+        candidates.append(observed)
     try:
         candidates.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
     except (ValueError, OSError, AttributeError):
@@ -134,11 +142,23 @@ def available_memory_bytes() -> int | None:
     if limit:
         candidates.append(max(0, limit - (usage or 0)))
     if not candidates:
-        total = total_memory_bytes()
-        # macOS exposes no "available" figure through sysconf; half of
-        # physical memory is a conservative stand-in.
-        return total // 2 if total else None
+        return memory_info()["available_bytes"]
     return min(candidates)
+
+
+def global_stage_estimates(counts, *, native_bytes=0):
+    """Metadata-only preflight, same coefficients used by actual stages."""
+    nt, no, ni = (int(counts.get(name, 0)) for name in ("transactions", "outputs", "inputs"))
+    if min(nt, no, ni) < 0:
+        raise ValueError("Counts must be non-negative")
+    overhead = native_bytes + (128 * MB if native_bytes else 0)
+    return {"ml_global_bytes": nt * 1600 + no * 384 + ni * 80,
+            "ml_joint_bytes": nt * 1600 + no * 384 + ni * 80 + overhead,
+            "analytics_joint_bytes": nt * 256 + no * 192 + ni * 96 + overhead,
+            "risk_joint_bytes": (no + ni) * 256 + nt * 192 + (no + ni) * 128 + overhead,
+            "dense_fact_array_bytes": nt * 44 + no * 29 + ni * 12,
+            "scratch_bytes": nt * 12000 + 512 * MB,
+            "scope": "Conservative admission estimates, not measured peaks; no large arrays allocated"}
 
 
 def cpu_count() -> int:

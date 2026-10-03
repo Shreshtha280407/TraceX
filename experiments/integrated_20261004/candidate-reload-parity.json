@@ -1,0 +1,52 @@
+{
+  "status": "PASS_WIRING_ONLY",
+  "scope": "Serialized/reloaded inference reproduces validation AP/Brier/confusion on 56 permitted tiny validation rows for all four candidates; NOT large-scale/real-data generalization or cross-platform bitwise parity",
+  "results": {
+    "hist": {
+      "status": "PASS",
+      "manifest_sha256": "48ca32852dbd446aa2ba952cb8449a1502275b5e911a62b02aad284a87834f45",
+      "payload_sha256": "ed2f1fa08f9894b0518486c68413347b94c9098de8383e1cfbca6db93b1ab63b",
+      "feature_sha256": "166e25f6f5eee3c10e538d5906bb502088c1b8e1d6ef8d520f7a73bfb612c3e6",
+      "versions": {
+        "joblib": "1.6.0",
+        "numpy": "2.5.3",
+        "scikit-learn": "1.9.1"
+      }
+    },
+    "xgboost": {
+      "status": "PASS",
+      "manifest_sha256": "eeb6e8330865652317d6e57bae255b1c3631e7793b12fc72c8ad684a0fc408f3",
+      "payload_sha256": "532a2d46fb925729be4ef689b4eb4b38acb97994af8996b787ea8581e4c94a77",
+      "feature_sha256": "166e25f6f5eee3c10e538d5906bb502088c1b8e1d6ef8d520f7a73bfb612c3e6",
+      "versions": {
+        "joblib": "1.6.0",
+        "numpy": "2.5.3",
+        "scikit-learn": "1.9.1",
+        "xgboost": "3.4.1"
+      }
+    },
+    "lightgbm": {
+      "status": "PASS",
+      "manifest_sha256": "fc175d9dd08ce2d415f3bf866c8e497dbcf63dc2e50814dc41af3ab1b33747ad",
+      "payload_sha256": "5a1a56a198d2461ea84f97034b339bdf6e8c14263fd2c23ad24ff8a7ca2d64b6",
+      "feature_sha256": "166e25f6f5eee3c10e538d5906bb502088c1b8e1d6ef8d520f7a73bfb612c3e6",
+      "versions": {
+        "joblib": "1.6.0",
+        "lightgbm": "4.7.0",
+        "numpy": "2.5.3",
+        "scikit-learn": "1.9.1"
+      }
+    },
+    "hybrid": {
+      "status": "PASS",
+      "manifest_sha256": "f22ca05a9f28b50b97e340ceefe95ae009ae9f374ee5f6f09d994d98303a0260",
+      "payload_sha256": "aeda37be7777c14cd16d9acd305849448839ed8cc79875c3e285b12dd11b34d9",
+      "feature_sha256": "166e25f6f5eee3c10e538d5906bb502088c1b8e1d6ef8d520f7a73bfb612c3e6",
+      "versions": {
+        "joblib": "1.6.0",
+        "numpy": "2.5.3",
+        "scikit-learn": "1.9.1"
+      }
+    }
+  }
+}

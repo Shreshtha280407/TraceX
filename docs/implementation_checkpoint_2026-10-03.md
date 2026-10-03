@@ -1,5 +1,7 @@
 # Implementation checkpoint: steps 1–5
 
+Historical report: measurements/checks below precede the integrated 2026-10-04 implementation. The reviewed 2026-10-03 release was committed as d88af37; its former dirty/uncommitted descriptions are historical. Previous optional LLM/unavailable checks do not describe the current product, which contains no LLM/chat. See integrated_implementation_2026-10-04.md for current verification and macbook_runbook.md for NOT RUN large acceptance gates.
+
 Historical checkpoint only. The user subsequently freed disk space and
 authorized completion of steps 6–12. See
 [the final acceptance report](implementation_acceptance_2026-10-03.md) for

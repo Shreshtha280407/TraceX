@@ -68,6 +68,8 @@ The 2026-10-03 copied-image install and no-egress/browser/scale evidence is in
 `docs/implementation_acceptance_2026-10-03.md`. Build-time internet is allowed;
 runtime API, worker and PostgreSQL isolation are tested separately. A verified
 compiled Geo-IP cache can be prepared with `scripts/prepare_geoip_cache.py`;
-the image verifies its SHA256SUMS and includes data editions/licences. Optional
-chat is explicitly unavailable if no pre-provisioned reachable Ollama exists.
+the image verifies its SHA256SUMS and includes data editions/licences.
+The current release contains no LLM/chat. Explanations are deterministic,
+source-backed evidence views. For native ARM64/amd64 macOS benchmark preparation,
+Docker VM resource admission and loopback UI routing see `docs/macbook_runbook.md`.
 Never include `.env`, databases, generated datasets or image tarballs in Git.

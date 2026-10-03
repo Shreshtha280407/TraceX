@@ -8,11 +8,34 @@ import shutil
 from pathlib import Path
 
 
-def main():
+def verify_cache(source):
+    manifest = json.loads((source / "manifest.json").read_text())
+    if manifest.get("format_version") != 1 or not manifest.get("sources"):
+        raise ValueError("Missing licensed compiled database provenance")
+    sums = (source / "SHA256SUMS").read_text().splitlines()
+    for line in sums:
+        expected, name = line.split("  ", 1)
+        path = source / name
+        if path.parent != source or path.is_symlink() or not path.is_file():
+            raise ValueError("invalid checksum inventory path")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+                raise ValueError(f"Geo-IP cache checksum mismatch: {name}")
+    names = {line.split("  ", 1)[1] for line in sums}
+    if names != {path.name for path in source.iterdir() if path.name != "SHA256SUMS"}:
+        raise ValueError("Geo-IP checksum inventory is incomplete")
+    return {"files_verified": len(names), "sources": manifest["sources"]}
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("var/geoip/compiled"))
-    args = parser.parse_args()
+    parser.add_argument("--verify-existing", action="store_true", help="verify an existing build cache without overwriting it")
+    args = parser.parse_args(argv)
     source = args.source.resolve(strict=True)
+    if args.verify_existing:
+        print(json.dumps(verify_cache(source)))
+        return
     manifest = json.loads((source / "manifest.json").read_text())
     if manifest.get("format_version") != 1 or not manifest.get("sources"):
         raise ValueError("Missing licensed compiled database provenance")

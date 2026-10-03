@@ -21,9 +21,10 @@ dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "ruff>=0.12,<1"]
 # (poisson/nbinom/norm in detectors.py and fusion.py). A direct import belongs in
 # the declared dependency set, or a future scikit-learn that drops or loosens the
 # transitive pin breaks the stack with no warning.
-ml = ["scikit-learn>=1.5,<2", "numpy>=1.26,<3", "scipy>=1.11,<2"]
+ml = ["scikit-learn>=1.5,<2", "numpy>=1.26,<3", "scipy>=1.11,<2", "joblib>=1.5,<2", "threadpoolctl>=3,<4"]
 # Isolated synthetic research comparators; never installed by the appliance's ml extra.
-research = ["xgboost-cpu>=3,<4; platform_machine == 'x86_64'", "lightgbm>=4,<5"]
+research = ["xgboost-cpu>=3,<4; platform_machine == 'x86_64' and sys_platform != 'darwin'", "xgboost>=3,<4; sys_platform == 'darwin' or platform_machine == 'arm64' or platform_machine == 'aarch64'", "lightgbm>=4,<5"]
+diagnostics = ["psutil>=7,<8"]
 
 [project.scripts]
 tracex-init-db = "app.db:init_database"

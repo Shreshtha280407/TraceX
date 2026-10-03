@@ -130,7 +130,7 @@ def _rows() -> list[dict]:
     return rows
 
 
-def _ingest_fresh(tmp_path_factory: pytest.TempPathFactory, *, label: str, settings_overrides: dict | None = None):
+def _ingest_fresh(tmp_path_factory: pytest.TempPathFactory, *, label: str, settings_overrides: dict | None = None, case_overrides: dict | None = None):
     """Build an isolated case + source + job and drive it through the real worker.
 
     Every scenario test (ML disabled, missing dependency, invalid budget, a
@@ -155,7 +155,7 @@ def _ingest_fresh(tmp_path_factory: pytest.TempPathFactory, *, label: str, setti
         user = User(external_subject=f"{label}-user")
         session.add(user)
         session.flush()
-        case = Case(name=f"ML pipeline integration: {label}", synthetic=True, created_by=user.id)
+        case = Case(name=f"ML pipeline integration: {label}", synthetic=True, created_by=user.id, **(case_overrides or {}))
         session.add(case)
         session.flush()
         session.add(CaseMembership(case_id=case.id, user_id=user.id, role="case_lead"))

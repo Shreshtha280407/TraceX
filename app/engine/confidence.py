@@ -63,7 +63,9 @@ TARGET = "synthetic-pattern-majority-v1"
 
 
 def feature_contract(rule_version):
-    if rule_version.startswith("anomaly-stack-"):
+    if rule_version.startswith("anomaly-stack-candidate-"):
+        return "causal-structure-prior-bucket-v1"
+    if rule_version.startswith("anomaly-stack-") and not rule_version.startswith("anomaly-stack-candidate-"):
         return rule_version
     return "phase4.1-feature-v1" if rule_version == "deterministic-v1" else rule_version
 
@@ -127,7 +129,7 @@ def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_ve
             "registry_key": [rule_id, rule_version, contract, target],
             "training_provenance": calibration.get("fixture"), "split_policy": calibration.get("fit"),
             "applicability_domain": "labelled synthetic fixture; not probability of real-world criminality"})
-    if rule_version.startswith("anomaly-stack-"):
+    if rule_version.startswith("anomaly-stack-") and not rule_version.startswith("anomaly-stack-candidate-"):
         p_value = anomaly_p_value(feature_vector.get("fused_score", raw_score))
         result["anomaly_p_value"] = p_value
         result["anomaly_tail_basis"] = "theoretical Gaussian upper tail; fused dependence/distribution not validated"

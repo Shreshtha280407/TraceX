@@ -34,34 +34,21 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _rss_mb(pid: int) -> int:
-    try:
-        with open(f"/proc/{pid}/status") as handle:
-            for line in handle:
-                if line.startswith("VmRSS"):
-                    return int(line.split()[1]) // 1024
-    except OSError:
-        return 0
-    return 0
+def _rss_mb(pid: int) -> float | None:
+    from app.telemetry import process_rss_bytes
+    value = process_rss_bytes(pid)
+    return value / (1 << 20) if value is not None else None
 
 
-def _tree_rss_mb(pid: int) -> int:
-    """Resident memory of a process plus all its descendants (worker pools)."""
-    children: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            continue
-        children.setdefault(int(fields[1]), []).append(int(entry.name))
-    total, stack = 0, [pid]
-    while stack:
-        current = stack.pop()
-        total += _rss_mb(current)
-        stack.extend(children.get(current, []))
-    return total
+def _tree_rss_mb(pid: int) -> float | None:
+    from app.telemetry import process_rss_bytes
+    value = process_rss_bytes(pid, tree=True)
+    return value / (1 << 20) if value is not None else None
+
+
+def observed_max(*values):
+    available = [value for value in values if value is not None]
+    return max(available) if available else None
 
 
 def _get(base: str, path: str, headers: dict, attempts: int = 3, timeout: float = 10) -> dict:
@@ -88,6 +75,7 @@ def _sha(path):
 
 
 def _environment(source, work):
+    from app.telemetry import host_metrics
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=REPO)
 
@@ -114,7 +102,7 @@ def _environment(source, work):
             "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
             "child_thread_caps": {name: 1 for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                                                        "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")},
-            "meminfo": Path("/proc/meminfo").read_text(), "source_sha256": _sha(source),
+            "resources": host_metrics(), "source_sha256": _sha(source),
             "manifests": {p.name: {"sha256": _sha(p), "content": json.loads(p.read_text())}
                           for p in source.parent.glob("*manifest.json")},
             "disk": shutil.disk_usage(work)._asdict(),
@@ -126,7 +114,7 @@ def _environment(source, work):
 
 
 def acceptance_errors(job, inspection, *, required_stages, expected_counts=None, require_geoip=True,
-                      min_transactions=None, max_seconds=None, seconds=0):
+                      min_transactions=None, max_seconds=None, seconds=0, expected_release="anomaly-stack-v2"):
     errors = []
     if job.get("state") != "completed":
         errors.append(f"job state {job.get('state')}: {job.get('error_detail')}")
@@ -134,7 +122,7 @@ def acceptance_errors(job, inspection, *, required_stages, expected_counts=None,
     for name in required_stages:
         if stages.get(name, {}).get("status") not in {"complete", "written", "no_rows_flagged"}:
             errors.append(f"mandatory stage {name}: {stages.get(name, {}).get('status', 'missing')}")
-    if "ml_scoring" in required_stages and stages.get("ml_scoring", {}).get("details", {}).get("release_id") != "anomaly-stack-v2":
+    if "ml_scoring" in required_stages and stages.get("ml_scoring", {}).get("details", {}).get("release_id") != expected_release:
         errors.append("model release missing or mismatched")
     if require_geoip and not inspection.get("geoip", {}).get("installed"):
         errors.append("offline Geo-IP database missing")
@@ -151,8 +139,8 @@ def acceptance_errors(job, inspection, *, required_stages, expected_counts=None,
         errors.append(f"canonical transactions below {min_transactions}")
     if job.get("rows_seen") != job.get("rows_accepted", 0) + job.get("rows_quarantined", 0):
         errors.append("source row reconciliation failed")
-    if max_seconds is not None and seconds > max_seconds:
-        errors.append(f"elapsed {seconds:.3f}s exceeds target {max_seconds}s")
+    if max_seconds is not None and seconds >= max_seconds:
+        errors.append(f"elapsed {seconds:.3f}s must be less than target {max_seconds}s")
     return errors
 
 
@@ -206,12 +194,12 @@ def main(argv=None) -> int:
     result["configuration"] = {"workers": env.get("TRACEX_WORKERS"), "memory_budget_mb": env.get("TRACEX_MEMORY_BUDGET_MB"),
                                "execution_mode": env.get("TRACEX_EXECUTION_MODE"),
                                "required_stages": args.required_stages.split(","), "require_geoip": not args.allow_missing_geoip}
-    job, peak, tree_peak, api_peak = {}, 0, 0, 0
+    job, peak, tree_peak, api_peak = {}, None, None, None
     started = time.monotonic()
     deadline = started + args.timeout
     sampler = None
     sampling_stop = threading.Event()
-    samples = {"worker_peak_rss_mb": 0, "worker_tree_peak_rss_mb": 0, "api_peak_rss_mb": 0}
+    samples = {"worker_peak_rss_mb": None, "worker_tree_peak_rss_mb": None, "api_peak_rss_mb": None}
     base = f"http://127.0.0.1:{args.port}"
     headers = {"X-TraceX-Actor": "scale-benchmark"}
     try:
@@ -281,7 +269,7 @@ def main(argv=None) -> int:
                     values = {"worker_peak_rss_mb": _rss_mb(worker.pid), "worker_tree_peak_rss_mb": _tree_rss_mb(worker.pid),
                               "api_peak_rss_mb": _rss_mb(api.pid)}
                     for key, value in values.items():
-                        samples[key] = max(samples[key], value)
+                        samples[key] = observed_max(samples[key], value)
                     handle.write(json.dumps({"elapsed_seconds": time.monotonic() - pipeline_started,
                                              "observed_stage": job.get("stage"), "observed_attempt": job.get("attempt"),
                                              "disk_free_bytes": shutil.disk_usage(work).free, **values}) + "\n")
@@ -313,9 +301,9 @@ def main(argv=None) -> int:
         while True:
             if time.monotonic() >= deadline:
                 raise TimeoutError("overall benchmark timeout")
-            peak = max(peak, _rss_mb(worker.pid))
-            tree_peak = max(tree_peak, _tree_rss_mb(worker.pid))
-            api_peak = max(api_peak, _rss_mb(api.pid))
+            peak = observed_max(peak, _rss_mb(worker.pid))
+            tree_peak = observed_max(tree_peak, _tree_rss_mb(worker.pid))
+            api_peak = observed_max(api_peak, _rss_mb(api.pid))
             try:
                 job = _get(base, f"/v1/jobs/{job_id}", headers, attempts=1,
                            timeout=min(args.poll_timeout, max(.01, deadline - time.monotonic())))
@@ -334,7 +322,13 @@ def main(argv=None) -> int:
             if worker.poll() is not None or api.poll() is not None:
                 raise RuntimeError(f"API or worker died: {api.poll()}, {worker.poll()}")
             time.sleep(args.sample_seconds)
+        final_findings = _get(base, f"/v1/cases/{case_id}/findings?limit=1", headers,
+            timeout=min(args.poll_timeout, max(.01, deadline - time.monotonic())))
+        if time.monotonic() >= deadline or "findings" not in final_findings:
+            raise TimeoutError("final findings retrieval did not finish within the deadline")
         total = round(time.monotonic() - pipeline_started, 3)
+        result["final_findings_retrieval"] = {"total": final_findings.get("total"), "returned": len(final_findings["findings"])}
+        result["clock_contract"] = "upload initiation to final findings retrieval; resumed runs are not fresh acceptance"
         result.update({
             "source": str(args.source), "source_bytes": args.source.stat().st_size,
             "state": job.get("state"), "error": job.get("error_detail"), "worker_exit_code": job.get("worker_exit_code"),
@@ -362,9 +356,9 @@ def main(argv=None) -> int:
         sampling_stop.set()
         if sampler:
             sampler.join(timeout=5)
-        peak = max(peak, samples["worker_peak_rss_mb"])
-        tree_peak = max(tree_peak, samples["worker_tree_peak_rss_mb"])
-        api_peak = max(api_peak, samples["api_peak_rss_mb"])
+        peak = observed_max(peak, samples["worker_peak_rss_mb"])
+        tree_peak = observed_max(tree_peak, samples["worker_tree_peak_rss_mb"])
+        api_peak = observed_max(api_peak, samples["api_peak_rss_mb"])
         result.update({"job": job, "elapsed_seconds": time.monotonic() - started,
                        "worker_peak_rss_mb": peak, "worker_tree_peak_rss_mb": tree_peak,
                        "api_peak_rss_mb": api_peak, "sampling_interval_seconds": args.sample_seconds,

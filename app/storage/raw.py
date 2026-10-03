@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -88,3 +89,22 @@ def resolve_source(evidence_root: Path, relative_path: str) -> Path:
     if root not in candidate.parents or candidate.name != "original":
         raise RuntimeError("Invalid evidence path stored in control plane")
     return candidate
+
+
+@lru_cache(maxsize=256)
+def _verified_digest(path: str, identity: tuple) -> str:
+    with Path(path).open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    stat = Path(path).stat()
+    if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != identity:
+        raise RuntimeError("Stored evidence changed while verifying; replay refused")
+    return digest
+
+
+def verified_source(evidence_root: Path, relative_path: str, expected_sha256: str) -> Path:
+    path = resolve_source(evidence_root, relative_path)
+    stat = path.stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if _verified_digest(str(path), identity) != expected_sha256:
+        raise RuntimeError("Immutable source SHA-256 mismatch; replay refused")
+    return path

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -71,6 +71,13 @@ class Facts:
     asns: list[str] | None = None
     countries: list[str] | None = None
     src_ips: list[str] | None = None
+    _indexes: dict = field(default_factory=dict, init=False, repr=False)
+
+    def freeze_indexes(self):
+        """Cache only immutable grouping arrays. Mutable research facts never cache."""
+        self.out_tx.flags.writeable = False
+        self.in_tx.flags.writeable = False
+        return self
 
     @property
     def transaction_count(self) -> int:
@@ -82,18 +89,28 @@ class Facts:
         `order` lists output indices sorted by transaction; `starts[t]:starts[t+1]`
         slices the outputs of transaction `t`.
         """
+        if not self.out_tx.flags.writeable and "outputs" in self._indexes:
+            return self._indexes["outputs"]
         order = np.argsort(self.out_tx, kind="stable").astype(np.int32)
         counts = np.bincount(self.out_tx, minlength=self.transaction_count)
         starts = np.zeros(self.transaction_count + 1, dtype=np.int64)
         np.cumsum(counts, out=starts[1:])
+        if not self.out_tx.flags.writeable:
+            starts.flags.writeable = order.flags.writeable = False
+            self._indexes["outputs"] = (starts, order)
         return starts, order
 
     def inputs_of(self) -> tuple[np.ndarray, np.ndarray]:
         """CSR-style index of inputs grouped by spending transaction."""
+        if not self.in_tx.flags.writeable and "inputs" in self._indexes:
+            return self._indexes["inputs"]
         order = np.argsort(self.in_tx, kind="stable").astype(np.int32)
         counts = np.bincount(self.in_tx, minlength=self.transaction_count)
         starts = np.zeros(self.transaction_count + 1, dtype=np.int64)
         np.cumsum(counts, out=starts[1:])
+        if not self.in_tx.flags.writeable:
+            starts.flags.writeable = order.flags.writeable = False
+            self._indexes["inputs"] = (starts, order)
         return starts, order
 
 
@@ -158,7 +175,7 @@ def load_facts(dataset: Path, *, with_network_context: bool = True) -> Facts:
         if previous_txid is None or previous_vout is None:
             in_prev.append(-1)
             continue
-        slot = outpoint_index.get((tx_index[previous_txid], int(previous_vout)), -1)
+        slot = outpoint_index.get((tx_index.get(previous_txid, -1), int(previous_vout)), -1)
         in_prev.append(slot)
         if slot >= 0:
             spent_by[slot] = transaction
@@ -433,9 +450,9 @@ def truncate_facts(facts: Facts, as_of: int) -> Facts:
         in_tx=old_to_new[facts.in_tx[in_keep]], in_prev=previous,
         addresses=facts.addresses, addr_index=facts.addr_index,
     )
-    for field in ("tx_asn", "tx_country", "tx_src_ip"):
-        value = getattr(facts, field)
+    for name in ("tx_asn", "tx_country", "tx_src_ip"):
+        value = getattr(facts, name)
         if value is not None:
-            setattr(truncated, field, value[keep])
+            setattr(truncated, name, value[keep])
     truncated.asns, truncated.countries, truncated.src_ips = facts.asns, facts.countries, facts.src_ips
     return truncated

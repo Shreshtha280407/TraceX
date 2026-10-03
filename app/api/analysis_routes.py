@@ -118,9 +118,10 @@ def review_queue(case_id: str, snapshot_id: str | None = None, k: int | None = Q
         raise HTTPException(422, "unsupported review state")
     stages = {s["name"]: s for s in analysis_view(session, job)["stages"]}
     scored = int(stages.get("ml_scoring", {}).get("details", {}).get("scored_transactions", 0))
+    scorer = stages.get("ml_scoring", {}).get("details", {}).get("release_id", ML_RULE_VERSION)
     capacity = k if k is not None else math.floor(scored * (fraction if fraction is not None else .01))
     scope = (FindingRecord.case_id == case_id, FindingRecord.snapshot_id == job.snapshot_id,
-             FindingRecord.rule_version == ML_RULE_VERSION)
+             FindingRecord.rule_version == scorer)
     flagged_count, transaction_count = session.execute(select(func.count(FindingRecord.id),
         func.count(func.distinct(FindingRecord.entity_ref))).where(*scope)).one()
     ranked = select(FindingRecord.entity_ref.label("entity"), func.max(FindingRecord.raw_score).label("score"))\
@@ -144,7 +145,7 @@ def review_queue(case_id: str, snapshot_id: str | None = None, k: int | None = Q
     associations.extend(path_nodes.contains('"' + entity + '"') for entity in entities)
     for finding in session.scalars(select(FindingRecord).where(FindingRecord.case_id == case_id,
                                   FindingRecord.snapshot_id == job.snapshot_id,
-                                  FindingRecord.rule_version != ML_RULE_VERSION, or_(*associations))):
+                                  ~FindingRecord.rule_version.like("anomaly-stack-%"), or_(*associations))):
         refs = [finding.entity_ref]
         detector = (finding.feature_vector or {}).get("detector_result", {})
         refs.extend((detector.get("graph_path") or {}).get("nodes", []))
@@ -152,7 +153,8 @@ def review_queue(case_id: str, snapshot_id: str | None = None, k: int | None = Q
             if ref.startswith("tx:"):
                 deterministic.setdefault(ref, set()).add(finding.id)
     return {"case_id": case_id, "snapshot_id": job.snapshot_id, "policy_version": "ml-top-k-v1",
-            "scorer": ML_RULE_VERSION, "eligible_scored_transactions": scored,
+            "scorer": scorer, "eligibility_decision": stages.get("ml_scoring", {}).get("details", {}).get("eligibility_decision"),
+            "eligible_scored_transactions": scored,
             "threshold_flagged_transactions": transaction_count, "threshold_flagged_findings": flagged_count,
             "capacity": capacity, "queued_transactions": min(capacity, transaction_count),
             "additional_flagged_transactions": max(0, transaction_count - capacity), "filtered_total": filtered_total,

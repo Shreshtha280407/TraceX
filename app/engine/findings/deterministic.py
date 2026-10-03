@@ -1005,8 +1005,8 @@ def opposing_evidence_json() -> str:
             {
                 "kind": "coverage_limitation",
                 "statement": (
-                    "This committed snapshot contains no ownership attribution or independently "
-                    "verified benign context; the pattern alone cannot establish either."
+                    "Ownership attribution and independently verified benign context are not "
+                    "established by this rule's checked coverage; the pattern alone cannot establish either."
                 ),
                 "source_refs": [],
             }

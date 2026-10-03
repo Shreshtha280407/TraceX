@@ -28,6 +28,8 @@ class Case(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(256))
     synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
+    scoring_mode: Mapped[str] = mapped_column(String(32), default="unsupervised", server_default="unsupervised")
+    candidate_domain: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

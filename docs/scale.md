@@ -3,7 +3,10 @@
 Current acceptance host: Linux x86_64, 15.2 GiB physical RAM, 12 logical CPUs
 in process affinity; available RAM varies with desktop applications. Both
 SQLite and PostgreSQL must be measured independently. Historical timings are
-not acceptance for the current uncommitted implementation.
+not acceptance for this integrated implementation. The reviewed October 3
+release was committed as d88af37; its measurements remain historical. Current
+MacBook 32 GB/1 TB procedures are in [macbook_runbook.md](macbook_runbook.md).
+Fresh 3M/<1800s all-stage acceptance is NOT RUN. No LLM is in the current release.
 
 ## What changed to make multi-million-row imports work
 

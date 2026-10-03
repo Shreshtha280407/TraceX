@@ -14,6 +14,9 @@ export function FindingsFeed() {
   const { caseId } = useParams<{ caseId: string }>();
   const navigate = useNavigate();
   const [response, setResponse] = useState<FindingsListResponse | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [reviewState, setReviewState] = useState("");
+  const [findingsError, setFindingsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterId>("all");
   const [priorityFilter, setPriorityFilter] = useState<PriorityId>("all");
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
@@ -34,8 +37,10 @@ export function FindingsFeed() {
 
   useEffect(() => {
     if (!caseId) return;
-    api.listFindings(caseId, 200, 0).then(setResponse);
-  }, [caseId]);
+    let active = true;
+    api.listFindings(caseId, 200, offset, undefined, reviewState).then((result) => { if (active) { setResponse(result); setFindingsError(null); } }).catch((error) => { if (active) { setResponse(null); setFindingsError(String(error)); } });
+    return () => { active = false; };
+  }, [caseId, offset, reviewState]);
 
   useEffect(() => {
     if (!response) return;
@@ -61,7 +66,7 @@ export function FindingsFeed() {
     });
   }, [response]);
 
-  const findings = response?.findings ?? [];
+  const findings = useMemo(() => response?.findings ?? [], [response]);
   // Rank percentiles must divide by the case's REAL finding count, not by how
   // many rows this page happened to return, or every tier is wrong once the
   // case has more findings than the page limit.
@@ -84,14 +89,14 @@ export function FindingsFeed() {
 
   const priorityCounts = useMemo(() => {
     const counts = { high: 0, medium: 0, low: 0 };
-    for (const f of filtered) counts[priorityTier(f.rank, total)]++;
+    for (const f of filtered) counts[priorityTier(f.family_rank ?? null, f.family_total ?? 0)]++;
     return counts;
-  }, [filtered, total]);
+  }, [filtered]);
 
   const filteredByPriority = useMemo(() => {
     if (priorityFilter === "all") return filtered;
-    return filtered.filter((f) => priorityTier(f.rank, total) === priorityFilter);
-  }, [filtered, priorityFilter, total]);
+    return filtered.filter((f) => priorityTier(f.family_rank ?? null, f.family_total ?? 0) === priorityFilter);
+  }, [filtered, priorityFilter]);
 
   function selectCategory(next: FilterId) {
     setFilter(next);
@@ -103,7 +108,11 @@ export function FindingsFeed() {
       <div className="page-header">
         <div>
           <h1>Findings Feed</h1>
-          <p className="subtitle">Deterministic motifs plus the unsupervised anomaly ranking — the rule-based baseline is always available; ML runs automatically on ingest</p>
+          <p className="subtitle">Observed structural patterns, anomaly triage and network measurements — not identity or criminality verdicts</p>
+          <label>Reviewer context <select value={reviewState} onChange={(event) => { setReviewState(event.target.value); setOffset(0); }}>
+            <option value="">All dispositions</option><option value="open">Unreviewed</option><option value="escalated">Reviewer escalated</option><option value="dismissed">Dismissed — observations retained</option><option value="needs_data_review">Needs more evidence</option><option value="confirmed">Confirmed proposition</option>
+          </select></label>
+          {findingsError && <p role="alert">Findings could not be loaded: {findingsError}. Check analysis status and API readiness.</p>}
         </div>
         {response && (
           <div className="ff-counters">
@@ -115,10 +124,13 @@ export function FindingsFeed() {
 
       {truncated && (
         <p className="coverage-note" style={{ marginBottom: 10 }}>
-          Showing the top {findings.length.toLocaleString()} of {total.toLocaleString()} findings in this case, ranked by
-          triage priority. Filter counts below describe this page; the Open/Total figures above are the whole case.
+          Showing {findings.length.toLocaleString()} of {total.toLocaleString()} findings. Families are independently ranked
+          and interleaved; raw scores from different families are not compared. Filter counts describe this page.
         </p>
       )}
+      <p className="coverage-note">{response?.review_policy?.version}: per-family rank is a workflow priority, not calibrated cross-family risk. An analyst's confirmation concerns only the stated pattern.</p>
+      <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))}>Previous findings page</button>
+      <button type="button" disabled={offset + findings.length >= total} onClick={() => setOffset(offset + 200)}>Next findings page</button>
 
       <div className="two-col">
         <div>
@@ -170,7 +182,7 @@ export function FindingsFeed() {
             <p className="coverage-note">No findings match this filter.</p>
           ) : (
             filteredByPriority.map((finding) => {
-              const priority = priorityOf(finding.rank, total);
+              const priority = priorityOf(finding.family_rank ?? null, finding.family_total ?? 0);
               return (
                 <NeoCard key={finding.finding_id} variant="neo-sm" className="finding-card">
                   <div onClick={() => navigate(`/findings/${finding.finding_id}`)}>
@@ -178,6 +190,8 @@ export function FindingsFeed() {
                       <div className="finding-card-left">
                         <strong>{finding.finding_type.replace(/_/g, " ")}</strong>
                         <Badge tone={methodOf(finding.rule_version).tone}>{methodOf(finding.rule_version).label}</Badge>
+                        <Badge tone="warning">{finding.interpretation?.category.replaceAll("_", " ") ?? "observed pattern"}</Badge>
+                        <Badge tone="warning">{finding.status}</Badge>
                       </div>
                       <div style={{ display: "flex", gap: 6 }}>
                         <ConfidenceBadge confidence={finding.confidence} />
@@ -200,10 +214,10 @@ export function FindingsFeed() {
                     <div className="rank-bar-track">
                       <div
                         className="rank-bar-fill"
-                        style={{ width: `${finding.rank ? Math.max(6, 100 - ((finding.rank - 1) / Math.max(total - 1, 1)) * 100) : 6}%` }}
+                        style={{ width: `${finding.family_rank ? Math.max(6, 100 - ((finding.family_rank - 1) / Math.max((finding.family_total ?? 1) - 1, 1)) * 100) : 6}%` }}
                       />
                     </div>
-                    <div className="meta" style={{ marginTop: 4 }}>{finding.rank ? `rank #${finding.rank} of ${total}` : "unranked"}</div>
+                    <div className="meta" style={{ marginTop: 4 }}>{finding.family_rank ? `family rank #${finding.family_rank} of ${finding.family_total}` : "unranked"}</div>
                   </div>
                 </NeoCard>
               );
@@ -225,7 +239,7 @@ export function FindingsFeed() {
             )}
             <p className="coverage-note" style={{ marginTop: 8 }}>
               {response?.ml_enabled
-                ? "Six-layer unsupervised anomaly stack, deployed automatically on ingest. Triage priority only — never a verdict."
+                ? "Inspect the recorded scorer/version and case eligibility. Triage priority only — never a verdict."
                 : "No ML-scored finding in this case yet — either too few transactions, or none cleared the review budget."}
             </p>
           </NeoCard>

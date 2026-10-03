@@ -119,6 +119,8 @@ def get_session() -> Generator[Session, None, None]:
 #: one of these existed would otherwise fail every query that touches the model
 #: (e.g. `import_jobs.total_records` broke job polling and worker claims).
 ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("cases", "scoring_mode", "VARCHAR(32) NOT NULL DEFAULT 'unsupervised'"),
+    ("cases", "candidate_domain", "VARCHAR(128)"),
     ("import_jobs", "total_records", "INTEGER"),
     ("analysis_requests", "fulfilled", "BOOLEAN NOT NULL DEFAULT FALSE"),
 )

@@ -4,7 +4,7 @@ import { Shell } from "../components/Shell";
 import { Modal } from "../components/Modal";
 import { NeoCard, StatTile, Badge, NoticeBanner, ErrorBanner } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ApiError, type CaseWithRole, type Finding } from "../lib/api";
+import { api, ApiError, type CaseWithRole, type Finding, type ScoringMode } from "../lib/api";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 import { getSessionStats } from "../lib/sessionStats";
 
@@ -28,6 +28,9 @@ export function InvestigatorOverview() {
   const [activity, setActivity] = useState<(CaseEvent & { caseName: string })[]>([]);
   const [showNewCase, setShowNewCase] = useState(false);
   const [newCaseName, setNewCaseName] = useState("");
+  const [synthetic, setSynthetic] = useState(false);
+  const [scoringMode, setScoringMode] = useState<ScoringMode>("unsupervised");
+  const [candidateDomain, setCandidateDomain] = useState("");
   const [newCaseError, setNewCaseError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const stats = getSessionStats();
@@ -41,7 +44,11 @@ export function InvestigatorOverview() {
             .listFindings(c.case_id, 200, 0)
             .then((r) => r.findings.filter((f) => f.status === "open").map((f) => ({ ...f, caseName: c.name })))
         )
-      ).then((lists) => setQueue(lists.flat().sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)).slice(0, 8)));
+      ).then((lists) => setQueue(lists.flat().sort((a, b) =>
+        Number(b.status === "escalated") - Number(a.status === "escalated") ||
+        (a.family_rank ?? Infinity) - (b.family_rank ?? Infinity) ||
+        a.rule_id.localeCompare(b.rule_id) || a.caseName.localeCompare(b.caseName) ||
+        a.finding_id.localeCompare(b.finding_id)).slice(0, 8)));
       Promise.all(result.cases.map((c) => api.getFindingsSummary(c.case_id).catch(() => null))).then((summaries) =>
         setOpenTotal(summaries.reduce((sum, s) => sum + (s?.open ?? 0), 0))
       );
@@ -60,6 +67,9 @@ export function InvestigatorOverview() {
 
   function openNewCase() {
     setNewCaseName("");
+    setSynthetic(false);
+    setScoringMode("unsupervised");
+    setCandidateDomain("");
     setNewCaseError(null);
     setShowNewCase(true);
   }
@@ -69,7 +79,7 @@ export function InvestigatorOverview() {
     setNewCaseError(null);
     setCreating(true);
     try {
-      const created = await api.createCase(newCaseName, true);
+      const created = await api.createCase(newCaseName, synthetic, scoringMode, candidateDomain || undefined);
       // Show it immediately, on the same page the case lead just created it from --
       // no navigation away, no separate click needed to confirm it exists.
       setCases((prev) => [...(prev ?? []), { ...created, role: "case_lead" }]);
@@ -82,7 +92,7 @@ export function InvestigatorOverview() {
   }
 
   const pendingReview = openTotal;
-  const highPriority = queue?.filter((f) => (f.rank ?? Infinity) <= 10).length ?? null;
+  const highPriority = queue?.filter((f) => (f.family_rank ?? Infinity) <= 10).length ?? null;
 
   return (
     <Shell>
@@ -116,6 +126,17 @@ export function InvestigatorOverview() {
             />
             <p className="form-hint">Use a clear, unique identifier — you can rename it later from Settings.</p>
           </div>
+          <div className="form-field">
+            <label><input type="checkbox" checked={synthetic} onChange={(e) => { setSynthetic(e.target.checked); if (!e.target.checked && scoringMode === "synthetic_demo") setScoringMode("unsupervised"); }} /> Synthetic/demo data (not real case evidence)</label>
+            <label htmlFor="scoring-mode">Scoring procedure</label>
+            <select id="scoring-mode" value={scoringMode} onChange={(e) => setScoringMode(e.target.value as ScoringMode)}>
+              <option value="unsupervised">Unsupervised v2 — default, retrospective burst</option>
+              {synthetic && <option value="synthetic_demo">Synthetic/demo candidate — explicitly opted in</option>}
+              <option value="validated_candidate">Approved domain candidate — applicability required</option>
+            </select>
+            {scoringMode === "validated_candidate" && <input aria-label="Approved candidate domain" required value={candidateDomain} onChange={(e) => setCandidateDomain(e.target.value)} placeholder="Exact approved label domain" />}
+            <p className="form-hint">Unavailable, untrusted or ineligible candidates fall back to v2 with a recorded reason. No upload has measured AP without independent applicable labels.</p>
+          </div>
           <div className="modal-actions">
             <button type="button" className="btn-ghost" onClick={() => setShowNewCase(false)} disabled={creating}>
               Cancel
@@ -131,7 +152,7 @@ export function InvestigatorOverview() {
       <div className="stat-grid">
         <StatTile label="Assigned cases" value={cases?.length ?? "—"} sub={cases ? `${cases.filter((c) => c.role === "case_lead").length} as case lead` : ""} />
         <StatTile label="Pending review" value={pendingReview ?? "—"} sub="across all assigned cases" />
-        <StatTile label="High priority" value={highPriority ?? "—"} sub="rank ≤ 10" />
+        <StatTile label="Leading family rows" value={highPriority ?? "—"} sub="displayed queue, family rank ≤ 10; not calibrated risk" />
         <StatTile label="Reviewed this session" value={stats.findingsReviewed} sub={`${stats.reversedOnAppeal} reversed on appeal`} />
       </div>
 

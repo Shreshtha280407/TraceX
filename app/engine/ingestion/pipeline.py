@@ -77,8 +77,8 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
     produced. Every outcome is recorded on the completion event so a silent skip
     is still visible.
 
-    Only the unsupervised layers run here; the supervised comparator needs analyst
-    review decisions and must never write into a case on generator truth.
+    Default v2 is unsupervised. Owner-trusted frozen candidates require explicit
+    case-mode eligibility; imports never open truth or learn criminality reviews.
     """
     if not getattr(settings, "ml_findings_enabled", True):
         return {"written": 0, "status": "disabled"}
@@ -98,15 +98,17 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
         return {"written": 0, "status": "invalid_budget"}
 
     try:
-        from app.ml.findings import materialize_ml_findings
+        from app.ml.candidate_findings import score_or_fallback
     except ImportError:
         # scikit-learn/numpy absent: Phase 4 findings still stand on their own.
         return {"written": 0, "status": "unavailable"}
     try:
-        result = materialize_ml_findings(
-            session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, budget=float(budget),
+        result, eligibility_decision = score_or_fallback(
+            session, settings=settings, snapshot=snapshot, graph=graph, budget=float(budget),
             records=records, store=store,
         )
+    except ImportError:
+        return {"written": 0, "status": "unavailable", "reason": "required ML runtime dependency is unavailable"}
     except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
         session.rollback()
         logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
@@ -120,7 +122,9 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
         "threshold_flagged": result.flagged,
         "model_run_id": result.model_run_id,
         "release_id": result.release_id,
+        "eligibility_decision": eligibility_decision,
         "global_memory_estimate_bytes": getattr(store, "ml_memory_estimate_bytes", None),
+        "joint_memory_estimate_bytes": getattr(store, "ml_joint_memory_estimate_bytes", None),
     }
 
 

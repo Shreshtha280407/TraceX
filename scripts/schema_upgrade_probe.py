@@ -42,16 +42,19 @@ def probe(engine):
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE import_jobs DROP COLUMN total_records"))
         connection.execute(text("ALTER TABLE analysis_requests DROP COLUMN fulfilled"))
+        connection.execute(text("ALTER TABLE cases DROP COLUMN scoring_mode"))
+        connection.execute(text("ALTER TABLE cases DROP COLUMN candidate_domain"))
     added = ensure_schema(engine)
     repeated = ensure_schema(engine)
     with Session(engine) as session:
         request = session.get(AnalysisRequest, (identity, 2))
         preserved = (session.get(ImportJob, identity).total_records is None and
                      request.refresh_analytics is True and request.fulfilled is False and
-                     session.query(Case).count() == 1 and session.query(EvidenceSource).count() == 1)
+                     session.query(Case).count() == 1 and session.query(EvidenceSource).count() == 1 and
+                     session.query(Case).one().scoring_mode == "unsupervised" and session.query(Case).one().candidate_domain is None)
     columns = {table: [c["name"] for c in inspect(engine).get_columns(table)]
-               for table in ("import_jobs", "analysis_requests")}
-    passed = added == ["import_jobs.total_records", "analysis_requests.fulfilled"] and not repeated and preserved
+               for table in ("cases", "import_jobs", "analysis_requests")}
+    passed = added == ["cases.scoring_mode", "cases.candidate_domain", "import_jobs.total_records", "analysis_requests.fulfilled"] and not repeated and preserved
     return {"status": "pass" if passed else "failed", "dialect": engine.dialect.name,
             "added": added, "second_upgrade_added": repeated, "fixture_rows_preserved": preserved,
             "columns": columns, "scope": "new empty disposable database, never an existing case database"}

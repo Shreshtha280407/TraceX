@@ -1,0 +1,1194 @@
+{
+  "status": "PASS_WIRING_ONLY",
+  "scope": "4 independently authored 64-row populations; NOT 3M or AP/generalization acceptance; no production promotion",
+  "models": {
+    "hist": {
+      "manifest_sha256": "48ca32852dbd446aa2ba952cb8449a1502275b5e911a62b02aad284a87834f45",
+      "release": "anomaly-stack-candidate-v1-ed2f1fa08f9894b0",
+      "validation": {
+        "motif": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.37566137566137564,
+          "precision": 0.4444444444444444,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 30,
+            "fp": 10,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 10,
+          "benign_in_review_budget": 40,
+          "brier": 0.21015216410160065,
+          "ap_95": [
+            0.34614182692307693,
+            0.41879293240284615
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.37566137566137564,
+          "precision": 0.4444444444444444,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 30,
+            "fp": 10,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 10,
+          "benign_in_review_budget": 40,
+          "brier": 0.21015216410160065,
+          "ap_95": [
+            0.34285714285714286,
+            0.4178361344537814
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.37566137566137564,
+          "precision": 0.4444444444444444,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 30,
+            "fp": 10,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 10,
+          "benign_in_review_budget": 40,
+          "brier": 0.21015216410160065,
+          "ap_95": [
+            0.33797619047619043,
+            0.42857142857142855
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      }
+    },
+    "xgboost": {
+      "manifest_sha256": "eeb6e8330865652317d6e57bae255b1c3631e7793b12fc72c8ad684a0fc408f3",
+      "release": "anomaly-stack-candidate-v1-532a2d46fb925729",
+      "validation": {
+        "motif": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40709511077158134,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 40,
+            "fp": 0,
+            "fn": 16,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 40,
+          "brier": 0.1919907182455063,
+          "ap_95": [
+            0.3378610950599271,
+            0.5015325430025381
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40709511077158134,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 40,
+            "fp": 0,
+            "fn": 16,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 40,
+          "brier": 0.1919907182455063,
+          "ap_95": [
+            0.33738735021065364,
+            0.5095972560425684
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40709511077158134,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 40,
+            "fp": 0,
+            "fn": 16,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 40,
+          "brier": 0.1919907182455063,
+          "ap_95": [
+            0.3331958123958896,
+            0.5143034148256632
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      }
+    },
+    "lightgbm": {
+      "manifest_sha256": "fc175d9dd08ce2d415f3bf866c8e497dbcf63dc2e50814dc41af3ab1b33747ad",
+      "release": "anomaly-stack-candidate-v1-5a1a56a198d2461e",
+      "validation": {
+        "motif": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40714285714285714,
+          "precision": 0.5,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 32,
+            "fp": 8,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 40,
+          "brier": 0.1942882239818573,
+          "ap_95": [
+            0.39285714285714285,
+            0.4368131868131868
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40714285714285714,
+          "precision": 0.5,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 32,
+            "fp": 8,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 40,
+          "brier": 0.1942882239818573,
+          "ap_95": [
+            0.39285714285714285,
+            0.43253968253968256
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.40714285714285714,
+          "precision": 0.5,
+          "recall": 0.5,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 32,
+            "fp": 8,
+            "fn": 8,
+            "tp": 8
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 40,
+          "brier": 0.1942882239818573,
+          "ap_95": [
+            0.39285714285714285,
+            0.4392362637362637
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      }
+    },
+    "hybrid": {
+      "manifest_sha256": "f22ca05a9f28b50b97e340ceefe95ae009ae9f374ee5f6f09d994d98303a0260",
+      "release": "anomaly-stack-candidate-v1-aeda37be7777c14c",
+      "validation": {
+        "motif": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.42559399412847687,
+          "precision": 0.6,
+          "recall": 0.1875,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 38,
+            "fp": 2,
+            "fn": 13,
+            "tp": 3
+          },
+          "benign_false_positives": 2,
+          "benign_in_review_budget": 40,
+          "brier": 0.19156377017498016,
+          "ap_95": [
+            0.3782907668881506,
+            0.50067383061179
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.42559399412847687,
+          "precision": 0.6,
+          "recall": 0.1875,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 38,
+            "fp": 2,
+            "fn": 13,
+            "tp": 3
+          },
+          "benign_false_positives": 2,
+          "benign_in_review_budget": 40,
+          "brier": 0.19156377017498016,
+          "ap_95": [
+            0.38294190732513095,
+            0.4896244626443065
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 56,
+          "prevalence": 0.2857142857142857,
+          "ap": 0.42559399412847687,
+          "precision": 0.6,
+          "recall": 0.1875,
+          "p_at_100": null,
+          "review_budget": 100,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 38,
+            "fp": 2,
+            "fn": 13,
+            "tp": 3
+          },
+          "benign_false_positives": 2,
+          "benign_in_review_budget": 40,
+          "brier": 0.19156377017498016,
+          "ap_95": [
+            0.38580929066853176,
+            0.5228599401717209
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      }
+    }
+  },
+  "results": {
+    "procedure": "frozen fitted-weight transfer; no test-label fitting or adaptation",
+    "model": {
+      "calibration": "separate labelled reference; per-task pattern frequency, NOT criminality",
+      "columns": [
+        "n_inputs",
+        "n_outputs",
+        "log_n_inputs",
+        "log_n_outputs",
+        "equal_group_exact",
+        "equal_group_tol_10",
+        "equal_group_tol_100",
+        "equal_group_tol_1000",
+        "equal_group_fraction",
+        "distinct_value_classes",
+        "distinct_value_fraction",
+        "output_value_entropy",
+        "output_value_gini",
+        "max_output_share",
+        "second_to_max_ratio",
+        "log_output_total",
+        "log_output_max",
+        "log_output_min",
+        "log_output_median",
+        "log_fee",
+        "fee_share",
+        "peel_ratio",
+        "one_big_one_small",
+        "round_output_count",
+        "round_output_share",
+        "script_type_count",
+        "input_value_concentration",
+        "log_input_total",
+        "value_throughput_ratio",
+        "input_age_min_log",
+        "input_age_median_log",
+        "rapid_input_share",
+        "prior_completed_equal_output_count",
+        "relay_metadata_missing"
+      ],
+      "eligibility": "synthetic_demo",
+      "expanded_artifact_bytes": 89066,
+      "feature_contract": "causal-structure-prior-bucket-v1",
+      "feature_sha256": "166e25f6f5eee3c10e538d5906bb502088c1b8e1d6ef8d520f7a73bfb612c3e6",
+      "model": "hist",
+      "payload_sha256": "ed2f1fa08f9894b0518486c68413347b94c9098de8383e1cfbca6db93b1ab63b",
+      "promotion": null,
+      "provenance": {
+        "entity_split_audit": "NOT VERIFIED by scenario IDs alone; require independent address/entity overlap audit for domain validation",
+        "excluded_positive_families": [
+          "independent_equal_outputs"
+        ],
+        "label_domain": "synthetic-fixture-patterns",
+        "label_meaning": "motif/surge/contrast propositions, NOT criminality",
+        "label_prevalence": {
+          "calibration": {
+            "discrimination": 0.2857142857142857,
+            "motif": 0.2857142857142857,
+            "surge": 0.2857142857142857
+          },
+          "training": {
+            "discrimination": 0.2857142857142857,
+            "motif": 0.2857142857142857,
+            "surge": 0.2857142857142857
+          }
+        },
+        "procedure_code_sha256": {
+          "app/ml/candidate.py": "84c2b055092846d0418ca79ac2d4b3dc6cf441c874b4813313a32efb49555d72",
+          "app/ml/grains.py": "e68171a2cba6926253495ff9e66852b1fae2b170bc736668c4cc18cb383b857e",
+          "scripts/candidate_lifecycle.py": "71bfe5bf0baabc1120b939a1e32233bf10818063248e0e39258b798f72e13c1c"
+        },
+        "protocol_sha256": "4e46f4049042017b6edad97bb03e00547c9fa2fc49bb372b1e8fe5a7f726df74",
+        "split_group_overlap": {
+          "0/1": 0,
+          "0/2": 0,
+          "1/2": 0
+        },
+        "training_feature_baselines": {
+          "distinct_value_classes": 2.0,
+          "distinct_value_fraction": 1.0,
+          "equal_group_exact": 1.0,
+          "equal_group_fraction": 0.5,
+          "equal_group_tol_10": 1.0,
+          "equal_group_tol_100": 1.0,
+          "equal_group_tol_1000": 2.0,
+          "fee_share": 0.0,
+          "input_age_median_log": 0.0,
+          "input_age_min_log": 0.0,
+          "input_value_concentration": 0.0,
+          "log_fee": 0.0,
+          "log_input_total": 0.0,
+          "log_n_inputs": 0.0,
+          "log_n_outputs": 1.0986123085021973,
+          "log_output_max": 6.8035054206848145,
+          "log_output_median": 6.284599304199219,
+          "log_output_min": 5.144545078277588,
+          "log_output_total": 6.976813793182373,
+          "max_output_share": 0.8407303094863892,
+          "n_inputs": 0.0,
+          "n_outputs": 2.0,
+          "one_big_one_small": 1.0,
+          "output_value_entropy": 0.43845173716545105,
+          "output_value_gini": 0.34073030948638916,
+          "peel_ratio": 0.0,
+          "prior_completed_equal_output_count": 0.0,
+          "rapid_input_share": 0.0,
+          "relay_metadata_missing": 0.0,
+          "round_output_count": 0.0,
+          "round_output_share": 0.0,
+          "script_type_count": 1.0,
+          "second_to_max_ratio": 0.18944445252418518,
+          "value_throughput_ratio": 0.0
+        },
+        "truth_sha256": {
+          "calibration": "7e0bd2367c09610b57e4961d165d254b86bee97562cdbd388c4f162b7e2e1b63",
+          "training": "9b0b0b2b3006eedbfecf7dceb9a714588824bb8283f9f2db3fc6d08cce7141d3",
+          "validation": "892663347d8541acfbbd39c854dcf20a5c879669b57859421aa88aa51fcc175f"
+        },
+        "validation_used_for": "selection only"
+      },
+      "release_id": "anomaly-stack-candidate-v1-ed2f1fa08f9894b0",
+      "schema": 1,
+      "tasks": [
+        "motif",
+        "surge",
+        "discrimination"
+      ],
+      "versions": {
+        "joblib": "1.6.0",
+        "numpy": "2.5.3",
+        "scikit-learn": "1.9.1"
+      }
+    },
+    "dataset": "fresh-final",
+    "truth_sha256": "a1553bee9b4645f6ac86d2b76823b2a0c5c20ec49199f9cfef79cd242daeab7b",
+    "protocol_sha256": "4e46f4049042017b6edad97bb03e00547c9fa2fc49bb372b1e8fe5a7f726df74",
+    "results": {
+      "motif": {
+        "population": 64,
+        "prevalence": 0.375,
+        "ap": 0.5456730769230769,
+        "precision": 0.6153846153846154,
+        "recall": 0.6666666666666666,
+        "p_at_100": null,
+        "review_budget": 10,
+        "p_at_review_budget": 0.7,
+        "recall_at_review_budget": 0.2916666666666667,
+        "confusion": {
+          "tn": 30,
+          "fp": 10,
+          "fn": 8,
+          "tp": 16
+        },
+        "benign_false_positives": 10,
+        "benign_in_review_budget": 3,
+        "brier": 0.2097836434841156,
+        "ap_95": [
+          0.49996347371077976,
+          0.58953125
+        ],
+        "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+      },
+      "surge": {
+        "population": 64,
+        "prevalence": 0.25,
+        "ap": 0.28231837606837606,
+        "precision": 0.3076923076923077,
+        "recall": 0.5,
+        "p_at_100": null,
+        "review_budget": 10,
+        "p_at_review_budget": 0.4,
+        "recall_at_review_budget": 0.25,
+        "confusion": {
+          "tn": 30,
+          "fp": 18,
+          "fn": 8,
+          "tp": 8
+        },
+        "benign_false_positives": 10,
+        "benign_in_review_budget": 3,
+        "brier": 0.2097836434841156,
+        "ap_95": [
+          0.26785714285714285,
+          0.31180729166666665
+        ],
+        "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+      },
+      "discrimination": {
+        "population": 64,
+        "prevalence": 0.375,
+        "ap": 0.5456730769230769,
+        "precision": 0.6153846153846154,
+        "recall": 0.6666666666666666,
+        "p_at_100": null,
+        "review_budget": 10,
+        "p_at_review_budget": 0.7,
+        "recall_at_review_budget": 0.2916666666666667,
+        "confusion": {
+          "tn": 30,
+          "fp": 10,
+          "fn": 8,
+          "tp": 16
+        },
+        "benign_false_positives": 10,
+        "benign_in_review_budget": 3,
+        "brier": 0.2097836434841156,
+        "ap_95": [
+          0.4998907447318008,
+          0.6064510233918129
+        ],
+        "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+      }
+    },
+    "strata": {
+      "batch_fanout": {
+        "motif": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.040572427213191986,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.040572427213191986,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.040572427213191986,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "benign_exchange": {
+        "motif": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.058445774018764496,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.058445774018764496,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 8,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 8,
+          "brier": 0.058445774018764496,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "benign_merchant": {
+        "motif": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.06400992721319199,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.06400992721319199,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.06400992721319199,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "benign_payroll": {
+        "motif": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 8,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 8,
+          "brier": 0.25,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 8,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 8,
+          "brier": 0.25,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 8,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 8,
+          "benign_in_review_budget": 8,
+          "brier": 0.25,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "coinjoin_like": {
+        "motif": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 8
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 8
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 8
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "consolidation": {
+        "motif": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.05750826746225357,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.05750826746225357,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 7,
+            "fp": 1,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 8,
+          "brier": 0.05750826746225357,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "independent_equal_outputs": {
+        "motif": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 8
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 0.0,
+          "ap": null,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 0.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 8,
+            "fn": 0,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": null,
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 8
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.25,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "peel_step": {
+        "motif": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 8,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.7077327966690063,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 8,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.7077327966690063,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 8,
+          "prevalence": 1.0,
+          "ap": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": null,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 0,
+            "fp": 0,
+            "fn": 8,
+            "tp": 0
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 0,
+          "brier": 0.7077327966690063,
+          "ap_95": [
+            1.0,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      }
+    },
+    "baseline": {
+      "procedure": "v2 label-free per-dataset reference refit; retrospective D; not frozen transfer",
+      "results": {
+        "motif": {
+          "population": 64,
+          "prevalence": 0.375,
+          "ap": 0.37624673175118334,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": 0.2,
+          "recall_at_review_budget": 0.08333333333333333,
+          "benign_in_review_budget": 8,
+          "ap_95": [
+            0.33367743450844106,
+            0.47563578522986033
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy",
+          "calibration": "not a pattern probability; baseline z-score thresholds not equated to .5"
+        },
+        "surge": {
+          "population": 64,
+          "prevalence": 0.25,
+          "ap": 0.2524851549704672,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": 0.2,
+          "recall_at_review_budget": 0.125,
+          "benign_in_review_budget": 8,
+          "ap_95": [
+            0.2229195203942728,
+            0.35231627286995604
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy",
+          "calibration": "not a pattern probability; baseline z-score thresholds not equated to .5"
+        },
+        "discrimination": {
+          "population": 64,
+          "prevalence": 0.375,
+          "ap": 0.37624673175118334,
+          "p_at_100": null,
+          "review_budget": 10,
+          "p_at_review_budget": 0.2,
+          "recall_at_review_budget": 0.08333333333333333,
+          "benign_in_review_budget": 8,
+          "ap_95": [
+            0.33849219469074365,
+            0.506398901891892
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy",
+          "calibration": "not a pattern probability; baseline z-score thresholds not equated to .5"
+        }
+      }
+    },
+    "candidate": {
+      "procedure": "frozen transfer; no inference adaptation"
+    },
+    "comparison": {
+      "motif": {
+        "ap_delta": 0.16942634517189353
+      },
+      "surge": {
+        "ap_delta": 0.02983322109790887
+      },
+      "discrimination": {
+        "ap_delta": 0.16942634517189353
+      }
+    }
+  },
+  "reproduction": [
+    "uv run python -m scripts.quality_matrix smoke --output var/NEW_64_ROW_WIRING_CHECK"
+  ],
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": false
+}

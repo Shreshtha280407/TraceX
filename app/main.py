@@ -74,6 +74,12 @@ def _mount_web_ui(directory: str | None) -> None:
 
     from fastapi import HTTPException
 
+    @app.api_route("/v1/{unmatched:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    def missing_api(unmatched: str) -> None:
+        # Without this, an unknown POST partially matches the GET SPA catch-all
+        # and returns 405 instead of an unambiguous missing API resource.
+        raise HTTPException(status_code=404, detail="Not Found")
+
     @app.get("/{path:path}", include_in_schema=False)
     def web_ui(path: str) -> FileResponse:
         if path == "v1" or path.startswith("v1/"):

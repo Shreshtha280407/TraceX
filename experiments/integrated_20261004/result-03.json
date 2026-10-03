@@ -1,0 +1,18 @@
+{
+  "manifest_sha256": "48ca32852dbd446aa2ba952cb8449a1502275b5e911a62b02aad284a87834f45",
+  "release_id": "anomaly-stack-candidate-v1-ed2f1fa08f9894b0",
+  "protocol_sha256": "4e46f4049042017b6edad97bb03e00547c9fa2fc49bb372b1e8fe5a7f726df74",
+  "validation_report_sha256": "978ca7fa013994db7f88cbbad2a943adf25221c179b46e0e4e508d1cafd7437a",
+  "reason": "Fixed HGB for tiny command wiring only; NOT selected for quality/promotion",
+  "inference_adaptation": "NONE",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": false
+}

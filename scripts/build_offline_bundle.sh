@@ -18,9 +18,13 @@ docker image inspect postgres:16-alpine >/dev/null 2>&1 || docker pull postgres:
 docker save "$image" postgres:16-alpine -o "$out/images.tar"
 cp deploy/appliance/docker-compose.yml deploy/appliance/.env.example deploy/appliance/install.sh "$out/"
 cp deploy/appliance/README.md "$out/README.md"
-sed -i "s|^TRACEX_IMAGE=.*|TRACEX_IMAGE=$image|" "$out/.env.example"
+if [ "$(uname -s)" = Darwin ]; then
+  sed -i '' "s|^TRACEX_IMAGE=.*|TRACEX_IMAGE=$image|" "$out/.env.example"
+else
+  sed -i "s|^TRACEX_IMAGE=.*|TRACEX_IMAGE=$image|" "$out/.env.example"
+fi
 cp pyproject.toml uv.lock frontend/package-lock.json "$out/"
 python3 scripts/offline_manifest.py "$out" "$image"
-(cd "$out" && sha256sum images.tar docker-compose.yml .env.example install.sh README.md manifest.json pyproject.toml uv.lock package-lock.json > SHA256SUMS)
+(cd "$out" && if command -v sha256sum >/dev/null 2>&1; then sha256sum images.tar docker-compose.yml .env.example install.sh README.md manifest.json pyproject.toml uv.lock package-lock.json; else shasum -a 256 images.tar docker-compose.yml .env.example install.sh README.md manifest.json pyproject.toml uv.lock package-lock.json; fi > SHA256SUMS)
 tar -C dist -czf "${out}.tar.gz" "$(basename "$out")"
 ls -lh "${out}.tar.gz"

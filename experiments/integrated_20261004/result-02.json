@@ -1,0 +1,40 @@
+{
+  "reserved_finals": [
+    "[HOME]/documents/TraceX/var/implementation-20261004/quality-smoke-final-02/fresh-final"
+  ],
+  "selection": "validation only; no final labels enter fitting",
+  "feature_contract": "causal-structure-prior-bucket-v1",
+  "grid": [
+    "hist",
+    "xgboost",
+    "lightgbm",
+    "hybrid"
+  ],
+  "generalization": [
+    "fresh seeds/prevalence",
+    "unseen pattern families",
+    "payroll/merchant/exchange/batching/consolidation",
+    "missing/noisy IP/ASN",
+    "incomplete prevouts",
+    "degree/reuse skew",
+    "timing/value shifts",
+    "independent author fixtures"
+  ],
+  "targets": {
+    "motif_ap": 0.85,
+    "surge_ap": 0.85,
+    "stretch_ap": 0.9,
+    "p100": 0.9
+  },
+  "status": "NOT RUN",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": false
+}

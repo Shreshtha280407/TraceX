@@ -1,7 +1,7 @@
 """Phase 5B orchestrator: real feature package -> 3 candidates -> one selection decision.
 
 Comparison and selection only. Nothing here touches the production API, the findings
-endpoint, the frontend, the Docker image, or the offline LLM.
+endpoint, the frontend, or the Docker image.
 
 Thread limits MUST be set before numpy/sklearn import, so this happens at module load,
 before those imports below.

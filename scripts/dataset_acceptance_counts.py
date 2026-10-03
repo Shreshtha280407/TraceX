@@ -4,30 +4,34 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sqlite3
+import tempfile
 from pathlib import Path
 
 
 def counts(source):
-    seen = set()
     result = {"transactions": 0, "inputs": 0, "outputs": 0, "network_observations": 0, "quarantine": 0}
     source_rows = 0
-    with source.open() as handle:
+    with tempfile.TemporaryDirectory(prefix="tracex-count-", dir=source.parent) as scratch, sqlite3.connect(Path(scratch) / "seen.db") as database, source.open() as handle:
+        database.execute("PRAGMA cache_size=-8192")
+        database.execute("CREATE TABLE seen (txid BLOB PRIMARY KEY) WITHOUT ROWID")
         for line in handle:
             if not line.strip():
                 continue
             source_rows += 1
             row = json.loads(line)
             identity = bytes.fromhex(row["txid"])
-            if identity in seen:
+            if database.execute("INSERT OR IGNORE INTO seen VALUES (?)", (identity,)).rowcount == 0:
                 result["quarantine"] += 1
                 continue
-            seen.add(identity)
             result["transactions"] += 1
             result["inputs"] += len(row["inputs"])
             result["outputs"] += len(row["outputs"])
             # The generator always contributes one observation row, including
             # explicit null endpoint metadata. Null is not a known endpoint.
             result["network_observations"] += 1
+            if source_rows % 8192 == 0:
+                database.commit()
     return result, source_rows
 
 

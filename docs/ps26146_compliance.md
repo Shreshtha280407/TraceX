@@ -18,7 +18,7 @@ only its reviewed proposition; automatic supervised deployment remains disabled.
 
 Whole-appliance offline acceptance requires API and browser evidence as well
 as worker isolation; the previous worker-only outbound test does not establish
-that claim. Optional Ollama is currently absent. The current all-stage strict
+that claim. The current release contains no LLM/chat integration. The all-stage strict
 scale ladder and copied-bundle/browser checks must pass before claiming their
 targets. See the final `implementation_acceptance_2026-10-03.md` for measured
 gates; older failures and historical reports remain preserved.

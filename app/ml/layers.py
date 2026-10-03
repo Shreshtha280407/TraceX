@@ -77,6 +77,15 @@ def _rank_normalise(values: np.ndarray, reference: np.ndarray | None = None) -> 
 # --------------------------------------------------------------------------- #
 # Layer A — transaction structure
 # --------------------------------------------------------------------------- #
+def shape_families(table: Table, train_mask: np.ndarray, n_clusters=8):
+    """Same descriptive shape labels without fitting unused stratified detectors."""
+    matrix = table.matrix.astype(np.float64)
+    scaler = StandardScaler().fit(matrix[train_mask])
+    scaled = scaler.transform(matrix)
+    kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=SEED, n_init=5, batch_size=4096).fit(scaled[train_mask])
+    return kmeans.predict(scaled).astype(np.int32)
+
+
 def layer_a_structure(
     table: Table,
     train_mask: np.ndarray,

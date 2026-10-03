@@ -4,12 +4,17 @@ import { Shell } from "../components/Shell";
 import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primitives";
 import { Modal } from "../components/Modal";
 import { RecordPreview } from "../components/RecordPreview";
-import { ChatPanel } from "../components/ChatPanel";
 import { AnalysisStatus } from "../components/AnalysisStatus";
 import { GraphContinuation } from "../components/GraphContinuation";
-import { api, ApiError, type FindingEvidence } from "../lib/api";
+import { StructuredEvidence } from "../components/StructuredEvidence";
+import { api, ApiError, type FindingEvidence, type EvidenceReference } from "../lib/api";
 import { recordReview } from "../lib/sessionStats";
 import "./EvidencePackage.css";
+
+function reviewReferences(evidence: FindingEvidence): EvidenceReference[] {
+  const refs = [...evidence.source_refs as EvidenceReference[], ...evidence.structured_evidence.observed_counter_evidence.flatMap((item) => item.source_refs)];
+  return [...new Map(refs.map((ref) => [`${ref.evidence_id}:${ref.locator}`, ref])).values()];
+}
 
 const DISPOSITIONS: { id: "confirmed" | "escalated" | "dismissed" | "needs_data_review"; label: string }[] = [
   { id: "confirmed", label: "Confirm Pattern" },
@@ -86,43 +91,10 @@ export function EvidencePackage() {
   const [counterRefs, setCounterRefs] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [staleNotice, setStaleNotice] = useState(false);
-  const [openRecord, setOpenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
+  const [openRecord, setOpenRecord] = useState<{ evidenceId: string; locator: string; record: unknown; isCsv: boolean } | null>(null);
   const [evidenceSearch, setEvidenceSearch] = useState("");
   const [counterSearch, setCounterSearch] = useState("");
   const [fullscreenRecord, setFullscreenRecord] = useState<{ locator: string; record: unknown; isCsv: boolean } | null>(null);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [contraryText, setContraryText] = useState<string | null>(null);
-  const [contraryBusy, setContraryBusy] = useState(false);
-  const [contraryError, setContraryError] = useState<string | null>(null);
-
-  /** Routed through the same grounded endpoint the chat panel uses, so the model
-   * only ever sees this finding's own evidence and is instructed to say it does
-   * not know rather than invent. The answer is labelled as generated commentary
-   * in the UI -- it never becomes part of the evidence record. */
-  async function askContraryCase() {
-    if (!findingId) return;
-    setContraryBusy(true);
-    setContraryError(null);
-    try {
-      const result = await api.chatAboutFinding(
-        findingId,
-        "Argue against this finding. Using only the evidence provided, what are the strongest benign explanations, " +
-          "and what specific evidence is missing that a reviewer would need before escalating? Be concise.",
-        []
-      );
-      setContraryText(result.answer);
-    } catch (err) {
-      setContraryError(
-        err instanceof ApiError && err.status === 503
-          ? "The local model is not reachable right now, so no summary can be generated. Everything above is unaffected — it comes from the stored evidence, not the model."
-          : err instanceof ApiError
-            ? String(err.detail)
-            : "Could not reach the TraceX backend."
-      );
-    } finally {
-      setContraryBusy(false);
-    }
-  }
 
   function load() {
     if (!findingId) return;
@@ -134,9 +106,9 @@ export function EvidencePackage() {
   async function viewRecord(evidenceId: string, locator: string, isCsv: boolean) {
     try {
       const result = await api.getEvidenceRecord(evidenceId, locator);
-      setOpenRecord({ locator, record: result.record, isCsv });
+      setOpenRecord({ evidenceId, locator, record: result.record, isCsv });
     } catch {
-      setOpenRecord({ locator, record: "Could not reopen this source record.", isCsv: false });
+      setOpenRecord({ evidenceId, locator, record: "Could not reopen this source record.", isCsv: false });
     }
   }
 
@@ -146,7 +118,7 @@ export function EvidencePackage() {
     setStaleNotice(false);
     setError(null);
     const isReversal = evidence.review_history.length > 0;
-    const allRefs = evidence.source_refs as { evidence_id: string; locator: string }[];
+    const allRefs = reviewReferences(evidence);
     try {
       await api.submitReview(findingId, {
         expected_finding_version: evidence.finding.finding_version,
@@ -154,7 +126,7 @@ export function EvidencePackage() {
         reason: reason.trim(),
         counterevidence_refs: allRefs
           .filter((ref) => counterRefs.has(refKey(ref)))
-          .map((ref) => ({ evidence_id: ref.evidence_id, locator: ref.locator })),
+          .map((ref) => ({ evidence_id: ref.evidence_id, locator: ref.locator, source_sha256: ref.source_sha256 })),
       });
       recordReview(isReversal);
       setReason("");
@@ -182,7 +154,8 @@ export function EvidencePackage() {
   const matches = (ref: { locator: string }, query: string) =>
     !query.trim() || ref.locator.toLowerCase().includes(query.trim().toLowerCase());
   const filteredSourceRefs = sourceRefs.filter((ref) => matches(ref, evidenceSearch));
-  const filteredCounterRefs = sourceRefs.filter((ref) => matches(ref, counterSearch));
+  const reviewRefs = reviewReferences(evidence);
+  const filteredCounterRefs = reviewRefs.filter((ref) => matches(ref, counterSearch));
 
   return (
     <Shell>
@@ -190,9 +163,6 @@ export function EvidencePackage() {
       <div className="evidence-header">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <span className="back-link" onClick={() => navigate(-1)}>← Back</span>
-          <button type="button" className="btn-ghost" onClick={() => setChatOpen(true)}>
-            💬 Chat
-          </button>
         </div>
         <div className="pill-row" style={{ marginBottom: 6 }}>
           <Badge tone="deterministic">{finding.finding_type}</Badge>
@@ -206,6 +176,8 @@ export function EvidencePackage() {
 
       {staleNotice && <NoticeBanner>This finding changed since you opened it — reviewed the update below, try your decision again.</NoticeBanner>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
+
+      <StructuredEvidence key={finding.finding_id} value={evidence.structured_evidence} />
 
       <div className="evidence-columns">
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -239,7 +211,7 @@ export function EvidencePackage() {
                           >
                             View raw record
                           </button>
-                          {openRecord?.locator === ref.locator && (
+                          {openRecord?.locator === ref.locator && openRecord.evidenceId === ref.evidence_id && (
                             <>
                               <div style={{ marginTop: 6 }}>
                                 <RecordPreview record={openRecord.record} isCsv={openRecord.isCsv} />
@@ -328,11 +300,11 @@ export function EvidencePackage() {
             )}
           </NeoCard>
           <NeoCard variant="neo-sm">
-            <h2>Contrary Evidence &amp; Sensitivity</h2>
+            <h2>Stored detector context &amp; sensitivity</h2>
             <div className="contrary-scroll">
 
             {evidence.opposing_evidence.length === 0 ? (
-              <p className="coverage-note">No contrary evidence recorded in this snapshot.</p>
+              <p className="coverage-note">No counter-evidence was identified within the supplied data and checked coverage.</p>
             ) : (
               <div className="opposing-list">
                 {(evidence.opposing_evidence as OpposingItem[]).map((item, i) => (
@@ -407,16 +379,6 @@ export function EvidencePackage() {
             </table>
             </div>
 
-            <h3 className="sub-heading">Plain-language contrary case</h3>
-            <p className="coverage-note">
-              Asks the local offline model to argue against this finding using only the evidence above. It is a
-              generated summary to help a reviewer think, never a new piece of evidence.
-            </p>
-            {contraryText && <p className="contrary-text">{contraryText}</p>}
-            {contraryError && <p className="field-hint-required">{contraryError}</p>}
-            <button type="button" className="btn-ghost" disabled={contraryBusy} onClick={askContraryCase}>
-              {contraryBusy ? "Asking local model…" : contraryText ? "Ask again" : "Argue against this finding"}
-            </button>
             </div>
           </NeoCard>
         </div>
@@ -453,9 +415,10 @@ export function EvidencePackage() {
                 <p className="field-hint-required">A reason is required — it is written to the immutable audit trail with your decision.</p>
               )}
             </div>
-            {sourceRefs.length > 0 && (
+            {reviewRefs.length > 0 && (
               <div className="form-field">
                 <label>Counterevidence (optional)</label>
+                <p className="coverage-note">Supporting and observed opposing sources are available here. Cite at most 20 records and explain their relevance; a citation alone is not a verified benign verdict.</p>
                 <input
                   type="text"
                   className="list-search-input"
@@ -474,6 +437,7 @@ export function EvidencePackage() {
                           <input
                             type="checkbox"
                             checked={counterRefs.has(key)}
+                            disabled={!counterRefs.has(key) && counterRefs.size >= 20}
                             onChange={(e) => {
                               const next = new Set(counterRefs);
                               if (e.target.checked) next.add(key);
@@ -524,7 +488,6 @@ export function EvidencePackage() {
         </div>
       </Modal>
 
-      {chatOpen && findingId && <ChatPanel findingId={findingId} onClose={() => setChatOpen(false)} />}
     </Shell>
   );
 }

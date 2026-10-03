@@ -136,7 +136,7 @@ export function EntitiesRisk() {
           <h1>Entities &amp; Risk</h1>
           <p className="subtitle">
             Wallet clusters proposed by common-input-ownership, behaviour similarity from graph embeddings, and risk
-            propagated from seed wallets you mark as illicit.
+            propagated exposure from analyst-supplied seeds. These are hypotheses and measurements, not common identity, ownership or criminality verdicts.
           </p>
         </div>
         <FilterPills<Tab>
@@ -247,7 +247,7 @@ export function EntitiesRisk() {
       ) : (
         <div className="two-col">
           <NeoCard>
-            <h2>Highest-risk wallets</h2>
+            <h2>Highest propagated exposure</h2>
             {!run ? (
               <EmptyState title="No risk run yet" body="Add a seed wallet on the right; risk is propagated immediately over the case's UTXO value-flow graph." />
             ) : (

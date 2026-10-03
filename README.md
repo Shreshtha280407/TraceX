@@ -3,7 +3,11 @@
 
 **Case-scoped, evidence-first analysis of Bitcoin transaction data: UTXO graph construction, deterministic pattern findings, unsupervised anomaly ranking, and reviewable evidence export.**
 
-Implementation review, 2026-10-03: changes are intentionally **uncommitted**.
+Current integrated implementation (2026-10-04): **no LLM/chat integration**.
+The 2026-10-03 reviewed release was subsequently committed as `d88af37`.
+See [current implementation report](docs/integrated_implementation_2026-10-04.md)
+and [executable MacBook runbook](docs/macbook_runbook.md). Fresh 3M/<1800s
+acceptance and new candidate generalization gates are **NOT RUN**.
 The current scoring baseline remains `anomaly-stack-v2`; synthetic research
 results do not automatically promote a supervised model. See
 [`docs/implementation_checkpoint_2026-10-03.md`](docs/implementation_checkpoint_2026-10-03.md)
@@ -102,7 +106,7 @@ Real-world address attribution; live blockchain node integration; multi-node or 
 
 ## 5. Implemented functional capabilities
 
-Status values: **Implemented**, **Partial**, **Research-only**, **Not implemented**. Current verification is recorded in [`docs/implementation_acceptance_2026-10-03.md`](docs/implementation_acceptance_2026-10-03.md); older measurements below remain historical, not acceptance of the current worktree.
+Status values: **Implemented**, **Partial**, **Research-only**, **Not implemented**. Current small verification is recorded in [`docs/integrated_implementation_2026-10-04.md`](docs/integrated_implementation_2026-10-04.md); October 3 and older measurements remain historical, not acceptance of this worktree or the future MacBook run.
 
 | Capability | Status | Basis |
 | --- | --- | --- |
@@ -129,9 +133,7 @@ Status values: **Implemented**, **Partial**, **Research-only**, **Not implemente
 | Feature export | Implemented (streamed JSON, paged JSON, or the snapshot's Parquet feature store) | `GET /v1/cases/{id}/features/export[.parquet]`, `app/engine/feature_store.py` |
 | Durable job leasing, crash and retry recovery | Implemented (tested against SQLite, Section 14) | `tests/unit/test_phase_six_crash_retry.py` |
 | Server-sent case events with replay | Implemented | `GET /v1/cases/{id}/events` |
-| Single-finding chat assistant using a locally hosted Ollama model | Implemented, optional; unavailable-model behavior tested inside the offline appliance, prompt contracts unit-tested; an actual model/grounded answer is NOT RUN on this host | `app/engine/chat/assistant.py`, `tests/unit/test_chat_contract.py` |
 | Web frontend (React, 9 routes) | Build and real-browser investigation acceptance verified against copied offline image; missing-IP/outpoint variant also verified | `frontend/`, `frontend/e2e/acceptance.mjs` |
-| Agentic or autonomous AI workflow | **Not implemented.** The chat feature is single-turn question answering over one finding's stored evidence, with no tools or actions | — |
 | Provisional activity per ingestion batch | Receipt-approved address read model, including unlinked entities, visible before finalization; not an incremental full graph | `AddressActivity`, `/activity`, Evidence Intake; SSE/recovery/browser tests |
 | Offline Linux appliance (container image + compose + air-gapped installer) | Copied-bundle install, PostgreSQL investigation and API/worker public IPv4/IPv6 isolation verified. Host internet remains unchanged; this is not physical machine air-gapping | `Dockerfile`, `deploy/appliance/`, final acceptance report |
 | Ingestion of PS-shaped datasets | Implemented. The PS publishes no dataset ("Dataset Link: Nil"; participants use synthetic data); header aliases, list encodings and epoch timestamps are mapped, and `tracex-dataset inspect` verifies any supplied file | `app/engine/canonical/profiles.py`, `app/engine/dataset_cli.py`, `data_manifest.json` |
@@ -149,13 +151,13 @@ TraceX is a **two-process, shared-nothing-in-memory** system: a stateless FastAP
 | **Commit or nothing** | Each ingestion batch commits Parquet fragments (staging file, then atomic rename) together with receipts, a checkpoint and an event in one database transaction. Files without receipts are ignored on resume. |
 | **Case isolation** | Every route, query and file path is scoped by `case_id`; non-members receive `404`, not `403`. |
 | **Deterministic replay** | Same source bytes plus the same rule and release identifiers produce the same output; findings carry locators that reopen the exact original record. |
-| **Optional intelligence, mandatory review** | The anomaly stack and chat assistant are optional and can fail or be disabled without failing an import. Every result is a lead that a human disposes through a versioned review. |
+| **Mandatory review** | Stage failures leave evidence readable but mark analysis degraded. Acceptance requires every stage. Scores are leads, not verdicts; explanations are deterministic and source-backed. |
 
 ### 6.2 Logical architecture
 
 Read the diagram **left to right**. The browser talks only to the **API**. The **Worker** does all heavy computation. The API and the Worker never call each other: they meet only in the **storage** column (PostgreSQL and the evidence vault).
 
-**Colour key:** blue = user interface, teal = API process, amber = worker process, green = storage, purple dashed = optional external service.
+**Colour key:** blue = user interface, teal = API process, amber = worker process, green = storage.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontSize":"22px","fontFamily":"Arial, Helvetica, sans-serif","lineColor":"#1E293B","textColor":"#0F172A","primaryTextColor":"#0F172A","edgeLabelBackground":"#FFFFFF"},"flowchart":{"nodeSpacing":45,"rankSpacing":70,"curve":"basis","padding":18}}}%%
@@ -168,7 +170,7 @@ flowchart LR
         AUTH["<b>Auth</b><br/>token + case membership"]
         UPLOAD["<b>Upload</b><br/>stream, hash, store"]
         QUERY["<b>Graph query</b><br/>bounded, read-only"]
-        REVIEW["<b>Review and export</b><br/>plus chat proxy"]
+        REVIEW["<b>Review and export</b><br/>structured source-backed evidence"]
     end
 
     subgraph L3["③ WORKER PROCESS<br/>runs the pipeline"]
@@ -186,27 +188,21 @@ flowchart LR
         VAULT[("<b>Evidence vault</b><br/>original files<br/>Parquet fragments<br/>graph files")]
     end
 
-    subgraph L5["⑤ OPTIONAL"]
-        LLM["<b>Ollama</b><br/>local chat model"]
-    end
 
     UI ==>|"HTTPS + token"| L2
     L2 <==>|"metadata"| PG
     L2 ==>|"save and read files"| VAULT
     L3 <==>|"jobs, findings"| PG
     L3 <==>|"fragments, graphs"| VAULT
-    L2 -.->|"one finding question"| LLM
 
     class UI ui
     class AUTH,UPLOAD,QUERY,REVIEW api
     class J,I,G,D,M worker
     class PG,VAULT store
-    class LLM ext
     style L1 fill:#EFF6FF,stroke:#1D4ED8,stroke-width:2px,color:#1E3A8A
     style L2 fill:#ECFEFF,stroke:#0E7490,stroke-width:2px,color:#164E63
     style L3 fill:#FFFBEB,stroke:#B45309,stroke-width:2px,color:#78350F
     style L4 fill:#F0FDF4,stroke:#15803D,stroke-width:2px,color:#14532D
-    style L5 fill:#FAF5FF,stroke:#7E22CE,stroke-width:2px,color:#581C87
 
     classDef ui fill:#DBEAFE,stroke:#1D4ED8,stroke-width:3px,color:#0F172A,font-weight:bold
     classDef api fill:#CFFAFE,stroke:#0E7490,stroke-width:3px,color:#0F172A
@@ -222,7 +218,6 @@ flowchart LR
 | ② API process | Login, authorization, upload, graph queries, review, export | `app/main.py`, `app/api/routes.py`, `app/auth`, `app/storage/raw.py` |
 | ③ Worker process | Runs the five pipeline steps in order for each import | `workers/runner.py`, `app/jobs/service.py`, `app/engine`, `app/ml` |
 | ④ Storage | PostgreSQL decides *what is valid*; the vault holds *the bytes* | `app/models.py`, `TRACEX_EVIDENCE_ROOT` |
-| ⑤ Optional | Local LLM for single-finding questions; failure never affects imports | `app/engine/chat/assistant.py` |
 
 ### 6.3 Runtime topology and trust boundaries
 
@@ -243,7 +238,6 @@ flowchart LR
         DBC[("<b>PostgreSQL 16</b><br/>port 5433")]
     end
 
-    OL["<b>Ollama</b><br/>port 11434<br/>optional"]
 
     B ==>|"REST + SSE"| API
     F ==>|"size limit + hash on write"| API
@@ -251,13 +245,11 @@ flowchart LR
     API --> FS
     WK <--> DBC
     WK <--> FS
-    API -.-> OL
 
     class B,F risk
     class API api
     class WK worker
     class FS,DBC store
-    class OL ext
     style U fill:#FEF2F2,stroke:#B91C1C,stroke-width:2px,color:#7F1D1D
     style H fill:#F0FDF4,stroke:#15803D,stroke-width:2px,color:#14532D
 
@@ -275,7 +267,6 @@ flowchart LR
 | Upload → vault | Extension allow-list (`.csv`, `.json`, `.ndjson`, `.xml`), byte limit (`TRACEX_MAX_UPLOAD_BYTES`), sanitized filename, hash-while-write, immutable target with digest check |
 | Source bytes → parser | Streaming parsers; `defusedxml` for XML; invalid rows quarantined with a locator, never silently dropped |
 | Control plane ↔ vault | Receipts in PostgreSQL define which files are valid; vault paths are resolved against the evidence root and rejected if they escape it |
-| API → LLM | Optional, single-turn, grounded in one finding's stored evidence; failure returns `503` and affects nothing else |
 
 ### 6.4 Evidence vault layout
 
@@ -331,7 +322,6 @@ A job is reclaimable when its state is `running` or `checkpointed` and its lease
 | Graph builder | Build immutable node and edge tables with coverage counters | Receipt-approved fragments | DuckDB file plus `GraphSnapshot` record | DuckDB, PyArrow |
 | Deterministic findings | Address-window features, three window rules, peeling and CoinJoin-like detectors | Fragments, graph coverage | `FeatureRecord`, `FindingRecord` | Pure Python |
 | Anomaly stack | Transaction-structure and burst scoring, fusion, budgeted flagging | Fragments | `FindingRecord` rows with `rule_version=anomaly-stack-v1` | NumPy, SciPy, scikit-learn (optional extra) |
-| Chat assistant | Answer a question using only one finding's stored evidence | Finding evidence, question | Text answer | HTTP call to Ollama (`qwen3:8b` default) |
 
 ### 6.7 Architectural constraints
 
@@ -459,7 +449,7 @@ Release `anomaly-stack-v1` (`app/ml/findings.py`) runs **layer A (global)** and 
 | Minimum data | Snapshots with fewer than 50 transactions are not scored |
 | Flagging | All rows scoring at or above the reference threshold are written, including reference rows; the budget is therefore a calibration target, not a hard cap on the queue |
 
-Offline-only components: layers B (Kaplan–Meier spend latency), C (empirical-Bayes history), E (bounded graph features), HBOS, and supervised layer S (`HistGradientBoostingClassifier`, opt-in, trained on fixture generator labels). Layer S is not run inside the application; `review_decision_labels` returns `None` until at least 50 review decisions with at least 10 positives exist and is not wired into the ingestion path.
+Research-only legacy components include layers B (Kaplan–Meier spend latency), C (empirical-Bayes history), E (bounded graph features), HBOS and legacy layer S. The new frozen-candidate lifecycle compares HistGradientBoosting, XGBoost, LightGBM and a hybrid on the same versioned causal feature contract. Its actual application inference is explicitly case-mode gated: synthetic/demo only unless the owner records a representative-label applicability approval for an exact domain. It does not train on finding reviews or import truth labels. Default scoring remains unsupervised v2 with retrospective D. See the [runbook](docs/macbook_runbook.md) for training, freezing, transfer evaluation and optional installation; no candidate has been promoted by this implementation.
 
 ### 8.5 Explainability and evidence traceability
 
@@ -486,7 +476,6 @@ Versions below are version constraints from `pyproject.toml` and `frontend/packa
 | Graph | `duckdb>=1.2,<2` |
 | Machine learning (extra `ml`) | `scikit-learn>=1.5,<2`, `numpy>=1.26,<3`, `scipy>=1.11,<2`; ECOD and HBOS implemented in-tree |
 | Frontend | React `^19.2.8`, React Router `^7.18.4`, TypeScript `~6.0.2`, Vite `^8.3.0`, oxlint, Playwright (smoke test) |
-| Optional LLM | Ollama HTTP API, default model `qwen3:8b` |
 
 ## 10. Repository structure
 
@@ -509,7 +498,6 @@ Versions below are version constraints from `pyproject.toml` and `frontend/packa
 │   │   ├── graph/           Graph builder and neighbourhood queries
 │   │   ├── motifs/          Peeling, CoinJoin-like, seed-proximity detectors
 │   │   ├── findings/        Address-window features and finding records
-│   │   └── chat/            Optional grounded chat (Ollama)
 │   └── ml/                  Anomaly stack (layers, fusion, findings, evaluation)
 ├── workers/runner.py        Worker entry point (tracex-worker)
 ├── frontend/                React + TypeScript investigator UI
@@ -549,13 +537,13 @@ Geo-IP database for a source checkout is installed with `make geoip` (or, offlin
 
 ### 11.1 Prerequisites
 
-Python 3.11 or newer, [`uv`](https://docs.astral.sh/uv/), Docker with Compose (for PostgreSQL), and Node.js with npm (frontend). Dependency installation requires network access unless wheels and packages are pre-provisioned; TraceX does not require network access at runtime except for the optional chat feature.
+Python 3.11 or newer, [`uv`](https://docs.astral.sh/uv/), Docker with Compose (for PostgreSQL), and Node.js with npm (frontend). Dependency installation requires network access unless wheels and packages are pre-provisioned; analysis has no network/cloud runtime dependency and contains no LLM.
 
 ### 11.2 Download the source from a command shell
 
 The verified repository is `Shreshtha280407/TraceX`, with `main` as the current
 review base. A fresh fetch on 2026-10-03 confirms HEAD and origin/main agree;
-local implementation edits remain uncommitted on top.
+the 2026-10-03 reviewed implementation is committed in d88af37; current integrated edits await owner review.
 
 #### Option 1: `git clone` (recommended)
 
@@ -642,8 +630,9 @@ Defined in `app/config.py` unless noted.
 | `TRACEX_ALLOW_DEV_ACTOR_HEADER` | `0` | Development-only `X-TraceX-Actor` identity bypass. **Never enable outside local development** |
 | `TRACEX_ML_FINDINGS` | `1` | Set to `0` to disable the anomaly ranking |
 | `TRACEX_ML_REVIEW_BUDGET` | `0.01` | Review budget fraction; values outside `(0, 0.5]` are recorded as `invalid_budget` |
+| `TRACEX_CANDIDATE_DIRECTORY` | unset | Optional owner-trusted frozen artifact directory; explicit case-mode eligibility still required |
+| `TRACEX_CANDIDATE_MANIFEST_SHA256` | unset | Independently reviewed manifest pin, checked before model deserialization; not a user-upload control |
 | `TRACEX_ML_THREADS` | `min(4, CPU count)` | BLAS/OpenMP thread bound for the ML stack (`app/ml/stack.py`) |
-| `TRACEX_OLLAMA_BASE_URL`, `TRACEX_OLLAMA_MODEL`, `TRACEX_OLLAMA_TIMEOUT_SECONDS` | `http://localhost:11434`, `qwen3:8b`, `60` | Optional chat backend |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | Frontend build-time API base URL (`frontend/.env.example`) |
 
 ### 11.4 Development setup
@@ -700,11 +689,11 @@ All routes are prefixed `/v1`. FastAPI generates interactive OpenAPI documentati
 | `GET /cases/{case_id}/events` | member | SSE replay. Use `Last-Event-ID` or `after` (not both, else `400`); `follow=true` adds heartbeats |
 | `GET /cases/{case_id}/graph` | member | Query `seed` (required), `depth` 1–5, `node_limit` 1–1000, `edge_limit` 1–3000. `409` if no completed graph; `422` on invalid parameters |
 | `GET /evidence/{source_id}/records` | member of the source's case | Query `locator`; returns the raw record replayed from the original file; `404` if not found; `409` if the stored source cannot be parsed |
-| `GET /cases/{case_id}/findings` | member | Query `limit` (1–200, default 50), `offset`; response includes `method`, `methods`, `ml_enabled` derived from the rows returned |
-| `GET /findings/{finding_id}/evidence` | member | Finding, feature vector, source references, coverage, opposing evidence, review and audit history, `replay_contract` |
-| `POST /findings/{finding_id}/reviews` | `case_lead` or `reviewer` | Body `expected_finding_version`, `disposition` in `open`, `triaged`, `dismissed`, `escalated`, `needs_data_review`; `reason`; optional `counterevidence_refs` (each with `evidence_id`, `locator`, validated against sources of the same case). `409` on stale version; `403` for other roles |
-| `POST /findings/{finding_id}/chat` | member | Body `question`, optional `history`; `503` if the Ollama endpoint is unreachable |
-| `GET /cases/{case_id}/findings/export` | member | Case-scoped JSON bundle with limitations statement |
+| `GET /cases/{case_id}/findings` | member | `limit` (1–200), `offset`, optional `rule_id`/`review_state`; independent `family_rank`/`family_total`, contextual round-robin policy; not calibrated cross-family risk |
+| `GET /findings/{finding_id}/evidence` | member | Deterministic structured evidence, separate supporting/opposing references, feature/coverage/provenance, review/audit history and replay contract |
+| `POST /findings/{finding_id}/reviews` | `case_lead` or `reviewer` | `expected_finding_version`, disposition `open`, `triaged`, `confirmed`, `dismissed`, `escalated`, `needs_data_review`; reason; <=20 same-case receipt-approved counter-references with pinned source hash. `409` stale version; `403` other roles |
+| `GET /cases/{case_id}/findings/export` | member | Bounded JSON preview/page (`limit` <=200, `offset`) with real total and limitations |
+| `GET /cases/{case_id}/findings/export.ndjson` | member | Full streaming finding/evidence/review export; private case data, not a GitHub report package |
 | `GET /cases/{case_id}/features/export` | member | Address-window feature rows; optional `snapshot_id` |
 | `POST /cases/{case_id}/synthetic-review-seeds` | member; case must have `synthetic: true` | Adds explicit synthetic seed context to a completed snapshot; `422` otherwise |
 
@@ -758,9 +747,9 @@ None of these is official SIH data or real blockchain data. `evaluation_truth.js
 | Offline process boot, dependency pinning, export honesty | `test_phase_seven_offline_launch.py` | `make phase-seven-test` |
 | Frontend end-to-end smoke (Playwright, requires Chrome and running servers) | `frontend/e2e/smoke.mjs` | `npm run e2e` |
 
-Full suite command documented by the project: `uv run --extra ml pytest -q`. A static count finds 117 `test_` functions under `tests/`; the project documents report 130 (`docs/final_report.md`) and 128 (`docs/phase7.md`) passing, a difference not reconciled here (parametrization may account for it).
+Historical full-suite command: `uv run --extra ml pytest -q`. Original documentation inventories reported 117 functions, 130 and 128 passing tests under differing scopes/parametrization; those are not current counts. Some broad targets generate or read 100K fixtures. On the implementation machine use only the audited explicit small module list in the current report; the full suite was intentionally not run in this phase.
 
-Important qualification: every committed pytest module, benchmark script and walkthrough script inspected constructs its control-plane database with **SQLite** (`make_engine("sqlite:///...")`). PostgreSQL-specific behavior (`FOR UPDATE`, `SKIP LOCKED` row locking, concurrent workers) is therefore not exercised by any committed test or benchmark.
+Historical qualification for the original table: those pytest/walkthrough measurements used **SQLite**, not PostgreSQL row-lock behavior. The subsequently committed October 3 appliance report separately records real PostgreSQL acceptance. This integrated phase again used small isolated SQLite/browser tests; the new native MacBook/PostgreSQL gate is NOT RUN. Do not transfer either report's result to a different release or clock contract.
 
 ### 14.2 Results obtained while preparing this document
 
@@ -855,7 +844,7 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 
 - **Case isolation is application-level.** It is enforced by membership checks in one shared database and one shared filesystem root. There is no per-case physical, operating-system or cryptographic isolation.
 - **Hashes and audit rows are not a proven chain of custody.** SHA-256 values and database audit records support integrity checking, but audit rows are ordinary mutable rows (not hash-chained or signed), exports are not signed, and no filesystem-level immutability (for example WORM storage) is enforced by the code.
-- **Offline runtime isolation** is now tested for API, worker and database internal networks, public IPv4/IPv6 failures, and no external browser resources on native Linux Docker. The host itself was not disconnected. Installation needs the checksummed copied bundle; optional chat still requires a reachable pre-provisioned local model.
+- **Historical offline runtime isolation** was checked for API, worker and database internal networks, public IPv4/IPv6 failures and no external browser resources on the October 3 native Linux appliance. The host itself was not disconnected. It was not rerun after this implementation; MacBook loopback routing is not native-Linux isolation evidence. The current release contains no LLM/chat; analysis requires no cloud service.
 
 ### 16.3 Gaps and hardening requirements
 
@@ -870,7 +859,7 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 | `GET /evidence/{source_id}/records` scans the stored source linearly per request | Authenticated request cost grows with file size |
 | Upload declares every source `synthetic=false` regardless of case flag (`routes.py`) | The synthetic flag is only meaningful at case level |
 | A lead may add a member who has not signed up; that creates a user record without a password, and `/auth/signup` then returns `409` for the name | Code-reading observation, not executed. Members should register first |
-| Chat assistant: grounding is best-effort through a system prompt | Prompt contracts and unavailable-model behavior tested; real-model grounded answers remain NOT RUN |
+| Unlabelled uploads cannot establish AP/accuracy | Show coverage, applicability and reference limitations rather than invented quality numbers |
 | Job lease (default 30 s) is renewed only at batch commits, while graph, findings and ranking run afterwards without renewal (about 177 s on the 100K fixture) | A second worker could reclaim an active job; the project recommends one worker per host |
 | Weak-data and partial coverage are surfaced as coverage fields, not blocked | Reviewers must read coverage before relying on a finding |
 
@@ -958,5 +947,6 @@ Known inconsistencies among these documents, to be resolved by the authors:
 Originally prepared by static audit on 2026-09-30. Updated during the actual
 2026-10-03 implementation: code, tests, fresh benchmark/model/browser reports,
 copied appliance and schema-upgrade evidence are recorded in the final acceptance
-report. September documentation-only statements are historical. Changes remain
-uncommitted for manual review; no push is performed.
+report. September documentation-only statements are historical. That reviewed
+release was committed as d88af37. The 2026-10-04 integrated changes await owner
+review; no automatic commit or push is performed.

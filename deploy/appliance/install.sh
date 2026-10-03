@@ -10,7 +10,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 if [ -f images.tar ]; then
   if [ ! -f SHA256SUMS ]; then echo "Offline bundle lacks SHA256SUMS; refusing unverified install." >&2; exit 1; fi
-  sha256sum -c SHA256SUMS
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
   echo "Loading images from images.tar (offline install)..."
   docker load -i images.tar
 fi
@@ -18,7 +18,11 @@ if [ ! -f .env ]; then
   cp .env.example .env
   secret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
   dbpass=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  sed -i "s/^TRACEX_SECRET_KEY=.*/TRACEX_SECRET_KEY=${secret}/; s/^TRACEX_DB_PASSWORD=.*/TRACEX_DB_PASSWORD=${dbpass}/" .env
+  if [ "$(uname -s)" = Darwin ]; then
+    sed -i '' "s/^TRACEX_SECRET_KEY=.*/TRACEX_SECRET_KEY=${secret}/; s/^TRACEX_DB_PASSWORD=.*/TRACEX_DB_PASSWORD=${dbpass}/" .env
+  else
+    sed -i "s/^TRACEX_SECRET_KEY=.*/TRACEX_SECRET_KEY=${secret}/; s/^TRACEX_DB_PASSWORD=.*/TRACEX_DB_PASSWORD=${dbpass}/" .env
+  fi
   chmod 600 .env
   echo "Created .env with fresh secrets."
 fi

@@ -1,0 +1,195 @@
+{
+  "status": "IMPLEMENTED_SMALL_VERIFIED_MAC_NOT_RUN",
+  "scope": "Implementation machine only. Small fixtures and mocked large-count admission; NOT 3M/AP/generalization acceptance.",
+  "test_summary": {
+    "targeted_pytest": {
+      "passed": 146,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 32.18,
+      "junit": "var/implementation-20261004/review-ready-small.xml"
+    },
+    "frontend": {
+      "build_typecheck": "PASS",
+      "lint_exit_code": 0,
+      "lint_existing_warnings": 21,
+      "graph_window_node_test": "PASS"
+    },
+    "browser": {
+      "status": "PASS",
+      "checks": 42,
+      "transactions": 64,
+      "scope": "real authenticated Chrome; isolated SQLite; no external requests/runtime JS errors; NOT PostgreSQL/Docker/Mac acceptance"
+    },
+    "sqlite_additive_schema_probe": "PASS"
+  },
+  "checks": [
+    {
+      "name": "Fresh MacBook >=3M canonical and <1800s upload-through-authenticated-findings",
+      "status": "NOT RUN"
+    },
+    {
+      "name": "Representative final per-task AP/precision/benign false positives/calibration",
+      "status": "NOT RUN"
+    },
+    {
+      "name": "Large memory/bounded/serial/parallel parity",
+      "status": "NOT RUN"
+    },
+    {
+      "name": "Native MacBook image/VM/resource admission and PostgreSQL upgrade",
+      "status": "NOT RUN"
+    },
+    {
+      "name": "Official PS source wording",
+      "status": "UNRESOLVED SOURCE PROVENANCE"
+    }
+  ],
+  "candidate": {
+    "active_default": "anomaly-stack-v2",
+    "burst": "retrospective",
+    "promotion": "NONE",
+    "candidate_feature_contract": "causal-structure-prior-bucket-v1",
+    "eligibility": "Synthetic/demo only with opt-in unless manually approved representative-label domain; otherwise v2 fallback. No arbitrary-upload AP guarantee."
+  },
+  "reproduction": [
+    "docs/macbook_runbook.md",
+    "docs/integrated_implementation_2026-10-04.md",
+    "uv run python -m scripts.quality_matrix smoke --output var/NEW_64_ROW_WIRING",
+    "uv run python -m scripts.small_browser_acceptance --output var/NEW_64_ROW_BROWSER --timeout 120"
+  ],
+  "errors": [],
+  "exit_code": 0,
+  "code_identity": {
+    "commit": "d88af37c2377f6aed72604b72b2f116a87ae39b2",
+    "diff_sha256": "9ce998beaddd84b5536dd76c1b8c69e150c0e7e53b65c9f318d2533a13390213",
+    "untracked_sha256": {
+      "app/engine/evidence.py": "c6e9bbdabe8183bdd28183043651b13fd9e85dd84ec7f60fbc45a8fd18cea48b",
+      "app/ml/candidate.py": "84c2b055092846d0418ca79ac2d4b3dc6cf441c874b4813313a32efb49555d72",
+      "app/ml/candidate_findings.py": "4d83c595b0cce217062856e6045d8a1634fbeaa2ea66085ae03d90a3f03008e3",
+      "app/telemetry.py": "5559f4b62f288445f67528f038ec46edc9f6e67e67d50da4066ab33101bf0853",
+      "docs/integrated_implementation_2026-10-04.md": "f767bade8dac72c3a12ea281dcd1b862cca55ba672b0eb2a262e0e6980fdbd0c",
+      "docs/macbook_runbook.md": "569ff5adacd31e763734001cbf0d69b22b166c27eab0b63ecee79e5a58f838eb",
+      "frontend/e2e/graph-window.test.mjs": "54ef51b320e9e1aa1b8bd836ddade82243d532716d1cb8a210b4e6939593b821",
+      "frontend/src/components/StructuredEvidence.tsx": "03be26d58badcf362046d33b08c0642292bf5a82031312db8d342eca9881e4de",
+      "frontend/src/lib/graphWindow.ts": "ed3e0dd66228be1bcbced032486cbb95394c0c30d7358155527d60b17037f292",
+      "scripts/candidate_lifecycle.py": "71bfe5bf0baabc1120b939a1e32233bf10818063248e0e39258b798f72e13c1c",
+      "scripts/case_export.py": "c3c7fe4d43af0ae479157d426aa53fa19b2507edf675c133402d23947d690b0c",
+      "scripts/export_review_package.py": "7a2724f2c0bfd721fcf585e5c3ce0b48c10ad60bcff6d7fc5ee5c674de1de09e",
+      "scripts/macbook_benchmark.py": "65285a28d03e96e6231f96eaeffa72e23de22a29a43a87f44532e82a8ce8a863",
+      "scripts/quality_matrix.py": "3a553274268d7cbf885e408bfd3be8d107a27527ff90c701213e4657446dd79c",
+      "scripts/runtime_probe.py": "12f3fe1226002d7dde48ae75ed4f09d55e979815b667655f9280b6be5ff886e2",
+      "scripts/small_browser_acceptance.py": "6ab4c24821c508bf1548f50bb6b57e274abd101b5993e413ed86f49157ac2e34",
+      "tests/unit/test_integrated_boundaries.py": "aefc2bd93d542c5fce05711713db415373aa5a99c9e87a787887d185601ded1e",
+      "tests/unit/test_integrated_improvements.py": "d3a4f990e990f696e51b76ef65ed72a62529ba73559dfbc23f3cc2047ccfbe5f",
+      "tests/unit/test_macbook_orchestration.py": "34a392173849dd0df7bc27f6601a7425c4ae5661e2788018e1b96a3afa6e6311",
+      "tests/unit/test_quality_wiring.py": "a8ef1b78a9a170e82f6f0a1bfece8db124acecece977c5890a31b9a96bb3c8bf"
+    },
+    "locks": {
+      "uv.lock": "eae2c80a99dd945f3ac8d60ed2ec8cb044d3a9beb5e7e3f02f944ee1fd80b6ef",
+      "frontend/package-lock.json": "727baec17e38f4ee0e8d04e479b0ef3e21164b6e55fcd7598712849ad5a213ff"
+    },
+    "runtime_source_sha256": {
+      "app/__init__.py": "13dc5f69d13f9b5459f2d7b197b658a9f74f59a4b1d1c4b16f7b3f12af89f86b",
+      "app/api/__init__.py": "d93b5f927d5548a8ac36fcb08ff9ea4d61844066f86244c9564b8b01c01428b4",
+      "app/api/analysis_routes.py": "66a8fd5c2be1dd4058db2964cdab64d758b2ae19a2173e9f5a16fd9f163b75be",
+      "app/api/analytics_routes.py": "708675a88634299439e8b924c79f10e7429f825151affcc5b876405c4a34fe07",
+      "app/api/routes.py": "f1427d2d0767d67c3090d899a336fd8d9b8fd8f5342908f30051302d2b800f23",
+      "app/auth/__init__.py": "e027eb0235b3e0047e1993e9862199e7071f1480c85d5f3def83897198045940",
+      "app/auth/dependencies.py": "41cf7fc13f110beff4abb28af384e9b5a9a40885b4e28d92ac9045c06442c19a",
+      "app/auth/security.py": "fc8d8cbfcb79e0787c4d27a9184850b5c0548a6d8837ea80f5675fe955f78935",
+      "app/config.py": "cde8f04387ce8fc3aef366ee562d6560ad2188720276fc18ec1002c79e60c466",
+      "app/db.py": "1f1ab5f656f15349c51647f20fae283499730adccf13d21cdd0176dfed9be833",
+      "app/engine/__init__.py": "90e8784103bbb278eaceee5a5e00e2117b7a5e16798052096cd9efbc96becca5",
+      "app/engine/adapters/__init__.py": "68ebf05e6d94a746e36f7046acddd71610253d25ac2fbf28a85d2387f25f7310",
+      "app/engine/adapters/source.py": "82ba2e5e2e6e40619088ad68bef6bfff7c7606053d93a23e6c716334ab3ac7c1",
+      "app/engine/analytics.py": "072ff6553ac54e53fb74946baf92e424d8f4fba51b0cafa3957e1cbe7ea50254",
+      "app/engine/bounded.py": "e1e81715c41d5ba1ea3dc0a7ebfef49fe5a3d31d1ea4e7fc773832f8ec58090d",
+      "app/engine/canonical/__init__.py": "5c3ea36121df3439efddc359be43c158fd1a337f2ddd3dfcebba4c8ccfcbb015",
+      "app/engine/canonical/batch.py": "364d8a8ec504a9bbe862cc79a7e39fdf8254eb49db1b40a399e8bf59b77cee4b",
+      "app/engine/canonical/normalize.py": "b68bf88f2ab66388468225558e986a4dbf15023043be597292fd3399bc95c0e8",
+      "app/engine/canonical/profiles.py": "658e585040610cffe7d7baa233e4eb5249bcd637ec40a95cde186c0da6474a5c",
+      "app/engine/catalogue/__init__.py": "3cf0a26670c3074c5ff1522dec6234b9550b782862b0e542036cc8fb0f871190",
+      "app/engine/catalogue/fragments.py": "23304dda8901774966fcb11ef18879cf304217352dfaa5f8c1e679276990277b",
+      "app/engine/confidence.py": "226a00ad882408ed464160b65d3a13b4965d0c3ad5b6ce9b8247fe9dc0e8b056",
+      "app/engine/dataset_cli.py": "5372d8d1135c05a99e9cf0d752b87260407ccb7a48dc404ffdf3b12370cd9ae1",
+      "app/engine/evidence.py": "c6e9bbdabe8183bdd28183043651b13fd9e85dd84ec7f60fbc45a8fd18cea48b",
+      "app/engine/feature_store.py": "0eada05f111ce1ec4a2d0fb2f2287298d4f75f58ed3424b4e90670974750e9c9",
+      "app/engine/findings/__init__.py": "dc41e312c606942f39d00b651de2ff84d291792ffe75cc1f455b8c7e2a3d1200",
+      "app/engine/findings/deterministic.py": "296e67cea97add4a0808918610021ed4ae137d311c139968e3fc36c7922781ea",
+      "app/engine/geoip.py": "d87d0b196104d321d027429867cfbf9a23f68cba509a0b720f1f3d7ffd98a2d1",
+      "app/engine/graph/__init__.py": "f1c0ca402f1123f3a7e7fabd19cc3db03d6f92455ef6ff3b4ea2fbf626e6ad64",
+      "app/engine/graph/builder.py": "ecff3fa28a1c95c0161ed0f7547e59e2720766fadd7013a1bc091133ae757eb4",
+      "app/engine/graph/query.py": "f50b1c5c4d16476d64ea8b0fd719419ca05d1cac67ec648bf2834409ea74767e",
+      "app/engine/ingestion/__init__.py": "c3a413e31b7e6b916587c388c5a9c859fa16785feca45ce022cee535c2daea65",
+      "app/engine/ingestion/pipeline.py": "aa8d6d9281b0c395a2c1a2d59269e87e586815df682f1b035858289c30e3e233",
+      "app/engine/motifs/__init__.py": "56822cb4aa2b8693cca0fd1edd0891c214adf28d26e1192193baf48245f0f110",
+      "app/engine/motifs/deterministic.py": "3c8ef395a9b4790454055c49475d78abd320d33ab72f1fab65379e3caf1b1d6d",
+      "app/engine/process_pool.py": "5413486acc56f16b8dec4645470ca96954ef5cd92b8ae9a997a149a06e844892",
+      "app/events.py": "d3b42783ef151b36f6534b31bb9fa9ac32f80c9477161e5b9f5357f60a3ca75e",
+      "app/jobs/__init__.py": "a6dc15e5382828746581952565afdb88b4dc6d742a984ce8ea7838aad27c3825",
+      "app/jobs/analysis.py": "f661870fde218702287a6316cfba5971cac53b0de43926e297c2c27b8b150272",
+      "app/jobs/service.py": "589471ef09826c0a5c6bd78e8b6a6f202bb5d3dea7627a62a37f7226341c0b87",
+      "app/main.py": "6968c384d37b9e95a70d72cac3381043cc7688bda3c11d69acf7ffa680d2b817",
+      "app/ml/__init__.py": "b6a993e4a0c5f8251d18d47b02e8f692240049fc6fc0f86931ed7d3ac506a34d",
+      "app/ml/analyst_labels.py": "b1eb686c7d1718ecd26b72b0358167ac4cc8f78de5740c6b9a1704b0397deb82",
+      "app/ml/candidate.py": "84c2b055092846d0418ca79ac2d4b3dc6cf441c874b4813313a32efb49555d72",
+      "app/ml/candidate_findings.py": "4d83c595b0cce217062856e6045d8a1634fbeaa2ea66085ae03d90a3f03008e3",
+      "app/ml/detectors.py": "a8cc84a86338064fb9925c36ba9c224d1fef8bab6123a4afdb4be7a7e0eeb5a0",
+      "app/ml/evaluate.py": "5e2b242de71f475353819c886eec2e9ba0e1b82fa9a195eaf1e39ba995561dcc",
+      "app/ml/facts.py": "a5394c1bab19c9c45d71fd4a9affe2c37b56cbb382f4ec7b9fc69dcc5ef6045d",
+      "app/ml/findings.py": "d745002264b30d6b127825b0a9c0c2ff41b8f402c33dd7a1dc785b7cb55ff9ca",
+      "app/ml/fusion.py": "a9701d269018a6e41264eb6300ed470b9de6d869eb4c0b6c0b17b8faaefa4e26",
+      "app/ml/grains.py": "e68171a2cba6926253495ff9e66852b1fae2b170bc736668c4cc18cb383b857e",
+      "app/ml/layers.py": "44627f60ee4112a649958ca2a9ca6477a2652e11f0f6d6ecd138bae65fb8dd62",
+      "app/ml/stack.py": "1e7fb3252a3e0263823c9547516bb0967daf54a91e4942ceaf78260fae64c38f",
+      "app/ml_release_constants.py": "a56aa783dfe1014c786e14d7fb1262d25180d0f11f4da0d3c97a812319029d2a",
+      "app/models.py": "935ea2ef8696560a5493293e55f7b10f58addedf115fa9f44c933e945e6ca2e7",
+      "app/resources.py": "a29815f3a6ff8a2d4b707ad338d084ab4be1f8bbaa3413d3ba74df5a581d2c6e",
+      "app/storage/__init__.py": "ac05eda8f48d944c77e43c83e0d39c8ebc9c4abb35a49ea064bcd50ded2a520f",
+      "app/storage/raw.py": "331bcd77a1b509534b96d1216c8a34c8dc12eab244a87ac476e625343196f80b",
+      "app/telemetry.py": "5559f4b62f288445f67528f038ec46edc9f6e67e67d50da4066ab33101bf0853",
+      "workers/__init__.py": "8b491c878ff53e5a814e2f68edefad26ac096a1b9710423bec5d93a6105a8a3c",
+      "workers/runner.py": "033ae80e373e7b56e58c977ce93848cbf72413afbcc14354ad8d86794a866e4d"
+    },
+    "resources": {
+      "system": "Linux",
+      "architecture": "x86_64",
+      "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.44",
+      "machine_model": null,
+      "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+      "logical_cpus": 12,
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "memory": {
+        "physical_bytes": 16366317568,
+        "available_bytes": 8717967360,
+        "method": "proc_meminfo",
+        "available_is_estimate": false
+      },
+      "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages."
+    },
+    "versions": {
+      "duckdb": "1.5.5",
+      "pyarrow": "23.0.1",
+      "numpy": "2.5.3",
+      "scikit-learn": "1.9.1",
+      "scipy": "1.18.1",
+      "SQLAlchemy": "2.1.1",
+      "psycopg": "3.3.6"
+    }
+  },
+  "dirty_tree": true
+}

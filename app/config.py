@@ -39,12 +39,8 @@ class Settings:
     # ingests and still produces the Phase 4 findings.
     ml_findings_enabled: bool = True
     ml_review_budget: float = 0.01
-    # Chat is a separate, optional local model call (Ollama), never a hosted API --
-    # matches the offline posture everywhere else in this app. See docs/final_report.md
-    # for how to run qwen3:8b on a dedicated LAN machine.
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:8b"
-    ollama_timeout_seconds: int = 60
+    candidate_directory: Path | None = None
+    candidate_manifest_sha256: str | None = None
 
     @staticmethod
     def _parse_ml_review_budget(raw: str) -> float:
@@ -97,9 +93,8 @@ class Settings:
             token_ttl_seconds=int(os.environ.get("TRACEX_TOKEN_TTL_SECONDS", "86400")),
             ml_findings_enabled=os.environ.get("TRACEX_ML_FINDINGS", "1").lower() not in {"0", "false", "no"},
             ml_review_budget=cls._parse_ml_review_budget(os.environ.get("TRACEX_ML_REVIEW_BUDGET", "0.01")),
-            ollama_base_url=os.environ.get("TRACEX_OLLAMA_BASE_URL", "http://localhost:11434"),
-            ollama_model=os.environ.get("TRACEX_OLLAMA_MODEL", "qwen3:8b"),
-            ollama_timeout_seconds=int(os.environ.get("TRACEX_OLLAMA_TIMEOUT_SECONDS", "60")),
+            candidate_directory=Path(os.environ["TRACEX_CANDIDATE_DIRECTORY"]) if os.environ.get("TRACEX_CANDIDATE_DIRECTORY") else None,
+            candidate_manifest_sha256=os.environ.get("TRACEX_CANDIDATE_MANIFEST_SHA256"),
         )
 
 

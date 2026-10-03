@@ -378,7 +378,8 @@ def build_analytics(
     else:
         nt, no, ni = (len(records.get(kind, [])) for kind in ("transactions", "outputs", "inputs"))
     memory_estimate = int(nt * 256 + no * 192 + ni * 96)
-    admit_global_allocation("entity/network analytics", memory_estimate, plan=plan)
+    admit_global_allocation("entity/network analytics", memory_estimate, plan=plan,
+                            native_bytes=max(256, plan.memory_budget_bytes // (4 << 20)) * (1 << 20))
 
     if store is not None:
         con = store.con
@@ -923,8 +924,9 @@ def _network_finding_rows(con: duckdb.DuckDBPyConnection) -> list[dict[str, Any]
     for dimension, wallet, key, n, total, keys, base_rate, p_value, adjusted in correlations:
         txs = con.execute(
             f"""
-            SELECT DISTINCT w.txid, t.us FROM wallet_spend w JOIN obs_tx o USING (txid) JOIN tx_ids t USING (txid)
-            WHERE w.wallet = ? AND o.{'ip' if dimension == 'endpoint' else 'asn'} = ? ORDER BY t.us NULLS LAST, w.txid
+            SELECT DISTINCT w.txid, t.us, min(t.us) OVER (), max(t.us) OVER ()
+            FROM wallet_spend w JOIN obs_tx o USING (txid) JOIN tx_ids t USING (txid)
+            WHERE w.wallet = ? AND o.{'ip' if dimension == 'endpoint' else 'asn'} = ? ORDER BY t.us NULLS LAST, w.txid LIMIT 25
             """,
             [wallet, key],
         ).fetchall()
@@ -938,7 +940,7 @@ def _network_finding_rows(con: duckdb.DuckDBPyConnection) -> list[dict[str, Any]
         rows.append({
             "kind": "concentration", "dimension": dimension, "wallet": wallet, "key": key, "n": n, "total": total,
             "keys": keys, "base_rate": base_rate, "p_value": p_value, "adjusted": adjusted,
-            "txids": [txid for txid, _ in txs], "times": [us for _, us in txs if us is not None],
+            "txids": [item[0] for item in txs], "times": [value for value in (txs[0][2:4] if txs else ()) if value is not None],
             "geo": geo, "entity_addresses": entity[0] if entity else None,
         })
     for ip, n, k, expected, base_rate, p_value, adjusted in con.execute(
@@ -1313,26 +1315,45 @@ def similar_wallets(evidence_root: Path, record: AnalyticsSnapshot, wallet: str,
     ).fetchone() if _table_exists(cursor, "embedding_rows") else None
     matrix = _embedding_matrix(evidence_root, record)
     if row is None or matrix is None:
+        cursor.close()
         return {"wallet": wallet, "status": "not_embedded (active in fewer than two transactions)", "similar": []}
     vector = np.asarray(matrix[row[0]], dtype=np.float32)
-    scores = np.asarray(matrix @ vector)
-    scores[row[0]] = -np.inf
-    count = min(limit, scores.size - 1)
+    count = min(limit, len(matrix) - 1)
     if count <= 0:
+        cursor.close()
         return {"wallet": wallet, "status": "complete", "similar": []}
-    top = np.argpartition(-scores, count - 1)[:count]
-    top = top[np.argsort(-scores[top], kind="stable")]
-    rows = [int(item) for item in top]
+    import heapq
+    best = []
+    for start in range(0, len(matrix), 8192):
+        scores = np.asarray(matrix[start:start + 8192] @ vector)
+        # Only a chunk's leading K can enter the global K. Stable native sort
+        # avoids visiting every wallet in Python while keeping exact tie policy.
+        local = np.lexsort((np.arange(len(scores)), -scores))[:count + 1]
+        for offset in local:
+            score = scores[offset]
+            index = start + offset
+            if index == row[0]:
+                continue
+            item = (float(score), -int(index))
+            if len(best) < count:
+                heapq.heappush(best, item)
+            elif item > best[0]:
+                heapq.heapreplace(best, item)
+    top = sorted(best, reverse=True)
+    rows = [-item[1] for item in top]
+    chosen_scores = {-index: score for score, index in top}
     placeholders = ",".join("?" for _ in rows)
     keys = dict(cursor.execute(
         f"SELECT e.row, w.wallet FROM embedding_rows e JOIN wallets w USING (wid) WHERE e.row IN ({placeholders})",
         rows,
     ).fetchall())
+    cursor.close()
     return {
         "wallet": wallet,
         "status": "complete",
         "method": "cosine similarity of spectral graph embeddings",
-        "similar": [{"wallet": keys[item], "similarity": float(scores[item])} for item in rows if item in keys],
+        "tie_policy": "embedding-row-ascending-v1; bounded 8192-row scoring",
+        "similar": [{"wallet": keys[item], "similarity": chosen_scores[item]} for item in rows if item in keys],
     }
 
 
@@ -1379,7 +1400,9 @@ def propagate_risk(
     tx_count = cursor.execute("SELECT count(*) FROM tx_index").fetchone()[0]
     flow_count = cursor.execute("SELECT (SELECT count(*) FROM flow_out) + (SELECT count(*) FROM flow_in)").fetchone()[0]
     try:
-        admit_global_allocation("risk propagation", wallet_count * 256 + tx_count * 192 + flow_count * 128)
+        plan = current_plan()
+        admit_global_allocation("risk propagation", wallet_count * 256 + tx_count * 192 + flow_count * 128,
+                                plan=plan, native_bytes=max(256, plan.memory_budget_bytes // (4 << 20)) * (1 << 20))
     except RuntimeError:
         cursor.close()
         raise

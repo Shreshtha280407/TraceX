@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.stats import norm
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -282,9 +283,14 @@ def materialize_ml_findings(
         structure = layers.layer_a_structure(transaction_table, reference, stratified=False, score_with=A_SCORE_WITH)
         structure.name = "A_global"
         available["A_global"] = structure
-        available["A_structure"] = layers.layer_a_structure(
-            transaction_table, reference, stratified=True, score_with=A_SCORE_WITH
-        )
+        if "A_structure" in layer_names:
+            available["A_structure"] = layers.layer_a_structure(
+                transaction_table, reference, stratified=True, score_with=A_SCORE_WITH)
+        else:
+            # v2 uses A_global+D; only the shape labels were ever exposed from
+            # this second fit. Preserve them, omit eight unused IF/ECOD fits.
+            available["A_structure"] = layers.LayerScore("A_structure", np.zeros(facts.transaction_count),
+                detail={"shape_family": layers.shape_families(transaction_table, reference)})
     if "B_latency" in layer_names:
         horizon = int(facts.tx_time[reference].max())
         available["B_latency"] = layers.layer_b_latency(
@@ -306,6 +312,7 @@ def materialize_ml_findings(
         raise ValueError(f"requested layers are not available: {missing}")
 
     selected = {name: available[name].score for name in layer_names}
+    fused = None
     if len(selected) == 1:
         score = next(iter(selected.values()))
         threshold = float(np.quantile(score[reference], 1.0 - budget))
@@ -363,6 +370,15 @@ def materialize_ml_findings(
             "release_id": RELEASE_ID,
             "model_run_id": run_id,
             "layers": {name: float(available[name].score[transaction]) for name in layer_names},
+            "fusion_components": {
+                "version": "stouffer-explanation-v1", "scope": "separate layer inputs, not criminality probabilities",
+                "components": {name: {"raw_score": float(available[name].score[transaction]),
+                    "reference_tail_p": float(fused.p_values[name][transaction]), "weight": fused.weights[name],
+                    "normalized_z_contribution": float(norm.isf(fused.p_values[name][transaction]) * fused.weights[name] /
+                        np.sqrt(sum(weight ** 2 for weight in fused.weights.values())))}
+                    for name in layer_names} if fused is not None else {},
+                "scoring_scope": "v2 burst is retrospective, not a causal prior-bucket detector",
+            },
             "fused_score": float(score[transaction]),
             "threshold": float(threshold),
             "top_feature_contributions": drivers,
@@ -443,8 +459,8 @@ def materialize_ml_findings(
                     {
                         "kind": "coverage_limitation",
                         "statement": (
-                            "This snapshot contains no ownership attribution and no independently "
-                            "verified benign context; an anomaly score alone cannot establish either."
+                            "Ownership attribution and independently verified benign context are not "
+                            "established by the checked scoring coverage; an anomaly score alone cannot establish either."
                         ),
                         "source_refs": [],
                     },

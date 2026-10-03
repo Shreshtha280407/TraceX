@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import case as sql_case
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -20,9 +21,8 @@ from app.auth.security import hash_password, issue_session_token, verify_passwor
 from app.config import settings
 from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
-from app.engine.chat import ChatTurn, ChatUnavailable, build_finding_context
-from app.engine.chat import ask as ask_chat
 from app.engine.confidence import finding_confidence
+from app.engine.evidence import POLICY, interpretation, reference_status, structured_evidence
 from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphNodeNotFound, GraphQueryError, query_flow, query_neighbourhood
 from app.events import append_event, event_envelope
@@ -62,6 +62,8 @@ class LoginRequest(BaseModel):
 class CaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     synthetic: bool = False
+    scoring_mode: str = Field(default="unsupervised", pattern="^(unsupervised|synthetic_demo|validated_candidate)$")
+    candidate_domain: str | None = Field(default=None, max_length=128)
 
 
 class CaseMemberCreate(BaseModel):
@@ -96,6 +98,8 @@ def case_view(case: Case) -> dict:
         "case_id": case.id,
         "name": case.name,
         "synthetic": case.synthetic,
+        "scoring_mode": case.scoring_mode,
+        "candidate_domain": case.candidate_domain,
         "created_at": case.created_at.isoformat() if case.created_at else None,
     }
 
@@ -215,7 +219,12 @@ def readiness(session: Session = Depends(get_session)) -> dict:
 
 @router.post("/cases", status_code=status.HTTP_201_CREATED)
 def create_case(body: CaseCreate, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
-    case = Case(name=body.name, synthetic=body.synthetic, created_by=user.id)
+    if body.scoring_mode == "synthetic_demo" and not body.synthetic:
+        raise HTTPException(status_code=422, detail="synthetic_demo requires a synthetic case")
+    if body.scoring_mode == "validated_candidate" and not body.candidate_domain:
+        raise HTTPException(status_code=422, detail="validated candidate requires an explicitly approved applicability domain")
+    case = Case(name=body.name, synthetic=body.synthetic, created_by=user.id,
+                scoring_mode=body.scoring_mode, candidate_domain=body.candidate_domain)
     session.add(case)
     session.flush()
     session.add(CaseMembership(case_id=case.id, user_id=user.id, role="case_lead"))
@@ -346,11 +355,11 @@ def get_evidence_record(
     if source is None:
         raise HTTPException(status_code=404, detail="Evidence source not found")
     require_case_member(source.case_id, user, session)
-    from app.storage.raw import resolve_source
+    from app.storage.raw import verified_source
 
     try:
         for row in rows_for_source(
-            resolve_source(settings.evidence_root, source.storage_relative_path), source.source_format
+            verified_source(settings.evidence_root, source.storage_relative_path, source.sha256), source.source_format
         ):
             if row.locator == locator:
                 return {
@@ -360,7 +369,7 @@ def get_evidence_record(
                     "locator": row.locator,
                     "record": row.value,
                 }
-    except SourceParseError as exc:
+    except (SourceParseError, OSError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=f"Stored source cannot be replayed: {exc}") from exc
     raise HTTPException(status_code=404, detail="Source locator not found")
 
@@ -566,6 +575,7 @@ def finding_view(finding: FindingRecord, session=None) -> dict:
         "opposing_evidence": finding.opposing_evidence,
         "source_refs": finding.source_refs,
         "status": finding.status,
+        "interpretation": interpretation(finding),
     }
 
 
@@ -614,6 +624,7 @@ def list_findings(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     rule_id: list[str] | None = Query(default=None),
+    review_state: str | None = Query(default=None, pattern="^(open|triaged|confirmed|dismissed|escalated|needs_data_review)$"),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -627,9 +638,22 @@ def list_findings(
     query = select(FindingRecord).where(FindingRecord.case_id == case_id)
     if rule_id:
         query = query.where(FindingRecord.rule_id.in_(rule_id))
-    records = list(
-        session.scalars(query.order_by(FindingRecord.rank, FindingRecord.created_at).offset(offset).limit(limit))
-    )
+    if review_state:
+        query = query.where(FindingRecord.status == review_state)
+    # Never compare raw 0..100 rule scores with 0..1 rule scores. Interleave
+    # independently ranked families; the order is workflow, NOT calibrated risk.
+    family = select(FindingRecord.id.label("fid"), func.row_number().over(
+        partition_by=(FindingRecord.snapshot_id, FindingRecord.rule_id, FindingRecord.rule_version),
+        order_by=(FindingRecord.raw_score.desc(), FindingRecord.entity_ref, FindingRecord.window_start,
+                  FindingRecord.id)).label("family_rank"), func.count().over(
+        partition_by=(FindingRecord.snapshot_id, FindingRecord.rule_id, FindingRecord.rule_version)
+    ).label("family_total")).where(FindingRecord.case_id == case_id).subquery()
+    rows = session.execute(query.add_columns(family.c.family_rank, family.c.family_total)
+        .join(family, family.c.fid == FindingRecord.id)
+        .order_by(sql_case((FindingRecord.status == "escalated", 0), (FindingRecord.status == "dismissed", 2), else_=1),
+                  family.c.family_rank, FindingRecord.rule_id, FindingRecord.rule_version,
+                  FindingRecord.snapshot_id, FindingRecord.id).offset(offset).limit(limit)).all()
+    records = [row[0] for row in rows]
     # `method`/`ml_enabled` describe this page, not a case-wide constant: a page
     # can hold Phase 4 deterministic findings, anomaly-stack ML findings, or a mix
     # of both (they share this table and endpoint by design), so a hardcoded
@@ -648,10 +672,15 @@ def list_findings(
     count_base = select(func.count()).select_from(FindingRecord).where(FindingRecord.case_id == case_id)
     if rule_id:
         count_base = count_base.where(FindingRecord.rule_id.in_(rule_id))
+    if review_state:
+        count_base = count_base.where(FindingRecord.status == review_state)
     total = session.scalar(count_base) or 0
     open_total = session.scalar(count_base.where(FindingRecord.status == "open")) or 0
     return {
-        "findings": [finding_view(record) for record in records],
+        "findings": [{**finding_view(record), "family_rank": family_rank, "family_total": family_total}
+                     for record, family_rank, family_total in rows],
+        "review_policy": {"version": POLICY, "order": "reviewer-escalated first, dismissed last; within each workflow band per-family ranks round robin",
+                          "meaning": "Workflow order, not calibrated cross-family risk; legacy stored rank retained."},
         "total": total,
         "open_total": open_total,
         "limit": limit,
@@ -691,13 +720,15 @@ def finding_evidence(
     if finding is None:
         raise HTTPException(status_code=404, detail="Finding not found")
     require_case_member(finding.case_id, user, session)
+    reviews = finding_review_history(session, finding.id)
     return {
         "finding": finding_view(finding),
+        "structured_evidence": structured_evidence(session, finding, reviews),
         "feature_vector": finding.feature_vector,
         "source_refs": finding.source_refs,
         "coverage": finding.coverage,
         "opposing_evidence": finding.opposing_evidence,
-        "review_history": finding_review_history(session, finding.id),
+        "review_history": reviews,
         "audit_history": finding_audit_history(session, finding.id),
         "replay_contract": {
             "snapshot_id": finding.snapshot_id,
@@ -736,6 +767,7 @@ def finding_path_signals(
                 FindingRecord.case_id == finding.case_id,
                 FindingRecord.id != finding.id,
                 FindingRecord.status == "open",
+                FindingRecord.entity_ref.in_(path_nodes),
             )
         )
     )
@@ -753,47 +785,13 @@ def finding_path_signals(
     }
 
 
-class ChatMessage(BaseModel):
-    role: str = Field(pattern="^(user|assistant)$")
-    content: str = Field(min_length=1, max_length=4000)
-
-
-class ChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=2000)
-    # Prior turns of *this same conversation*, sent back by the client each time
-    # (no server-side chat session state) -- capped so one request can't be used
-    # to smuggle an unbounded prompt into the model.
-    history: list[ChatMessage] = Field(default_factory=list, max_length=20)
-
-
-@router.post("/findings/{finding_id}/chat")
-def finding_chat(
-    finding_id: str,
-    body: ChatRequest,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> dict:
-    """Answers a question about ONE finding, grounded only in that finding's own
-    evidence (see app.engine.chat) -- never a general-purpose chatbot."""
-    finding = session.get(FindingRecord, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="Finding not found")
-    require_case_member(finding.case_id, user, session)
-    context = build_finding_context(finding_view(finding), finding.feature_vector)
-    history = [ChatTurn(role=m.role, content=m.content) for m in body.history]
-    try:
-        answer = ask_chat(body.question, context, history)
-    except ChatUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"answer": answer, "model": settings.ollama_model}
-
-
 @router.get("/cases/{case_id}/findings/export")
-def export_findings(case_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
+def export_findings(case_id: str, limit: int = Query(200, ge=1, le=200), offset: int = Query(0, ge=0),
+                    user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
     require_case_member(case_id, user, session)
     findings = list(
         session.scalars(
-            select(FindingRecord).where(FindingRecord.case_id == case_id).order_by(FindingRecord.rank, FindingRecord.id)
+            select(FindingRecord).where(FindingRecord.case_id == case_id).order_by(FindingRecord.id).offset(offset).limit(limit)
         )
     )
     # Same rule as `list_findings`: an export is a page over whatever rule/model
@@ -830,6 +828,8 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
             )
     return {
         "case_id": case_id,
+        "limit": limit, "offset": offset,
+        "total": session.scalar(select(func.count()).select_from(FindingRecord).where(FindingRecord.case_id == case_id)),
         "method": methods[0] if len(methods) == 1 else ("mixed" if methods else "none"),
         "analysis_runs": [job_view(job, session) for job in session.scalars(
             select(ImportJob).where(ImportJob.case_id == case_id).order_by(ImportJob.created_at, ImportJob.id))],
@@ -847,10 +847,28 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
                 "opposing_evidence": finding.opposing_evidence,
                 "review_history": reviews_by_finding.get(finding.id, []),
                 "audit_history": audits_by_finding.get(finding.id, []),
+                "structured_evidence": structured_evidence(session, finding, reviews_by_finding.get(finding.id, [])),
             }
             for finding in findings
         ],
     }
+
+
+@router.get("/cases/{case_id}/findings/export.ndjson")
+def stream_findings(case_id: str, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    require_case_member(case_id, user, session)
+    def document():
+        offset = 0
+        while True:
+            page = export_findings(case_id, limit=200, offset=offset, user=user, session=session)
+            if offset == 0:
+                yield json.dumps({"type": "manifest", **{key: value for key, value in page.items() if key != "findings"}}) + "\n"
+            for finding in page["findings"]:
+                yield json.dumps({"type": "finding", **finding}) + "\n"
+            if len(page["findings"]) < 200:
+                break
+            offset += 200
+    return StreamingResponse(document(), media_type="application/x-ndjson")
 
 
 @router.get("/cases/{case_id}/features/export")
@@ -939,6 +957,9 @@ def review_finding(
         source = session.get(EvidenceSource, evidence_id)
         if source is None or source.case_id != finding.case_id:
             raise HTTPException(status_code=422, detail="counterevidence reference is not a source in this case")
+        if reference_status(session, finding.case_id, reference) != "receipt_approved":
+            raise HTTPException(status_code=422, detail="counterevidence locator/hash is stale or outside checked receipts")
+        reference["source_sha256"] = source.sha256  # Pin legacy locator-only citations at decision time.
     previous = session.scalar(
         select(ReviewDecisionRecord)
         .where(ReviewDecisionRecord.finding_id == finding.id)

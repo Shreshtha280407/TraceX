@@ -1,0 +1,14 @@
+{
+  "status": "pass",
+  "scope": "new empty disposable database, never an existing case database",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": false
+}

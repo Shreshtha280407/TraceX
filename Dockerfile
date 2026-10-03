@@ -21,14 +21,15 @@ RUN npm run build
 
 # ---- 2. Python environment -------------------------------------------------------
 FROM python:3.11-slim AS python
+ARG TRACEX_CANDIDATE_BACKENDS=0
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; pip install --no-cache-dir "uv==0.8.17"
 WORKDIR /opt/tracex
 COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; uv sync --frozen --no-dev --extra ml --no-install-project
+RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; if [ "$TRACEX_CANDIDATE_BACKENDS" = 1 ]; then uv sync --frozen --no-dev --extra ml --extra research --no-install-project; else uv sync --frozen --no-dev --extra ml --no-install-project; fi
 COPY app ./app
 COPY workers ./workers
-RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; uv sync --frozen --no-dev --extra ml
+RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; if [ "$TRACEX_CANDIDATE_BACKENDS" = 1 ]; then uv sync --frozen --no-dev --extra ml --extra research; else uv sync --frozen --no-dev --extra ml; fi
 
 # ---- 3. Offline Geo-IP database (DB-IP country lite CC BY 4.0 + IPtoASN PDDL) ------
 FROM python AS geoip
@@ -40,9 +41,12 @@ RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca
         (cd /opt/geoip-cache/compiled && sha256sum -c SHA256SUMS) && mkdir -p /opt/geoip && cp -a /opt/geoip-cache/compiled /opt/geoip/; \
       else /opt/tracex/.venv/bin/python -m app.engine.geoip --dir /opt/geoip download && rm -rf /opt/geoip/downloads; fi; \
     else mkdir -p /opt/geoip; fi
+RUN if [ -d /opt/geoip/compiled ] && [ ! -f /opt/geoip/compiled/SHA256SUMS ]; then cd /opt/geoip/compiled && sha256sum * > SHA256SUMS; fi
 
 # ---- 4. Runtime ----------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
+ARG TRACEX_CANDIDATE_BACKENDS=0
+RUN if [ "$TRACEX_CANDIDATE_BACKENDS" = 1 ]; then apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*; fi
 RUN useradd --create-home --uid 10001 tracex && mkdir -p /data/evidence && chown -R tracex /data
 WORKDIR /opt/tracex
 COPY --from=python /opt/tracex /opt/tracex

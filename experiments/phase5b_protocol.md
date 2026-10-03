@@ -1,6 +1,6 @@
 # Phase 5B protocol — offline model comparison and selection
 
-Status: comparison and selection only. Nothing in this phase touches the production API, the findings endpoint, the frontend, the Docker image, or the offline LLM — that is later, separately authorized work. Phase 5A did not train a model; this document does not rewrite that history. `experiments/protocol.md` remains the Phase 5A preparation record; this file is the Phase 5B experiment record that inherits its fixed identity (`TRAINING_SEED=42`, `TRAINING_BUDGET=600s CPU wall-clock per candidate fit`) rather than redeclaring it.
+Historical protocol: comparison and selection only. Nothing in this historical phase touched the production API, findings endpoint, frontend or Docker image. Its former optional LLM is removed from the current product. The integrated 2026-10-04 candidate lifecycle is a separate procedure/protocol, not retroactive deployment of these measurements. Phase 5A did not train a model; this document does not rewrite that history. `experiments/protocol.md` remains the Phase 5A preparation record; this file inherits its fixed identity (`TRAINING_SEED=42`, `TRAINING_BUDGET=600s CPU wall-clock per candidate fit`).
 
 ## Reproducibility identity
 
