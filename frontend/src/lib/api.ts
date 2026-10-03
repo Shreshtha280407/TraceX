@@ -59,6 +59,8 @@ export type JobProgress = {
 };
 
 export type ImportJob = {
+  analysis?: { state: "running" | "complete" | "degraded" | "failed" | "unknown"; retry_supported: boolean;
+    stages: { name: string; status: string; reason: string | null; duration_seconds: number | null }[] } | null;
   job_id: string;
   case_id: string;
   source_id: string;
@@ -120,7 +122,7 @@ export type FindingPattern = {
 
 export type MatchedWindow = { window_seconds: number; window_start: string; window_end: string; score: number };
 
-/** Calibrated / statistical confidence attached at read time (app/engine/confidence.py). */
+/** Immutable finding calibration provenance; historical unpinned rows are unvalidated. */
 export type FindingConfidence = {
   /** null when the rule has no calibration (rank by score only) or is a data-consistency check. */
   value: number | null;
@@ -130,7 +132,7 @@ export type FindingConfidence = {
   calibration_id?: string | null;
   rule_base_rate?: number | null;
   reliability?: { findings?: number; positives?: number; brier?: number; ece?: number; auc?: number | null };
-  /** Anomaly-stack findings: probability an ordinary reference-period transaction scores this high. */
+  /** Theoretical Gaussian tail; distribution/dependence assumptions are unvalidated. */
   anomaly_p_value?: number | null;
   network_corroboration?: number | null;
 };
@@ -164,7 +166,7 @@ export type Finding = {
   benign_alternatives: string[];
   opposing_evidence: unknown[];
   source_refs: unknown[];
-  status: "open" | "triaged" | "dismissed" | "escalated" | "needs_data_review";
+  status: "open" | "triaged" | "confirmed" | "dismissed" | "escalated" | "needs_data_review";
   // peeling_chain_candidate-only, and only on findings materialized after this
   // was added to detector_result -- older findings will have these as null.
   hop_count: number | null;
@@ -444,6 +446,12 @@ export type GraphResponse = {
   cursor: string | null;
 };
 
+export type ReceiptActivity = { case_id: string; job_id: string; provisional: boolean; total: number;
+  entities: { address: string; transactions: number; participations: number }[] };
+export type ReviewQueue = { eligible_scored_transactions: number; threshold_flagged_transactions: number;
+  capacity: number; queued_transactions: number; additional_flagged_transactions: number; filtered_total: number;
+  snapshot_id: string; items: { transaction: string; score: number; finding_ids: string[]; deterministic_finding_ids: string[] }[] };
+
 /** One direct counterparty of the flow source (app/engine/graph/query.py::query_flow).
  * For a transaction source these are addresses (grouped over their UTXOs); for an
  * address source they are the transactions that paid it or spent from it. */
@@ -534,15 +542,19 @@ export const api = {
     );
   },
   getJob: (jobId: string) => request<ImportJob>(`/jobs/${jobId}`),
+  getAnalysis: (caseId: string) => request<{ job_id: string; analysis: ImportJob["analysis"] }>(`/cases/${caseId}/analysis`),
+  retryAnalysis: (caseId: string, jobId: string) => request<ImportJob>(`/cases/${caseId}/analysis/retry?job_id=${encodeURIComponent(jobId)}`, { method: "POST" }),
+  getActivity: (caseId: string, jobId: string, offset = 0) => request<ReceiptActivity>(`/cases/${caseId}/activity?job_id=${encodeURIComponent(jobId)}&limit=20&offset=${offset}`),
+  getReviewQueue: (caseId: string, k = 100, offset = 0) => request<ReviewQueue>(`/cases/${caseId}/review-queue?k=${k}&limit=20&offset=${offset}`),
   getEvidenceRecord: (sourceId: string, locator: string) =>
     request<{ source_id: string; source_sha256: string; locator_type: string; locator: string; record: unknown }>(
       `/evidence/${sourceId}/records?locator=${encodeURIComponent(locator)}`
     ),
 
   // ---- Graph ----
-  getGraph: (caseId: string, seed: string, depth: number, nodeLimit: number, edgeLimit: number) =>
+  getGraph: (caseId: string, seed: string, depth: number, nodeLimit: number, edgeLimit: number, cursor?: string, graphSnapshotId?: string) =>
     request<GraphResponse>(
-      `/cases/${caseId}/graph?seed=${encodeURIComponent(seed)}&depth=${depth}&node_limit=${nodeLimit}&edge_limit=${edgeLimit}`
+      `/cases/${caseId}/graph?seed=${encodeURIComponent(seed)}&depth=${depth}&node_limit=${nodeLimit}&edge_limit=${edgeLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${graphSnapshotId ? `&graph_snapshot_id=${encodeURIComponent(graphSnapshotId)}` : ""}`
     ),
 
   getGraphFlow: (caseId: string, node: string, limit = 40, graphSnapshotId?: string) =>

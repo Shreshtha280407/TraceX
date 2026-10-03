@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
+import { AnalysisStatus } from "../components/AnalysisStatus";
 import { Badge, EmptyState, ErrorBanner, FilterPills, NeoCard, NoticeBanner, StatTile } from "../components/primitives";
 import {
   api,
@@ -129,6 +130,7 @@ export function EntitiesRisk() {
 
   return (
     <Shell>
+      <AnalysisStatus caseId={caseId} />
       <div className="page-header">
         <div>
           <h1>Entities &amp; Risk</h1>

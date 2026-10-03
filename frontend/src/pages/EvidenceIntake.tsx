@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
-import { NeoCard, StatTile, ErrorBanner } from "../components/primitives";
+import { NeoCard, StatTile, ErrorBanner, NoticeBanner } from "../components/primitives";
 import { Modal } from "../components/Modal";
 import { RecordPreview } from "../components/RecordPreview";
 import { api, ApiError, type EvidenceSourceRow, type ImportJob } from "../lib/api";
 import { trackJob, jobsForCase } from "../lib/jobRegistry";
+import { requestId } from "../lib/requestId";
 import "./EvidenceIntake.css";
 
 type PreviewRecord = { locator: string; record: unknown };
@@ -107,6 +108,27 @@ export function EvidenceIntake() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [fullscreenSource, setFullscreenSource] = useState<EvidenceSourceRow | null>(null);
   const [uploadingFile, setUploadingFile] = useState<string | null>(null);
+  const [activityData, setActivity] = useState<Awaited<ReturnType<typeof api.getActivity>> | null>(null);
+  const [activityOffset, setActivityOffset] = useState(0);
+  const [retrying, setRetrying] = useState(false);
+  const activityJobId = job?.job_id;
+  const activity = activityData?.case_id === caseId && activityData?.job_id === activityJobId ? activityData : null;
+
+  useEffect(() => {
+    if (!caseId || !activityJobId) return;
+    let active = true;
+    api.getActivity(caseId, activityJobId, activityOffset).then((value) => { if (active) setActivity(value); })
+      .catch((err) => { if (active) setError(String(err)); });
+    return () => { active = false; };
+  }, [caseId, activityJobId, job?.rows_seen, job?.state, activityOffset]);
+
+  async function retry() {
+    if (!caseId || !job) return;
+    setRetrying(true);
+    try { setJob(await api.retryAnalysis(caseId, job.job_id)); }
+    catch (err) { setError(String(err)); }
+    finally { setRetrying(false); }
+  }
 
   async function togglePreview(source: EvidenceSourceRow) {
     if (previewSource?.source_id === source.source_id) {
@@ -159,7 +181,7 @@ export function EvidenceIntake() {
     // start a job" the whole time, indistinguishable from the drop not registering.
     setUploadingFile(file.name);
     try {
-      const idempotencyKey = crypto.randomUUID();
+      const idempotencyKey = requestId();
       const result = await api.createImport(caseId, file, idempotencyKey);
       trackJob(caseId, result.job_id);
       const initial = await api.getJob(result.job_id);
@@ -342,8 +364,31 @@ export function EvidenceIntake() {
                   <StatTile label="Rows quarantined" value={job.rows_quarantined.toLocaleString()} />
                   <StatTile label="Bytes read" value={formatBytes(job.bytes_read)} />
                 </div>
+                {job.analysis && job.analysis.state !== "complete" && job.state === "completed" && (
+                  <NoticeBanner>Evidence imported. Analysis is {job.analysis.state}.
+                    {job.analysis.stages.filter((s) => !["complete", "written", "no_rows_flagged"].includes(s.status)).map((s) =>
+                      <p key={s.name}>{s.name}: {s.reason ?? s.status}</p>)}
+                  </NoticeBanner>
+                )}
+                {job.analysis?.retry_supported && <button className="btn-secondary" type="button" disabled={retrying} onClick={() => void retry()}>
+                  {retrying ? "Queuing…" : "Retry analysis from committed evidence"}
+                </button>}
+                {job.analysis && <div className="coverage-note" aria-label="Analysis stage outcomes">
+                  {job.analysis.stages.map((s) => <p key={s.name}>{s.name}: {s.status}{s.duration_seconds !== null ? ` · ${s.duration_seconds.toFixed(1)}s` : ""}</p>)}
+                </div>}
               </>
             )}
+          </NeoCard>
+
+          <NeoCard>
+            <h2>Committed address activity</h2>
+            <p className="coverage-note">{!activity ? "Awaiting committed evidence" : activity.provisional ? "Provisional and incomplete" : "Finalized receipt view"} · addresses are participation evidence; proposed wallet entities become available after analytics.</p>
+            {!activity?.entities.length ? <p className="coverage-note">No addresses in committed evidence yet. Parsing may still be active.</p> :
+              activity.entities.map((item) => <p key={item.address}><span className="mono-id">{item.address}</span> · {item.transactions} transactions</p>)}
+            {activity && activity.total > 20 && <div>
+              <button type="button" disabled={activityOffset === 0} onClick={() => setActivityOffset(Math.max(0, activityOffset - 20))}>Previous</button>
+              <button type="button" disabled={activityOffset + 20 >= activity.total} onClick={() => setActivityOffset(activityOffset + 20)}>Next addresses</button>
+            </div>}
           </NeoCard>
 
           <NeoCard>

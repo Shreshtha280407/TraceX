@@ -7,14 +7,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
-out=dist/tracex-offline
-rm -rf "$out" && mkdir -p "$out"
+mkdir -p dist
+out=$(mktemp -d "dist/tracex-offline-${version}-XXXXXXXX")
+image=${TRACEX_BUNDLE_IMAGE:-tracex-appliance:bundle-$(basename "$out")}
 # TRACEX_BUILD_CA=/path/ca.crt for a TLS-inspecting proxy (build time only).
 if [ -n "${TRACEX_BUILD_CA:-}" ]; then set -- --secret "id=build_ca,src=${TRACEX_BUILD_CA}"; else set --; fi
-docker build "$@" -t tracex-appliance:latest -t "tracex-appliance:${version}" .
+if [ -z "${TRACEX_BUNDLE_IMAGE:-}" ]; then docker build "$@" -t "$image" .; fi
+docker image inspect "$image" >/dev/null
 docker image inspect postgres:16-alpine >/dev/null 2>&1 || docker pull postgres:16-alpine
-docker save tracex-appliance:latest "tracex-appliance:${version}" postgres:16-alpine -o "$out/images.tar"
+docker save "$image" postgres:16-alpine -o "$out/images.tar"
 cp deploy/appliance/docker-compose.yml deploy/appliance/.env.example deploy/appliance/install.sh "$out/"
 cp deploy/appliance/README.md "$out/README.md"
-tar -C dist -czf "dist/tracex-offline-${version}.tar.gz" tracex-offline
-ls -lh "dist/tracex-offline-${version}.tar.gz"
+sed -i "s|^TRACEX_IMAGE=.*|TRACEX_IMAGE=$image|" "$out/.env.example"
+cp pyproject.toml uv.lock frontend/package-lock.json "$out/"
+python3 scripts/offline_manifest.py "$out" "$image"
+(cd "$out" && sha256sum images.tar docker-compose.yml .env.example install.sh README.md manifest.json pyproject.toml uv.lock package-lock.json > SHA256SUMS)
+tar -C dist -czf "${out}.tar.gz" "$(basename "$out")"
+ls -lh "${out}.tar.gz"

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import threading
 from collections import OrderedDict
@@ -11,7 +13,9 @@ from typing import Any
 
 import duckdb
 
+from app.config import settings
 from app.models import GraphSnapshot
+from app.resources import current_plan
 
 
 class GraphQueryError(ValueError):
@@ -26,7 +30,7 @@ class GraphNodeNotFound(GraphQueryError):
 # file can serve every request: opening the database (catalog + index load)
 # used to be paid on every single graph query. Each request takes its own
 # cursor, which is DuckDB's thread-safe way to share one database instance.
-_CONNECTION_CACHE_SIZE = 8
+_CONNECTION_CACHE_SIZE = 2
 _connections: OrderedDict[str, duckdb.DuckDBPyConnection] = OrderedDict()
 _connections_lock = threading.Lock()
 
@@ -36,7 +40,8 @@ def _cursor_for(path: Path) -> duckdb.DuckDBPyConnection:
     with _connections_lock:
         connection = _connections.get(key)
         if connection is None:
-            connection = duckdb.connect(key, read_only=True)
+            budget_mb = max(64, min(256, current_plan().memory_budget_bytes // (8 << 20)))
+            connection = duckdb.connect(key, read_only=True, config={"threads": 1, "memory_limit": f"{budget_mb}MB"})
             _connections[key] = connection
             while len(_connections) > _CONNECTION_CACHE_SIZE:
                 # Dropped, not closed: a request on another thread may still hold
@@ -61,22 +66,43 @@ def _node_id(seed: str) -> str:
     return seed
 
 
-def _cursor(seed: str, next_depth: int) -> str:
-    return (
-        base64.urlsafe_b64encode(json.dumps({"seed": seed, "next_depth": next_depth}, separators=(",", ":")).encode())
-        .decode()
-        .rstrip("=")
-    )
+def _cursor(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signature = hmac.new(settings.secret_key.encode(), b"graph-v2:" + raw, hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=") + "." + signature
+
+
+def _decode_cursor(token, binding):
+    try:
+        if len(token) > 4096:
+            raise ValueError("oversized")
+        encoded, signature = token.split(".")
+        raw = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+        expected = hmac.new(settings.secret_key.encode(), b"graph-v2:" + raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        value = json.loads(raw)
+        if any(value.get(key) != entry for key, entry in binding.items()):
+            raise ValueError("scope")
+        if any(type(value.get(key)) is not int or value[key] < 0 for key in ("nodes_offset", "edges_offset")):
+            raise ValueError("offset")
+        return value["nodes_offset"], value["edges_offset"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise GraphQueryError("invalid, stale or differently scoped graph cursor") from exc
 
 
 def query_neighbourhood(
-    *, evidence_root: Path, graph: GraphSnapshot, seed: str, depth: int, node_limit: int, edge_limit: int
+    *, evidence_root: Path, graph: GraphSnapshot, seed: str, depth: int, node_limit: int, edge_limit: int,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     if not 1 <= depth <= 5:
         raise GraphQueryError("depth must be in 1..5")
     if not 1 <= node_limit <= 1000 or not 1 <= edge_limit <= 3000:
         raise GraphQueryError("limits exceed graph safety caps")
     source = _node_id(seed)
+    binding = {"version": 2, "case": graph.case_id, "graph": graph.id, "sha256": graph.sha256,
+               "seed": source, "depth": depth, "node_limit": node_limit, "edge_limit": edge_limit}
+    nodes_offset, edges_offset = _decode_cursor(cursor, binding) if cursor else (0, 0)
     connection = _cursor_for(_path(evidence_root, graph.storage_relative_path))
     try:
         if connection.execute("SELECT 1 FROM nodes WHERE node_id = ?", [source]).fetchone() is None:
@@ -90,42 +116,31 @@ def query_neighbourhood(
                 "truncated_edges": 0,
                 "cursor": None,
             }
-        selected_nodes = {source}
-        selected_edges: dict[str, tuple] = {}
-        frontier = {source}
-        truncated_nodes = 0
-        truncated_edges = 0
-        for _ in range(depth):
-            if not frontier:
-                break
-            placeholders = ",".join("?" for _ in frontier)
-            values = list(frontier)
-            candidates = connection.execute(
-                f"SELECT edge_id, from_node, to_node, edge_type, attributes_json, uncertainty FROM edges WHERE from_node IN ({placeholders}) OR to_node IN ({placeholders})",
-                values + values,
-            ).fetchall()
-            next_frontier: set[str] = set()
-            for row in candidates:
-                edge_id, from_node, to_node, *_ = row
-                if edge_id in selected_edges:
-                    continue
-                if len(selected_edges) >= edge_limit:
-                    truncated_edges += 1
-                    continue
-                new_nodes = {from_node, to_node}.difference(selected_nodes)
-                allowed = max(0, node_limit - len(selected_nodes))
-                if len(new_nodes) > allowed:
-                    truncated_nodes += len(new_nodes)
-                    continue
-                selected_edges[edge_id] = row
-                selected_nodes.update(new_nodes)
-                next_frontier.update(new_nodes)
-            frontier = next_frontier
-        placeholders = ",".join("?" for _ in selected_nodes)
+        # Reachability remains in DuckDB; no whole-neighborhood Python dictionaries.
+        # Nodes and edges have independent, stable pages. Endpoints may arrive on
+        # later pages; clients merge by ID before drawing an edge.
+        connection.execute("CREATE TEMP TABLE q_reach (node_id VARCHAR PRIMARY KEY, level INTEGER)")
+        connection.execute("INSERT INTO q_reach VALUES (?, 0)", [source])
+        for level in range(depth):
+            connection.execute("CREATE OR REPLACE TEMP TABLE q_next AS SELECT DISTINCT node_id FROM ("
+                "SELECT e.to_node AS node_id FROM edges e JOIN q_reach r ON r.node_id=e.from_node WHERE r.level=? "
+                "UNION SELECT e.from_node FROM edges e JOIN q_reach r ON r.node_id=e.to_node WHERE r.level=?) "
+                "WHERE node_id NOT IN (SELECT node_id FROM q_reach)", [level, level])
+            connection.execute("INSERT INTO q_reach SELECT node_id, ? FROM q_next", [level + 1])
+        connection.execute("CREATE TEMP VIEW q_edges AS SELECT e.* FROM edges e WHERE e.from_node IN "
+                           "(SELECT node_id FROM q_reach WHERE level < " + str(depth) + ") OR e.to_node IN "
+                           "(SELECT node_id FROM q_reach WHERE level < " + str(depth) + ")")
+        total_nodes = connection.execute("SELECT count(*) FROM q_reach").fetchone()[0]
+        total_edges = connection.execute("SELECT count(*) FROM q_edges").fetchone()[0]
         node_rows = connection.execute(
-            f"SELECT node_id, node_type, label, attributes_json FROM nodes WHERE node_id IN ({placeholders})",
-            list(selected_nodes),
+            "SELECT n.node_id, node_type, label, attributes_json FROM nodes n JOIN q_reach r USING (node_id) "
+            "ORDER BY n.node_id != ?, n.node_id LIMIT ? OFFSET ?", [source, node_limit, nodes_offset],
         ).fetchall()
+        edge_rows = connection.execute("SELECT edge_id, from_node, to_node, edge_type, attributes_json, uncertainty "
+                                       "FROM q_edges ORDER BY edge_id LIMIT ? OFFSET ?", [edge_limit, edges_offset]).fetchall()
+        nodes_offset += len(node_rows)
+        edges_offset += len(edge_rows)
+        truncated_nodes, truncated_edges = total_nodes - nodes_offset, total_edges - edges_offset
     finally:
         connection.close()
     return {
@@ -145,11 +160,13 @@ def query_neighbourhood(
                 "attributes": json.loads(attributes),
                 "uncertainty": uncertainty,
             }
-            for edge_id, from_node, to_node, edge_type, attributes, uncertainty in selected_edges.values()
+            for edge_id, from_node, to_node, edge_type, attributes, uncertainty in edge_rows
         ],
         "truncated_nodes": truncated_nodes,
         "truncated_edges": truncated_edges,
-        "cursor": _cursor(seed, depth + 1) if (truncated_nodes or truncated_edges) and depth < 5 else None,
+        "cursor": _cursor({**binding, "nodes_offset": nodes_offset, "edges_offset": edges_offset})
+                  if truncated_nodes or truncated_edges else None,
+        "continuation_contract": "graph-v2: independent stable node/edge pages; merge by ID; endpoints may follow",
     }
 
 

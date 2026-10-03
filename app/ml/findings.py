@@ -127,6 +127,38 @@ def _hash(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def local_if_sensitivity(table, reference, transactions, *, limit=20):
+    """Bounded descriptive perturbations of the exact global IF procedure.
+
+    Replace one standardized feature with its reference median. This measures
+    raw IF score response, NOT causal attribution, a valid alternative
+    transaction, or a decomposition of the A+D fused rank.
+    """
+    from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
+
+    selected = np.asarray(transactions[:limit], dtype=np.int64)
+    if not selected.size:
+        return {}
+    scaler = StandardScaler().fit(table.matrix[reference].astype(np.float64))
+    fit = scaler.transform(table.matrix[reference].astype(np.float64))
+    forest = IsolationForest(n_estimators=100, max_samples=min(256, fit.shape[0]),
+                             random_state=layers.SEED, n_jobs=1).fit(fit)
+    median = np.median(fit, axis=0)
+    original = scaler.transform(table.matrix[selected].astype(np.float64))
+    base = -forest.score_samples(original)
+    changed = np.repeat(original, len(table.columns), axis=0)
+    for row in range(selected.size):
+        for column in range(len(table.columns)):
+            changed[row * len(table.columns) + column, column] = median[column]
+    delta = (base[:, None] + forest.score_samples(changed).reshape(selected.size, -1))
+    return {int(transaction): {"method": "if-reference-median-perturbation-v1", "limit": limit,
+            "scope": "raw global IF score only; not fused-score attribution, causation or valid counterfactual",
+            "raw_if_score": float(base[row]), "score_decrease_by_feature": {
+                column: float(delta[row, index]) for index, column in enumerate(table.columns)}}
+            for row, transaction in enumerate(selected)}
+
+
 def _source_refs_by_txid(records: dict[str, list[dict]]) -> dict[str, list[dict]]:
     """Map each transaction to the source locators of its own canonical facts.
 
@@ -166,8 +198,9 @@ def _coverage(
         "release_manifest_sha256": release_manifest_sha256(),
         "notes": [
             "Scores are a triage ranking over the committed snapshot, not a probability of criminality.",
-            ("Every feature is computed only from facts at or before its own transaction's timestamp; "
-             "activity outside the committed snapshot is unknown, not absent."),
+            ("Structure and prior-activity context use observed snapshot facts; D uses full containing-bucket "
+             "counts and is retrospective, including later observations in that bucket. Reference-period "
+             "scores are in-sample. Activity outside the snapshot is unknown, not absent."),
             "No supervised model contributed to this ranking.",
             ("This model is dynamically fitted on the committed snapshot's own reference period at "
              "scoring time; there is no static model artifact. release_manifest_sha256 identifies "
@@ -199,12 +232,18 @@ def materialize_ml_findings(
     """
     from app.engine.graph.builder import load_facts
 
-    if session.scalar(
-        select(FindingRecord.id)
+    existing = session.scalar(
+        select(FindingRecord)
         .where(FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == ML_RULE_VERSION)
         .limit(1)
-    ):
-        return MLFindingResult(0, 0, layer_names, budget, 0, model_run_id=model_run_id(
+    )
+    if existing:
+        from sqlalchemy import func
+
+        flagged_count = session.scalar(select(func.count()).select_from(FindingRecord).where(
+            FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == ML_RULE_VERSION)) or 0
+        return MLFindingResult(0, int(existing.coverage.get("scored_transactions", 0)), layer_names,
+                               budget, flagged_count, model_run_id=model_run_id(
             snapshot_id=snapshot.id, budget=budget
         ))
 
@@ -215,6 +254,10 @@ def materialize_ml_findings(
     else:
         if records is None:
             records = load_facts(session, evidence_root, snapshot.id)
+        from app.resources import admit_global_allocation
+
+        admit_global_allocation("ML", len(records.get("transactions", [])) * 1600 +
+                                len(records.get("outputs", [])) * 384 + len(records.get("inputs", [])) * 80)
         facts = facts_from_records(records)
     # PS network layer: relay endpoint / ASN / reported country per transaction.
     attach_network_observations(
@@ -296,6 +339,7 @@ def materialize_ml_findings(
     out_starts, out_order = facts.outputs_of()
     attribution = available.get("A_global") or next(iter(available.values()))
     columns = attribution.attribution_columns
+    sensitivity = local_if_sensitivity(transaction_table, reference, order) if layer_names == DEFAULT_LAYERS else {}
 
     written = 0
     for rank, transaction in enumerate(order, 1):
@@ -312,12 +356,23 @@ def materialize_ml_findings(
 
         feature_vector = {
             "feature_contract_version": ML_RULE_VERSION,
+            "feature_contract_sha256": hashlib.sha256(json.dumps({"version": ML_RULE_VERSION,
+                "structure_columns": list(transaction_table.columns), "layers": list(layer_names)},
+                sort_keys=True).encode()).hexdigest(),
+            "release_manifest_sha256": release_manifest_sha256(),
             "release_id": RELEASE_ID,
             "model_run_id": run_id,
             "layers": {name: float(available[name].score[transaction]) for name in layer_names},
             "fused_score": float(score[transaction]),
             "threshold": float(threshold),
             "top_feature_contributions": drivers,
+            "explanation_method": "ECOD feature-tail context; not attribution of Isolation Forest or fused score",
+            "explanation_version": "feature-tail-context-v1",
+            "local_if_sensitivity": sensitivity.get(int(transaction), {"status": "not_computed", "reason": "bounded to first 20 ranked findings or unsupported layer configuration"}),
+            "fitting_scope": "reference_period_in_sample" if reference[transaction] else "forward_scored",
+            "reference_fraction": reference_fraction,
+            "reference_cutoff_epoch": int(facts.tx_time[reference].max()),
+            "scoring_scope": "snapshot retrospective triage; D uses completed containing-bucket counts",
             "shape_family": int(available["A_structure"].detail["shape_family"][transaction])
             if "A_structure" in available else None,
             "structure": {
@@ -373,7 +428,7 @@ def materialize_ml_findings(
                 feature_vector_hash=_hash(feature_vector),
                 explanations=[
                     "Ranked by " + " + ".join(layer_names)
-                    + (f"; strongest feature contributions: {', '.join(drivers)}" if drivers else ""),
+                    + (f"; ECOD descriptive feature-tail context (not score attribution): {', '.join(drivers)}" if drivers else ""),
                     f"Observed at {observed.isoformat()}; {len(addresses)} output address(es) in this transaction.",
                     *network_lines,
                 ],
@@ -433,38 +488,11 @@ def materialize_ml_findings(
 
 
 def review_decision_labels(session: Session, *, case_id: str, facts) -> np.ndarray | None:
-    """Labels from analyst review decisions — the only non-circular label source.
-
-    Returns a per-transaction boolean of "a reviewer confirmed this lead", or
-    `None` when too few decisions exist to train on. Training the supervised layer
-    on `evaluation_truth.json` is a demo; training it on this is the real thing,
-    because a reviewer's confirm/dismiss is independent of the rule that surfaced
-    the finding.
-    """
-    from app.models import ReviewDecisionRecord
-
-    rows = session.execute(
-        select(FindingRecord.entity_ref, ReviewDecisionRecord.disposition, ReviewDecisionRecord.created_at)
-        .join(ReviewDecisionRecord, ReviewDecisionRecord.finding_id == FindingRecord.id)
-        .where(FindingRecord.case_id == case_id)
-        .order_by(ReviewDecisionRecord.created_at)
-    ).all()
-    if not rows:
-        return None
-    labels = np.zeros(facts.transaction_count, dtype=bool)
-    decided = 0
-    for entity_ref, disposition, _ in rows:
-        txid = str(entity_ref).removeprefix("tx:")
-        slot = facts.tx_index.get(txid, -1)
-        if slot < 0:
-            continue
-        # Later decisions supersede earlier ones for the same transaction, which is
-        # why the query is ordered by decision time.
-        labels[slot] = disposition in {"confirmed", "escalated"}
-        decided += 1
-    if decided < 50 or labels.sum() < 10:
-        return None
-    return labels
+    """Disabled compatibility hook; use the masked analyst-label contract."""
+    # A bare boolean array cannot represent unknown labels, cutoff or sampling
+    # bias. Keep the legacy hook disabled; analyst_labels exposes an explicit
+    # masked/provenanced contract for a separately validated future trainer.
+    return None
 
 
 def feature_record_count(session: Session, snapshot_id: str) -> int:

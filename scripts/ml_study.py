@@ -4,14 +4,14 @@
     uv run --extra ml python scripts/ml_study.py --dataset datasets/phase5a_100k --dataset datasets/judge_a ...
 
 For every dataset given, fits on its `train_reference` split exactly as the
-offline harness does and reports average precision (AP) on `validation` and,
-for the generator datasets, on `final_holdout` too, for three tasks (motif,
+offline harness does and reports average precision (AP) on development
+`validation` only, for three tasks (motif,
 surge, discrimination). Every variant changes ONE thing relative to the frozen
 release (A_global + D_burst, Stouffer, equal weights):
 
 * layer-A preprocessing: StandardScaler (frozen) / QuantileTransformer(normal) /
   signed log1p + StandardScaler;
-* layer-A detectors: Isolation Forest + ECOD (frozen) / + HBOS / IF only / ECOD only;
+* layer-A detectors: Isolation Forest (v2) / historical IF+ECOD / + HBOS / ECOD only;
 * Isolation Forest capacity: 100 x 256 (frozen) / 300 x 512;
 * fusion weights A:D: 1:1 (frozen) / 1.5:1 / 1:1.5.
 
@@ -59,7 +59,7 @@ def _scaled(matrix: np.ndarray, train: np.ndarray, method: str) -> np.ndarray:
     raise ValueError(method)
 
 
-def layer_a(matrix: np.ndarray, train: np.ndarray, *, scaling: str = "standard", detectors: str = "if+ecod",
+def layer_a(matrix: np.ndarray, train: np.ndarray, *, scaling: str = "standard", detectors: str = "if",
             trees: int = 100, samples: int = 256) -> np.ndarray:
     scaled = _scaled(matrix.astype(np.float64), train, scaling)
     reference = scaled[train]
@@ -78,6 +78,7 @@ def layer_a(matrix: np.ndarray, train: np.ndarray, *, scaling: str = "standard",
 
 VARIANTS = {
     "frozen (A_global+D_burst)": {},
+    "historical v1 IF+ECOD": {"detectors": "if+ecod"},
     "A: quantile-normal scaling": {"scaling": "quantile"},
     "A: signed log1p + standard": {"scaling": "log1p"},
     "A: IF+ECOD+HBOS": {"detectors": "if+ecod+hbos"},
@@ -103,7 +104,7 @@ def study(dataset: Path) -> dict:
     burst = layers.layer_d_burst(facts, flags, reference=train).score
     cache: dict[tuple, np.ndarray] = {}
     results: dict[str, dict] = {}
-    report_splits = [name for name in ("validation", "final_holdout") if (splits == SPLIT_NAMES.index(name)).any()]
+    report_splits = ["validation"]
     for name, variant in VARIANTS.items():
         key = tuple(sorted((k, v) for k, v in variant.items() if k != "weights"))
         if key not in cache:
@@ -129,7 +130,18 @@ def main() -> int:
     parser.add_argument("--dataset", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, default=REPO / "experiments" / "runs" / "ml_study.json")
     parser.add_argument("--variants", default=None, help="comma-separated subset of variant names (frozen always runs)")
+    parser.add_argument("--controlled", action="store_true", help="run pre-registered HGB/XGBoost/LightGBM/hybrid grid")
+    parser.add_argument("--final-candidate", help="evaluate one frozen controlled candidate once on newly reserved holdouts")
+    parser.add_argument("--max-iterations", type=int, default=100)
+    parser.add_argument("--release-protocol", type=Path)
+    parser.add_argument("--frozen-selection", type=Path)
     args = parser.parse_args()
+    if args.controlled:
+        from scripts.ml_controlled_study import run
+
+        run(args.dataset, args.output, final_candidate=args.final_candidate, max_iter=args.max_iterations,
+            release_protocol=args.release_protocol, frozen_selection=args.frozen_selection)
+        return 0
     if args.variants:
         keep = {name.strip() for name in args.variants.split(",")} | {"frozen (A_global+D_burst)"}
         for name in list(VARIANTS):
@@ -137,7 +149,8 @@ def main() -> int:
                 del VARIANTS[name]
     reports = [study(path) for path in args.dataset]
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(reports, indent=2), encoding="utf-8")
+    with args.output.open("x", encoding="utf-8") as handle:
+        json.dump(reports, handle, indent=2)
     for report in reports:
         print(f"\n== {report['dataset']}  ({report['transactions']:,} txs, {report['seconds']} s, splits {report['split_counts']})")
         columns = list(next(iter(report["results"].values())))

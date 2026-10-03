@@ -47,7 +47,6 @@ from app.engine.graph.builder import (
     EDGES_TABLE_SQL,
     NODES_TABLE_SQL,
     GraphBuildResult,
-    _attributes_json,
     _receipt_path,
     duckdb_config,
     graph_paths,
@@ -61,7 +60,7 @@ from app.engine.motifs.deterministic import (
 )
 from app.engine.process_pool import ProcessPool
 from app.models import FindingRecord, FragmentReceipt, GraphSnapshot, Snapshot, SyntheticReviewSeed
-from app.resources import ResourcePlan, current_plan
+from app.resources import ResourcePlan, admit_disk_allocation, admit_global_allocation, current_plan
 
 logger = logging.getLogger(__name__)
 
@@ -168,9 +167,12 @@ class FactStore:
         store.plan = plan
         store.path = path
         store._owned = False
+        store._spill = path.parent / "spill" / f"child-{uuid.uuid4().hex}"
+        store._spill.mkdir(parents=True, exist_ok=True)
         store._config = {
             "memory_limit": f"{memory_limit_mb}MB", "threads": 1, "preserve_insertion_order": False,
-            "temp_directory": str(path.parent / "spill"),
+            # Independent DuckDB buffer managers must not share spill names.
+            "temp_directory": str(store._spill),
         }
         store.con = duckdb.connect(":memory:", config=store._config)
         store.con.execute(f"ATTACH {_quote(path)} AS facts (READ_ONLY)")
@@ -193,6 +195,8 @@ class FactStore:
         finally:
             if self._owned:
                 shutil.rmtree(self.work_dir, ignore_errors=True)
+            elif hasattr(self, "_spill"):
+                shutil.rmtree(self._spill, ignore_errors=True)
 
     def __enter__(self) -> Self:
         return self
@@ -208,6 +212,14 @@ class FactStore:
         # retry owns this snapshot now, so clear any such leftovers first.
         for stale in work_root.glob(f"snapshot-{snapshot.id}-*"):
             shutil.rmtree(stale, ignore_errors=True)
+        # Sum across all committed batches (not merely the first receipt).
+        from sqlalchemy import func
+
+        records = session.scalar(select(func.sum(FragmentReceipt.record_count)).where(
+            FragmentReceipt.snapshot_id == snapshot.id, FragmentReceipt.record_type == "transactions")) or 0
+        # 100K profiling and the 300K disk-full retry include fact staging,
+        # wide finding payloads, child Parquet parts and SQLite WAL coexistence.
+        admit_disk_allocation("bounded derived stages", evidence_root, int(records) * 12_000)
         store = cls(work_root / f"snapshot-{snapshot.id}-{uuid.uuid4().hex[:8]}")
         try:
             store._stage(session, evidence_root, snapshot.id)
@@ -244,7 +256,7 @@ class FactStore:
             """
             CREATE TABLE tx AS SELECT seq, j ->> '$.txid' AS txid, j ->> '$.block_time' AS block_time,
                 j ->> '$.source_timestamp' AS source_timestamp, j ->> '$.network' AS network,
-                TRY_CAST(j ->> '$.fee_sats' AS BIGINT) AS fee_sats, j
+                TRY_CAST(j ->> '$.fee_sats' AS BIGINT) AS fee_sats, (j -> '$.source_refs')::VARCHAR AS refs, j
             FROM raw_transactions
             """
         )
@@ -253,7 +265,8 @@ class FactStore:
             CREATE TABLE outputs AS SELECT seq, j ->> '$.txid' AS txid, CAST(j ->> '$.vout' AS BIGINT) AS vout,
                 TRY_CAST(j ->> '$.amount_sats' AS BIGINT) AS amount, j ->> '$.address' AS address,
                 j ->> '$.script_id' AS script_id, j ->> '$.script_type' AS script_type,
-                COALESCE(NULLIF(j ->> '$.address', ''), NULLIF(j ->> '$.script_id', '')) AS addr_key, j
+                COALESCE(NULLIF(j ->> '$.address', ''), NULLIF(j ->> '$.script_id', '')) AS addr_key,
+                (j -> '$.source_refs')::VARCHAR AS refs, j
             FROM raw_outputs
             """
         )
@@ -261,11 +274,19 @@ class FactStore:
             """
             CREATE TABLE inputs AS SELECT seq, j ->> '$.txid' AS txid, TRY_CAST(j ->> '$.vin' AS BIGINT) AS vin,
                 j ->> '$.prev_txid' AS prev_txid, TRY_CAST(j ->> '$.prev_vout' AS BIGINT) AS prev_vout,
-                j ->> '$.address' AS address, j
+                j ->> '$.address' AS address, TRY_CAST(j ->> '$.amount_sats' AS BIGINT) AS amount,
+                (j -> '$.source_refs')::VARCHAR AS refs, j
             FROM raw_inputs
             """
         )
-        con.execute("CREATE TABLE observations AS SELECT seq, j FROM raw_network_observations")
+        con.execute("""CREATE TABLE observations AS SELECT seq,
+            j ->> '$.observation_id' AS observation_id, j ->> '$.txid' AS txid,
+            j ->> '$.src_ip' AS src_ip, j ->> '$.dst_ip' AS dst_ip,
+            TRY_CAST(j ->> '$.src_port' AS BIGINT) AS src_port,
+            TRY_CAST(j ->> '$.dst_port' AS BIGINT) AS dst_port,
+            j ->> '$.clock_quality' AS clock_quality, j ->> '$.asn' AS asn,
+            j ->> '$.geo_country' AS geo_country, j ->> '$.observer_received_at' AS observer_received_at, j
+            FROM raw_network_observations""")
         for kind in _KINDS:
             con.execute(f"DROP TABLE raw_{kind}")
         # Transaction times are parsed by the same Python `_time()` the
@@ -330,6 +351,13 @@ class FactStore:
         from app.ml.facts import Facts
 
         con = self.con
+        nt, no, ni = con.execute("SELECT (SELECT count(*) FROM tx), (SELECT count(*) FROM outputs), "
+                                "(SELECT count(*) FROM inputs)").fetchone()
+        # Includes ID dictionaries, feature matrices and fitting/scoring scratch
+        # arrays, not just the compact Facts arrays. This is a conservative
+        # supported limit and is recorded with the scoring stage.
+        self.ml_memory_estimate_bytes = int(nt * 1600 + no * 384 + ni * 80)
+        admit_global_allocation("ML", self.ml_memory_estimate_bytes, plan=self.plan)
         con.execute(
             """
             CREATE OR REPLACE TABLE ml_tx AS
@@ -369,12 +397,21 @@ class FactStore:
         )
 
         def arrays(sql: str) -> list:
-            table = con.execute(sql).to_arrow_reader(1 << 20).read_all()
-            return [column.to_numpy(zero_copy_only=False) for column in table.columns]
+            count = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]
+            reader = con.execute(sql).to_arrow_reader(_FETCH_ROWS)
+            # These projections are integer-only. Arrow's to_pandas_dtype()
+            # imports pandas even though the runtime intentionally has none.
+            if any(not pa.types.is_integer(field.type) for field in reader.schema):
+                raise TypeError("ML numeric projection must contain only integer columns")
+            values = [np.empty(count, dtype=np.int64) for _ in reader.schema]
+            offset = 0
+            for batch in reader:
+                for target, column in zip(values, batch.columns, strict=True):
+                    target[offset:offset + batch.num_rows] = column.to_numpy(zero_copy_only=False)
+                offset += batch.num_rows
+            return values
 
-        tx_table = con.execute("SELECT txid FROM ml_tx ORDER BY slot").to_arrow_reader(1 << 20).read_all()
-        txids = tx_table.column(0).to_pylist()
-        del tx_table
+        txids = [txid for (txid,) in self.rows("SELECT txid FROM ml_tx ORDER BY slot")]
         tx_time, tx_fee = arrays("SELECT t, fee FROM ml_tx ORDER BY slot")
         out_tx, out_vout, out_value, out_addr, out_script = arrays(
             "SELECT tx, vout, amount, addr, script FROM ml_out ORDER BY pos"
@@ -383,11 +420,9 @@ class FactStore:
         spent_by = np.full(out_tx.shape[0], -1, dtype=np.int32)
         spender_pos, spender_tx = arrays("SELECT prev, arg_max(tx, seq) FROM ml_in WHERE prev >= 0 GROUP BY prev")
         spent_by[spender_pos.astype(np.int64)] = spender_tx
-        address_table = con.execute(
+        addresses = [address for (address,) in self.rows(
             "SELECT addr_key FROM (SELECT DISTINCT addr, addr_key FROM ml_out WHERE addr >= 0) ORDER BY addr"
-        ).to_arrow_reader(1 << 20).read_all()
-        addresses = address_table.column(0).to_pylist()
-        del address_table
+        )]
         for table in ("ml_tx", "ml_out", "ml_in"):
             con.execute(f"DROP TABLE {table}")
         return Facts(
@@ -402,7 +437,7 @@ class FactStore:
 
     def network_observations(self) -> Iterator[dict]:
         for txid, src_ip, asn, country in self.rows(
-            "SELECT j ->> '$.txid', j ->> '$.src_ip', j ->> '$.asn', j ->> '$.geo_country' FROM observations ORDER BY seq"
+            "SELECT txid, src_ip, asn, geo_country FROM observations ORDER BY seq"
         ):
             yield {"txid": txid, "src_ip": src_ip, "asn": asn, "geo_country": country}
 
@@ -451,6 +486,31 @@ class _Stage:
 
 
 def build_graph_bounded(session: Session, *, store: FactStore, evidence_root: Path, snapshot: Snapshot) -> GraphBuildResult:
+    """Use the joint plan's graph-only budget, restoring chunk-stage limits.
+
+    Graph SQL has no concurrent Python detector partitions or process pool.
+    Keeping its large outpoint hash join under the chunk-stage quarter-budget
+    caused the actual 3M run to fail despite adequate joint memory headroom.
+    Give this phase the already planned half-budget, with bounded thread-local
+    buffers; do not let later detector workers inherit that larger allowance.
+    """
+    con = store.con
+    original_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+    # current_setting(memory_limit) is display-rounded (e.g. 488.2 MiB).
+    # Parsing it back slowly shrinks the limit on every invocation/retry.
+    original_memory = store._config["memory_limit"]
+    graph_mb = store.plan.duckdb_memory_limit_mb
+    threads = max(1, min(store.plan.cpu_count, graph_mb // 512, 4))
+    con.execute(f"SET memory_limit = '{graph_mb}MB'")
+    con.execute(f"SET threads = {threads}")
+    try:
+        return _build_graph_bounded(session, store=store, evidence_root=evidence_root, snapshot=snapshot)
+    finally:
+        con.execute(f"SET threads = {int(original_threads)}")
+        con.execute(f"SET memory_limit = '{original_memory}'")
+
+
+def _build_graph_bounded(session: Session, *, store: FactStore, evidence_root: Path, snapshot: Snapshot) -> GraphBuildResult:
     """Same nodes, edges and coverage as `build_graph_snapshot`, built through the store.
 
     The in-memory builder dedupes with first-insert-wins over a fixed order:
@@ -468,41 +528,29 @@ def build_graph_bounded(session: Session, *, store: FactStore, evidence_root: Pa
         "CREATE TABLE e_stage (edge_id VARCHAR, from_node VARCHAR, to_node VARCHAR, edge_type VARCHAR, "
         "attributes_json VARCHAR, uncertainty DOUBLE, ord BIGINT)"
     )
-    string, integer, double = pa.string(), pa.int64(), pa.float64()
-    nodes = _Stage(con, "n_stage", ("node_id", "node_type", "label", "attributes_json", "ord"), (string, string, string, string, integer))
-    edges = _Stage(
-        con, "e_stage", ("edge_id", "from_node", "to_node", "edge_type", "attributes_json", "uncertainty", "ord"),
-        (string, string, string, string, string, double, integer),
-    )
-    position = 0
-
-    def next_position() -> int:
-        nonlocal position
-        position += 1
-        return position
-
-    for txid, network, block_time, source_timestamp in store.rows(
-        "SELECT txid, network, block_time, source_timestamp FROM tx ORDER BY seq"
-    ):
-        nodes.add(
-            f"tx:{txid}", "transaction", txid,
-            _attributes_json({"network": network, "block_time": block_time, "source_timestamp": source_timestamp}),
-            next_position(),
-        )
-    for txid, vout, amount, address, script_id, script_type in store.rows(
-        "SELECT txid, vout, amount, address, script_id, script_type FROM outputs ORDER BY seq"
-    ):
-        output_id = f"out:{txid}:{vout}"
-        nodes.add(f"tx:{txid}", "transaction", txid, "{}", next_position())
-        nodes.add(output_id, "output", f"{txid}:{vout}", _attributes_json({"amount_sats": amount, "script_type": script_type}), next_position())
-        edges.add(
-            _edge_id(f"tx:{txid}", output_id, "CREATES_OUTPUT"), f"tx:{txid}", output_id, "CREATES_OUTPUT",
-            _attributes_json({"vout": vout, "amount_sats": amount}), None, next_position(),
-        )
-        locked = address or script_id
-        if locked:
-            nodes.add(f"address:{locked}", "address_or_script", str(locked), "{}", next_position())
-            edges.add(_edge_id(output_id, f"address:{locked}", "LOCKED_TO"), output_id, f"address:{locked}", "LOCKED_TO", "{}", None, next_position())
+    # A phase prefix plus source sequence preserves the Python builder's exact
+    # first-insert rule, without allocating a Python object for every graph row.
+    con.execute("""INSERT INTO n_stage SELECT 'tx:' || txid, 'transaction', txid,
+        '{"block_time": ' || COALESCE((j -> '$.block_time')::VARCHAR, 'null') || ', "network": ' ||
+        COALESCE((j -> '$.network')::VARCHAR, 'null') || ', "source_timestamp": ' ||
+        COALESCE((j -> '$.source_timestamp')::VARCHAR, 'null') || '}', seq
+        FROM tx""")
+    con.execute("""CREATE TEMP VIEW graph_outputs AS SELECT *, 'tx:' || txid AS tid,
+        'out:' || txid || ':' || vout AS oid, NULLIF(COALESCE(NULLIF(address, ''), script_id), '') AS locked
+        FROM outputs""")
+    con.execute("""INSERT INTO n_stage
+        SELECT tid, 'transaction', txid, '{}', 100000000000000000 + seq * 8 FROM graph_outputs
+        UNION ALL SELECT oid, 'output', txid || ':' || vout,
+            '{"amount_sats": ' || COALESCE(amount::VARCHAR, 'null') || ', "script_type": ' ||
+            COALESCE((j -> '$.script_type')::VARCHAR, 'null') || '}', 100000000000000001 + seq * 8 FROM graph_outputs
+        UNION ALL SELECT 'address:' || locked, 'address_or_script', locked, '{}', 100000000000000003 + seq * 8
+            FROM graph_outputs WHERE locked IS NOT NULL""")
+    con.execute("""INSERT INTO e_stage
+        SELECT sha256(tid || '|' || oid || '|CREATES_OUTPUT'), tid, oid, 'CREATES_OUTPUT',
+            '{"amount_sats": ' || COALESCE(amount::VARCHAR, 'null') || ', "vout": ' || vout || '}',
+            NULL, 100000000000000002 + seq * 8 FROM graph_outputs
+        UNION ALL SELECT sha256(oid || '|address:' || locked || '|LOCKED_TO'), oid, 'address:' || locked,
+            'LOCKED_TO', '{}', NULL, 100000000000000004 + seq * 8 FROM graph_outputs WHERE locked IS NOT NULL""")
     # Spend resolution: an input resolves when its outpoint is a committed
     # output; the first input (in fact order) to spend an outpoint wins, later
     # inputs from another transaction are double-spend conflicts.
@@ -523,30 +571,29 @@ def build_graph_bounded(session: Session, *, store: FactStore, evidence_root: Pa
         ) f USING (prev_txid, prev_vout)
         """
     )
-    for prev_txid, prev_vout, txid, vin in store.rows(
-        "SELECT prev_txid, prev_vout, txid, vin FROM resolution WHERE resolved ORDER BY seq"
-    ):
-        from_id = f"out:{prev_txid}:{prev_vout}"
-        edges.add(_edge_id(from_id, f"tx:{txid}", "SPENT_BY"), from_id, f"tx:{txid}", "SPENT_BY", _attributes_json({"vin": vin}), None, next_position())
-    for (raw,) in store.rows("SELECT j FROM observations ORDER BY seq"):
-        observation = json.loads(raw)
-        observation_id = f"obs:{observation['observation_id']}"
-        nodes.add(observation_id, "network_observation", observation["observation_id"],
-                  _attributes_json({"clock_quality": observation.get("clock_quality")}), next_position())
-        if observation.get("txid"):
-            nodes.add(f"tx:{observation['txid']}", "transaction", observation["txid"], "{}", next_position())
-            edges.add(_edge_id(observation_id, f"tx:{observation['txid']}", "OBSERVED_TX"), observation_id,
-                      f"tx:{observation['txid']}", "OBSERVED_TX", "{}", None, next_position())
-        for direction, address, port in (
-            ("SEEN_FROM", observation.get("src_ip"), observation.get("src_port")),
-            ("SEEN_TO", observation.get("dst_ip"), observation.get("dst_port")),
-        ):
-            if address:
-                endpoint_id = f"endpoint:{address}:{port if port is not None else 'unknown'}"
-                nodes.add(endpoint_id, "network_endpoint", f"{address}:{port if port is not None else '?'}", "{}", next_position())
-                edges.add(_edge_id(observation_id, endpoint_id, direction), observation_id, endpoint_id, direction, "{}", None, next_position())
-    nodes.flush()
-    edges.flush()
+    con.execute("""INSERT INTO e_stage SELECT sha256('out:' || prev_txid || ':' || prev_vout || '|tx:' || txid || '|SPENT_BY'),
+        'out:' || prev_txid || ':' || prev_vout, 'tx:' || txid, 'SPENT_BY',
+        '{"vin": ' || COALESCE(vin::VARCHAR, 'null') || '}', NULL,
+        200000000000000000 + seq FROM resolution WHERE resolved""")
+    con.execute("""INSERT INTO n_stage
+        SELECT 'obs:' || observation_id, 'network_observation', observation_id,
+            '{"clock_quality": ' || COALESCE((j -> '$.clock_quality')::VARCHAR, 'null') || '}',
+            300000000000000000 + seq * 8 FROM observations
+        UNION ALL SELECT 'tx:' || txid, 'transaction', txid, '{}', 300000000000000001 + seq * 8
+            FROM observations WHERE NULLIF(txid, '') IS NOT NULL""")
+    con.execute("""INSERT INTO e_stage SELECT sha256('obs:' || observation_id || '|tx:' || txid || '|OBSERVED_TX'),
+        'obs:' || observation_id, 'tx:' || txid, 'OBSERVED_TX', '{}', NULL, 300000000000000002 + seq * 8
+        FROM observations WHERE NULLIF(txid, '') IS NOT NULL""")
+    con.execute("""CREATE TEMP VIEW graph_endpoints AS
+        SELECT seq, observation_id, src_ip AS ip, src_port AS port, 'SEEN_FROM' AS direction, 3 AS pos FROM observations
+        UNION ALL SELECT seq, observation_id, dst_ip, dst_port, 'SEEN_TO', 5 FROM observations""")
+    con.execute("""INSERT INTO n_stage SELECT 'endpoint:' || ip || ':' || COALESCE(port::VARCHAR, 'unknown'),
+        'network_endpoint', ip || ':' || COALESCE(port::VARCHAR, '?'), '{}', 300000000000000000 + seq * 8 + pos
+        FROM graph_endpoints WHERE NULLIF(ip, '') IS NOT NULL""")
+    con.execute("""INSERT INTO e_stage
+        SELECT sha256('obs:' || observation_id || '|endpoint:' || ip || ':' || COALESCE(port::VARCHAR, 'unknown') || '|' || direction),
+        'obs:' || observation_id, 'endpoint:' || ip || ':' || COALESCE(port::VARCHAR, 'unknown'), direction, '{}', NULL,
+        300000000000000001 + seq * 8 + pos FROM graph_endpoints WHERE NULLIF(ip, '') IS NOT NULL""")
 
     counts = con.execute(
         """
@@ -626,8 +673,18 @@ def _facts_by_tx(store: FactStore, table: str, txids: list[str]) -> tuple[dict[s
     store.with_keys("chunk_tx", {"txid": pa.array(txids, pa.string())})
     grouped: dict[str, list[dict]] = defaultdict(list)
     by_seq: dict[int, dict] = {}
-    for seq, raw in store.rows(f"SELECT t.seq, t.j FROM {table} t SEMI JOIN chunk_tx c ON c.txid = t.txid ORDER BY t.seq"):
-        fact = json.loads(raw)
+    if table not in {"inputs", "outputs", "tx"}:
+        raise ValueError("unsupported fact projection")
+    fields = ("txid", "vout", "amount_sats", "address", "script_id", "script_type", "source_refs") if table == "outputs" else (
+        "txid", "vin", "prev_txid", "prev_vout", "address", "amount_sats", "source_refs")
+    projection = "t.txid, t.vout, t.amount, t.address, t.script_id, t.script_type, t.refs" if table == "outputs" else (
+        "t.txid, t.vin, t.prev_txid, t.prev_vout, t.address, t.amount, t.refs")
+    if table == "tx":
+        fields = ("txid", "network", "block_time", "source_timestamp", "fee_sats", "source_refs")
+        projection = "t.txid, t.network, t.block_time, t.source_timestamp, t.fee_sats, t.refs"
+    for seq, *values in store.rows(f"SELECT t.seq, {projection} FROM {table} t SEMI JOIN chunk_tx c ON c.txid = t.txid ORDER BY t.seq"):
+        values[-1] = json.loads(values[-1] or "[]")
+        fact = dict(zip(fields, values, strict=True))
         grouped[fact["txid"]].append(fact)
         by_seq[seq] = fact
     return grouped, by_seq
@@ -639,6 +696,26 @@ def _times(store: FactStore, txids: list[str]) -> dict[str, datetime | None]:
 
 
 def _peeling(store: FactStore, max_hops: int, min_length: int) -> list[tuple[tuple[str, int], list[tuple[str, int | None]]]]:
+    """Serial SQL preprocessing, with no concurrent detector pool.
+
+    Like the graph-only phase, this global join/grouping needs its planned
+    half-budget rather than a partition worker's quarter-budget. Restore the
+    exact native settings before constructing/launching any detector jobs.
+    """
+    con = store.con
+    original_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+    original_memory = store._config["memory_limit"]
+    sql_mb = store.plan.duckdb_memory_limit_mb
+    con.execute(f"SET memory_limit = '{sql_mb}MB'")
+    con.execute(f"SET threads = {max(1, min(store.plan.cpu_count, sql_mb // 512, 4))}")
+    try:
+        return _peeling_sql(store, max_hops, min_length)
+    finally:
+        con.execute(f"SET threads = {int(original_threads)}")
+        con.execute(f"SET memory_limit = '{original_memory}'")
+
+
+def _peeling_sql(store: FactStore, max_hops: int, min_length: int) -> list[tuple[tuple[str, int], list[tuple[str, int | None]]]]:
     """Every emitted peeling walk, in the in-memory detector's emit order.
 
     Walks are computed in SQL from the hop table: an outpoint whose spend
@@ -1114,7 +1191,9 @@ def _attach(job: dict[str, Any], tables: tuple[str, ...], local: tuple[str, ...]
 
 def _export(store: FactStore, job: dict[str, Any], table: str) -> str:
     path = Path(job["out_dir"]) / f"{table}-{job['id']}.parquet"
-    store.con.execute(f"COPY {table} TO {_quote(path)} (FORMAT parquet)")
+    # Large JSON rows can exceed a worker's entire budget in DuckDB's default
+    # 122,880-row group (observed on the untouched 100K control run).
+    store.con.execute(f"COPY {table} TO {_quote(path)} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 8192)")
     return str(path)
 
 
@@ -1150,7 +1229,7 @@ def _peeling_job(job: dict[str, Any]) -> dict[str, Any]:
         count = _peeling_chunk(store, job["walks"], pattern_base=0)
         return {"count": count, "contrib": _export(store, job, "contrib"), "det": _export(store, job, "det")}
     finally:
-        store.con.close()
+        store.close()
 
 
 def _detector_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -1163,7 +1242,7 @@ def _detector_job(job: dict[str, Any]) -> dict[str, Any]:
         )
         return {"count": count, "cand": _export(store, job, "cand")}
     finally:
-        store.con.close()
+        store.close()
 
 
 _CAND_DDL = "CREATE TABLE cand (score DOUBLE, rule_id VARCHAR, entity_ref VARCHAR, start_us BIGINT, end_us BIGINT, pos BIGINT, row VARCHAR)"
@@ -1172,7 +1251,7 @@ _KEPT_DDL = "CREATE TABLE kept (addr VARCHAR, seconds BIGINT, us BIGINT, feature
 
 def _partition_job(job: dict[str, Any]) -> dict[str, Any]:
     """One address partition in a worker process; its outputs go to files."""
-    store = _attach(job, ("outputs", "inputs", "tx_time", "contrib", "needed"), (_KEPT_DDL, _CAND_DDL))
+    store = _attach(job, ("outputs", "inputs", "tx_time", "contrib", "needed", "rapid_spends"), (_KEPT_DDL, _CAND_DDL))
     snapshot = SimpleNamespace(id=job["snapshot_id"], case_id=job["case_id"])
     graph = SimpleNamespace(id=job["graph_id"])
     try:
@@ -1183,7 +1262,7 @@ def _partition_job(job: dict[str, Any]) -> dict[str, Any]:
         try:
             count = _address_partition(
                 store, partition=job["partition"], partitions=job["partitions"], writer=writer, snapshot=snapshot,
-                graph=graph, coverage_json=job["coverage_json"], opposing_json=job["opposing_json"], position=0,
+                graph=graph, coverage_json=job["coverage_json"], opposing_json=job["opposing_json"], position=0, rapid_cached=True,
             )
             features, feature_rows, schema_version = writer.close_part()
         except BaseException:
@@ -1194,7 +1273,7 @@ def _partition_job(job: dict[str, Any]) -> dict[str, Any]:
             "kept": _export(store, job, "kept"), "cand": _export(store, job, "cand"),
         }
     finally:
-        store.con.close()
+        store.close()
 
 
 def _address_partitions_parallel(
@@ -1205,6 +1284,9 @@ def _address_partitions_parallel(
     rows are appended to the snapshot's store as partitions finish, in
     partition order; candidate positions are offset exactly as the in-process
     loop numbers them, so ranking ties resolve identically."""
+    # Resolve rapid spends once, rather than repeating global prevout/time
+    # joins for every partition (48 partitions in the measured 1M plan).
+    _prepare_rapid_spends(store, partitions=partitions)
     jobs = [
         _job(store, workers, partition=partition, partitions=partitions, snapshot_id=snapshot.id, case_id=snapshot.case_id,
              graph_id=graph.id, evidence_root=str(evidence_root), coverage_json=coverage_json,
@@ -1229,13 +1311,98 @@ def _address_partitions_parallel(
     _remove_job_files(results)
 
 
+_RAPID_SPENDS_SQL = """
+    SELECT i.seq, i.j AS input_raw, po.seq AS previous_seq, po.j AS previous_raw,
+           po.address, ts.us AS spent_us, tr.us AS received_us
+    FROM inputs i
+    JOIN outputs po ON po.txid = i.prev_txid AND po.vout = i.prev_vout
+    JOIN tx_time ts ON ts.txid = i.txid
+    JOIN tx_time tr ON tr.txid = i.prev_txid
+    WHERE i.prev_txid IS NOT NULL AND i.prev_vout IS NOT NULL AND NULLIF(po.address, '') IS NOT NULL
+      AND ts.us IS NOT NULL AND tr.us IS NOT NULL AND ts.us - tr.us BETWEEN 0 AND 3600000000
+"""
+
+
+def _prepare_rapid_spends(store: FactStore, *, partitions: int) -> None:
+    """Cache the unchanged verified-spend relation before child processes run.
+
+    Bucket order lets native zone maps skip unrelated rows. Raw evidence JSON,
+    source sequence, exact prevout resolution and inclusive time bounds remain
+    unchanged. This is serial SQL; restore child limits even on failure.
+    """
+    if partitions < 1:
+        raise ValueError("partitions must be positive")
+    con = store.con
+    original_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+    original_memory = store._config["memory_limit"]
+    sql_mb = store.plan.duckdb_memory_limit_mb
+    con.execute(f"SET memory_limit = '{sql_mb}MB'")
+    con.execute(f"SET threads = {max(1, min(store.plan.cpu_count, sql_mb // 512, 4))}")
+    try:
+        con.execute(f"CREATE TABLE rapid_spends AS SELECT hash(address) % {int(partitions)} AS bucket, * "
+                    f"FROM ({_RAPID_SPENDS_SQL}) ORDER BY bucket, seq")
+    finally:
+        con.execute(f"SET threads = {int(original_threads)}")
+        con.execute(f"SET memory_limit = '{original_memory}'")
+
+
+def _address_history_sql(store: FactStore, *, partition: int, partitions: int) -> dict:
+    """Distinct source counts and exact value sums, including signal-keyed outputs.
+
+    SQL holds window memberships/aggregation; Python divides the integer totals
+    exactly as the reference path does, preserving its floating point results.
+    """
+    windows = ",".join(f"({seconds})" for seconds in det.WINDOW_SECONDS)
+    sql = f"""
+        WITH memberships AS (
+            SELECT o.addr_key AS addr, w.seconds,
+                floor(trunc(t.us::DOUBLE / 1000000) / w.seconds)::BIGINT * w.seconds * 1000000 AS us, o.seq
+            FROM outputs o JOIN tx_time t USING (txid) CROSS JOIN (VALUES {windows}) w(seconds)
+            WHERE o.addr_key IS NOT NULL AND t.us IS NOT NULL AND hash(o.addr_key) % {partitions} = {partition}
+            UNION
+            SELECT c.addr, w.seconds,
+                floor(trunc(c.us::DOUBLE / 1000000) / w.seconds)::BIGINT * w.seconds * 1000000 AS us, c.out_seq
+            FROM contrib c CROSS JOIN (VALUES {windows}) w(seconds)
+            WHERE NULLIF(c.addr, '') IS NOT NULL AND c.us IS NOT NULL AND hash(c.addr) % {partitions} = {partition}
+        ), grouped AS (
+            SELECT m.addr, m.seconds, m.us, count(DISTINCT o.txid) AS n, sum(o.amount) AS value
+            FROM memberships m JOIN outputs o ON o.seq = m.seq GROUP BY m.addr, m.seconds, m.us
+        )
+        SELECT addr, seconds, us, n, value,
+            row_number() OVER earlier - 1 AS prior_n, lag(us) OVER earlier AS previous_us,
+            sum(n) OVER prior AS prior_count, sum(value) OVER prior AS prior_value
+        FROM grouped
+        WINDOW earlier AS (PARTITION BY addr, seconds ORDER BY us),
+               prior AS (PARTITION BY addr, seconds ORDER BY us ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+    """
+    history = {}
+    for addr, seconds, us, n, value, prior_n, previous_us, prior_count, prior_value in store.rows(sql):
+        count_mean = int(prior_count) / prior_n if prior_n else None
+        value_mean = int(prior_value) / prior_n if prior_n else None
+        history[(addr, seconds, _to_datetime(us))] = {
+            "first_observed_activity": not prior_n,
+            "prior_window_gap_seconds": (us - previous_us) / 1000000 if prior_n else None,
+            "baseline_in_event_count_mean": count_mean,
+            "activity_surge_ratio": n / count_mean if count_mean else None,
+            "baseline_value_sats_mean": value_mean,
+            "value_surge_ratio": int(value) / value_mean if value_mean else None,
+        }
+    return history
+
+
 def _address_partition(
     store: FactStore, *, partition: int, partitions: int, writer, snapshot, graph, coverage_json, opposing_json, position: int,
+    rapid_cached: bool = False,
 ) -> int:
     """One partition of addresses: exactly the in-memory address-window pass,
     over only the facts those addresses need."""
     con = store.con
     in_part = f"hash({{column}}) % {partitions} = {partition}"
+    partition_rows = con.execute(f"SELECT count(*) FROM outputs o WHERE o.addr_key IS NOT NULL "
+                                 f"AND {in_part.format(column='o.addr_key')}").fetchone()[0]
+    # Hash partitioning does not split a single hot address. Its Python fact
+    # dictionaries and three window memberships need explicit admission too.
+    admit_global_allocation("address partition (including skew)", int(partition_rows * 4096), plan=store.plan)
     output_events: dict[tuple[str, int, datetime], list[dict]] = defaultdict(list)
     outputs_by_seq: dict[int, dict] = {}
     for seq, raw, addr_key, us in store.rows(
@@ -1266,8 +1433,10 @@ def _address_partition(
     del event_outpoints
     rapid_events: dict[tuple[str, int, datetime], list[tuple[dict, dict, float]]] = defaultdict(list)
     outgoing: set[str] = set()
-    for input_raw, previous_seq, previous_raw, address, spent_us, received_us in store.rows(
-        f"""
+    rapid_sql = (
+        f"SELECT input_raw, previous_seq, previous_raw, address, spent_us, received_us FROM rapid_spends "
+        f"WHERE bucket = {int(partition)} ORDER BY seq"
+        if rapid_cached else f"""
         SELECT i.j, po.seq, po.j, po.address, ts.us, tr.us
         FROM inputs i
         JOIN outputs po ON po.txid = i.prev_txid AND po.vout = i.prev_vout
@@ -1278,7 +1447,8 @@ def _address_partition(
           AND ts.us - tr.us BETWEEN 0 AND 3600000000 AND {in_part.format(column='po.address')}
         ORDER BY i.seq
         """
-    ):
+    )
+    for input_raw, previous_seq, previous_raw, address, spent_us, received_us in store.rows(rapid_sql):
         tx_input = json.loads(input_raw)
         previous = outputs_by_seq.get(previous_seq)
         if previous is None:
@@ -1300,6 +1470,7 @@ def _address_partition(
     candidates, kept = det.address_window_pass(
         output_events=output_events, rapid_events=rapid_events, signal_by_key=signal_by_key,
         transaction_times=transaction_times, outputs_by_tx=outputs_by_tx, needed_keys=needed, writer=writer,
+        history_features=_address_history_sql(store, partition=partition, partitions=partitions),
     )
     writer.end_pass()
     _store_rows(

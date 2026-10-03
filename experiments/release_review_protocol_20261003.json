@@ -1,0 +1,26 @@
+{
+  "version": "release-review-protocol-v1",
+  "registered_before_new_generation": true,
+  "scope": "Synthetic research only; production retains anomaly-stack-v2 unless independently validated real outcomes exist",
+  "development": {"rows": 1000000, "seed": "tracex-review-dev-million-20261003-v1", "scenario_scale": 1.0},
+  "final_datasets": [
+    {"directory": "datasets/review_final_a_20261003", "rows": 300000, "seed": "tracex-review-reserved-final-a-20261003-v1", "scenario_scale": 0.5, "stress": "missing_network_prevouts"},
+    {"directory": "datasets/review_final_b_20261003", "rows": 300000, "seed": "tracex-review-reserved-final-b-20261003-v1", "scenario_scale": 1.5, "stress": "timing_endpoint_skew"}
+  ],
+  "scale_dataset": {"rows": 3000000, "parts": 30, "seed": "tracex-review-scale-three-million-20261003-v1", "scenario_scale": 1.0},
+  "selection": "Highest minimum validation AP over motif and surge across all available 100K, 300K and 1M development reports, subject to discrimination AP >= v2 - 0.01 on every development dataset; lexical candidate tie break. Freeze candidate and report hashes before final generation/evaluation.",
+  "candidate_grid": ["E1_hgb", "E2_balanced_hgb", "E3_without_structure_age", "E3_without_prior_history", "E3_without_causal_graph", "E3_without_prior_network", "E3_without_a_d_context", "E4_xgboost", "E5_lightgbm", "E6_hybrid"],
+  "max_iterations": 100,
+  "tuning": "No search beyond registered candidates; fixed depth/leaf/rate and random_state=42",
+  "splits": "Chronological reference first 80% fit, remaining 20% calibration, separate validation and final partition. Each reserved final dataset fits only its own earlier reference: forward-case retraining, NOT transfer of frozen model weights.",
+  "scenario_family_holdout": "benign_payroll transactions excluded from supervised fitting and calibration; reported separately if represented in evaluation",
+  "stress_parameters": {
+    "missing_network_prevouts": "Every fifth transaction lacks endpoint/ASN/country; every twentieth resolved input is unknown",
+    "timing_endpoint_skew": "Quantize observed times to 60 seconds; every fourth transaction shares endpoint and ASN 0; every twentieth endpoint is unknown"
+  },
+  "uncertainty": "100 deterministic cluster-bootstrap replicates, group by labelled scenario episode when available, otherwise recipient entity, otherwise independent transaction. Report conditional AP/P100 percentile intervals and cluster count; never row-bootstrap a linked episode.",
+  "targets": {"motif_ap": 0.8, "surge_ap": 0.8, "p_at_100": 0.9, "discrimination_ap_tolerance": 0.01},
+  "acceptance": "Report per-dataset, mean and worst case. Any missing metric/class, failed target or regression retains v2. Synthetic superiority alone never authorizes production promotion.",
+  "final_use": "Exclusive dataset reservation and exclusive evaluation marker; no final retuning or rerun after observing final outcomes",
+  "limitations": "Same generator with independent seeds and registered construction/stress variants is not an independently authored generator or real-world validation. Entity/time/scenario split audit must be reported, not assumed."
+}

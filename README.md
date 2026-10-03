@@ -3,10 +3,22 @@
 
 **Case-scoped, evidence-first analysis of Bitcoin transaction data: UTXO graph construction, deterministic pattern findings, unsupervised anomaly ranking, and reviewable evidence export.**
 
+Implementation review, 2026-10-03: changes are intentionally **uncommitted**.
+The current scoring baseline remains `anomaly-stack-v2`; synthetic research
+results do not automatically promote a supervised model. See
+[`docs/implementation_checkpoint_2026-10-03.md`](docs/implementation_checkpoint_2026-10-03.md)
+for the historical steps 1–5 checkpoint and
+[`docs/implementation_acceptance_2026-10-03.md`](docs/implementation_acceptance_2026-10-03.md)
+for the measured continuation and remaining failed/unrun gates.
+Import completion and analysis completion are distinct; degraded stages are
+visible and retryable. Calibration is pinned, synthetic-domain-specific and
+never evidence of criminality. Graph continuation and a separate distinct-TX
+review-capacity queue preserve access to evidence outside the current page.
+
 | Item | Value |
 | --- | --- |
 | Software version | `0.1.0` (`pyproject.toml`, `app/main.py`) |
-| Repository | `TODO: insert the verified repository URL` (the source archive used to prepare this document contained no VCS remote) |
+| Repository | [Shreshtha280407/TraceX](https://github.com/Shreshtha280407/TraceX) (verified local Git remote) |
 | Problem-statement reference | Project documents cite **SIH 26146**. Its official wording and portal status are recorded as unconfirmed in [`docs/requirements.md`](docs/requirements.md). `TODO: confirm ID and official wording before submission` |
 | Team, institution, department, organization | `TODO: not present in the repository` |
 | License | MIT, copyright holder as stated in [`LICENSE`](LICENSE) |
@@ -72,7 +84,7 @@ This section is the project's own problem framing. The official problem-statemen
 | O4 | Produce reviewable findings with source locators, coverage and benign alternatives | `app/engine/findings/`, `app/engine/motifs/`, `app/ml/findings.py` |
 | O5 | Isolate cases and record reviewer decisions and audit entries | `app/auth/`, `app/api/routes.py`, `app/models.py` |
 | O6 | Survive worker interruption without duplicate or phantom data | `app/jobs/service.py`, `app/engine/catalogue/fragments.py` |
-| O7 | Rank transactions by anomaly using strictly causal features | `app/ml/` |
+| O7 | Rank completed snapshots with versioned anomaly scoring; isolate causal research from retrospective v2 D/in-sample fitting | `app/ml/`, `scripts/ml_controlled_study.py` |
 
 ### 3.2 Out of current scope
 
@@ -90,7 +102,7 @@ Real-world address attribution; live blockchain node integration; multi-node or 
 
 ## 5. Implemented functional capabilities
 
-Status values: **Implemented** (present in source and covered by a committed test or benchmark script), **Partial**, **Research-only**, **Not implemented**. "Covered by test" refers to existence of a committed test; the pytest suite was **not executed** while preparing this document (Section 22).
+Status values: **Implemented**, **Partial**, **Research-only**, **Not implemented**. Current verification is recorded in [`docs/implementation_acceptance_2026-10-03.md`](docs/implementation_acceptance_2026-10-03.md); older measurements below remain historical, not acceptance of the current worktree.
 
 | Capability | Status | Basis |
 | --- | --- | --- |
@@ -99,7 +111,7 @@ Status values: **Implemented** (present in source and covered by a committed tes
 | Case-scoped workflows with roles `case_lead`, `analyst`, `reviewer` | Implemented | `app/auth/dependencies.py`, `routes.py` |
 | Bitcoin UTXO graph with six edge types | Implemented | `graph/builder.py`; `tests/unit/test_phase_three.py` |
 | Bounded neighbourhood query (depth 1–5) | Implemented | `graph/query.py` |
-| Graph continuation cursor | **Partial** — a cursor is returned when results are capped, but no route accepts it | `graph/query.py`, `routes.py` |
+| Graph continuation cursor | Implemented: authenticated, query/case/snapshot-bound continuation with independent node/edge caps and actual UI Load more | `graph/query.py`, `routes.py`, `GraphContinuation.tsx`; parity/auth tests and browser acceptance |
 | Deterministic address-window rules (3) | Implemented | `findings/deterministic.py` |
 | Peeling-chain candidate, CoinJoin-like structure, synthetic-seed proximity | Implemented | `motifs/deterministic.py`; `test_phase_four_one.py` |
 | Anomaly scoring and ranking (layers A and D deployed) | Implemented, optional (`ml` extra); evaluated on synthetic data only | `app/ml/` |
@@ -117,11 +129,11 @@ Status values: **Implemented** (present in source and covered by a committed tes
 | Feature export | Implemented (streamed JSON, paged JSON, or the snapshot's Parquet feature store) | `GET /v1/cases/{id}/features/export[.parquet]`, `app/engine/feature_store.py` |
 | Durable job leasing, crash and retry recovery | Implemented (tested against SQLite, Section 14) | `tests/unit/test_phase_six_crash_retry.py` |
 | Server-sent case events with replay | Implemented | `GET /v1/cases/{id}/events` |
-| Single-finding chat assistant using a locally hosted Ollama model | Implemented, optional, **no committed test located**; requires a reachable Ollama endpoint | `app/engine/chat/assistant.py` |
-| Web frontend (React, 9 routes) | Implemented; Playwright smoke script provided, not executed here | `frontend/` |
+| Single-finding chat assistant using a locally hosted Ollama model | Implemented, optional; unavailable-model behavior tested inside the offline appliance, prompt contracts unit-tested; an actual model/grounded answer is NOT RUN on this host | `app/engine/chat/assistant.py`, `tests/unit/test_chat_contract.py` |
+| Web frontend (React, 9 routes) | Build and real-browser investigation acceptance verified against copied offline image; missing-IP/outpoint variant also verified | `frontend/`, `frontend/e2e/acceptance.mjs` |
 | Agentic or autonomous AI workflow | **Not implemented.** The chat feature is single-turn question answering over one finding's stored evidence, with no tools or actions | — |
-| Incremental or provisional graph per ingestion batch | **Not implemented** (documented gap in `docs/phase6.md`) | — |
-| Offline Linux appliance (container image + compose + air-gapped installer) | Implemented; verified by building the image, an air-gapped install from the bundle, an end-to-end import, and a no-egress check on the worker | `Dockerfile`, `deploy/appliance/`, `scripts/build_offline_bundle.sh` |
+| Provisional activity per ingestion batch | Receipt-approved address read model, including unlinked entities, visible before finalization; not an incremental full graph | `AddressActivity`, `/activity`, Evidence Intake; SSE/recovery/browser tests |
+| Offline Linux appliance (container image + compose + air-gapped installer) | Copied-bundle install, PostgreSQL investigation and API/worker public IPv4/IPv6 isolation verified. Host internet remains unchanged; this is not physical machine air-gapping | `Dockerfile`, `deploy/appliance/`, final acceptance report |
 | Ingestion of PS-shaped datasets | Implemented. The PS publishes no dataset ("Dataset Link: Nil"; participants use synthetic data); header aliases, list encodings and epoch timestamps are mapped, and `tracex-dataset inspect` verifies any supplied file | `app/engine/canonical/profiles.py`, `app/engine/dataset_cli.py`, `data_manifest.json` |
 
 ## 6. System architecture
@@ -528,7 +540,7 @@ machine and install it on any Linux host with Docker — no network needed there
 scripts/build_offline_bundle.sh                 # -> dist/tracex-offline-<version>.tar.gz
 # on the target host
 tar xzf tracex-offline-<version>.tar.gz && ./tracex-offline/install.sh
-# open http://127.0.0.1:8000/
+# open the native-Linux private API bridge URL printed by install.sh
 ```
 
 Details: `deploy/appliance/README.md`. For development, follow 11.1 onwards. The
@@ -541,7 +553,9 @@ Python 3.11 or newer, [`uv`](https://docs.astral.sh/uv/), Docker with Compose (f
 
 ### 11.2 Download the source from a command shell
 
-The repository URL is not recorded in the source archive (see the table at the top). Replace `<owner>` with the account that hosts the repository, or substitute your full URL; `TODO: insert the verified repository URL`. The default branch is assumed to be `main`, as suggested by the archive folder name `TraceX-main`.
+The verified repository is `Shreshtha280407/TraceX`, with `main` as the current
+review base. A fresh fetch on 2026-10-03 confirms HEAD and origin/main agree;
+local implementation edits remain uncommitted on top.
 
 #### Option 1: `git clone` (recommended)
 
@@ -552,10 +566,10 @@ Works in Bash, Zsh, PowerShell and Windows Command Prompt once Git is installed.
 git --version
 
 # HTTPS
-git clone https://github.com/<owner>/TraceX.git
+git clone https://github.com/Shreshtha280407/TraceX.git
 
 # or SSH, if you have a key registered with the host
-git clone git@github.com:<owner>/TraceX.git
+git clone git@github.com:Shreshtha280407/TraceX.git
 
 cd TraceX
 ```
@@ -756,11 +770,19 @@ Important qualification: every committed pytest module, benchmark script and wal
 | `python3 -m unittest discover -s tests -v` | 4 tests run, all `ok`, about 27 s |
 | `python3 -m compileall -q app workers scripts fixtures tests` | no errors |
 
-### 14.3 Not executed here
+### 14.3 Historical documentation-only checks
 
-The pytest suite, `ruff`, all `uv`-based Make targets, the anomaly evaluation, the benchmarks, the frontend build and lint, the Playwright smoke test, and Docker/PostgreSQL startup were not executed in the documentation environment (FastAPI, PyArrow, DuckDB and pytest were not installed and network access was disabled). Results quoted in Section 15 are those recorded by the project, not reproduced here.
+The original September 30 documentation environment did not run pytest, Ruff,
+frontend builds, browser tests or Docker. That historical restriction is
+superseded by the actual October 3 implementation verification in the final
+acceptance report. Do not mistake the old Section 15 tables for current results.
 
 ## 15. Experimental evaluation and performance
+
+Current results: [`docs/implementation_acceptance_2026-10-03.md`](docs/implementation_acceptance_2026-10-03.md),
+[`docs/scale.md`](docs/scale.md) and
+[`experiments/model_decision_review_20261003.md`](experiments/model_decision_review_20261003.md).
+The subsections below preserve historical v1/Phase 6 measurements.
 
 ### 15.1 Anomaly ranking
 
@@ -770,7 +792,7 @@ The pytest suite, `ruff`, all `uv`-based Make targets, the anomaly evaluation, t
 
 **Baseline.** The deterministic Phase 4.1 predicate reimplemented as a score (`rule_baseline` in `app/ml/layers.py`).
 
-**Tasks and metrics.** Average precision (tie-aware) at a 1% review budget for three tasks: `motif` (CoinJoin-like and peel-step positives against all transactions), `surge` (transactions in labelled burst episodes), `discrimination` (true motifs against near-miss negatives only).
+**Historical tasks and metrics.** Average precision (tie-aware) over each ranking, plus separate precision/recall at a 1% review budget: `motif` (CoinJoin-like and peel-step positives against all transactions), `surge` (transactions in labelled burst episodes), `discrimination` (true motifs against near-miss negatives only).
 
 **Final-holdout results, deployable unsupervised configuration** (as recorded in `docs/anomaly_stack.md`):
 
@@ -833,7 +855,7 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 
 - **Case isolation is application-level.** It is enforced by membership checks in one shared database and one shared filesystem root. There is no per-case physical, operating-system or cryptographic isolation.
 - **Hashes and audit rows are not a proven chain of custody.** SHA-256 values and database audit records support integrity checking, but audit rows are ordinary mutable rows (not hash-chained or signed), exports are not signed, and no filesystem-level immutability (for example WORM storage) is enforced by the code.
-- **"Offline" means the tested application workflow made no outbound socket connections under a test guard.** It is not an independently verified air-gapped deployment. Installation requires pre-provisioned dependencies, and the optional chat feature contacts an Ollama endpoint that may be on another machine.
+- **Offline runtime isolation** is now tested for API, worker and database internal networks, public IPv4/IPv6 failures, and no external browser resources on native Linux Docker. The host itself was not disconnected. Installation needs the checksummed copied bundle; optional chat still requires a reachable pre-provisioned local model.
 
 ### 16.3 Gaps and hardening requirements
 
@@ -843,12 +865,12 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 | Session token is stored in browser `localStorage` (`frontend/src/lib/auth.tsx`) | Susceptible to theft through script injection; consider alternative session handling for production |
 | Evidence vault is unencrypted by the application | Use an encrypted volume; documentation advises this but the code does not enforce it |
 | Development database password is committed in `docker-compose.yml` and as a default URL | Development use only |
-| No TLS in the application; no container images | Terminate TLS in a proxy; build a deployment definition |
+| No TLS in the application; appliance images/bundles are provided | Use a trusted local network or terminate TLS in a reviewed proxy |
 | Uploads are validated by extension, not content sniffing | Content is parsed by format-specific readers and invalid content is rejected or quarantined |
 | `GET /evidence/{source_id}/records` scans the stored source linearly per request | Authenticated request cost grows with file size |
 | Upload declares every source `synthetic=false` regardless of case flag (`routes.py`) | The synthetic flag is only meaningful at case level |
 | A lead may add a member who has not signed up; that creates a user record without a password, and `/auth/signup` then returns `409` for the name | Code-reading observation, not executed. Members should register first |
-| Chat assistant: grounding is best-effort through a system prompt | Answers are not verified statements; no committed test located |
+| Chat assistant: grounding is best-effort through a system prompt | Prompt contracts and unavailable-model behavior tested; real-model grounded answers remain NOT RUN |
 | Job lease (default 30 s) is renewed only at batch commits, while graph, findings and ranking run afterwards without renewal (about 177 s on the 100K fixture) | A second worker could reclaim an active job; the project recommends one worker per host |
 | Weak-data and partial coverage are surfaced as coverage fields, not blocked | Reviewers must read coverage before relying on a finding |
 
@@ -860,9 +882,9 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 - **Heuristic false positives.** Payroll, exchange batching, consolidation and treasury sweeps can satisfy the same predicates. The synthetic fixture includes such cases by construction and shows the rule and the model both rank them highly.
 - **Model limits.** The unsupervised ranking does not separate a benign rule-satisfying transaction from a true motif (Section 15.1). Calibration depends on the snapshot's own first 70% of transactions. Scores are not probabilities.
 - **Attribution.** TraceX does not attribute addresses to persons or entities. Address, script, IP and ASN values are observations. Graph proximity is not common ownership.
-- **Scale.** The graph builder and findings stage hold snapshot-wide structures in memory. One million rows did not complete on a 15 GiB host; a streaming rewrite is required.
+- **Scale.** Typed disk-backed bounded graph/features now pass 1,014,581 transactions on this host. Global ML/embedding/risk arrays still scale with data and are resource-admitted, not constant memory. See the final report for actual 3M attempts and missed gates.
 - **Scoring scales.** Deterministic findings mix 0–100 and 0–1 scores in a single rank ordering (Section 8.3).
-- **Graph cursor.** A continuation cursor is emitted but cannot be consumed through the API.
+- **Graph cursor.** Continuation is query/case/snapshot-bound, validated server-side and consumed by actual UI Load more; full-graph rendering remains intentionally bounded.
 - **Storage engine.** Behavior on PostgreSQL under concurrency is untested by the committed suite.
 - **Production readiness.** Not claimed. See Sections 11.5 and 16.3.
 - **Interpretation.** Suspicious patterns and anomaly scores are investigative leads requiring human review. They are not proof of criminal conduct or identity.
@@ -933,4 +955,8 @@ Known inconsistencies among these documents, to be resolved by the authors:
 
 ## 22. Documentation verification record
 
-Prepared by static audit of the complete source archive on 2026-09-30. Verified by reading: application source, routes, models, configuration, auth, storage, ingestion, graph, detectors, ML modules, tests, scripts, frontend manifests and pages, Makefile, compose file, fixtures, schemas and all project documents. Commands executed and their outcomes are listed in Section 14.2; everything in Section 14.3 remains to be run by the team. The external reference repository named in the documentation brief was not accessible and was not inspected. No source file other than this README was modified. The download commands in Section 11.2 and the diagrams in Sections 6 and 7 were added or redesigned in later revisions and were not executed or rendered in the documentation environment; the diagrams were checked against `app/storage/raw.py`, `app/jobs/service.py`, `app/engine/catalogue/fragments.py`, `app/engine/graph/builder.py` and `docker-compose.yml`.
+Originally prepared by static audit on 2026-09-30. Updated during the actual
+2026-10-03 implementation: code, tests, fresh benchmark/model/browser reports,
+copied appliance and schema-upgrade evidence are recorded in the final acceptance
+report. September documentation-only statements are historical. Changes remain
+uncommitted for manual review; no push is performed.

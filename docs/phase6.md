@@ -1,5 +1,12 @@
 # Phase 6 — performance, recovery, security
 
+Current implementation note (2026-10-03): the measurements below are historical
+Phase 6 baselines, including deliberately ML-disabled runs, and are NOT full
+acceptance evidence for the current implementation. Durable per-stage outcomes,
+receipt activity, isolated per-process spill directories and strict all-stage
+HTTP benchmarks now exist. See `docs/scale.md` and the final implementation
+acceptance report for current measured evidence; preserve these old failures.
+
 One measured pipeline, honest clocks. Every number below came from an actual
 run on this development host (Arch Linux, kernel `7.2.4-arch1-2`, x86_64,
 13th Gen Intel Core i5-13420H, 8 physical / 12 logical CPUs, 15 GiB RAM, 15
@@ -294,6 +301,13 @@ strictly additive (fewer rows only when a real collision exists) so it
 cannot change their inputs.
 
 ## 7. Known gaps, stated rather than hidden
+
+Historical gaps at the Phase 6 measurement date. The October 3 bounded path
+now completes 1,014,581 transactions with all mandatory intelligence enabled;
+receipt-approved provisional activity is visible earlier. This supersedes the
+old 1M ceiling and “no first output” conclusions below, but preserves the OOM
+control runs. Finalized graphs/findings are still snapshot publications, not
+per-batch full graph rebuilds. Current memory/scale limits are in `scale.md`.
 
 - **1M-row throughput on this host: did not complete.** The kernel
   OOM-killer ended the ingestion worker at ~10.3 GiB resident (§1). This is a

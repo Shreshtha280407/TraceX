@@ -3,7 +3,9 @@
 # Every service sits on `tracex_internal`, a network with no route to the
 # internet. Only the API is additionally attached to `tracex_ui` so its port
 # can be published to the host; the worker and the database never leave the
-# internal network, so analysis provably runs offline.
+# internal network. The UI bridge is internal by default too. On native Linux,
+# use the API's host-private bridge address when published loopback ports are
+# unavailable in this mode. Routing opt-out is explicitly NOT isolation.
 name: tracex
 
 services:
@@ -56,7 +58,8 @@ services:
 networks:
   tracex_internal:
     internal: true
-  tracex_ui: {}
+  tracex_ui:
+    internal: ${TRACEX_UI_INTERNAL:-true}
 
 volumes:
   tracex_postgres:

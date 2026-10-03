@@ -66,6 +66,9 @@ class ProcessPool:
         # The `app` package this module belongs to: workers import the same tree.
         root = str(Path(__file__).resolve().parents[2])
         env = dict(os.environ)
+        env["PYTHONFAULTHANDLER"] = "1"
+        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            env[name] = "1"
         env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         self._processes = [
             subprocess.Popen(

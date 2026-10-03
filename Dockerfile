@@ -33,9 +33,12 @@ RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca
 # ---- 3. Offline Geo-IP database (DB-IP country lite CC BY 4.0 + IPtoASN PDDL) ------
 FROM python AS geoip
 ARG TRACEX_GEOIP=1
+COPY deploy/appliance/geoip-cache /opt/geoip-cache
 RUN --mount=type=secret,id=build_ca,required=false if [ -s /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca PIP_CERT=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; \
     if [ "$TRACEX_GEOIP" = "1" ]; then \
-      /opt/tracex/.venv/bin/python -m app.engine.geoip --dir /opt/geoip download && rm -rf /opt/geoip/downloads; \
+      if [ -f /opt/geoip-cache/compiled/manifest.json ]; then \
+        (cd /opt/geoip-cache/compiled && sha256sum -c SHA256SUMS) && mkdir -p /opt/geoip && cp -a /opt/geoip-cache/compiled /opt/geoip/; \
+      else /opt/tracex/.venv/bin/python -m app.engine.geoip --dir /opt/geoip download && rm -rf /opt/geoip/downloads; fi; \
     else mkdir -p /opt/geoip; fi
 
 # ---- 4. Runtime ----------------------------------------------------------------------

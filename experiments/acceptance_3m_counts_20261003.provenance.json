@@ -1,0 +1,12 @@
+{
+  "method": "independent raw generator row/array counting; no production parser or truth",
+  "source_sha256": "d7fc67addc58ffd24dd80905c0c9e8e4b423b24139ef0c9a95337f119ea3c854",
+  "source_rows": 3043812,
+  "counts": {
+    "transactions": 3043062,
+    "inputs": 4434511,
+    "outputs": 7927169,
+    "network_observations": 3043062,
+    "quarantine": 750
+  }
+}

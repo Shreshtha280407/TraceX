@@ -118,7 +118,10 @@ def get_session() -> Generator[Session, None, None]:
 #: `create_all` only creates missing *tables*, so a database initialised before
 #: one of these existed would otherwise fail every query that touches the model
 #: (e.g. `import_jobs.total_records` broke job polling and worker claims).
-ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (("import_jobs", "total_records", "INTEGER"),)
+ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("import_jobs", "total_records", "INTEGER"),
+    ("analysis_requests", "fulfilled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+)
 
 
 def ensure_schema(bind=None) -> list[str]:

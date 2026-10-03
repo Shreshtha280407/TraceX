@@ -23,6 +23,7 @@ Measures what the PS asks TraceX to find, using the generator's
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -57,18 +58,19 @@ def _auc(positive: np.ndarray, negative: np.ndarray) -> float:
     return float((ranks[: positive.size].sum() - positive.size * (positive.size + 1) / 2) / (positive.size * negative.size))
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--database", type=Path, required=True)
-    parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--truth", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=None)
-    args = parser.parse_args()
+def evaluate(args):
+    if args.database.resolve().parent.parent != (REPO / "var/scale-run").resolve():
+        raise ValueError("Truth-seeded evaluation is restricted to disposable benchmark databases")
     truth = json.loads(args.truth.read_text(encoding="utf-8"))
+    if not truth.get("evaluation_only") or not truth.get("do_not_ingest"):
+        raise ValueError("Truth lacks evaluation-only isolation markers")
     sessions = sessionmaker(bind=make_engine(f"sqlite:///{args.database}"), expire_on_commit=False)
-    report: dict = {}
+    report: dict = {"truth_sha256": hashlib.sha256(args.truth.read_bytes()).hexdigest(),
+                   "scope": "synthetic disposable benchmark only; all temporary truth-seeded changes rolled back"}
     with sessions() as session:
         case = session.scalar(select(Case))
+        if case is None or not case.synthetic or not case.name.startswith("scale "):
+            raise ValueError("Not a disposable synthetic scale case")
         record = analytics.latest_analytics(session, case.id)
         cursor = analytics.cursor_for(args.evidence, record)
 
@@ -164,7 +166,7 @@ def main() -> int:
         seeds = {predicted.get(address) or address for address in truth["risk_truth"]["seed_addresses"]}
         tainted_wallets -= seeds
         reached = sum(1 for wallet in tainted_wallets if risk.get(wallet, 0) > 0)
-        sample = [row[0] for row in cursor.execute("SELECT wallet FROM wallets USING SAMPLE 5000 ROWS").fetchall()]
+        sample = [row[0] for row in cursor.execute("SELECT wallet FROM wallets ORDER BY hash(wallet),wallet LIMIT 5000").fetchall()]
         negatives = np.array([risk.get(w, 0.0) for w in sample if w not in tainted_wallets and w not in seeds])
         positives = np.array([risk.get(w, 0.0) for w in tainted_wallets])
         report["risk_propagation"] = {
@@ -173,6 +175,7 @@ def main() -> int:
             "auc_tainted_vs_random": round(_auc(positives, negatives), 3),
             "wallets_with_risk": run.summary.get("wallets_with_risk"),
             "note": "risk is capped to the top 2000 wallets per run; tainted wallets beyond that count as unreached",
+            "negative_sampling": "deterministic hash-order sample capped at 5000; not full-population AUC",
         }
 
         # ---- network layer -------------------------------------------------
@@ -190,11 +193,29 @@ def main() -> int:
                                             "or relay_flow_coherence (per endpoint, chained spends)"},
         }
         cursor.close()
-    text = json.dumps(report, indent=2)
-    print(text)
-    if args.output:
-        args.output.write_text(text + "\n", encoding="utf-8")
-    return 0
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--truth", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if args.output.exists():
+        raise FileExistsError("refusing to overwrite scenario evaluation evidence")
+    report = {"status": "failed"}
+    try:
+        report.update(evaluate(args), status="pass")
+    except Exception as error:  # noqa: BLE001 - retain failed research evidence
+        report["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("x") as handle:
+            json.dump(report, handle, indent=2)
+    print(json.dumps(report, indent=2))
+    return int(report["status"] != "pass")
 
 
 if __name__ == "__main__":

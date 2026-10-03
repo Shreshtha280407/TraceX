@@ -202,3 +202,19 @@ def test_ensure_schema_adds_a_column_missing_from_an_older_database(tmp_path: Pa
     assert ensure_schema(engine) == ["import_jobs.total_records"]
     assert "total_records" in {column["name"] for column in inspect(engine).get_columns("import_jobs")}
     assert ensure_schema(engine) == []
+
+
+def test_schema_upgrade_preserves_unfulfilled_analysis_requests(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'old-requests.db'}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE import_jobs (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO import_jobs (id) VALUES ('retained-job')"))
+        connection.execute(text("CREATE TABLE analysis_requests (job_id VARCHAR(36), attempt INTEGER, "
+                                "refresh_analytics BOOLEAN, PRIMARY KEY (job_id, attempt))"))
+        connection.execute(text("INSERT INTO analysis_requests VALUES ('retained-job', 2, TRUE)"))
+    assert ensure_schema(engine) == ["import_jobs.total_records", "analysis_requests.fulfilled"]
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT id, total_records FROM import_jobs")).one() == ("retained-job", None)
+        assert connection.execute(text("SELECT job_id, attempt, refresh_analytics, fulfilled FROM analysis_requests")).one() == ("retained-job", 2, True, False)
+    assert ensure_schema(engine) == []
+    engine.dispose()

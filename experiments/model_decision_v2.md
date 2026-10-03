@@ -1,5 +1,13 @@
 # Model decision — release `anomaly-stack-v2`
 
+Historical adoption record. The 2026-10-03 review retains its numerical
+procedure; see `model_decision_review_20261003.md` for current independent
+reservations, measured research comparisons and limitations. The old ECOD
+“attribution” wording below is incorrect for the IF score: ECOD is descriptive
+tail context, with separate bounded IF sensitivity now exposed. The 1%
+reference quantile is not a hard queue cap. Independently seeded synthetic
+data does not establish real-world generalization.
+
 Status: **adopted**. Supersedes the scoring of `anomaly-stack-v1`
 (`experiments/model_decision.md`); everything else about v1 (layers, fusion,
 budget, seed, refit-per-snapshot) is unchanged.

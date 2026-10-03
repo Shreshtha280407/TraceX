@@ -811,6 +811,7 @@ def address_window_pass(
     outputs_by_tx: Mapping[str, list[dict]],
     needed_keys: set[tuple[str, int, datetime]],
     writer: FeatureRowWriter,
+    history_features: dict[tuple[str, int, datetime], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, int, datetime], tuple[dict[str, Any], str]]]:
     """Every address-window feature row plus the address-window rule candidates.
 
@@ -825,7 +826,7 @@ def address_window_pass(
         "rapid_redistribution_min_inbound_transactions": RAPID_MIN_INBOUND_TRANSACTIONS,
         "rapid_redistribution_max_delay_seconds": RAPID_MAX_DELAY_SECONDS,
     }
-    history = _history_features(output_events)
+    history = _history_features(output_events) if history_features is None else history_features
     kept_features: dict[tuple[str, int, datetime], tuple[dict[str, Any], str]] = {}
     for (address, seconds, start), outputs in output_events.items():
         key = (address, seconds, start)

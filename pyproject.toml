@@ -22,6 +22,8 @@ dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "ruff>=0.12,<1"]
 # the declared dependency set, or a future scikit-learn that drops or loosens the
 # transitive pin breaks the stack with no warning.
 ml = ["scikit-learn>=1.5,<2", "numpy>=1.26,<3", "scipy>=1.11,<2"]
+# Isolated synthetic research comparators; never installed by the appliance's ml extra.
+research = ["xgboost-cpu>=3,<4; platform_machine == 'x86_64'", "lightgbm>=4,<5"]
 
 [project.scripts]
 tracex-init-db = "app.db:init_database"

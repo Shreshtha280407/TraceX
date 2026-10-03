@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -43,6 +44,32 @@ IN_MEMORY_BYTES_PER_RECORD = 24 * 1024
 #: (1.95 GB over a 126 MB NDJSON source), rounded up.
 IN_MEMORY_BYTES_PER_SOURCE_BYTE = 20
 EXECUTION_MODES = ("memory", "bounded")
+
+
+def admit_global_allocation(stage: str, estimated_bytes: int, *, plan=None) -> None:
+    """Algorithms with global arrays have a supported limit, not constant memory."""
+    selected = plan or current_plan()
+    available = available_memory_bytes()
+    ceiling = min(selected.memory_budget_bytes, int(available * .8)) if available else selected.memory_budget_bytes
+    if estimated_bytes > ceiling:
+        raise RuntimeError(f"{stage} admission failed: estimated global working set {estimated_bytes >> 20} MiB "
+                           f"exceeds supported budget {ceiling >> 20} MiB; increase memory or reduce snapshot size")
+
+
+def admit_disk_allocation(stage: str, root: Path, estimated_bytes: int, *, reserve_bytes: int = 512 * MB) -> None:
+    """Fail before large scratch writes, leaving space for durable failure logs.
+
+    Estimates are conservative admission screens, not guarantees against other
+    applications consuming space concurrently. Existing evidence is never deleted.
+    """
+    path = root.resolve()
+    while not path.exists():
+        path = path.parent
+    free = shutil.disk_usage(path).free
+    required = estimated_bytes + reserve_bytes
+    if free < required:
+        raise RuntimeError(f"{stage} disk admission failed: {free >> 20} MiB free, "
+                           f"{required >> 20} MiB estimated scratch plus reserve required; free disk and retry")
 
 
 def _read_int(path: str) -> int | None:
@@ -129,6 +156,10 @@ def _clamp(value: float, low: int, high: int) -> int:
 PARALLEL_MIN_RECORDS = 50_000
 #: Memory one worker process may use: its share of the work, DuckDB and imports.
 WORKER_BUDGET_BYTES = 1 << 30
+# Matched 300K exports passed at ~305 MiB/child; 203 and 152 MiB failed.
+# Reserve 320 MiB in the quarter-budget DuckDB child pool rather than claiming
+# 6/8 workers are supported at 5 GiB simply because their Python imports fit.
+CHILD_DUCKDB_RESERVE_MB = 320
 
 
 @dataclass(frozen=True)
@@ -144,6 +175,10 @@ class ResourcePlan:
     #: DuckDB working memory for the graph build; beyond it DuckDB spills to disk.
     duckdb_memory_limit_mb: int
     duckdb_threads: int
+
+    def supported_workers(self) -> int:
+        return max(1, min(self.cpu_count, (self.memory_budget_bytes - 512 * MB) // (512 * MB),
+                          self.memory_budget_bytes // (4 * MB) // CHILD_DUCKDB_RESERVE_MB))
 
     def estimated_in_memory_bytes(self, *, records: int | None, source_bytes: int | None = None) -> int:
         if records:
@@ -182,12 +217,20 @@ class ResourcePlan:
         override = os.environ.get("TRACEX_WORKERS")
         if override:
             try:
-                return max(1, int(override))
+                requested = max(1, int(override))
             except ValueError:
                 logger.warning("TRACEX_WORKERS=%r is not a number; ignoring it", override)
+            else:
+                # Reserve the parent and API, plus native imports, DuckDB's
+                # minimum 128 MB and partition/result buffers in each child.
+                supported = self.supported_workers()
+                if requested > supported:
+                    raise RuntimeError(f"worker admission failed: requested {requested}, supported {supported} "
+                                       f"under {self.memory_budget_bytes >> 20} MiB joint budget")
+                return requested
         if records is not None and records < PARALLEL_MIN_RECORDS:
             return 1
-        return max(1, min(self.cpu_count, self.memory_budget_bytes // WORKER_BUDGET_BYTES))
+        return max(1, min(self.supported_workers(), self.memory_budget_bytes // WORKER_BUDGET_BYTES))
 
     def as_dict(self) -> dict:
         return asdict(self)

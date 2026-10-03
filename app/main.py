@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
+from app.api.analysis_routes import router as analysis_router
 from app.api.analytics_routes import router as analytics_router
 from app.api.routes import router
 
@@ -45,6 +46,7 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 app.include_router(router)
 app.include_router(analytics_router)
+app.include_router(analysis_router)
 
 
 def _mount_web_ui(directory: str | None) -> None:

@@ -8,19 +8,20 @@ import { useLastCaseId } from "../lib/lastCase";
 import { api, ApiError, type CaseDetail, type CaseWithRole, type EvidenceSourceRow } from "../lib/api";
 
 const FORWARD_COMMITMENTS = [
-  "No search was performed on the final holdout set",
-  "Layers, fusion method and review budget were fixed on train/validation only",
-  "The held-out set was evaluated exactly once, after the configuration was frozen",
-  "The rule-only baseline stays the live comparator on every task, always shown alongside the model",
+  "The historical generator-v2 fixture split was reused: development evidence, not a pristine final holdout",
+  "Production retains unsupervised v2; synthetic-trained research comparators are not deployed models",
+  "Completed-snapshot triage refits on an earlier reference period; it is not an online forecast for reference rows",
+  "Synthetic AP and calibrated benchmark frequency do not guarantee precision or criminality on new files",
 ];
 
 /** Release anomaly-stack-v2 (layer A ranked by Isolation Forest; experiments/model_decision_v2.md)
- * on the generator-v2 100K fixture's final holdout, tie-aware average precision. Not recomputed per request: these are a versioned decision
- * (experiments/model_decision.md), not a live metric. See docs/anomaly_stack.md. */
+ * on the reused generator-v2 100K fixture split, tie-aware average precision.
+ * Historical development evidence, not a pristine holdout or a live case metric.
+ * Source: experiments/model_decision_v2.md; inference procedure is unchanged. */
 const HOLDOUT_RESULTS = [
   { task: "surge", candidate: "A_global+D_burst", ap: 0.6235, rule: 0.2388, lift: "2.61x" },
   { task: "motif", candidate: "A_global+D_burst", ap: 0.626, rule: 0.3799, lift: "1.65x" },
-  { task: "discrimination", candidate: "rule baseline wins", ap: 0.9569, rule: 0.9569, lift: "1.00x" },
+  { task: "discrimination", candidate: "A_global+D_burst", ap: 0.9269, rule: 0.9569, lift: "0.97x" },
 ];
 
 type CheckResult = { label: string; ok: boolean; detail: string };
@@ -165,21 +166,25 @@ export function Settings() {
             <div className="kv-row"><span className="k">Release ID</span><span className="mono-id">anomaly-stack-v2</span></div>
             <div className="kv-row"><span className="k">Layers</span><span>A_global + D_burst</span></div>
             <div className="kv-row"><span className="k">Fusion</span><span>Stouffer (equal-weight ECDF p-values)</span></div>
-            <div className="kv-row"><span className="k">Review budget</span><span>1% (TRACEX_ML_REVIEW_BUDGET)</span></div>
+            <div className="kv-row"><span className="k">Default reference threshold</span><span>99th percentile (1% reference tail)</span></div>
             <p className="coverage-note" style={{ marginTop: 8 }}>
               No static model file — the stack refits on each snapshot's own reference period at scoring time. This ID
-              names the frozen procedure, not a loaded artifact. See <span className="mono-id">experiments/model_decision.md</span>.
+              names the frozen procedure, not a loaded artifact. The reference threshold is not a hard queue cap;
+              the case Findings screen separately controls distinct-transaction review capacity. Isolation Forest ranks
+              layer A; ECOD describes feature tails, not attribution of its score. Layer D describes a retrospective
+              containing bucket. Fused tails have unvalidated distribution/dependence assumptions.
+              See <span className="mono-id">experiments/model_decision_review_20261003.md</span>.
             </p>
           </NeoCard>
 
           <NeoCard>
-            <h2>Comparison — final holdout, generator-v2 100K fixture</h2>
+            <h2>Comparison — historical reused generator-v2 100K fixture</h2>
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Task</th>
-                  <th>Best candidate</th>
-                  <th>AP</th>
+                  <th>Deployed procedure</th>
+                  <th>v2 AP</th>
                   <th>Rule AP</th>
                   <th>Lift</th>
                 </tr>
@@ -197,10 +202,12 @@ export function Settings() {
               </tbody>
             </table>
             <p className="coverage-note" style={{ marginTop: 10 }}>
-              No unsupervised combination beats the rule on discrimination — that decision stays with the reviewer.
-              Release v2 was chosen on validation splits of three independently seeded datasets (100K fixture,
-              300K and 1M generator runs) and confirmed on their held-out splits. Full methodology in{" "}
-              <span className="mono-id">experiments/model_decision_v2.md</span>.
+              This fixture's final split was reused during the v2 study and is not pristine. These fixed synthetic
+              numbers are historical, not this case's measured accuracy. Discrimination is restricted to motifs
+              and labelled near-misses, not all transactions. Independently seeded runs of the same generator
+              do not establish real-world generalization. Current reserved-final research results and limitations
+              are in <span className="mono-id">experiments/model_decision_review_20261003.md</span>;
+              production still retains v2. The rule comparator is shown separately, not substituted for v2's AP.
             </p>
           </NeoCard>
         </div>

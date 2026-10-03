@@ -1,5 +1,18 @@
 # Phase 7 — submission and proof package
 
+Current implementation note (2026-10-03): the older submission evidence below
+does not establish acceptance of the current dirty worktree. Review image 07
+was installed from a copied checksum-verified bundle in 39.606 seconds without
+registry pulls. Native-Linux PostgreSQL browser investigation passes 70 checks,
+the missing-IP/prevout variant passes 31, and smoke passes 42. API and worker
+public IPv4/IPv6 connections return ENETUNREACH; all runtime networks, including
+the API's UI bridge, are internal. The host's internet remains unchanged.
+Worker-only isolation is not substituted for whole-appliance evidence. Larger
+PostgreSQL scale results and their separate resource/time gates are in the
+[final acceptance report](implementation_acceptance_2026-10-03.md). Optional
+Ollama is unavailable: no real grounded-answer claim follows from a prompt or
+the verified HTTP 503 response.
+
 This document is the reproducible evidence behind every claim the Phase 7
 release gate makes. Every number below came from an actual run on this
 development host (Arch Linux, kernel `7.2.4-arch1-2`, x86_64, 13th Gen Intel

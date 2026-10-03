@@ -40,3 +40,27 @@ def test_jobs_are_drawn_lazily_and_errors_while_drawing_arrive_in_order() -> Non
         with pytest.raises(KeyError, match="source broke"):
             seen.extend(results)
     assert seen == [float(n) ** 0.5 for n in range(6)]
+
+
+def test_duckdb_children_have_independent_existing_spill_directories(tmp_path):
+    from app.engine.bounded import FactStore
+
+    parent = FactStore(tmp_path / "facts")
+    parent.con.execute("CREATE TABLE test_values AS SELECT 1 AS value")
+    parent.suspend()
+    children = []
+    try:
+        children = [FactStore.attach(parent.path, memory_limit_mb=128, plan=parent.plan,
+                                     tables=("test_values",)) for _ in range(2)]
+        assert children[0]._spill != children[1]._spill
+        assert all(child._spill.is_dir() for child in children)
+        for child in children:
+            assert child.con.execute("SELECT value FROM test_values").fetchone()[0] == 1
+        first_spill, second_spill = [child._spill for child in children]
+        children[0].close()
+        assert not first_spill.exists() and second_spill.exists()
+    finally:
+        for child in children[1:]:
+            child.close()
+        parent.resume()
+        parent.close()

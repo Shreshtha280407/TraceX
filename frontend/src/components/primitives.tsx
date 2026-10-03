@@ -127,7 +127,7 @@ export function ConfidenceBadge({ confidence }: { confidence?: FindingConfidence
   const tooltip = confidence.method === "statistical" ? "1 − adjusted p-value of the correlation test" : "Calibrated on labelled synthetic ground truth";
   return (
     <span data-tooltip={tooltip}>
-      <Badge tone={tone}>CONF {value}%{grade}</Badge>
+      <Badge tone={tone}>{confidence.method === "statistical" ? "1 − adj. p" : "SYN CAL"} {value}%{grade}</Badge>
     </span>
   );
 }

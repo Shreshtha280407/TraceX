@@ -4,6 +4,7 @@
   "definition": "P(the finding is a true laundering-pattern lead | rule, raw score): a finding counts as a true lead when at least half of the transactions it cites are generator-labelled peel_step or coinjoin_like transactions.",
   "fit": "isotonic regression per rule; reliability measured on the time-ordered validation split; shipped map refitted on train + validation; final holdout never read",
   "fixture": {
+    "ingestion_sha256": ["ef3020f84208ba9a6506902a4f3af672d7bcf21269dafd18da37163c0e0375ac", "4fc5810cf8f424e3ae4d5861f8bd2c8f5ffb4acf198f9a37de89016bcb274555", "1430d4b9a42277de8cae42aad3232d2fd451fbf5b92337b0a3b8f44ecf473a1e", "97ff74ddd165ad1addf9ce5b562f707626ddec44a74821ce7e9d9a6dbc159a59"],
     "dataset": "datasets/phase5a_100k",
     "generator_version": "2.0.0",
     "truth_sha256": "7417cdaf35e11090ca03c91ecdc8a6d4b8297c22422a377f1a127fb09c762f3c"

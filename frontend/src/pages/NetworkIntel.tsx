@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
+import { AnalysisStatus } from "../components/AnalysisStatus";
 import { Badge, EmptyState, ErrorBanner, NeoCard, StatTile } from "../components/primitives";
 import { api, ApiError, type NetworkResponse } from "../lib/api";
 
@@ -59,6 +60,7 @@ export function NetworkIntel() {
 
   return (
     <Shell>
+      <AnalysisStatus caseId={caseId} />
       <div className="page-header">
         <div>
           <h1>Network Intelligence</h1>

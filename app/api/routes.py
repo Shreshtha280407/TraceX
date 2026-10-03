@@ -22,7 +22,7 @@ from app.db import get_session
 from app.engine.adapters import SourceParseError, rows_for_source
 from app.engine.chat import ChatTurn, ChatUnavailable, build_finding_context
 from app.engine.chat import ask as ask_chat
-from app.engine.confidence import confidence_for
+from app.engine.confidence import finding_confidence
 from app.engine.findings import refresh_synthetic_seed_proximity
 from app.engine.graph import GraphNodeNotFound, GraphQueryError, query_flow, query_neighbourhood
 from app.events import append_event, event_envelope
@@ -71,7 +71,7 @@ class CaseMemberCreate(BaseModel):
 
 class ReviewCreate(BaseModel):
     expected_finding_version: int = Field(ge=1)
-    disposition: str = Field(pattern="^(open|triaged|dismissed|escalated|needs_data_review)$")
+    disposition: str = Field(pattern="^(open|triaged|confirmed|dismissed|escalated|needs_data_review)$")
     reason: str = Field(min_length=1, max_length=2000)
     counterevidence_refs: list[dict] = Field(default_factory=list, max_length=20)
 
@@ -332,7 +332,7 @@ def get_job(job_id: str, user: User = Depends(current_user), session: Session = 
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     require_case_member(job.case_id, user, session)
-    return job_view(job)
+    return job_view(job, session)
 
 
 @router.get("/evidence/{source_id}/records")
@@ -382,11 +382,13 @@ def get_graph(
     depth: int = Query(default=1, ge=1, le=5),
     node_limit: int = Query(default=200, ge=1, le=1000),
     edge_limit: int = Query(default=500, ge=1, le=3000),
+    cursor: str | None = Query(default=None, max_length=4096),
+    graph_snapshot_id: str | None = Query(default=None, min_length=1, max_length=128),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict:
     require_case_member(case_id, user, session)
-    graph = _latest_graph(session, case_id)
+    graph = _latest_graph(session, case_id, graph_snapshot_id)
     try:
         return query_neighbourhood(
             evidence_root=settings.evidence_root,
@@ -395,6 +397,7 @@ def get_graph(
             depth=depth,
             node_limit=node_limit,
             edge_limit=edge_limit,
+            cursor=cursor,
         )
     except GraphQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -521,7 +524,10 @@ def create_synthetic_review_seed(
     }
 
 
-def finding_view(finding: FindingRecord) -> dict:
+def finding_view(finding: FindingRecord, session=None) -> dict:
+    from sqlalchemy.orm import object_session
+
+    session = session or object_session(finding)
     detector = (finding.feature_vector or {}).get("detector_result", {})
     return {
         "finding_id": finding.id,
@@ -539,7 +545,7 @@ def finding_view(finding: FindingRecord) -> dict:
         "claim": finding.claim,
         "raw_score": finding.raw_score,
         "score": finding.raw_score,
-        "confidence": confidence_for(finding.rule_id, finding.rule_version, finding.raw_score, finding.feature_vector),
+        "confidence": finding_confidence(session, finding),
         "rank": finding.rank,
         "coverage": finding.coverage,
         "uncertainty": detector.get("uncertainty", {"scope": "See coverage and source evidence."}),
@@ -743,9 +749,7 @@ def finding_path_signals(
         "entity_risk": entity_risk,
         "entity_risk_matches": sorted(matches),
         "entity_risk_path_node_count": len(path_nodes),
-        "confidence": confidence_for(
-            finding.rule_id, finding.rule_version, finding.raw_score, finding.feature_vector
-        )["value"],
+        "confidence": finding_confidence(session, finding)["value"],
     }
 
 
@@ -827,6 +831,8 @@ def export_findings(case_id: str, user: User = Depends(current_user), session: S
     return {
         "case_id": case_id,
         "method": methods[0] if len(methods) == 1 else ("mixed" if methods else "none"),
+        "analysis_runs": [job_view(job, session) for job in session.scalars(
+            select(ImportJob).where(ImportJob.case_id == case_id).order_by(ImportJob.created_at, ImportJob.id))],
         "methods": methods,
         "ml_enabled": ml_present,
         "limitations": [

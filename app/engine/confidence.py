@@ -1,28 +1,13 @@
-"""Calibrated confidence for every finding, computed when it is read.
+"""Version matched synthetic calibration and immutable finding provenance.
 
-A finding's `raw_score` is a rule-specific triage score (a peeling-chain score
-in 0..1, a window-rule score in 45..100, a fused anomaly z-score...). It ranks,
-but it is not a probability. The confidence attached here is:
-
-* **calibrated** (rules with labelled evidence): P(true laundering-pattern lead
-  | rule, raw score), an isotonic map fitted per rule on the labelled synthetic
-  fixture (scripts/calibrate_confidence.py -> calibration/confidence-v1.json),
-  with its measured out-of-sample reliability (Brier score, expected
-  calibration error) and a reliability grade;
-* **statistical** (network-correlation rules): 1 - the Bonferroni-adjusted
-  p-value of the concentration test, i.e. confidence that the concentration is
-  not chance under that snapshot's own base rates;
-* plus, for anomaly-stack findings, the label-free `anomaly_p_value` -- the
-  probability that an ordinary transaction from the snapshot's own reference
-  period scores at least this high (one-sided tail of the fused z-score).
-
-Computed at read time, so stored findings and their hashes never change when a
-calibration is refitted, and old cases pick up a new calibration immediately.
+Network statistics and theoretical Gaussian tails are not posterior probabilities.
+Legacy findings without pinned provenance remain explicitly unvalidated.
 """
 
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import math
 from functools import lru_cache
@@ -37,7 +22,10 @@ GOOD_ECE = 0.1
 @lru_cache(maxsize=1)
 def _calibration() -> dict[str, Any]:
     try:
-        return json.loads(CALIBRATION_PATH.read_text(encoding="utf-8"))
+        raw = CALIBRATION_PATH.read_bytes()
+        value = json.loads(raw)
+        value["_registry_sha256"] = hashlib.sha256(raw).hexdigest()
+        return value
     except (OSError, ValueError):
         return {"calibration_id": None, "rules": {}}
 
@@ -71,7 +59,17 @@ def anomaly_p_value(fused_score: float | None) -> float | None:
     return 0.5 * math.erfc(fused_score / math.sqrt(2.0))
 
 
-def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_vector: dict | None) -> dict[str, Any]:
+TARGET = "synthetic-pattern-majority-v1"
+
+
+def feature_contract(rule_version):
+    if rule_version.startswith("anomaly-stack-"):
+        return rule_version
+    return "phase4.1-feature-v1" if rule_version == "deterministic-v1" else rule_version
+
+
+def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_vector: dict | None,
+                   *, contract: str | None = None, target: str = TARGET, applicable: bool = True) -> dict[str, Any]:
     feature_vector = feature_vector or {}
     calibration = _calibration()
     if rule_version == "network-correlation-v1":
@@ -80,8 +78,12 @@ def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_ve
             return {
                 "value": round(max(0.0, min(1.0, 1.0 - float(adjusted))), 6),
                 "method": "statistical",
-                "basis": "1 - Bonferroni-adjusted binomial p-value of the relay concentration in this snapshot",
+                "basis": "1 - Bonferroni-adjusted binomial p-value; a transformed test statistic",
                 "grade": "statistical",
+                "adjusted_p_value": float(adjusted),
+                "null_hypothesis": "independent relay observations follow the snapshot's endpoint base rates",
+                "test_count": feature_vector.get("test_count", feature_vector.get("tests")),
+                "limitations": "A transformed hypothesis-test statistic; not wallet ownership or a posterior probability.",
             }
         observations = feature_vector.get("observations")
         return {
@@ -91,11 +93,17 @@ def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_ve
                      "observation(s); a data-consistency check, not a probability",
             "grade": "not_applicable",
         }
-    entry = calibration.get("rules", {}).get(rule_id)
+    contract = contract or feature_contract(rule_version)
+    key = f"{rule_id}|{rule_version}|{contract}|{target}"
+    entry = calibration.get("rules", {}).get(key, calibration.get("rules", {}).get(rule_id))
+    if entry and (entry.get("rule_version") != rule_version or
+                  entry.get("feature_contract", feature_contract(entry.get("rule_version", ""))) != contract or
+                  entry.get("target_definition", TARGET) != target or not applicable):
+        entry = None
     result: dict[str, Any]
     if entry is None:
         result = {"value": None, "method": "uncalibrated", "grade": "unvalidated",
-                  "basis": "no labelled evidence is available for this rule yet; rank by raw score only"}
+                  "basis": "no applicable version-matched calibration; rank by raw score only"}
     else:
         if entry.get("method") == "isotonic":
             value = _interpolate(entry["x"], entry["y"], float(raw_score))
@@ -106,7 +114,7 @@ def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_ve
             "value": round(value, 6),
             "method": "calibrated",
             "calibration_id": calibration.get("calibration_id"),
-            "basis": calibration.get("definition"),
+            "basis": "Synthetic benchmark calibration: " + str(calibration.get("definition")),
             "grade": _grade(entry),
             "rule_base_rate": entry.get("base_rate"),
             "reliability": {
@@ -114,10 +122,59 @@ def confidence_for(rule_id: str, rule_version: str, raw_score: float, feature_ve
                 if key in validation
             },
         }
+        result.update({"calibration_sha256": calibration.get("_registry_sha256") or hashlib.sha256(
+            json.dumps(calibration, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "registry_key": [rule_id, rule_version, contract, target],
+            "training_provenance": calibration.get("fixture"), "split_policy": calibration.get("fit"),
+            "applicability_domain": "labelled synthetic fixture; not probability of real-world criminality"})
     if rule_version.startswith("anomaly-stack-"):
         p_value = anomaly_p_value(feature_vector.get("fused_score", raw_score))
         result["anomaly_p_value"] = p_value
+        result["anomaly_tail_basis"] = "theoretical Gaussian upper tail; fused dependence/distribution not validated"
         network = feature_vector.get("network_context") or {}
         if network:
             result["network_corroboration"] = network.get("score")
     return result
+
+
+def pin_snapshot_confidence(session, snapshot_id):
+    from sqlalchemy import exists, insert, select
+
+    from app.models import Case, EvidenceSource, FindingConfidence, FindingRecord, ImportJob, Snapshot
+
+    session.flush()
+    snapshot = session.get(Snapshot, snapshot_id)
+    if snapshot is None:
+        raise ValueError("snapshot missing while pinning confidence")
+    job = session.get(ImportJob, snapshot.job_id)
+    source = session.get(EvidenceSource, job.source_id) if job else None
+    case = session.get(Case, snapshot.case_id)
+    known_sources = _calibration().get("fixture", {}).get("ingestion_sha256", [])
+    applicable = bool(case and case.synthetic and source and source.sha256 in known_sources)
+    # Narrow projection and Core inserts keep a fixed batch resident. Do not
+    # commit here: findings and their original provenance must commit together.
+    findings = session.execute(select(FindingRecord.id, FindingRecord.case_id, FindingRecord.rule_id,
+        FindingRecord.rule_version, FindingRecord.raw_score, FindingRecord.feature_vector).where(
+        FindingRecord.snapshot_id == snapshot_id,
+        # NOT IN can materialize the entire pin table and scan it again for
+        # every finding once PostgreSQL's work_mem hash threshold is crossed.
+        # finding_id is a non-null primary key, so this correlated anti-join
+        # selects exactly the same unpinned rows without that quadratic plan.
+        ~exists().where(FindingConfidence.finding_id == FindingRecord.id)).execution_options(yield_per=256))
+    for batch in findings.partitions(256):
+        session.execute(insert(FindingConfidence.__table__), [
+            {"finding_id": finding.id, "case_id": finding.case_id,
+             "provenance": confidence_for(finding.rule_id, finding.rule_version, finding.raw_score,
+                                          finding.feature_vector, applicable=applicable)}
+            for finding in batch])
+    session.flush()
+
+
+def finding_confidence(session, finding):
+    from app.models import FindingConfidence
+
+    pinned = session.get(FindingConfidence, finding.id)
+    if pinned is not None:
+        return pinned.provenance
+    return {"value": None, "method": "uncalibrated", "grade": "unvalidated",
+            "basis": "legacy finding: original calibration provenance unknown"}

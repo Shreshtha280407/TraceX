@@ -5,11 +5,14 @@ import { NeoCard, Badge, ErrorBanner, NoticeBanner } from "../components/primiti
 import { Modal } from "../components/Modal";
 import { RecordPreview } from "../components/RecordPreview";
 import { ChatPanel } from "../components/ChatPanel";
+import { AnalysisStatus } from "../components/AnalysisStatus";
+import { GraphContinuation } from "../components/GraphContinuation";
 import { api, ApiError, type FindingEvidence } from "../lib/api";
 import { recordReview } from "../lib/sessionStats";
 import "./EvidencePackage.css";
 
-const DISPOSITIONS: { id: "escalated" | "dismissed" | "needs_data_review"; label: string }[] = [
+const DISPOSITIONS: { id: "confirmed" | "escalated" | "dismissed" | "needs_data_review"; label: string }[] = [
+  { id: "confirmed", label: "Confirm Pattern" },
   { id: "escalated", label: "Escalate for Investigation" },
   { id: "dismissed", label: "Dismiss" },
   { id: "needs_data_review", label: "Needs More Evidence" },
@@ -183,6 +186,7 @@ export function EvidencePackage() {
 
   return (
     <Shell>
+      <AnalysisStatus caseId={evidence.finding.case_id} />
       <div className="evidence-header">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <span className="back-link" onClick={() => navigate(-1)}>← Back</span>
@@ -420,6 +424,7 @@ export function EvidencePackage() {
         <div>
           <NeoCard variant="neo-sm">
             <h2>Review Decision</h2>
+            <p className="coverage-note">Confirm only this finding's pattern proposition, not criminality, ownership or every associated transaction. Escalation is not confirmation.</p>
             <div className="review-buttons">
               {DISPOSITIONS.map((option) => (
                 <button
@@ -505,6 +510,8 @@ export function EvidencePackage() {
           </NeoCard>
         </div>
       </div>
+
+      <GraphContinuation caseId={finding.case_id} seed={finding.entity_ref} graphSnapshotId={finding.graph_snapshot_id} />
 
       <Modal
         open={!!fullscreenRecord}

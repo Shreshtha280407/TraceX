@@ -1,5 +1,28 @@
 # TraceX anomaly stack
 
+Current production baseline (2026-10-03): `anomaly-stack-v2`, global Isolation
+Forest scoring plus D burst and equal-weight Stouffer fusion. B/C/E and the
+supervised E1–E7 grid are research comparators, not automatic production
+features. ECOD values are descriptive feature-tail context, not attribution
+of the IF or fused score. The first 20 ranked findings additionally expose
+reference-median perturbations of the exact raw global IF score, explicitly
+not causal explanations or valid counterfactual transactions. The containing
+bucket D score is retrospective; reference rows are labelled in-sample.
+
+The 99th-reference-percentile threshold does not cap the final queue to 1%.
+`/review-queue` applies a distinct-transaction top-K/fraction cap separately,
+with floor rounding, lexical ties, explicit denominator and no unflagged fill.
+Calibration is pinned per finding and version/feature-contract/target; its
+synthetic applicability is narrow. Network `1-adjusted-p` is a statistic, not
+a posterior probability. Analyst review concerns a finding proposition, not
+criminality or all transactions associated with it; triage is not confirmation.
+Synthetic model superiority cannot by itself authorize a production release.
+
+The current controlled E1–E7 development study and exclusively reserved finals
+are recorded in `experiments/model_decision_review_20261003.md`. XGBoost wins
+the synthetic validation selection but remains research-only; v2 is retained.
+The older numerical tables below are historical, not newly reserved evidence.
+
 Six scoring layers over four grains, fused into one ranked review queue, plus an
 ablation harness that runs every layer alone and every combination against the
 deterministic Phase 4.1 rule so the best combination is chosen from measurements
@@ -50,9 +73,10 @@ the ~77% of rows that are ordinary single receipts.
 
 Layer S is the only one that reads labels, and it is opt-in (`--with-supervised`).
 On this fixture its labels are the generator's own shape families, which is close
-to circular for the motif task and genuinely informative for discrimination. In
-production the non-circular label source is the reviewer decisions already
-recorded through `POST /v1/findings/{id}/reviews`.
+to circular for the motif task and informative for discrimination only within
+that synthetic population. Production labels require explicitly confirmed or
+dismissed propositions with version/cutoff/source/feature provenance. Triage is
+unlabelled; reviewing only high-ranked alerts does not resolve selection bias.
 
 ## The three evaluation tasks
 
@@ -124,12 +148,14 @@ exist to learn from.
 - **Layer B and E add little on their own** and mostly help by widening recall at
   the budget. Keep them only if that trade is worth it for your queue.
 
-## Strict causality
+## Causal research features, not an online v2 claim
 
-Every feature for transaction `t` uses only facts timestamped at or before
-`tx_time[t]`. This is a deployability constraint before it is a correctness one:
-when a case is scored, the transaction has just been observed, and a feature that
-needs the future cannot be computed at all.
+The research extension uses facts available at each transaction's cutoff and
+strictly earlier history; no final-snapshot clusters enter it. Its D feature is
+the last completed bucket with a fixed initial prior. The frozen production v2
+D feature instead includes the containing bucket and an initial multi-bucket
+baseline: it is retrospective. Fitting on an early portion of a completed
+snapshot is not an online forecast for those reference rows.
 
 An audit found three classes of future leak and removed them:
 
@@ -147,10 +173,10 @@ fitted on reference rows, so scoring one transaction gives the same number as
 scoring it inside a batch — a transductive whole-dataset rank could not be
 reproduced by a deployed scorer.
 
-**This is proved, not asserted.** `app.ml.facts.truncate_facts` rebuilds the
-snapshot as it looked at time T, and the property tests assert that every feature
-for transactions at or before T is bit-identical to the full run. One
-future-reading column makes them fail.
+`app.ml.facts.truncate_facts` rebuilds a cutoff snapshot. Existing grain tests
+and `tests/unit/test_research_contract.py` verify cutoff invariance for the
+tested causal features, including equal-time peers and country vocabulary.
+They do not certify retrospective v2 D or arbitrary future feature additions.
 
 Measured effect of the fix on the final holdout: the leaks were *noise*, not
 signal. Removing them left the supervised result unchanged (-0.001 AP) and
@@ -188,7 +214,12 @@ could not produce a score, so every outcome is recorded and none of them raise:
 | `no_rows_flagged` | the stack ran; nothing cleared the budget |
 | `unavailable` | the optional `ml` extra is not installed |
 | `disabled` | `TRACEX_ML_FINDINGS=0` |
-| `error:<Type>` | the stack raised; the import still completed |
+| `failed` / historical `error:<Type>` | the stack raised; imported evidence remains committed, overall analysis is degraded and strict benchmark acceptance fails |
+
+Persistent `AnalysisStage` outcomes additionally distinguish insufficient data,
+missing dependencies, unavailable Geo-IP and incomplete network coverage. The
+case-authorized retry endpoint reruns failed derived work without re-importing
+receipted facts; explicit analytics refresh creates an immutable revision.
 
 Two settings control it: `TRACEX_ML_FINDINGS` (default on) and
 `TRACEX_ML_REVIEW_BUDGET` (default `0.01`).
@@ -218,6 +249,9 @@ Enforced by `tests/unit/test_anomaly_stack.py`, not by convention:
   for the two split-boundary timestamps). No label reaches a feature table.
 
 ## Cost
+
+The table below is a historical standalone unsupervised study, not current
+HTTP/worker end-to-end timing. See `scale.md` for all mandatory stages.
 
 100K transactions on a 12-thread i5 with 15 GiB, `TRACEX_ML_THREADS=4`:
 

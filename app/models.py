@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -99,6 +99,42 @@ class ImportCheckpoint(Base):
     rows_quarantined: Mapped[int] = mapped_column(Integer)
     parser_revision: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalysisStage(Base):
+    __tablename__ = "analysis_stages"
+    __table_args__ = (UniqueConstraint("job_id", "name", "attempt", name="uq_job_stage_attempt"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("import_jobs.id", ondelete="CASCADE"), index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    attempt: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class FindingConfidence(Base):
+    """Write-once explanation provenance; never alters a finding's evidence hash."""
+    __tablename__ = "finding_confidence"
+    finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id", ondelete="CASCADE"), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    provenance: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AddressActivity(Base):
+    """Provisional address participation, committed with the fragment receipts."""
+    __tablename__ = "address_activity"
+    job_id: Mapped[str] = mapped_column(ForeignKey("import_jobs.id", ondelete="CASCADE"), primary_key=True)
+    address: Mapped[str] = mapped_column(String(512), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    transactions: Mapped[int] = mapped_column(Integer)
+    participations: Mapped[int] = mapped_column(Integer)
+    last_batch: Mapped[int] = mapped_column(Integer)
 
 
 class Snapshot(Base):
@@ -307,6 +343,34 @@ class AnalyticsSnapshot(Base):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     state: Mapped[str] = mapped_column(String(32), default="complete")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalyticsRevision(Base):
+    """Append-only recomputation; the original analytics receipt stays immutable."""
+
+    __tablename__ = "analytics_revisions"
+    __table_args__ = (UniqueConstraint("snapshot_id", "revision", name="uq_analytics_revision"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    graph_snapshot_id: Mapped[str] = mapped_column(ForeignKey("graph_snapshots.id", ondelete="CASCADE"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    storage_relative_path: Mapped[str] = mapped_column(String(1024), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    analytics_version: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(32), default="complete")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalysisRequest(Base):
+    """Durable refresh intent that survives failed/reclaimed worker attempts."""
+
+    __tablename__ = "analysis_requests"
+    job_id: Mapped[str] = mapped_column(ForeignKey("import_jobs.id", ondelete="CASCADE"), primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
+    refresh_analytics: Mapped[bool] = mapped_column(Boolean, default=False)
+    fulfilled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class RiskSeed(Base):

@@ -12,12 +12,12 @@ from app.auth.dependencies import current_user, require_case_member
 from app.config import settings
 from app.db import get_session
 from app.engine import analytics, geoip
-from app.models import AnalyticsSnapshot, AuditRecord, FindingRecord, RiskRun, RiskSeed, User
+from app.models import AnalyticsRevision, AnalyticsSnapshot, AuditRecord, FindingRecord, RiskRun, RiskSeed, User
 
 router = APIRouter(prefix="/v1")
 
 
-def _analytics(session: Session, case_id: str) -> AnalyticsSnapshot:
+def _analytics(session: Session, case_id: str) -> AnalyticsSnapshot | AnalyticsRevision:
     record = analytics.latest_analytics(session, case_id)
     if record is None:
         raise HTTPException(
@@ -28,10 +28,16 @@ def _analytics(session: Session, case_id: str) -> AnalyticsSnapshot:
 
 
 def _latest_risk(session: Session, case_id: str, snapshot_id: str) -> RiskRun | None:
-    return session.scalar(
+    run = session.scalar(
         select(RiskRun).where(RiskRun.case_id == case_id, RiskRun.snapshot_id == snapshot_id)
         .order_by(RiskRun.created_at.desc()).limit(1)
     )
+    record = analytics.latest_analytics(session, case_id, snapshot_id)
+    if run and record:
+        pinned_id = run.parameters.get("analytics_snapshot_id")
+        if pinned_id != record.id and (pinned_id or isinstance(record, AnalyticsRevision)):
+            return None  # Old runs remain stored, but cannot masquerade as current.
+    return run
 
 
 def risk_lookup(session: Session, case_id: str, snapshot_id: str) -> dict[str, dict]:

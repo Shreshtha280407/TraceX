@@ -108,17 +108,23 @@ def _materialize_ml_findings(session, *, settings, snapshot, graph, records=None
             records=records, store=store,
         )
     except Exception as error:  # noqa: BLE001 - a ranking failure must not lose the import
+        session.rollback()
         logger.warning("anomaly stack did not run for snapshot %s: %s", snapshot.id, error)
-        return {"written": 0, "status": f"error:{type(error).__name__}"}
+        return {"written": 0, "status": "failed", "legacy_status": f"error:{type(error).__name__}",
+                "reason": f"{type(error).__name__}: {str(error)[:1000]}"}
     return {
         "written": result.written,
-        "status": "written" if result.written else "no_rows_flagged",
+        "status": "insufficient_data" if result.scored_transactions < 50
+                  else "written" if result.written else "no_rows_flagged",
+        "scored_transactions": result.scored_transactions,
+        "threshold_flagged": result.flagged,
         "model_run_id": result.model_run_id,
         "release_id": result.release_id,
+        "global_memory_estimate_bytes": getattr(store, "ml_memory_estimate_bytes", None),
     }
 
 
-def _materialize_analytics(session, *, settings, snapshot, graph, records=None, store=None) -> dict[str, object]:
+def _materialize_analytics(session, *, settings, snapshot, graph, records=None, store=None, refresh=False) -> dict[str, object]:
     """Entity clusters, Geo-IP enrichment, network correlation, embeddings.
 
     Non-fatal for the same reason as the anomaly stack: the evidence, graph and
@@ -130,17 +136,19 @@ def _materialize_analytics(session, *, settings, snapshot, graph, records=None, 
 
         result = build_analytics(
             session, evidence_root=settings.evidence_root, snapshot=snapshot, graph=graph, records=records,
-            store=store,
+            store=store, refresh=refresh,
         )
     except Exception as error:
         session.rollback()
         logger.warning("analytics did not run for snapshot %s: %s", snapshot.id, error, exc_info=True)
-        return {"status": f"error:{type(error).__name__}", "network_findings": 0}
+        return {"status": "failed", "reason": f"{type(error).__name__}: {str(error)[:1000]}", "network_findings": 0}
     return {
         "status": "complete",
         "analytics_snapshot_id": result.analytics_snapshot_id,
         "network_findings": result.network_finding_count,
         "entity_count": result.summary.get("entity_count"),
+        "geoip_installed": result.summary.get("geoip_installed", False),
+        "summary": result.summary,
     }
 
 
@@ -236,6 +244,32 @@ def _commit_batch(
         canonical=canonical,
     )
     snapshot = _snapshot_for_job(session, job, source)
+    from app.models import AddressActivity
+
+    activity = {}
+    for kind in ("inputs", "outputs"):
+        for fact in facts[kind]:
+            address = fact.get("address")
+            if address:
+                txs, count = activity.get(address, (set(), 0))
+                txs.add(fact["txid"])
+                activity[address] = txs, count + 1
+    if activity:
+        dialect = session.bind.dialect.name
+        if dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as upsert
+        elif dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as upsert
+        else:
+            raise RuntimeError("provisional activity requires SQLite or PostgreSQL")
+        statement = upsert(AddressActivity)
+        statement = statement.on_conflict_do_update(index_elements=["job_id", "address"], set_={
+            "transactions": AddressActivity.transactions + statement.excluded.transactions,
+            "participations": AddressActivity.participations + statement.excluded.participations,
+            "last_batch": statement.excluded.last_batch})
+        session.execute(statement, [{"job_id": job.id, "case_id": job.case_id, "address": address,
+            "transactions": len(txs), "participations": count, "last_batch": batch_number}
+            for address, (txs, count) in sorted(activity.items())])
     for artifact in artifacts:
         receipt = session.scalar(
             select(FragmentReceipt).where(
@@ -295,6 +329,7 @@ def _commit_batch(
             "rows_quarantined": job.rows_quarantined,
             "provisional": True,
             "fragments": len(artifacts),
+            "provisional_addresses_in_batch": len(activity),
         },
     )
     session.commit()
@@ -302,8 +337,26 @@ def _commit_batch(
 
 def ingest_source(session: Session, *, settings: Settings, job: ImportJob, source: EvidenceSource) -> None:
     """Resume at the last committed source record; unreceipted files remain invisible orphans."""
+    if job.state == "completed":
+        return
     source_path = resolve_source(settings.evidence_root, source.storage_relative_path)
     last_record = _last_checkpoint(session, job.id)
+    from app.jobs.analysis import SUCCESS, StageTracker, analysis_view, stage_rows
+
+    prior_stages = {row.name: row for row in stage_rows(session, job.id)}
+    from app.engine import geoip
+    from app.engine.analytics import latest_analytics
+    from app.models import AnalysisRequest
+
+    refresh_requests = list(session.scalars(select(AnalysisRequest).where(
+        AnalysisRequest.job_id == job.id, AnalysisRequest.attempt <= job.attempt,
+        AnalysisRequest.refresh_analytics.is_(True), AnalysisRequest.fulfilled.is_(False))))
+    prior_analytics = latest_analytics(session, job.case_id, job.snapshot_id) if job.snapshot_id else None
+    refresh_analytics = bool(refresh_requests) or bool(
+        prior_analytics and not prior_analytics.summary.get("geoip_installed") and geoip.status().get("installed"))
+    ingestion_done = prior_stages.get("ingesting") is not None and prior_stages["ingesting"].status in SUCCESS
+    tracker = StageTracker(session, job)
+    tracker.start("ingesting", reuse_completed=ingestion_done)
     job.state = "running"
     job.stage = "ingesting"
     source.parser_revision = PARSER_REVISION
@@ -317,16 +370,21 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     # configured size, so a well-provisioned host keeps the shipped default).
     plan = current_plan()
     batch_records = plan.ingestion_batch_records(settings.ingestion_batch_records)
+    parse_workers = plan.worker_processes(records=job.total_records)
+    # Several normalized batches and their source rows coexist in the ordered
+    # process window. Divide the batch allowance across those live copies.
+    if parse_workers > 1:
+        batch_records = max(2048, batch_records // (parse_workers + 1))
     # Continue after the highest committed batch rather than dividing by the
     # batch size: a resumed attempt may run with a different size.
     last_batch = session.scalar(select(func.max(FragmentReceipt.logical_batch)).where(FragmentReceipt.job_id == job.id))
     batch_number = 0 if last_record == 0 or last_batch is None else last_batch + 1
-    row_iterator = rows_for_source(source_path, source.source_format)
+    row_iterator = iter(()) if ingestion_done else rows_for_source(source_path, source.source_format)
     # Binary txid -> 16-byte digest of the first source variant: about half the
     # memory of hex-string keys and values, which matters at millions of rows.
     seen_txids: dict[bytes, bytes | None] = {
         bytes.fromhex(txid): None
-        for txid in _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id)
+        for txid in (() if ingestion_done else _committed_txids(session, evidence_root=settings.evidence_root, job_id=job.id))
     }
     # On a fresh (non-resumed) run every receipted fact is produced right here,
     # so the later stages can take them from memory instead of re-reading and
@@ -350,7 +408,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     # source order, exactly as the in-process loop does.
     batches = _normalized_batches(
         _chunks((row for row in row_iterator if row.logical_record > last_record), batch_records),
-        workers=plan.worker_processes(records=job.total_records),
+        workers=parse_workers,
         case_id=job.case_id, source_id=source.id, source_sha256=source.sha256,
     )
     for batch, outcomes in batches:
@@ -425,9 +483,24 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     # nothing change for the whole back half and looked hung. Each stage is now
     # committed as it starts, which is what the intake page reports live.
     def _stage(name: str) -> None:
+        from app.engine.confidence import pin_snapshot_confidence
+
+        if tracker.row is not None and tracker.row.name == "findings":
+            pin_snapshot_confidence(session, snapshot.id)
         job.stage = name
         job.lease_expires_at = utcnow() + timedelta(seconds=settings.lease_seconds)
         session.commit()
+        tracker.start(name, reuse_completed=name != "analytics" or not refresh_analytics)
+
+    def _ml_done(result):
+        from app.engine.confidence import pin_snapshot_confidence
+
+        pin_snapshot_confidence(session, snapshot.id)
+        tracker.finish(status=result["status"], reason=result.get("reason", result["status"] if result["status"]
+                       not in {"written", "no_rows_flagged"} else None), details=result)
+
+    tracker.finish(details={"rows_seen": job.rows_seen, "rows_accepted": job.rows_accepted,
+                            "rows_quarantined": job.rows_quarantined})
 
     snapshot = _snapshot_for_job(session, job, source)
     snapshot.state = "graph_building"
@@ -449,12 +522,14 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
         )
         _stage("ml_scoring")
         ml_result = _materialize_ml_findings(
-            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
+            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records,
         )
         session.commit()
+        _ml_done(ml_result)
         _stage("analytics")
         analytics_result = _materialize_analytics(
-            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records
+            session, settings=settings, snapshot=snapshot, graph=graph_record, records=records,
+            refresh=refresh_analytics,
         )
         del records
     else:
@@ -472,13 +547,41 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             )
             _stage("ml_scoring")
             ml_result = _materialize_ml_findings(
-                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store
+                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store,
             )
             session.commit()
+            _ml_done(ml_result)
             _stage("analytics")
             analytics_result = _materialize_analytics(
-                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store
+                session, settings=settings, snapshot=snapshot, graph=graph_record, store=store,
+                refresh=refresh_analytics,
             )
+    if analytics_result["status"] == "complete":
+        for request in refresh_requests:
+            request.fulfilled = True
+    # Publish the revision, completion of its durable request and stage outcome
+    # in one transaction. A killed/failed attempt leaves the intent pending.
+    tracker.finish(status=analytics_result["status"], reason=analytics_result.get("reason"), details=analytics_result)
+    if analytics_result["status"] == "complete":
+        tracker.start("geoip", reuse_completed=not refresh_analytics)
+        tracker.finish(status="complete" if analytics_result.get("geoip_installed") else "unavailable",
+                       reason=None if analytics_result.get("geoip_installed") else "offline Geo-IP database missing",
+                       details={"installed": bool(analytics_result.get("geoip_installed"))})
+        summary = analytics_result.get("summary", {})
+        tracker.start("network_coverage", reuse_completed=not refresh_analytics)
+        observed = int(summary.get("observed_transactions", 0))
+        tracker.finish(status="complete" if observed >= job.rows_accepted else "incomplete",
+                       reason=None if observed >= job.rows_accepted else "network metadata unavailable for some transactions",
+                       details={"observed_transactions": observed, "canonical_transactions": job.rows_accepted})
+        tracker.start("embeddings", reuse_completed=not refresh_analytics)
+        embedding_status = summary.get("embedding_status", "missing")
+        tracker.finish(status="complete" if embedding_status == "complete" else
+                       "no_rows_flagged" if embedding_status == "no wallet active in two transactions" else "unavailable",
+                       reason=None if embedding_status == "complete" else embedding_status,
+                       details={"embedded_wallets": summary.get("embedded_wallets", 0)})
+    from app.engine.confidence import pin_snapshot_confidence
+
+    pin_snapshot_confidence(session, snapshot.id)
     snapshot.provisional = False
     snapshot.state = "complete"
     snapshot.completed_at = utcnow()
@@ -502,7 +605,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "graph_snapshot_id": graph.graph_snapshot_id,
             "finding_count": finding_count,
             "ml_finding_count": ml_result["written"],
-            "ml_status": ml_result["status"],
+            "ml_status": ml_result.get("legacy_status", ml_result["status"]),
             "ml_model_run_id": ml_result.get("model_run_id"),
             "ml_release_id": ml_result.get("release_id"),
             "execution_mode": execution_mode,
@@ -512,6 +615,7 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
             "network_finding_count": analytics_result.get("network_findings", 0),
             "entity_count": analytics_result.get("entity_count"),
             "provisional": False,
+            "analysis": analysis_view(session, job),
         },
     )
     session.commit()

@@ -1,0 +1,7 @@
+{
+  "transactions": 100000,
+  "inputs": 146484,
+  "outputs": 262338,
+  "network_observations": 100000,
+  "quarantine": 25
+}

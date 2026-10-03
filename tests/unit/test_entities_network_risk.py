@@ -182,6 +182,53 @@ def test_binomial_tail() -> None:
     assert analytics.binomial_tail(3, 5, 0.5) == pytest.approx(0.5)
 
 
+def test_refresh_preserves_network_finding_reviews_and_pinned_provenance(analytics_case):
+    from sqlalchemy import select
+
+    from app.models import FindingConfidence, FindingRecord, ImportJob
+
+    client, headers, case_id = analytics_case
+    with runner.SessionLocal() as session:
+        job = session.scalar(select(ImportJob).where(ImportJob.case_id == case_id))
+        findings = list(session.scalars(select(FindingRecord).where(
+            FindingRecord.snapshot_id == job.snapshot_id, FindingRecord.rule_version == analytics.NETWORK_RULE_VERSION)))
+        assert findings
+        findings[0].status = "triaged"
+        session.commit()
+        before = {f.id: (f.status, f.feature_vector_hash, session.get(FindingConfidence, f.id).provenance) for f in findings}
+    response = client.post(f"/v1/cases/{case_id}/analysis/retry?job_id={job.id}&recompute_analytics=true", headers=headers)
+    assert response.status_code == 202, response.text
+    assert runner.process_one("network-refresh")
+    with runner.SessionLocal() as session:
+        findings = list(session.scalars(select(FindingRecord).where(
+            FindingRecord.snapshot_id == job.snapshot_id, FindingRecord.rule_version == analytics.NETWORK_RULE_VERSION)))
+        after = {f.id: (f.status, f.feature_vector_hash, session.get(FindingConfidence, f.id).provenance) for f in findings}
+        assert after == before
+        record = analytics.latest_analytics(session, case_id)
+        assert record.summary["revision"] == 1 and record.summary["new_network_findings"] == 0
+
+
+def test_refresh_does_not_present_old_risk_as_current(analytics_case):
+    from sqlalchemy import select
+
+    from app.models import ImportJob
+
+    client, headers, case_id = analytics_case
+    response = client.post(f"/v1/cases/{case_id}/risk/seeds", headers=headers,
+                           json={"wallet_ref": "bcrt1qwalleta1", "reason": "test seed"})
+    assert response.status_code == 201
+    prior = client.get(f"/v1/cases/{case_id}/risk", headers=headers).json()["run"]
+    assert prior and prior["parameters"]["analytics_sha256"]
+    with runner.SessionLocal() as session:
+        job = session.scalar(select(ImportJob).where(ImportJob.case_id == case_id))
+    assert client.post(f"/v1/cases/{case_id}/analysis/retry?job_id={job.id}&recompute_analytics=true",
+                       headers=headers).status_code == 202
+    assert runner.process_one("risk-refresh")
+    assert client.get(f"/v1/cases/{case_id}/risk", headers=headers).json()["run"] is None
+    new = client.post(f"/v1/cases/{case_id}/risk/run", headers=headers).json()
+    assert new["parameters"]["analytics_snapshot_id"] != prior["parameters"]["analytics_snapshot_id"]
+
+
 def test_common_input_ownership_clusters_and_skips_coinjoin(analytics_case) -> None:
     client, headers, case_id = analytics_case
     page = client.get(f"/v1/cases/{case_id}/entities", headers=headers).json()

@@ -60,8 +60,8 @@ from app.engine import geoip
 from app.engine.findings.deterministic import _time
 from app.engine.graph.builder import duckdb_config
 from app.events import append_event
-from app.models import AnalyticsSnapshot, FindingRecord, GraphSnapshot, RiskRun, RiskSeed, Snapshot
-from app.resources import current_plan
+from app.models import AnalyticsRevision, AnalyticsSnapshot, FindingRecord, GraphSnapshot, RiskRun, RiskSeed, Snapshot
+from app.resources import admit_global_allocation, current_plan
 
 logger = logging.getLogger(__name__)
 
@@ -186,15 +186,14 @@ def _views_over_store(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("CREATE OR REPLACE TEMP VIEW a_out AS SELECT txid, vout, addr_key, amount FROM outputs")
     con.execute(
         "CREATE OR REPLACE TEMP VIEW a_in AS SELECT txid, vin, prev_txid, prev_vout, NULLIF(address, '') AS address, "
-        "TRY_CAST(j ->> '$.amount_sats' AS BIGINT) AS amount FROM inputs"
+        "amount FROM inputs"
     )
     con.execute(
         """
         CREATE OR REPLACE TEMP VIEW a_obs AS SELECT
-            NULLIF(j ->> '$.txid', '') AS txid, NULLIF(j ->> '$.src_ip', '') AS src_ip,
-            NULLIF(j ->> '$.dst_ip', '') AS dst_ip, TRY_CAST(j ->> '$.src_port' AS BIGINT) AS src_port,
-            TRY_CAST(j ->> '$.dst_port' AS BIGINT) AS dst_port, NULLIF(j ->> '$.geo_country', '') AS geo_country,
-            NULLIF(j ->> '$.asn', '') AS asn, NULL::BIGINT AS observed_us
+            NULLIF(txid, '') AS txid, NULLIF(src_ip, '') AS src_ip,
+            NULLIF(dst_ip, '') AS dst_ip, src_port, dst_port, NULLIF(geo_country, '') AS geo_country,
+            NULLIF(asn, '') AS asn, NULL::BIGINT AS observed_us
         FROM observations
         """
     )
@@ -205,7 +204,7 @@ def _store_block_times(con: duckdb.DuckDBPyConnection) -> None:
     `_time()` as the in-memory path (only for rows that carry them)."""
     con.execute("CREATE OR REPLACE TABLE obs_time (seq BIGINT, observed_us BIGINT)")
     reader = con.execute(
-        "SELECT seq, j ->> '$.observer_received_at' FROM observations WHERE j ->> '$.observer_received_at' IS NOT NULL"
+        "SELECT seq, observer_received_at FROM observations WHERE observer_received_at IS NOT NULL"
     ).to_arrow_reader(50_000)
     write = con.cursor()
     for batch in reader:
@@ -218,10 +217,9 @@ def _store_block_times(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         CREATE OR REPLACE TABLE a_obs AS SELECT
-            NULLIF(o.j ->> '$.txid', '') AS txid, NULLIF(o.j ->> '$.src_ip', '') AS src_ip,
-            NULLIF(o.j ->> '$.dst_ip', '') AS dst_ip, TRY_CAST(o.j ->> '$.src_port' AS BIGINT) AS src_port,
-            TRY_CAST(o.j ->> '$.dst_port' AS BIGINT) AS dst_port, NULLIF(o.j ->> '$.geo_country', '') AS geo_country,
-            NULLIF(o.j ->> '$.asn', '') AS asn, ot.observed_us
+            NULLIF(o.txid, '') AS txid, NULLIF(o.src_ip, '') AS src_ip,
+            NULLIF(o.dst_ip, '') AS dst_ip, o.src_port, o.dst_port, NULLIF(o.geo_country, '') AS geo_country,
+            NULLIF(o.asn, '') AS asn, ot.observed_us
         FROM observations o LEFT JOIN obs_time ot USING (seq)
         """
     )
@@ -243,6 +241,27 @@ def _store_block_times(con: duckdb.DuckDBPyConnection) -> None:
 # --------------------------------------------------------------------------- #
 # Union-find
 # --------------------------------------------------------------------------- #
+
+
+def _numeric_columns(con, sql: str, *, dtypes=None):
+    """Stream Arrow batches into one admitted numeric allocation, never read_all."""
+    count = con.execute(f"SELECT count(*) FROM ({sql}) q").fetchone()[0]
+    reader = con.execute(sql).to_arrow_reader(20_000)
+    try:
+        import numpy as np
+    except ImportError:
+        values = [[] for _ in reader.schema]
+        for batch in reader:
+            for target, column in zip(values, batch.columns, strict=True):
+                target.extend(column.to_pylist())
+        return values
+    values = [np.empty(count, dtype=dtype) for dtype in (dtypes or [np.int64] * len(reader.schema))]
+    offset = 0
+    for batch in reader:
+        for target, column in zip(values, batch.columns, strict=True):
+            target[offset:offset + batch.num_rows] = column.to_numpy(zero_copy_only=False)
+        offset += batch.num_rows
+    return values
 
 
 def _components(count: int, roots: list[int] | Any, members: list[int] | Any) -> list[int] | Any:
@@ -325,9 +344,10 @@ def build_analytics(
     records: dict[str, list[dict]] | None = None,
     store=None,
     geoip_dir: Path | None = None,
+    refresh: bool = False,
 ) -> AnalyticsResult:
-    existing = session.scalar(select(AnalyticsSnapshot).where(AnalyticsSnapshot.snapshot_id == snapshot.id))
-    if existing:
+    existing = latest_analytics(session, snapshot.case_id, snapshot.id)
+    if existing and not refresh:
         count = session.scalar(
             select(func.count()).select_from(FindingRecord).where(
                 FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == NETWORK_RULE_VERSION
@@ -339,7 +359,11 @@ def build_analytics(
 
         records = load_facts(session, evidence_root, snapshot.id)
 
+    revision = (session.scalar(select(func.max(AnalyticsRevision.revision)).where(
+        AnalyticsRevision.snapshot_id == snapshot.id)) or 0) + 1 if existing else 0
     relative = analytics_relative_path(snapshot)
+    if revision:
+        relative = relative.with_name(f"{relative.stem}-revision-{revision}.duckdb")
     target = _resolve(evidence_root, relative)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / ".staging"
@@ -348,6 +372,13 @@ def build_analytics(
     temporary = staging / f"{target.name}.{token}.part"
     embedding_temporary = staging / f"{target.stem}.{token}.embeddings.npy"
     plan = current_plan()
+    if store is not None:
+        nt, no, ni = store.con.execute("SELECT (SELECT count(*) FROM tx), (SELECT count(*) FROM outputs), "
+                                      "(SELECT count(*) FROM inputs)").fetchone()
+    else:
+        nt, no, ni = (len(records.get(kind, [])) for kind in ("transactions", "outputs", "inputs"))
+    memory_estimate = int(nt * 256 + no * 192 + ni * 96)
+    admit_global_allocation("entity/network analytics", memory_estimate, plan=plan)
 
     if store is not None:
         con = store.con
@@ -363,7 +394,11 @@ def build_analytics(
     try:
         con.execute(f"ATTACH {_quote(temporary)} AS an")
         summary = _compute(con, plan=plan, geoip_dir=geoip_dir, embedding_path=embedding_temporary)
+        summary["global_memory_estimate_bytes"] = memory_estimate
         summary["execution_mode"] = "bounded" if store is not None else "memory"
+        summary["revision"] = revision
+        summary["supersedes_analytics_id"] = existing.id if existing else None
+        summary["finding_refresh_policy"] = "append new natural keys; preserve prior findings, reviews and confidence"
         con.execute("CREATE TABLE an.meta (key VARCHAR, value VARCHAR)")
         con.execute("INSERT INTO an.meta VALUES ('analytics_version', ?), ('summary', ?)",
                     [ANALYTICS_VERSION, json.dumps(summary, sort_keys=True)])
@@ -387,22 +422,27 @@ def build_analytics(
         os.replace(embedding_temporary, embedding_target)
     shutil.rmtree(staging / "spill", ignore_errors=True)
 
-    record = AnalyticsSnapshot(
+    record_type = AnalyticsRevision if revision else AnalyticsSnapshot
+    record = record_type(
         case_id=snapshot.case_id,
         snapshot_id=snapshot.id,
         graph_snapshot_id=graph.id,
         storage_relative_path=relative.as_posix(),
         sha256=digest,
         analytics_version=ANALYTICS_VERSION,
-        summary=summary,
+        summary=dict(summary),
         state="complete",
+        **({"revision": revision} if revision else {}),
     )
     session.add(record)
     session.flush()
-    written = _write_network_findings(
+    added = _write_network_findings(
         session, snapshot=snapshot, graph=graph, rows=network_rows, records=records, store=store, summary=summary
     )
+    written = session.scalar(select(func.count()).select_from(FindingRecord).where(
+        FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == NETWORK_RULE_VERSION)) or 0
     summary["network_findings"] = written
+    summary["new_network_findings"] = added
     record.summary = dict(summary)
     append_event(
         session,
@@ -474,12 +514,11 @@ def _compute(con: duckdb.DuckDBPyConnection, *, plan, geoip_dir: Path | None, em
         "FROM (SELECT DISTINCT addr FROM link_addr)"
     )
     address_count = con.execute("SELECT count(*) FROM addr_ids").fetchone()[0]
-    pairs = con.execute(
+    roots, members = _numeric_columns(con,
         "SELECT min(a.id) OVER (PARTITION BY l.txid) AS root, a.id FROM link_addr l JOIN addr_ids a USING (addr)"
-    ).to_arrow_reader(1 << 20).read_all()
-    labels = _components(address_count, pairs.column(0).to_numpy() if _has_numpy() else pairs.column(0).to_pylist(),
-                         pairs.column(1).to_numpy() if _has_numpy() else pairs.column(1).to_pylist())
-    del pairs
+    )
+    labels = _components(address_count, roots, members)
+    del roots, members
     con.register("_labels", pa.table({
         "id": pa.array(range(address_count), pa.int32()),
         "root": pa.array(labels, pa.int32()) if not _has_numpy() else pa.array(labels.astype("int32")),
@@ -832,7 +871,7 @@ def _embeddings(con: duckdb.DuckDBPyConnection, path: Path) -> dict[str, Any]:
         from sklearn.utils.extmath import randomized_svd
     except ImportError:
         return {"embedded_wallets": 0, "embedding_status": "unavailable (install the ml extra)"}
-    incidence = con.execute(
+    wallets, transactions = _numeric_columns(con,
         """
         WITH touches AS (
             SELECT wid, tid FROM an.flow_out WHERE wid IS NOT NULL
@@ -840,12 +879,9 @@ def _embeddings(con: duckdb.DuckDBPyConnection, path: Path) -> dict[str, Any]:
              active AS (SELECT wid FROM touches GROUP BY wid HAVING count(*) >= 2)
         SELECT t.wid, t.tid FROM touches t JOIN active USING (wid)
         """
-    ).to_arrow_reader(1 << 20).read_all()
-    if incidence.num_rows == 0:
+    )
+    if wallets.size == 0:
         return {"embedded_wallets": 0, "embedding_status": "no wallet active in two transactions"}
-    wallets = incidence.column(0).to_numpy().astype(np.int64)
-    transactions = incidence.column(1).to_numpy().astype(np.int64)
-    del incidence
     wallet_ids, rows = np.unique(wallets, return_inverse=True)
     tx_ids, cols = np.unique(transactions, return_inverse=True)
     matrix = coo_matrix(
@@ -965,12 +1001,15 @@ def _write_network_findings(
     session: Session, *, snapshot: Snapshot, graph: GraphSnapshot, rows: list[dict], records, store,
     summary: dict[str, Any],
 ) -> int:
-    if not rows or session.scalar(
-        select(FindingRecord.id).where(
-            FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == NETWORK_RULE_VERSION
-        ).limit(1)
-    ):
+    if not rows:
         return 0
+    def key(entity, start, end, rule):
+        return (entity, start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC),
+                end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC), rule)
+
+    existing_keys = {key(*values) for values in session.execute(select(
+        FindingRecord.entity_ref, FindingRecord.window_start, FindingRecord.window_end, FindingRecord.rule_id
+    ).where(FindingRecord.snapshot_id == snapshot.id, FindingRecord.rule_version == NETWORK_RULE_VERSION))}
     fallback = snapshot.created_at or datetime.now(UTC)
     coverage = {
         "analytics_version": ANALYTICS_VERSION,
@@ -1086,8 +1125,14 @@ def _write_network_findings(
         prepared.append((score, entity_ref, start, end, rule_id, claim, feature_vector, feature_hash,
                          explanations, benign, opposing, refs))
     prepared.sort(key=lambda item: (-item[0], item[1], item[4]))
+    added = 0
     for rank, (score, entity_ref, start, end, rule_id, claim, feature_vector, feature_hash, explanations,
                benign, opposing, refs) in enumerate(prepared, 1):
+        natural_key = key(entity_ref, start, end, rule_id)
+        if natural_key in existing_keys:
+            continue
+        existing_keys.add(natural_key)
+        added += 1
         session.add(FindingRecord(
             case_id=snapshot.case_id, snapshot_id=snapshot.id, graph_snapshot_id=graph.id, entity_ref=entity_ref,
             window_start=start, window_end=end, rule_id=rule_id, rule_version=NETWORK_RULE_VERSION, claim=claim,
@@ -1096,24 +1141,32 @@ def _write_network_findings(
             opposing_evidence=opposing, source_refs=refs,
         ))
     session.flush()
-    return len(prepared)
+    return added
 
 
 # --------------------------------------------------------------------------- #
 # Read side
 # --------------------------------------------------------------------------- #
 
-_CACHE_SIZE = 8
+_CACHE_SIZE = 2
 _connections: OrderedDict[str, duckdb.DuckDBPyConnection] = OrderedDict()
 _embeddings_cache: OrderedDict[str, Any] = OrderedDict()
 _lock = threading.Lock()
 
 
-def latest_analytics(session: Session, case_id: str, snapshot_id: str | None = None) -> AnalyticsSnapshot | None:
+def latest_analytics(session: Session, case_id: str, snapshot_id: str | None = None) -> AnalyticsSnapshot | AnalyticsRevision | None:
     query = select(AnalyticsSnapshot).where(AnalyticsSnapshot.case_id == case_id, AnalyticsSnapshot.state == "complete")
     if snapshot_id:
         query = query.where(AnalyticsSnapshot.snapshot_id == snapshot_id)
-    return session.scalar(query.order_by(AnalyticsSnapshot.created_at.desc()).limit(1))
+    original = session.scalar(query.order_by(AnalyticsSnapshot.created_at.desc(), AnalyticsSnapshot.id).limit(1))
+    if original is None:
+        return None
+    # Choose the latest source snapshot first, then its latest revision. A
+    # refresh of an older source must not hide a newer imported snapshot.
+    revision = session.scalar(select(AnalyticsRevision).where(
+        AnalyticsRevision.snapshot_id == original.snapshot_id, AnalyticsRevision.case_id == case_id,
+        AnalyticsRevision.state == "complete").order_by(AnalyticsRevision.revision.desc()).limit(1))
+    return revision or original
 
 
 def cursor_for(evidence_root: Path, record: AnalyticsSnapshot) -> duckdb.DuckDBPyConnection:
@@ -1121,7 +1174,8 @@ def cursor_for(evidence_root: Path, record: AnalyticsSnapshot) -> duckdb.DuckDBP
     with _lock:
         connection = _connections.get(path)
         if connection is None:
-            connection = duckdb.connect(path, read_only=True)
+            budget_mb = max(64, min(256, current_plan().memory_budget_bytes // (8 << 20)))
+            connection = duckdb.connect(path, read_only=True, config={"threads": 1, "memory_limit": f"{budget_mb}MB"})
             _connections[path] = connection
             while len(_connections) > _CACHE_SIZE:
                 _connections.popitem(last=False)
@@ -1323,6 +1377,12 @@ def propagate_risk(
     cursor = cursor_for(evidence_root, record)
     wallet_count = cursor.execute("SELECT count(*) FROM wallets").fetchone()[0]
     tx_count = cursor.execute("SELECT count(*) FROM tx_index").fetchone()[0]
+    flow_count = cursor.execute("SELECT (SELECT count(*) FROM flow_out) + (SELECT count(*) FROM flow_in)").fetchone()[0]
+    try:
+        admit_global_allocation("risk propagation", wallet_count * 256 + tx_count * 192 + flow_count * 128)
+    except RuntimeError:
+        cursor.close()
+        raise
     seed_vector = np.zeros(wallet_count, dtype=np.float64)
     resolved: list[dict[str, Any]] = []
     for seed in seeds:
@@ -1338,19 +1398,14 @@ def propagate_risk(
         if row:
             seed_vector[row[0]] = max(seed_vector[row[0]], float(seed.weight))
 
-    flow_out = cursor.execute("SELECT oid, tid, wid, amount FROM flow_out ORDER BY oid").to_arrow_reader(1 << 20).read_all()
-    oid = flow_out.column(0).to_numpy()
-    out_tid = flow_out.column(1).to_numpy()
-    out_wid = flow_out.column(2).to_numpy(zero_copy_only=False)
-    out_amount = np.maximum(flow_out.column(3).to_numpy(zero_copy_only=False).astype(np.float64), 0.0)
-    del flow_out
+    oid, out_tid, out_wid, out_amount = _numeric_columns(
+        cursor, "SELECT oid, tid, wid, amount FROM flow_out ORDER BY oid",
+        dtypes=[np.int64, np.int64, np.float64, np.float64])
+    out_amount = np.maximum(out_amount, 0.0)
     out_count = oid.size
     has_wallet = ~np.isnan(out_wid.astype(np.float64)) if out_wid.dtype.kind == "f" else np.ones(out_count, bool)
     out_wid_int = np.where(has_wallet, np.nan_to_num(out_wid.astype(np.float64), nan=0), 0).astype(np.int64)
-    flow_in = cursor.execute("SELECT tid, oid, amount FROM flow_in WHERE oid IS NOT NULL").to_arrow_reader(1 << 20).read_all()
-    in_tid = flow_in.column(0).to_numpy()
-    in_oid = flow_in.column(1).to_numpy(zero_copy_only=False).astype(np.int64)
-    del flow_in
+    in_tid, in_oid = _numeric_columns(cursor, "SELECT tid, oid FROM flow_in WHERE oid IS NOT NULL")
 
     # spend[t, o] = value share of tx t's resolved inputs that output o supplies.
     spent_value = out_amount[in_oid]
@@ -1425,7 +1480,8 @@ def propagate_risk(
         case_id=case_id,
         snapshot_id=record.snapshot_id,
         method_version=RISK_METHOD_VERSION,
-        parameters={"decay": decay, "max_hops": max_hops, "top": RISK_TOP},
+        parameters={"decay": decay, "max_hops": max_hops, "top": RISK_TOP,
+                    "analytics_snapshot_id": record.id, "analytics_sha256": record.sha256},
         seeds=resolved,
         summary={
             "wallets": int(wallet_count),

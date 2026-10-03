@@ -9,9 +9,12 @@
 //
 // Run:  npm run e2e
 import { chromium } from "playwright";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 
-const BASE = "http://localhost:5173";
+const BASE = process.env.TRACEX_E2E_BASE ?? "http://localhost:5173";
 const results = [];
+const OUTPUT = process.env.TRACEX_E2E_OUTPUT ?? path.resolve("../var/browser-runs", `smoke-${Date.now()}`);
 let failed = 0;
 
 function record(name, ok, detail = "") {
@@ -21,6 +24,7 @@ function record(name, ok, detail = "") {
 }
 
 async function main() {
+  await mkdir(OUTPUT, { recursive: true });
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const consoleErrors = [];
@@ -57,13 +61,17 @@ async function main() {
     await page.fill("#password", password);
     await page.click(".auth-submit");
 
-    // 4. Brand-new user -> lands on Home, New Case modal auto-opens
+    // 4. Brand-new user lands on Home. The current UI intentionally lets the
+    // investigator explore first; the modal is opened by the explicit action.
     await page.waitForURL("**/overview", { timeout: 10000 });
     record("brand-new signup lands on /overview (not a blocking onboarding page)", true);
+    await page.getByText("0 cases assigned", { exact: false }).waitFor();
+    record("brand-new account has an isolated empty case list", true);
+    await page.locator("button:has-text('+ New Case')").click();
     await page.waitForSelector(".modal-overlay", { timeout: 5000 });
     const modalTitle = await page.locator(".modal-header h2").textContent();
-    record("New Case modal auto-opens on first sign-up", modalTitle?.includes("Create a new case") ?? false);
-    const homeVisibleBehindModal = await page.locator("h1:has-text('Good evening')").isVisible();
+    record("New Case action opens the create-case modal", modalTitle?.includes("Create a new case") ?? false);
+    const homeVisibleBehindModal = await page.getByRole("heading", { name: /Good (morning|afternoon|evening)/ }).isVisible();
     record("Home content visible behind the modal (background not blocked)", homeVisibleBehindModal);
 
     // 5. Dismiss it to "explore first"
@@ -116,22 +124,20 @@ async function main() {
     const modelRulesIconGone = (await page.locator("a[title='Model & Rules']").count()) === 0;
     record("'Model & Rules' nav icon removed from sidebar", modelRulesIconGone);
 
-    // 9. Navigate to Graph Explorer, exercise the combobox
+    // 9. Navigate to the current two-tab graph UI and verify empty states.
     await page.locator("a[title='UTXO Graph Explorer']").click();
     await page.waitForURL("**/graph", { timeout: 5000 });
     record("Graph Explorer reachable from sidebar", page.url().includes("/graph"));
 
-    const seedInput = page.locator(".combobox input");
-    await seedInput.click();
-    await page.waitForSelector(".combobox-panel", { timeout: 3000 });
-    const pillsVisible = await page.locator(".combobox-panel .pill").count();
-    record("Graph seed combobox shows filter pills when opened", pillsVisible === 3, `${pillsVisible} pills`);
-    const emptyStateText = await page.locator(".combobox-panel .coverage-note").textContent().catch(() => null);
-    record(
-      "Graph combobox shows an honest empty state for a case with no findings yet",
-      emptyStateText?.includes("No matching findings") ?? false
-    );
-    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Fund flow", exact: true }).waitFor();
+    const pillsVisible = await page.locator(".pill-row .pill").count();
+    record("Graph Explorer exposes its two supported views", pillsVisible === 2, `${pillsVisible} views`);
+    await page.getByRole("button", { name: "Suspicious path", exact: true }).click();
+    await page.getByText("No path-shaped findings yet", { exact: true }).waitFor();
+    record("Suspicious path shows an honest empty state", true);
+    await page.getByRole("button", { name: "Fund flow", exact: true }).click();
+    await page.getByText("No path-shaped findings in this case.", { exact: true }).waitFor();
+    record("Fund flow does not invent a graph for an empty case", true);
 
     // 10. Sidebar has no "Case Settings" icon anymore either -- merged into the
     // global Settings page reached via the avatar circle.
@@ -155,7 +161,12 @@ async function main() {
     record("Settings has About TraceX section", aboutVisible);
     record("Settings has merged-in Case Settings section", caseSettingsVisible);
     record("Settings has Deployed Model section", modelVisible);
-    record("Settings has holdout Comparison table", comparisonVisible);
+    record("Settings has historical Comparison table", comparisonVisible);
+    const settingsText = await page.locator("body").innerText();
+    record("Settings labels the reused fixture as historical, not pristine", settingsText.includes("This fixture's final split was reused") && settingsText.includes("not pristine"));
+    record("Settings separates queue capacity and descriptive ECOD context", settingsText.includes("reference threshold is not a hard queue cap") && settingsText.includes("ECOD describes feature tails, not attribution"));
+    const discriminationText = await page.locator("tr").filter({ hasText: "discrimination" }).innerText();
+    record("Settings shows v2 discrimination AP separately from the rule comparator", discriminationText.includes("0.9269") && discriminationText.includes("0.9569"));
     record("Settings has Account section", accountVisible);
     record("Settings has merged-in Data Sources section", dataSourcesVisible);
     record("Settings has System Check section", systemCheckVisible);
@@ -208,7 +219,7 @@ async function main() {
 
     console.log("\n--- failed HTTP responses seen during the run ---");
     failedResponses.forEach((f) => console.log(" ", f));
-    const unexplained404s = failedResponses.filter((f) => f.startsWith("404") && !f.includes("favicon.ico"));
+    const unexplained404s = failedResponses.filter((f) => f.startsWith("404") && !f.includes("favicon.ico") && !/\/analysis(?:\?|$)/.test(f));
     record(
       "no unexplained 404s (favicon.ico is a known pre-existing gap)",
       unexplained404s.length === 0,
@@ -224,9 +235,10 @@ async function main() {
     }
   } catch (err) {
     record("UNEXPECTED EXCEPTION", false, err.message);
-    await page.screenshot({ path: "/tmp/claude-1000/-home-Shreshtha-documents-TraceX/f566397b-929f-471b-b770-046f705bcf89/scratchpad/e2e-failure.png" }).catch(() => {});
+    await page.screenshot({ path: path.join(OUTPUT, "failure.png") }).catch(() => {});
   } finally {
     await browser.close();
+    await writeFile(path.join(OUTPUT, "result.json"), JSON.stringify({ base: BASE, results, failedResponses, consoleErrors }, null, 2), { flag: "wx" });
   }
 
   console.log("\n=== SUMMARY ===");

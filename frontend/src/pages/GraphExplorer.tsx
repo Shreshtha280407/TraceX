@@ -4,6 +4,7 @@ import { Shell } from "../components/Shell";
 import { NeoCard, Badge, EmptyState, FilterPills } from "../components/primitives";
 import { FundFlowGraph, ZOOM_STEPS, type GraphNodeInfo } from "../components/FundFlowGraph";
 import { SourceFlowGraph, type FlowSide } from "../components/SourceFlowGraph";
+import { GraphContinuation } from "../components/GraphContinuation";
 import { api, ApiError, type Finding, type FlowCounterparty, type FlowResponse, type PathSignals } from "../lib/api";
 import "./GraphExplorer.css";
 
@@ -438,6 +439,8 @@ export function GraphExplorer() {
           {picker}
 
           <div className="ff-canvas-wrap">
+            {caseId && (sourceNodeId || unresolvedSeed || selected?.entity_ref) && <GraphContinuation key={`${caseId}:${sourceNodeId ?? unresolvedSeed ?? selected?.entity_ref}`}
+              caseId={caseId} seed={sourceNodeId ?? unresolvedSeed ?? selected!.entity_ref} graphSnapshotId={selected?.graph_snapshot_id} />}
             <div className="ff-toolbar">
               <button type="button" onClick={() => setZoomIdx((i) => Math.max(0, i - 1))} disabled={zoomIdx === 0} title="Zoom out">−</button>
               <span className="ff-zoom-label">{Math.round(ZOOM_STEPS[zoomIdx] * 100)}%</span>

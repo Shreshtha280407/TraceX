@@ -70,7 +70,9 @@ def job_progress(job: ImportJob) -> dict:
     }
 
 
-def job_view(job: ImportJob) -> dict:
+def job_view(job: ImportJob, session=None) -> dict:
+    from app.jobs.analysis import analysis_view
+
     return {
         "job_id": job.id,
         "total_records": job.total_records,
@@ -91,6 +93,7 @@ def job_view(job: ImportJob) -> dict:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "analysis": analysis_view(session, job) if session is not None else None,
     }
 
 
@@ -186,6 +189,9 @@ def complete_job(session: Session, *, job: ImportJob, byte_size: int) -> None:
 
 
 def fail_job(session: Session, *, job: ImportJob, code: str, detail: str) -> None:
+    from app.jobs.analysis import fail_running_stage
+
+    fail_running_stage(session, job, detail)
     job.state = "failed"
     job.stage = "failed"
     job.error_code = code

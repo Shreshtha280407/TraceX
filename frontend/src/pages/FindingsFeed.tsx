@@ -18,6 +18,19 @@ export function FindingsFeed() {
   const [priorityFilter, setPriorityFilter] = useState<PriorityId>("all");
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const [mlInfo, setMlInfo] = useState<MlReleaseInfo | null>(null);
+  const [queue, setQueue] = useState<Awaited<ReturnType<typeof api.getReviewQueue>> | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [capacity, setCapacity] = useState(100);
+  const [queueOffset, setQueueOffset] = useState(0);
+
+  useEffect(() => {
+    if (!caseId) return;
+    let active = true;
+    api.getReviewQueue(caseId, capacity, queueOffset).then((result) => {
+      if (active) { setQueue(result); setQueueError(null); }
+    }).catch((err) => { if (active) { setQueue(null); setQueueError(String(err)); } });
+    return () => { active = false; };
+  }, [caseId, capacity, queueOffset]);
 
   useEffect(() => {
     if (!caseId) return;
@@ -109,6 +122,23 @@ export function FindingsFeed() {
 
       <div className="two-col">
         <div>
+          <NeoCard>
+            <h2>ML review capacity</h2>
+            <label>Transactions to queue <input type="number" min={0} max={1000000} value={capacity}
+              onChange={(e) => { setCapacity(Math.max(0, Math.floor(Number(e.target.value) || 0))); setQueueOffset(0); }} /></label>
+            <p className="coverage-note">A separate queue for the current ML scorer. Threshold flags and deterministic findings remain available below.</p>
+            {queueError && <p className="coverage-note">{queueError}</p>}
+            {queue && <>
+              <p className="coverage-note">{queue.eligible_scored_transactions.toLocaleString()} scored · {queue.threshold_flagged_transactions.toLocaleString()} threshold flagged · capacity {queue.capacity} · {queue.queued_transactions} queued · {queue.additional_flagged_transactions} additional flags outside the queue</p>
+              {!queue.items.length && <p className="coverage-note">No flagged transactions in this queue page.</p>}
+              {queue.items.map((item) => <p key={item.transaction}>
+                <button type="button" className="btn-secondary" onClick={() => navigate(`/findings/${item.finding_ids[0]}`)}>{item.transaction.slice(0, 22)}…</button>
+                {" "}score {item.score.toFixed(3)} · {item.deterministic_finding_ids.length} linked deterministic findings
+              </p>)}
+              <button type="button" disabled={queueOffset === 0} onClick={() => setQueueOffset(Math.max(0, queueOffset - 20))}>Previous queue page</button>
+              <button type="button" disabled={queueOffset + 20 >= queue.filtered_total} onClick={() => setQueueOffset(queueOffset + 20)}>Next queue page</button>
+            </>}
+          </NeoCard>
           <div style={{ marginBottom: 10 }}>
             <FilterPills
               active={filter}
