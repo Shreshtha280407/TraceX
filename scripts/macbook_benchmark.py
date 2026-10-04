@@ -74,6 +74,8 @@ def preflight(args):
         errors.append("global/native/scratch memory admission rejected; choose a safe budget/VM allocation, do not skip a stage")
     if not runtime["ml_enabled"]:
         errors.append("ML stage disabled")
+    if runtime.get("candidate_configured") and runtime.get("candidate_admission", {}).get("status") != "verified_metadata":
+        errors.append("configured candidate integrity/working-set admission is not verified; restore the pinned compatible artifact")
     if runtime["requested_workers"] and int(runtime["requested_workers"]) != runtime["effective_workers"]:
         errors.append("requested workers exceed joint CPU/native-memory admission; choose a supported configuration")
     if not runtime["geoip_files"] or not any(name.endswith("manifest.json") for name in runtime["geoip_files"]):
@@ -166,7 +168,7 @@ def main(argv=None):
             p.add_argument("--target", type=float, default=1800)
             p.add_argument("--timeout", type=float, default=7200)
             p.add_argument("--expected-release", default="anomaly-stack-v2")
-            p.add_argument("--scoring-mode", choices=["unsupervised", "synthetic_demo", "validated_candidate"], default="unsupervised")
+            p.add_argument("--scoring-mode", choices=["auto_eligible", "unsupervised", "synthetic_demo", "validated_candidate"], default="unsupervised")
             p.add_argument("--candidate-domain")
             p.add_argument("--user", help="Existing UI owner; password requested securely for each fresh run")
         if command == "screen":

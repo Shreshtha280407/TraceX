@@ -14,6 +14,7 @@ KEEP = {"status", "scope", "acceptance_errors", "error", "exit_code", "total_sec
         "models", "results", "procedure", "model", "dataset", "truth_sha256", "split_overlap", "promotion",
         "host", "docker_vm", "worker", "image", "container_memory_limit", "disk_required_bytes", "recommendations",
         "warnings", "errors", "large_run", "network_scope", "run_id", "test_summary", "checks", "passed", "failed",
+        "schema", "quality_gates_passed", "gate_details", "metric_coverage", "queue_comparison", "queue_coverage",
         "baseline", "candidate", "comparison", "reproduction", "protocol", "feature_contract", "selected_safe_workers", "preflight", "bottleneck", "first_useful_output_seconds", "first_useful_output_scope", "matrix_coverage", "worst_case", "gates", "strata", "protocol_sha256", "reserved_finals", "selection", "grid", "generalization", "targets", "inference_adaptation", "manifest_sha256", "validation_report_sha256", "reason", "release_id"}
 
 
@@ -50,7 +51,7 @@ def main(argv=None):
             selected["counts"] = sanitize(source["inspection"].get("canonical_counts"))
         environment = source.get("host_harness_environment", source.get("environment", {}))
         selected["code_identity"] = sanitize({key: environment.get(key) for key in ("commit", "diff_sha256", "untracked_sha256", "locks", "runtime_source_sha256", "resources", "versions")})
-        selected["dirty_tree"] = bool(environment.get("git_status"))
+        selected["dirty_tree"] = bool(environment["git_status"]) if "git_status" in environment else None
         destination = args.output / f"result-{i:02d}.json"
         destination.write_text(json.dumps(selected, indent=2))
         inventory.append({"file": destination.name, "original_sha256": hashlib.sha256(path.read_bytes()).hexdigest()})

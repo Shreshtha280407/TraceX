@@ -16,7 +16,7 @@ from app.ml import candidate
 from app.ml.facts import load_facts
 
 
-def population(path, truth_path, exclude_families=(), *, return_families=False):
+def population(path, truth_path, exclude_families=(), *, return_families=False, return_scope=False, contract=candidate.CONTRACT):
     research_admission([path])
     facts = load_facts(path)
     truth = json.loads(Path(truth_path).read_text())
@@ -31,8 +31,13 @@ def population(path, truth_path, exclude_families=(), *, return_families=False):
     groups = [str(r.get("episode_id") or r.get("scenario_id") or facts.txids[i]) for r, i in zip(rows, selected, strict=True)]
     benign = np.asarray([bool(r.get("benign_control") or str(r.get("family", "")).startswith("benign")
         or r.get("family") in {"nearmiss_rule_positive", "batch_fanout", "consolidation", "nearmiss_batch"}) for r in rows])
-    result = candidate.features(facts)[selected], targets, groups, benign
-    return (*result, [str(row.get("family", "unknown")) for row in rows]) if return_families else result
+    result = candidate.features(facts, contract=contract)[selected], targets, groups, benign
+    if return_families:
+        result = (*result, [str(row.get("family", "unknown")) for row in rows])
+    if return_scope:
+        result = (*result, {"eligible_transactions": facts.transaction_count, "labelled_transactions": len(selected),
+            "population_scope": "all time-eligible canonical transactions"})
+    return result
 
 
 def research_admission(paths):
@@ -46,7 +51,7 @@ def research_admission(paths):
     admit_global_allocation("candidate research retained populations/fitting", total * 2 + (512 << 20))
 
 
-def baseline(dataset, truth_path):
+def baseline(dataset, truth_path, *, exclude_families=(), finding_budget=.01, return_scope=False):
     """Deployed v2 PROCEDURE comparator: label-free refit on this dataset's reference.
 
     Unlike the candidate this is not frozen-weight transfer; v2 D is retrospective.
@@ -65,10 +70,16 @@ def baseline(dataset, truth_path):
     flags = layers.motif_family_flags(facts, table)
     a = layers.layer_a_structure(table, reference, stratified=False, score_with=A_SCORE_WITH)
     d = layers.layer_d_burst(facts, flags, reference=reference)
-    score = stouffer_fuse({"A_global": a.score, "D_burst": d.score}, reference).score
+    fused = stouffer_fuse({"A_global": a.score, "D_burst": d.score}, reference, budget=finding_budget)
+    score = fused.score
     truth = json.loads(Path(truth_path).read_text())["labelled_transactions"]
-    selected = sorted((i for i, txid in enumerate(facts.txids) if txid in truth), key=lambda i: facts.txids[i])
-    return {task: score[selected] for task in candidate.TASKS}
+    selected = sorted((i for i, txid in enumerate(facts.txids) if txid in truth and truth[txid].get("family") not in exclude_families), key=lambda i: facts.txids[i])
+    scores = {task: score[selected] for task in candidate.TASKS}
+    if return_scope:
+        return scores, {"finding_budget_fraction": finding_budget,
+            "baseline_available_findings": int(np.count_nonzero(score >= fused.threshold)),
+            "candidate_available_findings": max(1, int(np.ceil(facts.transaction_count * finding_budget)))}
+    return scores
 
 
 def metrics(scores, labels, *, budget=100, groups=None, benign=None):
@@ -77,7 +88,8 @@ def metrics(scores, labels, *, budget=100, groups=None, benign=None):
     for task in candidate.TASKS:
         y, score = np.asarray(labels[task], bool), np.asarray(scores[task])
         if not len(y):
-            results[task] = {"status": "no labelled observations"}
+            results[task] = {"status": "no labelled observations", "population": 0, "review_budget": budget,
+                **{field: None for field in ("ap", "p_at_100", "p_at_review_budget", "recall_at_review_budget", "benign_false_positives")}}
             continue
         order = np.argsort(-score, kind="stable")
         predicted = score >= .5
@@ -106,6 +118,60 @@ def metrics(scores, labels, *, budget=100, groups=None, benign=None):
     return results
 
 
+def queue_comparison(scores, previous, labels, families, benign, budget, *, contract=candidate.CONTRACT, population_scope=None):
+    """Actual versioned candidate queue policy vs v2 ranking, at the SAME K.
+
+    Truth/family/benign flags are evaluation-only, never inference inputs.
+    Structural matches in benign controls remain matches, not criminality labels.
+    """
+    y = np.asarray(labels["discrimination"], bool)
+    # Evaluation truth schema only, never an inference-time allowlist. Purchase
+    # and consolidation rows are both merchant controls in the generator.
+    merchant = np.asarray([family.startswith("benign_merchant") or family == "benign_purchase" for family in families], bool) & np.asarray(benign, bool)
+    reasons = []
+    population_scope = population_scope or {"eligible_transactions": len(y), "labelled_transactions": len(y),
+        "population_scope": "provided complete score universe"}
+    if population_scope["labelled_transactions"] != population_scope["eligible_transactions"]:
+        reasons.append("Truth does not cover all eligible canonical transactions; labelled-subset ranking is not the deployed queue. Unlabelled transactions are not negatives.")
+    if population_scope.get("population_scope") == "all time-eligible canonical transactions":
+        for field in ("candidate_available_findings", "baseline_available_findings"):
+            available = population_scope.get(field)
+            if not isinstance(available, int) or isinstance(available, bool) or available < budget:
+                reasons.append(f"{field} is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.")
+    if budget <= 0 or len(y) < budget:
+        reasons.append("A positive review budget supported by the labelled population is required.")
+    if not y.any():
+        reasons.append("No positive review-interest labels; recall/AP cannot be evaluated.")
+    if not merchant.any():
+        reasons.append("No labelled benign merchant controls; merchant false positives cannot be evaluated.")
+    result = {"status": "NOT EVALUABLE" if reasons else "EVALUATED", "reasons": reasons,
+        **population_scope,
+        "population": len(y), "review_budget": budget, "merchant_controls": int(merchant.sum()),
+        "unit": "labelled transaction at fixed review capacity, NOT historical episode-touch rate",
+        "target": "discrimination review-interest proposition, NOT criminality or structural-match correctness",
+        "candidate_policy": candidate.QUEUE_POLICIES[contract],
+        "baseline_policy": "v2 fused ranking; label-free per-dataset refit, retrospective burst",
+        "scope": "ranking comparison; actual findings availability and immutable source replay require product-path verification"}
+    if reasons:
+        return result
+    orders = {}
+    for name, score in (("candidate", candidate.queue_priority(scores, contract=contract)), ("baseline", previous["discrimination"])):
+        order = np.argsort(-score, kind="stable")[:budget]  # population is TX-ID sorted.
+        mask = np.zeros(len(y), dtype=bool)
+        mask[order] = True
+        orders[name] = mask
+        result[name] = {"precision": float(y[order].mean()), "recall": int(y[order].sum()) / int(y.sum()),
+            "benign_in_queue": int(np.asarray(benign, bool)[order].sum()),
+            "merchant_false_positives": int(merchant[order].sum()),
+            "merchant_false_positive_rate": int(merchant[order].sum()) / int(merchant.sum())}
+    result["delta"] = {"precision": result["candidate"]["precision"] - result["baseline"]["precision"],
+        "recall": result["candidate"]["recall"] - result["baseline"]["recall"],
+        "merchant_false_positive_reduction": result["baseline"]["merchant_false_positives"] - result["candidate"]["merchant_false_positives"],
+        "merchant_removed_from_queue": int((merchant & orders["baseline"] & ~orders["candidate"]).sum()),
+        "merchant_new_in_queue": int((merchant & orders["candidate"] & ~orders["baseline"]).sum())}
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +188,8 @@ def main(argv=None):
         train_parser.add_argument("--model", choices=["hist", "xgboost", "lightgbm", "hybrid"], default="hist")
         train_parser.add_argument("--exclude-family", action="append", default=[], help="Pre-registered unseen family: exclude from training/calibration/validation, never from final")
         train_parser.add_argument("--label-domain", default="synthetic-fixture-patterns", help="Documented task-label source domain; not automatic eligibility")
+        train_parser.add_argument("--review-budget", type=int, default=100)
+        train_parser.add_argument("--finding-budget", type=float, default=.01, help="Product retained-finding fraction; must match TRACEX_ML_REVIEW_BUDGET for deployment")
     transfer = sub.add_parser("evaluate")
     transfer.add_argument("--protocol", type=Path, required=True)
     transfer.add_argument("--artifact", type=Path, required=True)
@@ -130,10 +198,12 @@ def main(argv=None):
     transfer.add_argument("--truth", type=Path, required=True)
     transfer.add_argument("--output", type=Path, required=True)
     transfer.add_argument("--review-budget", type=int, default=100)
+    transfer.add_argument("--finding-budget", type=float, default=.01, help="Product retained-finding fraction; must match TRACEX_ML_REVIEW_BUDGET for deployment")
     promote = sub.add_parser("promote", help="OWNER decision only: never automatically promotes from a label count/AP")
     promote.add_argument("--artifact", type=Path, required=True)
     promote.add_argument("--manifest-sha256", required=True)
     promote.add_argument("--approval", type=Path, required=True)
+    promote.add_argument("--quality-result", type=Path, action="append", required=True, help="Frozen transfer reports for these weights; measured matched-capacity product queue is required")
     promote.add_argument("--output", type=Path, required=True)
     freeze = sub.add_parser("freeze", help="Pin validation-selected weights before opening any fresh final")
     freeze.add_argument("--protocol", type=Path, required=True)
@@ -142,6 +212,8 @@ def main(argv=None):
     freeze.add_argument("--validation-report", type=Path, required=True)
     freeze.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
+    if args.command in {"train", "compare", "evaluate"} and not (args.review_budget > 0 and 0 < args.finding_budget <= 1):
+        parser.error("review-budget must be positive and finding-budget must be in (0,1]")
     if args.command == "register":
         finals = [str(Path(value).resolve()) for value in args.final]
         if len(set(finals)) != len(finals) or any(Path(value).exists() for value in finals):
@@ -155,13 +227,22 @@ def main(argv=None):
                 "status": "NOT RUN"}, stream, indent=2)
         return 0
     if args.command == "promote":
-        manifest, models = candidate.load(args.artifact, args.manifest_sha256)
+        from app.ml.promotion import assess
+        manifest, _ = candidate.load(args.artifact, args.manifest_sha256)
         approval = json.loads(args.approval.read_text())
         for key in ("representative_labels", "domain", "decision_reason", "approved_by", "label_provenance", "validation_reports", "limitations"):
             if not approval.get(key):
                 parser.error(f"promotion requires explicit owner applicability judgement: {key}")
-        candidate.save(args.output, models, name=manifest["model"], eligibility="validated_candidate", promotion=approval,
-            provenance={**manifest["provenance"], "promotion_approval_sha256": candidate.sha(args.approval), "parent_manifest_sha256": args.manifest_sha256})
+        quality = assess(manifest, [json.loads(path.read_text()) for path in args.quality_result])
+        quality["reports_sha256"] = [candidate.sha(path) for path in args.quality_result]
+        decision = args.output.with_name(args.output.name + ".promotion-decision.json")
+        decision.parent.mkdir(parents=True, exist_ok=True)
+        with decision.open("x") as stream:
+            json.dump(quality, stream, indent=2)
+        if quality["status"] != "PASSED":
+            parser.error(f"promotion blocked; dataset-specific reasons saved in {decision}")
+        approval = {**approval, "quality_validation": quality}
+        candidate.promote_verified(args.artifact, args.output, args.manifest_sha256, approval, candidate.sha(args.approval))
         return 0
     protocol = json.loads(args.protocol.read_text())
     selection = args.protocol.with_name(args.protocol.name + ".frozen.json")
@@ -181,26 +262,36 @@ def main(argv=None):
         if len(set(paths)) != 3 or len(set(truth_paths)) != 3 or any(path == Path(final) or Path(final) in path.parents for path in paths + truth_paths for final in finals):
             parser.error("training/calibration/validation must be distinct and cannot use reserved finals")
         research_admission(paths)
-        populations = [population(path, getattr(args, split + "_truth"), args.exclude_family) for path, split in zip(paths, ("training", "calibration", "validation"), strict=True)]
+        contract = protocol["feature_contract"]
+        columns, _ = candidate.contract_identity(contract)
+        populations = [population(path, getattr(args, split + "_truth"), args.exclude_family, return_families=True, return_scope=True, contract=contract)
+            for path, split in zip(paths, ("training", "calibration", "validation"), strict=True)]
+        # Same exclusion as validation; baseline() returns all labelled TXs.
+        validation_previous, retained_scope = baseline(args.validation, args.validation_truth,
+            exclude_families=args.exclude_family, finding_budget=args.finding_budget, return_scope=True)
+        populations[2][5].update(retained_scope)
         overlap = {f"{a}/{b}": len(set(populations[a][2]) & set(populations[b][2])) for a, b in ((0, 1), (0, 2), (1, 2))}
         args.output.mkdir(parents=True, exist_ok=False)
         results = {}
         for name in (["hist", "xgboost", "lightgbm", "hybrid"] if args.command == "compare" else [args.model]):
             try:
-                models = candidate.train(populations[0][0], populations[0][1], populations[1][0], populations[1][1], name=name)
+                models = candidate.train(populations[0][0], populations[0][1], populations[1][0], populations[1][1], name=name, contract=contract)
                 manifest = candidate.save(args.output / name, models, name=name, provenance={
                     "protocol_sha256": candidate.sha(args.protocol), "split_group_overlap": overlap,
                     "procedure_code_sha256": {str(path.relative_to(Path(__file__).resolve().parents[1])): candidate.sha(path)
-                        for path in (Path(__file__).resolve(), Path(candidate.__file__).resolve(), Path(__file__).resolve().parents[1] / "app/ml/grains.py")},
+                        for path in (Path(__file__).resolve(), Path(candidate.__file__).resolve(), Path(__file__).resolve().parents[1] / "app/ml/grains.py",
+                            Path(__file__).resolve().parents[1] / "app/ml/recipient_history.py")},
                     "entity_split_audit": "NOT VERIFIED by scenario IDs alone; require independent address/entity overlap audit for domain validation",
-                    "training_feature_baselines": dict(zip(candidate.COLUMNS, map(float, np.median(populations[0][0], axis=0)), strict=True)),
+                    "training_feature_baselines": dict(zip(columns, map(float, np.median(populations[0][0], axis=0)), strict=True)),
                     "label_prevalence": {split: {task: float(values.mean()) for task, values in pop[1].items()}
                         for split, pop in zip(("training", "calibration"), populations[:2], strict=True)},
                     "truth_sha256": {split: candidate.sha(getattr(args, split + "_truth")) for split in ("training", "calibration", "validation")},
                     "label_meaning": "motif/surge/contrast propositions, NOT criminality", "label_domain": args.label_domain,
-                    "excluded_positive_families": args.exclude_family, "validation_used_for": "selection only"})
+                    "excluded_positive_families": args.exclude_family, "validation_used_for": "selection only"}, contract=contract)
+                scores = candidate.infer(models, populations[2][0])
                 results[name] = {"manifest_sha256": candidate.sha(args.output / name / "manifest.json"), "release": manifest["release_id"],
-                                 "validation": metrics(candidate.infer(models, populations[2][0]), populations[2][1], groups=populations[2][2], benign=populations[2][3])}
+                    "validation": metrics(scores, populations[2][1], budget=args.review_budget, groups=populations[2][2], benign=populations[2][3]),
+                    "queue_comparison": queue_comparison(scores, validation_previous, populations[2][1], populations[2][4], populations[2][3], args.review_budget, contract=contract, population_scope=populations[2][5])}
             except ImportError as error:
                 results[name] = {"status": "UNAVAILABLE", "error": str(error)}
         (args.output / "comparison.json").write_text(json.dumps({"models": results, "split_overlap": overlap, "promotion": "NONE; explicit representative-label decision required"}, indent=2))
@@ -216,7 +307,7 @@ def main(argv=None):
     marker = args.protocol.with_name(args.protocol.name + "." + final_id + ".evaluated")
     with marker.open("x") as stream:
         stream.write("Consumed final: frozen transfer, no refitting/selection\n")
-    matrix, labels, groups, benign, families = population(args.dataset, args.truth, return_families=True)
+    matrix, labels, groups, benign, families, population_scope = population(args.dataset, args.truth, return_families=True, return_scope=True, contract=manifest["feature_contract"])
     scores = candidate.infer(models, matrix)
     frozen = metrics(scores, labels, budget=args.review_budget, groups=groups, benign=benign)
     strata = {}
@@ -225,7 +316,9 @@ def main(argv=None):
         strata[family] = metrics({task: values[mask] for task, values in scores.items()},
             {task: values[mask] for task, values in labels.items()}, budget=args.review_budget,
             groups=np.asarray(groups)[mask], benign=benign[mask])
-    previous = metrics(baseline(args.dataset, args.truth), labels, budget=args.review_budget, groups=groups, benign=benign)
+    previous_scores, retained_scope = baseline(args.dataset, args.truth, finding_budget=args.finding_budget, return_scope=True)
+    population_scope.update(retained_scope)
+    previous = metrics(previous_scores, labels, budget=args.review_budget, groups=groups, benign=benign)
     # Baseline has uncalibrated z-scores; probability metrics/.5 confusion are invalid.
     for row in previous.values():
         for field in ("brier", "confusion", "precision", "recall", "benign_false_positives"):
@@ -235,6 +328,7 @@ def main(argv=None):
         json.dump({"procedure": "frozen fitted-weight transfer; no test-label fitting or adaptation", "model": manifest,
             "dataset": args.dataset.name, "truth_sha256": candidate.sha(args.truth), "protocol_sha256": candidate.sha(args.protocol),
             "results": frozen, "strata": strata, "baseline": {"procedure": "v2 label-free per-dataset reference refit; retrospective D; not frozen transfer", "results": previous},
+            "queue_comparison": queue_comparison(scores, previous_scores, labels, families, benign, args.review_budget, contract=manifest["feature_contract"], population_scope=population_scope),
             "candidate": {"procedure": "frozen transfer; no inference adaptation"},
             "comparison": {task: {"ap_delta": frozen[task]["ap"] - previous[task]["ap"] if frozen[task]["ap"] is not None and previous[task]["ap"] is not None else None} for task in candidate.TASKS}}, stream, indent=2)
     return 0

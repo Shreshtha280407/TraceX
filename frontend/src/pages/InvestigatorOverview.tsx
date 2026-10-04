@@ -29,7 +29,7 @@ export function InvestigatorOverview() {
   const [showNewCase, setShowNewCase] = useState(false);
   const [newCaseName, setNewCaseName] = useState("");
   const [synthetic, setSynthetic] = useState(false);
-  const [scoringMode, setScoringMode] = useState<ScoringMode>("unsupervised");
+  const [scoringMode, setScoringMode] = useState<ScoringMode>("auto_eligible");
   const [candidateDomain, setCandidateDomain] = useState("");
   const [newCaseError, setNewCaseError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -68,7 +68,7 @@ export function InvestigatorOverview() {
   function openNewCase() {
     setNewCaseName("");
     setSynthetic(false);
-    setScoringMode("unsupervised");
+    setScoringMode("auto_eligible");
     setCandidateDomain("");
     setNewCaseError(null);
     setShowNewCase(true);
@@ -127,14 +127,15 @@ export function InvestigatorOverview() {
             <p className="form-hint">Use a clear, unique identifier — you can rename it later from Settings.</p>
           </div>
           <div className="form-field">
-            <label><input type="checkbox" checked={synthetic} onChange={(e) => { setSynthetic(e.target.checked); if (!e.target.checked && scoringMode === "synthetic_demo") setScoringMode("unsupervised"); }} /> Synthetic/demo data (not real case evidence)</label>
+            <label><input type="checkbox" checked={synthetic} onChange={(e) => { setSynthetic(e.target.checked); if (!e.target.checked && scoringMode === "synthetic_demo") setScoringMode("auto_eligible"); }} /> Synthetic/demo data (not real case evidence)</label>
             <label htmlFor="scoring-mode">Scoring procedure</label>
             <select id="scoring-mode" value={scoringMode} onChange={(e) => setScoringMode(e.target.value as ScoringMode)}>
-              <option value="unsupervised">Unsupervised v2 — default, retrospective burst</option>
+              <option value="auto_eligible">Automatic approved candidate — v2 fallback if ineligible</option>
+              <option value="unsupervised">Unsupervised v2 — pinned, retrospective burst</option>
               {synthetic && <option value="synthetic_demo">Synthetic/demo candidate — explicitly opted in</option>}
               <option value="validated_candidate">Approved domain candidate — applicability required</option>
             </select>
-            {scoringMode === "validated_candidate" && <input aria-label="Approved candidate domain" required value={candidateDomain} onChange={(e) => setCandidateDomain(e.target.value)} placeholder="Exact approved label domain" />}
+            {(scoringMode === "validated_candidate" || scoringMode === "auto_eligible") && <input aria-label="Approved candidate domain" required={scoringMode === "validated_candidate"} value={candidateDomain} onChange={(e) => setCandidateDomain(e.target.value)} placeholder="Approved data domain; blank retains v2" />}
             <p className="form-hint">Unavailable, untrusted or ineligible candidates fall back to v2 with a recorded reason. No upload has measured AP without independent applicable labels.</p>
           </div>
           <div className="modal-actions">

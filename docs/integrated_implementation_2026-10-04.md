@@ -1,5 +1,10 @@
 # TraceX integrated implementation — 2026-10-04
 
+Historical scope: the initial integrated implementation subsequently committed by
+the owner as `c70fcb4`. See the [recipient-history/deployment follow-up](recipient_history_and_deployment_2026-10-04.md)
+for the newer candidate procedure, default selection policy and fresh small checks.
+The initial measurements below have not been rewritten as follow-up results.
+
 This is the implementation-machine report, not MacBook acceptance. The owner
 must review, commit and push manually. No commit, push, merge, publication or
 destructive data/image/volume cleanup was performed. No 100K/300K/1M/3M dataset

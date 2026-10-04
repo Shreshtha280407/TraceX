@@ -37,7 +37,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // ---- Types (field names match app/api/routes.py exactly) ----
 
-export type ScoringMode = "unsupervised" | "synthetic_demo" | "validated_candidate";
+export type ScoringMode = "auto_eligible" | "unsupervised" | "synthetic_demo" | "validated_candidate";
 export type Case = { case_id: string; name: string; synthetic: boolean; created_at: string | null; scoring_mode?: ScoringMode; candidate_domain?: string | null };
 export type CaseWithRole = Case & { role: "case_lead" | "analyst" | "reviewer" };
 export type CaseMember = { actor: string; role: "case_lead" | "analyst" | "reviewer" };
@@ -547,7 +547,7 @@ export const api = {
   // ---- Cases ----
   listCases: () => request<{ cases: CaseWithRole[] }>("/cases"),
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${caseId}`),
-  createCase: (name: string, synthetic: boolean, scoring_mode: ScoringMode = "unsupervised", candidate_domain?: string) =>
+  createCase: (name: string, synthetic: boolean, scoring_mode: ScoringMode = "auto_eligible", candidate_domain?: string) =>
     request<Case>("/cases", { method: "POST", body: JSON.stringify({ name, synthetic, scoring_mode, candidate_domain }) }),
   addMember: (caseId: string, actor: string, role: "case_lead" | "analyst" | "reviewer") =>
     request<{ case_id: string; actor: string; role: string }>(`/cases/${caseId}/members`, {

@@ -146,14 +146,15 @@ def available_memory_bytes() -> int | None:
     return min(candidates)
 
 
-def global_stage_estimates(counts, *, native_bytes=0):
+def global_stage_estimates(counts, *, native_bytes=0, candidate_extra_bytes=0):
     """Metadata-only preflight, same coefficients used by actual stages."""
     nt, no, ni = (int(counts.get(name, 0)) for name in ("transactions", "outputs", "inputs"))
-    if min(nt, no, ni) < 0:
+    if min(nt, no, ni, candidate_extra_bytes) < 0:
         raise ValueError("Counts must be non-negative")
     overhead = native_bytes + (128 * MB if native_bytes else 0)
-    return {"ml_global_bytes": nt * 1600 + no * 384 + ni * 80,
-            "ml_joint_bytes": nt * 1600 + no * 384 + ni * 80 + overhead,
+    return {"ml_global_bytes": nt * 1600 + no * 384 + ni * 80 + candidate_extra_bytes,
+            "ml_joint_bytes": nt * 1600 + no * 384 + ni * 80 + overhead + candidate_extra_bytes,
+            "candidate_extra_bytes": candidate_extra_bytes,
             "analytics_joint_bytes": nt * 256 + no * 192 + ni * 96 + overhead,
             "risk_joint_bytes": (no + ni) * 256 + nt * 192 + (no + ni) * 128 + overhead,
             "dense_fact_array_bytes": nt * 44 + no * 29 + ni * 12,

@@ -63,6 +63,8 @@ TARGET = "synthetic-pattern-majority-v1"
 
 
 def feature_contract(rule_version):
+    if rule_version.startswith("anomaly-stack-candidate-v2-"):
+        return "causal-structure-recipient-history-v2"
     if rule_version.startswith("anomaly-stack-candidate-"):
         return "causal-structure-prior-bucket-v1"
     if rule_version.startswith("anomaly-stack-") and not rule_version.startswith("anomaly-stack-candidate-"):

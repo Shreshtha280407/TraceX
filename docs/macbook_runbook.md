@@ -10,9 +10,11 @@ large commands on the implementation machine.
 ## 1. Owner review, commit and push (implementation machine)
 
 No commit or push was made by the agent. Review the diff and compact results first.
-The initial tree was clean at `d88af37c2377f6aed72604b72b2f116a87ae39b2`;
-there were no subsequent local commits or fetched upstream commits at initial
-inspection. Recheck upstream before your commit if others have since pushed.
+The original integrated implementation started at `d88af37c2377f6aed72604b72b2f116a87ae39b2`
+and was subsequently committed by the owner as `c70fcb4`. The current scoring/reporting
+follow-up builds on that commit; its changes remain uncommitted. Recheck upstream
+before your commit if others have since pushed. Stage only the changes you reviewed;
+the commands below assume the displayed changes are all intended.
 
 ```sh
 git status --short
@@ -20,14 +22,14 @@ git diff --check
 git diff --stat
 git diff
 git add -u
-git add -- app/engine/evidence.py app/ml/candidate.py app/ml/candidate_findings.py app/telemetry.py
+git add -- app/engine/evidence.py app/ml/candidate.py app/ml/candidate_findings.py app/ml/recipient_history.py app/ml/promotion.py app/telemetry.py
 git add -- frontend/src/components/StructuredEvidence.tsx frontend/src/lib/graphWindow.ts frontend/e2e/graph-window.test.mjs
 git add -- scripts/candidate_lifecycle.py scripts/quality_matrix.py scripts/case_export.py scripts/export_review_package.py scripts/macbook_benchmark.py scripts/runtime_probe.py scripts/small_browser_acceptance.py
-git add -- tests/unit/test_integrated_improvements.py tests/unit/test_integrated_boundaries.py tests/unit/test_macbook_orchestration.py tests/unit/test_quality_wiring.py
-git add -- docs/macbook_runbook.md docs/integrated_implementation_2026-10-04.md experiments/integrated_20261004
+git add -- tests/unit/test_integrated_improvements.py tests/unit/test_integrated_boundaries.py tests/unit/test_macbook_orchestration.py tests/unit/test_quality_wiring.py tests/unit/test_quality_matrix_reporting.py tests/unit/test_recipient_history_release.py
+git add -- docs/macbook_runbook.md docs/integrated_implementation_2026-10-04.md docs/quality_matrix_reporting_2026-10-04.md docs/recipient_history_and_deployment_2026-10-04.md experiments/integrated_20261004 experiments/recipient_history_20261004
 git diff --cached --check
 git diff --cached
-git commit -m "Remove local LLM; integrate evidence, candidate lifecycle and portable acceptance"
+git commit -m "Add approved scorer routing, causal recipient context and fail-closed quality gates"
 git push origin HEAD
 git rev-parse HEAD
 ```
@@ -281,6 +283,39 @@ done
 uv run python -m scripts.quality_matrix aggregate --review-budget 100 --result "$TRACEX_QUALITY/final-a-result.json" --result "$TRACEX_QUALITY/final-b-result.json" --result "$TRACEX_QUALITY/final-independent-result.json" --result "$TRACEX_QUALITY/final-missing_network-result.json" --result "$TRACEX_QUALITY/final-noisy_network-result.json" --result "$TRACEX_QUALITY/final-incomplete_prevouts-result.json" --result "$TRACEX_QUALITY/final-reuse_degree-result.json" --result "$TRACEX_QUALITY/final-timing_value-result.json" --output "$TRACEX_QUALITY/worst-case.json"
 ```
 
+Aggregation uses `quality-matrix-v2`. Missing/null/invalid required metrics make
+the matrix **INCOMPLETE**, the affected worst-case value null, and affected gate
+details **NOT EVALUABLE**, with dataset/report-specific reasons in `metric_coverage`
+and `gate_details`. Missing benign-control counts are not zero. AP regression is
+not evaluable without candidate AP and its reported comparison. P@100 is **NOT
+APPLICABLE** only for a known labelled population below 100; unknown population
+or missing P@100 in an eligible population is not excused. Mixed populations
+retain every explicit exclusion and check all eligible datasets. Gate flags are
+booleans; neither NOT EVALUABLE nor NOT APPLICABLE is true.
+
+Product queue comparisons additionally require truth covering **all time-eligible
+canonical transactions**, not just labelled pattern rows. The root generator's
+truth omits scenario-funding transactions; those datasets can provide labelled-subset
+AP but not measured whole-product-queue precision/recall without independent,
+applicable labels for the omitted population. Do not invent negative labels or
+change the generator to force a pass. `queue_comparison` reports **NOT EVALUABLE**
+with exact eligible/labelled counts; aggregation then remains **INCOMPLETE** even
+if subset metrics are finite. Such runs are useful diagnostics, not promotion.
+
+`compare`/`evaluate --finding-budget` defaults to `0.01`, matching the product's
+default `TRACEX_ML_REVIEW_BUDGET`; `--review-budget` defaults to 100 and means actual
+reviewer K. If changing the product fraction, pre-register it and supply the same
+`--finding-budget` to comparison/evaluation. Reports check candidate retained count
+and the baseline's actual reference-threshold finding count can both exercise K.
+Too few materialized findings is NOT EVALUABLE, not a full-population queue pass.
+
+The output report is saved before `aggregate` exits: **2** for incomplete metrics,
+**1** for evaluated thresholds that fail or cannot all be exercised, **0** only
+when all four automated threshold checks are evaluable and pass. Read
+`quality_gates_passed` together with per-task coverage; a 0 exit is not promotion,
+representative-label approval, proof of acceptable benign FP/calibration, or a
+claim that the default product now deploys that candidate.
+
 Evaluate uses frozen fitted weights; test labels are opened only for metrics.
 Preprocessing, classifiers and isotonic calibration are fitted solely on permitted
 train/calibration populations. It consumes a one-use final marker. Baseline v2
@@ -306,8 +341,11 @@ uv run python -m scripts.macbook_benchmark --context "$TRACEX_DOCKER_CONTEXT" ca
 Joblib is a code-execution
 boundary: never trust user-uploaded model files; pin an independently reviewed
 manifest before deserialization. Choose Synthetic/demo candidate only on an
-explicitly synthetic case. Its queue is max(motif,surge), stable txid ties; it is
-not calibrated cross-family criminality risk. Fallback retains v2 and records why.
+explicitly synthetic case. New `causal-structure-recipient-history-v2` candidates
+use `review-contrast-stable-txid-v2`: the separate discrimination/review-interest
+target sets queue priority while motif and surge scores and structural findings
+remain intact. Old `causal-structure-prior-bucket-v1` artifacts retain their
+max(motif,surge) policy. Neither is criminality risk. Fallback retains v2 and records why.
 To benchmark that candidate, explicitly pass its manifest `release_id` through
 `accept --expected-release ... --scoring-mode synthetic_demo`; fallback is then
 an acceptance failure, not a silent pass.
@@ -315,17 +353,42 @@ an acceptance failure, not a silent pass.
 Production promotion is **manual**, not a consequence of label count or synthetic
 AP. Supply owner-reviewed approval JSON with `representative_labels`, `domain`,
 `decision_reason`, `approved_by`, `label_provenance`, `validation_reports`,
-`limitations`; after reviewing that approval, run:
+`limitations`; after reviewing that approval, run with every registered transfer
+result (not a training table or the tiny unit-test demonstration):
 
 ```sh
-uv run python -m scripts.candidate_lifecycle promote --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --approval OWNER_REVIEWED_APPROVAL.json --output "$TRACEX_QUALITY/approved-artifact"
+uv run python -m scripts.candidate_lifecycle promote --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --approval OWNER_REVIEWED_APPROVAL.json --quality-result "$TRACEX_QUALITY/final-a-result.json" --quality-result "$TRACEX_QUALITY/final-b-result.json" --quality-result "$TRACEX_QUALITY/final-independent-result.json" --quality-result "$TRACEX_QUALITY/final-missing_network-result.json" --quality-result "$TRACEX_QUALITY/final-noisy_network-result.json" --quality-result "$TRACEX_QUALITY/final-incomplete_prevouts-result.json" --quality-result "$TRACEX_QUALITY/final-reuse_degree-result.json" --quality-result "$TRACEX_QUALITY/final-timing_value-result.json" --output "$TRACEX_QUALITY/approved-artifact"
 ```
 
-This packages unchanged
-fitted weights with immutable approval provenance. It does not verify that an
-owner's assertion about representative labels is true. Real-case eligibility
-requires `validated_candidate` mode and an exact approved domain; no finding
-review is automatically a transaction-wide criminality label.
+Promotion now requires measurable motif/surge AP >=.85, all-task P@100 >=.90 and
+no negative AP deltas, matched-capacity product queue precision >=.90 without
+precision/recall/benign regression, and observed merchant FP reduction in at least
+one dataset without increases in the others. Missing measurements block promotion.
+Full eligible-population labels and sufficient materialized findings at the
+registered fraction are required. The worker checks this approved fraction against
+its actual setting; a mismatch retains v2. Reports must agree on fraction and K.
+The unique `approved-artifact.promotion-decision.json` is saved even on a blocked
+quantitative gate. These point estimates are not statistical significance or a
+representative-label approval. The promoted weights/calibration bytes are copied
+unchanged, retaining release identity; metadata adds exact report hashes and the
+owner's applicability decision. It does not verify that assertion is true.
+
+Install/pin the approved artifact with the same `candidate` command, using its
+new manifest digest. New API/UI cases default to `auto_eligible`; provide the exact
+approved `candidate_domain` and this installed candidate is selected automatically.
+Blank/unknown domains, missing quality proof and demo-only artifacts retain v2.
+No approved real-case artifact was installed in this implementation phase, so this
+checkout's effective scorer for ordinary uploads remains v2 until owner validation,
+promotion and pinning. Do not use the controlled unit-test artifact as real-case
+approval. The acceptance command still defaults explicitly to unsupervised v2
+unless the owner supplies candidate mode/domain/exact release.
+Existing snapshots/reviews keep their pinned scorer. Explicit `validated_candidate`
+and `unsupervised` modes remain available; no finding review becomes a transaction
+criminality label. For a later fresh approved-candidate benchmark, use
+`accept --scoring-mode auto_eligible --candidate-domain APPROVED_DOMAIN
+--expected-release EXACT_ARTIFACT_RELEASE` in addition to the usual required
+accept flags. Candidate memory/preflight includes fitted weights and the extra
+recipient workspace; mismatched artifact pins/versions block preflight.
 
 ## 13. Export compact underlying evidence for review
 

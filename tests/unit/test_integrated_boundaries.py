@@ -75,6 +75,7 @@ def test_strict_under_1800_gate_and_compact_results_are_underlying_sanitized_dat
     export_results(["--result", str(source), "--output", str(destination)])
     exported = (destination / "result-00.json").read_text()
     assert "never-export" not in exported and '"ap": null' in exported
+    assert json.loads(exported)["dirty_tree"] is None  # Unknown provenance is not a clean-tree claim.
     assert json.loads((destination / "inventory.json").read_text())[0]["sha256"] == candidate.sha(destination / "result-00.json")
 
 

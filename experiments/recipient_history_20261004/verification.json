@@ -1,0 +1,94 @@
+{
+  "status": "IMPLEMENTATION_SMALL_CHECKS_PASSED",
+  "scope": "Uncommitted implementation follow-up; not large-scale or representative model acceptance",
+  "code_identity": {
+    "base_commit": "c70fcb4f0b94982c005069c8b3208fb6e15b7550",
+    "dirty_tree": true,
+    "source_sha256": {
+      "app/ml/candidate.py": "45c29148aa8a7fc13bb2d4d5cce61bb4787e3ce7f771a4ff92f0fe797a804dce",
+      "app/ml/recipient_history.py": "6772ad4c4095d46fdc0bc51785ea24d26558eeec91f29a56872375266409a87e",
+      "app/ml/promotion.py": "cfd91b5b7d3903d0d7eb6e4c422a1bceb20308b5240b7830bc4c0d1d376a6547",
+      "app/ml/candidate_findings.py": "c4351998a2264410e0035cd6a017f384d01ac9a8121b658b1301bab2273512de",
+      "scripts/candidate_lifecycle.py": "132bb9b0422f516f0aa96e6d3b50ad927c532897381fb92a3b25aca29980f436",
+      "scripts/quality_matrix.py": "9fa3a1f0497ee135c30f20b49f9e64336df845a593c0dab13f40f748cf616467",
+      "scripts/runtime_probe.py": "f8226d132104fc49432bcf4d34477e6b9b2533e411a54ddbff6451ee2be420fc",
+      "tests/unit/test_recipient_history_release.py": "4c788f080a42adf1e375985106d49114aa7be9150b6b61dafd1f85bdcbd3d0a1",
+      "tests/unit/test_quality_matrix_reporting.py": "bf57fbca1c6d46277f1d554103950f2dd05b7b5ecbb22278dffbd63493021b2f"
+    },
+    "locks": {
+      "uv.lock": "eae2c80a99dd945f3ac8d60ed2ec8cb044d3a9beb5e7e3f02f944ee1fd80b6ef",
+      "frontend/package-lock.json": "727baec17e38f4ee0e8d04e479b0ef3e21164b6e55fcd7598712849ad5a213ff"
+    }
+  },
+  "implementation_runtime": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "python": "3.12.13",
+    "node": "26.8.2",
+    "libraries": {
+      "numpy": "2.5.3",
+      "scikit-learn": "1.9.1",
+      "joblib": "1.6.0",
+      "duckdb": "1.5.5",
+      "pyarrow": "23.0.1"
+    }
+  },
+  "checks": {
+    "audited_pytest": {
+      "passed": 202,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "seconds": 30.289,
+      "source": "var/recipient-history-20261004-08/review-ready-small.xml",
+      "existing_deprecation_warnings": 1
+    },
+    "browser": {
+      "passed": 42,
+      "failed": 0,
+      "transactions": 64,
+      "scope": "Local SQLite, real worker and browser; preceding final quantitative gate tightening"
+    },
+    "frontend_typecheck_build": {"status": "PASS", "command": "npm --prefix frontend run build", "exit_code": 0},
+    "frontend_lint": {"status": "PASS_WITH_EXISTING_WARNINGS", "exit_code": 0, "warnings": 21},
+    "graph_window_node": {"status": "PASS", "tests": 1, "exit_code": 0},
+    "scoped_ruff": {"status": "PASS", "exit_code": 0},
+    "git_diff_check": {"status": "PASS", "exit_code": 0},
+    "cli_help": ["candidate_lifecycle evaluate", "candidate_lifecycle promote", "macbook_benchmark accept"],
+    "joint_memory_admission": {"status": "SMALL_TEST_PASSED", "scope": "3.05M synthetic metadata counts only; no million-row allocation"}
+  },
+  "scoring": {
+    "new_case_policy": "auto_eligible",
+    "unknown_domain_fallback": "anomaly-stack-v2",
+    "candidate_contract": "causal-structure-recipient-history-v2",
+    "candidate_queue_policy": "review-contrast-stable-txid-v2",
+    "production_artifact_promoted_or_installed_by_this_work": false,
+    "eligibility": "Exact declared approved domain, externally pinned compatible weights, representative-label owner approval, matched product-queue quality proof and finding-retention fraction",
+    "demo_mode": "Explicit synthetic opt-in only; never auto-eligible for real cases"
+  },
+  "not_run": {
+    "macbook_3m_under_1800s_acceptance": "NOT RUN",
+    "large_scale_memory_and_parallel_parity": "NOT RUN",
+    "fresh_representative_final_quality": "NOT RUN",
+    "real_case_merchant_precision_or_false_positive_improvement": "NOT DEMONSTRATED",
+    "production_promotion": "NOT PERFORMED",
+    "native_linux_isolation_recertification": "NOT RUN"
+  },
+  "reproduction": [
+    "uv run pytest tests/unit/test_analysis_acceptance.py tests/unit/test_research_contract.py tests/unit/test_entities_network_risk.py tests/unit/test_graph_flow_and_counts.py tests/unit/test_pattern_grouping_and_resources.py tests/unit/test_process_pool.py tests/unit/test_phase_six_crash_retry.py tests/unit/test_phase_four.py tests/unit/test_phase_four_one.py tests/unit/test_ml_pipeline_integration.py tests/unit/test_integrated_improvements.py tests/unit/test_integrated_boundaries.py tests/unit/test_macbook_orchestration.py tests/unit/test_quality_wiring.py tests/unit/test_appliance_acceptance.py tests/unit/test_quality_matrix_reporting.py tests/unit/test_recipient_history_release.py -q -o junit_logging=system-out --junitxml=var/NEW_REVIEW_READY_SMALL.xml",
+    "npm --prefix frontend run build",
+    "npm --prefix frontend run lint",
+    "node --test frontend/e2e/graph-window.test.mjs",
+    "uv run python -m scripts.candidate_lifecycle evaluate --help",
+    "uv run python -m scripts.candidate_lifecycle promote --help",
+    "uv run python -m scripts.macbook_benchmark accept --help",
+    "git diff --check",
+    "docs/macbook_runbook.md: ordered fresh final registration, selection, promotion, owner Git commands and later full acceptance"
+  ],
+  "safety": {
+    "commit_push_merge_or_publish": false,
+    "large_job_started": false,
+    "previous_final_reopened": false,
+    "existing_data_reports_vaults_images_or_volumes_deleted": false
+  }
+}

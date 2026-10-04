@@ -62,7 +62,7 @@ class LoginRequest(BaseModel):
 class CaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     synthetic: bool = False
-    scoring_mode: str = Field(default="unsupervised", pattern="^(unsupervised|synthetic_demo|validated_candidate)$")
+    scoring_mode: str = Field(default="auto_eligible", pattern="^(auto_eligible|unsupervised|synthetic_demo|validated_candidate)$")
     candidate_domain: str | None = Field(default=None, max_length=128)
 
 

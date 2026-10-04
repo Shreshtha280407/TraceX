@@ -1,0 +1,34 @@
+{
+  "status": "CONTROLLED_UNIT_ONLY",
+  "scope": "Controlled unit intervention, 3 isomorphic 256-TX role fixtures; NOT independent generalization, NOT default-v2 merchant precision or production acceptance",
+  "feature_contract": "causal-structure-recipient-history-v2",
+  "model": {
+    "release_id": "anomaly-stack-candidate-v2-350eb0721b19845c",
+    "eligibility": "synthetic_demo",
+    "payload_sha256": "350eb0721b19845c3891219d314d4e4ddd009d7340644db47442df396602b7eb"
+  },
+  "manifest_sha256": "33c4c175615db2ab98f464b0f84a9ac55693f517994940c690863f0f8e5a7a41",
+  "results": {
+    "review_capacity": 20,
+    "merchant_controls": 86,
+    "candidate_v2": {
+      "precision": 0.95,
+      "merchant_entries": 1
+    },
+    "same_weights_legacy_queue": {
+      "precision": 0.5,
+      "merchant_entries": 10
+    },
+    "preserved_merchant_motif_mean": 1.0
+  },
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

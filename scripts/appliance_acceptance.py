@@ -84,7 +84,7 @@ def main(argv=None):
     parser.add_argument("--min-transactions", type=int)
     parser.add_argument("--max-seconds", type=float)
     parser.add_argument("--expected-release", default="anomaly-stack-v2")
-    parser.add_argument("--scoring-mode", choices=["unsupervised", "synthetic_demo", "validated_candidate"], default="unsupervised")
+    parser.add_argument("--scoring-mode", choices=["auto_eligible", "unsupervised", "synthetic_demo", "validated_candidate"], default="unsupervised")
     parser.add_argument("--candidate-domain")
     parser.add_argument("--user", help="Existing case owner; password requested securely, never logged")
     args = parser.parse_args(argv)

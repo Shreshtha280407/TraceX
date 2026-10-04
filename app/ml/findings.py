@@ -14,9 +14,10 @@ Three boundaries are kept exactly where Phase 4 put them:
   reviewer can reopen the exact raw record;
 * the four Phase 4.1 `risk_*` fields stay out of the model input entirely.
 
-Only the unsupervised layers run here. The supervised layer needs reviewer
-decisions, and until those exist it is a research comparator, not something that
-should be writing into a case.
+This module retains the unsupervised v2 procedure. Frozen candidate dispatch is
+in candidate_findings.py, with independent labelled evaluation and explicit
+domain/quality eligibility. Finding reviews are never automatically converted
+into transaction-wide criminality labels.
 """
 
 from __future__ import annotations

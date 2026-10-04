@@ -18,7 +18,7 @@ def test_four_backend_cli_training_freeze_transfer_stress_and_worst_case(tmp_pat
         quality_matrix.main(["fixture", "--output", str(directory), "--seed", str(i + 1), "--role", role])
         datasets.extend(["--" + role, str(directory), "--" + role + "-truth", str(directory / "ground_truth.json")])
     comparison = tmp_path / "comparison"
-    assert lifecycle.main(["compare", "--protocol", str(protocol), *datasets, "--exclude-family", "independent_equal_outputs", "--output", str(comparison)]) == 0
+    assert lifecycle.main(["compare", "--protocol", str(protocol), *datasets, "--exclude-family", "independent_equal_outputs", "--finding-budget", ".5", "--output", str(comparison)]) == 0
     results = json.loads((comparison / "comparison.json").read_text())
     assert set(results["models"]) == {"hist", "xgboost", "lightgbm", "hybrid"}
     assert not any(results["split_overlap"].values())
@@ -32,14 +32,19 @@ def test_four_backend_cli_training_freeze_transfer_stress_and_worst_case(tmp_pat
     for dataset in (final, shifted):
         report = tmp_path / (dataset.name + ".json")
         assert lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
-            "--dataset", str(dataset), "--truth", str(dataset / "ground_truth.json"), "--output", str(report), "--review-budget", "10"]) == 0
+            "--dataset", str(dataset), "--truth", str(dataset / "ground_truth.json"), "--output", str(report), "--review-budget", "10", "--finding-budget", ".5"]) == 0
         reports.append(report)
         payload = json.loads(report.read_text())
         assert payload["results"]["motif"]["p_at_100"] is None
         assert "retrospective" in payload["baseline"]["procedure"]
+        assert payload["queue_comparison"]["candidate_available_findings"] == 32
     summary = quality_matrix.aggregate(reports, 10)
     assert set(summary["worst_case"]) == set(candidate.TASKS)
     assert summary["status"] == "EVALUATED_NOT_PROMOTED"
+    assert summary["quality_gates_passed"] is False  # 64 rows cannot exercise P@100.
+    for task in candidate.TASKS:
+        assert summary["gates"][task]["p100"] is False
+        assert summary["gate_details"][task]["p100"]["status"] == "NOT APPLICABLE"
     with pytest.raises(FileExistsError):
         lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
             "--dataset", str(final), "--truth", str(final / "ground_truth.json"), "--output", str(tmp_path / "forbidden.json")])

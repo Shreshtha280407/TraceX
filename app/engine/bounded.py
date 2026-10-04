@@ -335,7 +335,7 @@ class FactStore:
         self.con.unregister("_keys")
 
     # ---- ML -----------------------------------------------------------------
-    def ml_facts(self, *, extra_model_bytes=0):
+    def ml_facts(self, *, extra_model_bytes=0, recipient_context=False):
         """The anomaly stack's integer-indexed arrays, built in DuckDB.
 
         Exactly what `app.ml.facts.facts_from_streams` builds from the same
@@ -358,7 +358,9 @@ class FactStore:
         # Includes ID dictionaries, feature matrices and fitting/scoring scratch
         # arrays, not just the compact Facts arrays. This is a conservative
         # supported limit and is recorded with the scoring stage.
-        self.ml_memory_estimate_bytes = int(nt * 1600 + no * 384 + ni * 80 + extra_model_bytes)
+        from app.ml.recipient_history import working_set_bytes
+        context_bytes = working_set_bytes(nt, no) if recipient_context else 0
+        self.ml_memory_estimate_bytes = int(nt * 1600 + no * 384 + ni * 80 + extra_model_bytes + context_bytes)
         native_bytes = max(256, self.plan.memory_budget_bytes // (4 << 20)) * (1 << 20)
         self.ml_joint_memory_estimate_bytes = self.ml_memory_estimate_bytes + native_bytes + (128 << 20)
         admit_global_allocation("ML", self.ml_memory_estimate_bytes, plan=self.plan, native_bytes=native_bytes)

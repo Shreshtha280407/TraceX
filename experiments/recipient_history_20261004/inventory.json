@@ -1,0 +1,26 @@
+[
+  {
+    "file": "result-00.json",
+    "original_sha256": "45eeec7de0a99b5bb9958979b3adb86bb0f2b9baf34eda4feed29881a7313234",
+    "sha256": "9f241a13629c866091842c8cff4fb4200208daee314a9d6078bceafea35ffe36"
+  },
+  {
+    "file": "result-01.json",
+    "original_sha256": "2b1bd0e223246c6d852a7c13b4dbae84305a9300b5fa50701b88dce0ff9c70f8",
+    "sha256": "92005f57352f64e4750597aa8eec8ef956fad1a5922f4f44a745c26a9568ff8e"
+  },
+  {
+    "file": "tests-00.json",
+    "original_sha256": "66845e6d4aad83deb9833a259815b446e3f381534691785b6cdac83184136506",
+    "sha256": "ba7b60582ae0150daeb2b01c0fa70b71491e080e4139d0c0b14d7de4c93f04da"
+  },
+  {
+    "file": "verification.json",
+    "scope": "Final tool-observed checks and source/lock identity",
+    "sha256": "2fdd4dd8706067a688d10c973fc4f789b38e44d7c334aa081df919264ed2b73a"
+  },
+  {
+    "file": "README.md",
+    "sha256": "24ea99f007e91941bfdbfebf8dab026867a0b3483a786b02fabf31fda5b6ba0d"
+  }
+]

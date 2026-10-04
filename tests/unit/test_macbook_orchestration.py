@@ -37,6 +37,11 @@ def test_native_arm_preflight_checks_actual_worker_budget_not_host_ram(tmp_path,
     monkeypatch.setattr(appliance_acceptance, "request", lambda *a, **k: {"status": "ready"})
     args = SimpleNamespace(context="default", project="tracex-benchmark-test", install=tmp_path, counts=None, source=None, base="http://localhost:8000")
     assert orchestration.preflight(args)["status"] == "ADMITTED_NOT_RUN"
+    runtime["candidate_configured"] = True
+    runtime["candidate_admission"] = {"status": "failed", "error": "test integrity mismatch"}
+    blocked = orchestration.preflight(args)
+    assert blocked["status"] == "BLOCKED" and any("candidate integrity" in error for error in blocked["errors"])
+    runtime["candidate_configured"] = False
     runtime["resource_plan"]["memory_budget_bytes"] = 5 << 30
     report = orchestration.preflight(args)
     assert report["status"] == "BLOCKED" and any("memory admission" in error for error in report["errors"])

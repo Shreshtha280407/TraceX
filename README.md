@@ -8,8 +8,15 @@ The 2026-10-03 reviewed release was subsequently committed as `d88af37`.
 See [current implementation report](docs/integrated_implementation_2026-10-04.md)
 and [executable MacBook runbook](docs/macbook_runbook.md). Fresh 3M/<1800s
 acceptance and new candidate generalization gates are **NOT RUN**.
-The current scoring baseline remains `anomaly-stack-v2`; synthetic research
-results do not automatically promote a supervised model. See
+New API/UI cases default to `auto_eligible`: an installed, quality-approved
+candidate is used automatically for its declared approved data domain; missing
+approval, unknown domain or incompatible weights retain `anomaly-stack-v2`.
+Synthetic/demo candidates still require explicit opt-in. The new versioned
+recipient-history/contrast queue reduced merchant-control entries in a controlled
+unit test; representative real-case merchant precision remains **unverified**.
+No real-case candidate has been promoted. See the [scoring/deployment follow-up](docs/recipient_history_and_deployment_2026-10-04.md)
+and [quality-matrix reporting correction](docs/quality_matrix_reporting_2026-10-04.md)
+for fail-closed missing-metric handling. See
 [`docs/implementation_checkpoint_2026-10-03.md`](docs/implementation_checkpoint_2026-10-03.md)
 for the historical steps 1–5 checkpoint and
 [`docs/implementation_acceptance_2026-10-03.md`](docs/implementation_acceptance_2026-10-03.md)
@@ -431,11 +438,11 @@ All rules live in `app/engine/findings/deterministic.py` and `app/engine/motifs/
 
 The `coinjoin_like_structure` result is an observable shape only and does not assert CoinJoin or mixing activity. Peeling continuation selection is a structural convention, not a change-output inference.
 
-**Score scale.** The three address-window rules score on 0–100 while the three motif detectors score on 0–1. Findings from both families are sorted together by raw score when ranks are assigned (`candidates.sort`), so ranks compare unlike scales; this is consistent with the deterministic ranks reported in `docs/phase7.md` (2013 and 2024 of 2124 for two CoinJoin-like findings). Treat `rank` across rule families with caution.
+**Score scale and review order.** Address-window rules score on 0–100 and motif detectors on 0–1; these are not comparable cross-family risk scales. The current review API/UI uses `family-context-round-robin-v2`: independent rule/version/snapshot family ranks, round-robin inside reviewer workflow bands, stable ties and no raw-score comparison across families. Legacy stored ranks remain for provenance; the global ranks in `docs/phase7.md` describe the historical release. The separate ML transaction queue has its own versioned policy and does not hide findings outside that queue.
 
 ### 8.4 Anomaly stack
 
-Release `anomaly-stack-v1` (`app/ml/findings.py`) runs **layer A (global)** and **layer D (burst)** and fuses them.
+Eligible unsupervised fallback `anomaly-stack-v2` (`app/ml/findings.py`) runs **layer A (global)** and **layer D (burst)** and fuses them. Automatic approved routing does not alter this fallback procedure.
 
 | Element | Implementation |
 | --- | --- |
@@ -444,12 +451,12 @@ Release `anomaly-stack-v1` (`app/ml/findings.py`) runs **layer A (global)** and 
 | Layer D | Per motif family (`coinjoin_like`, `peel_step`), a Poisson EWMA control statistic over 900-second count buckets (half-life 96 buckets). Bayesian online change-point posteriors are computed and stored in layer detail; the per-transaction score uses the EWMA burst statistic. Only transactions belonging to a family carry that family's burst score |
 | Family membership | Derived from structural predicates (at least 3 inputs, 3 outputs and 3 equal outputs within 100 sat; or a one-large-one-small output shape). Layer D therefore inherits part of the deterministic rule's predicate |
 | Fusion | Per-layer empirical-CDF p-values fitted on reference rows, weighted Stouffer combination (equal weights), threshold at the reference quantile matching the review budget (default 1%) |
-| Temporal assumption | Reference set is the earliest 70% of the snapshot's transactions by time. Every feature uses only facts at or before its transaction's timestamp; equality of features under truncation is checked by property tests (`truncate_facts` in `tests/unit/test_anomaly_stack.py`) |
+| Temporal assumption | Reference set is the earliest 70% by time. Deployed v2 D is retrospective: completed containing buckets and future-dependent initialization are not causal prior-history inference. Only the separately versioned candidate causal contract uses strictly prior parents/recipient history and prior completed buckets; small cutoff tests do not establish large-scale parity. |
 | Fitting | Dynamic refit per snapshot; **no static model artifact exists**. `release_identity()` and `release_manifest_sha256()` identify the frozen procedure; `model_run_id` is deterministic in release, snapshot and budget |
 | Minimum data | Snapshots with fewer than 50 transactions are not scored |
 | Flagging | All rows scoring at or above the reference threshold are written, including reference rows; the budget is therefore a calibration target, not a hard cap on the queue |
 
-Research-only legacy components include layers B (Kaplan–Meier spend latency), C (empirical-Bayes history), E (bounded graph features), HBOS and legacy layer S. The new frozen-candidate lifecycle compares HistGradientBoosting, XGBoost, LightGBM and a hybrid on the same versioned causal feature contract. Its actual application inference is explicitly case-mode gated: synthetic/demo only unless the owner records a representative-label applicability approval for an exact domain. It does not train on finding reviews or import truth labels. Default scoring remains unsupervised v2 with retrospective D. See the [runbook](docs/macbook_runbook.md) for training, freezing, transfer evaluation and optional installation; no candidate has been promoted by this implementation.
+Research-only legacy components include layers B (Kaplan–Meier spend latency), C (empirical-Bayes history), E (bounded graph features), HBOS and legacy layer S. The frozen-candidate lifecycle compares HistGradientBoosting, XGBoost, LightGBM and a hybrid on a versioned causal feature contract. New v2 candidates include strictly prior recipient history and use a separate review-contrast priority; old v1 artifacts retain their original features and max(motif,surge) queue. New cases automatically select an installed approved candidate only for a declared matching domain with measured promotion gates; unknown/ineligible cases retain unsupervised v2 with retrospective D. Synthetic/demo mode remains explicit. Training does not derive criminality labels from finding reviews or import truth into inference. See the [runbook](docs/macbook_runbook.md); no real-case candidate was promoted here.
 
 ### 8.5 Explainability and evidence traceability
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -106,26 +107,112 @@ def stress(source, output, variant, seed):
         "limitation": "source labels retained; review task-label validity after timing/value/reuse perturbation; not independent populations"})
 
 
+def metric_observation(report, task, field, budget, path):
+    """Never turn an absent measurement into zero or assume its applicability."""
+    row = report.get("results", {}).get(task, {})
+    population = row.get("population")
+    known_population = isinstance(population, int) and not isinstance(population, bool) and population >= 0
+    observation = {"dataset": report.get("dataset", path.stem), "report": path.name,
+        "population": population, "status": "NOT EVALUABLE", "value": None}
+    if not row or row.get("status") == "no labelled observations" or (known_population and population == 0):
+        observation["reason"] = "No labelled observations or task results; required metrics cannot be evaluated."
+        return observation
+    if field == "p_at_100":
+        if not known_population:
+            observation["reason"] = "P@100 applicability is unknown: a labelled population count is required."
+            return observation
+        if population < 100:
+            observation.update(status="NOT APPLICABLE", reason=f"P@100 requires at least 100 labelled observations; population is {population}.")
+            return observation
+    if field in {"p_at_review_budget", "recall_at_review_budget"}:
+        if budget == 0:
+            observation.update(status="NOT APPLICABLE", reason="Reviewer capacity is zero; reviewer-budget metrics are not applicable.")
+            return observation
+        if row.get("review_budget") is None:
+            observation["reason"] = "Recorded reviewer capacity is missing; review-budget metrics are not comparable."
+            return observation
+        if known_population and population < budget:
+            observation["reason"] = f"Population {population} cannot exercise the required reviewer capacity {budget}."
+            return observation
+    if field in {"ap", "recall_at_review_budget", "minimum_ap_delta"} and row.get("prevalence") == 0:
+        observation["reason"] = "No positive labels for this task; AP, recall and AP comparison are not evaluable."
+        return observation
+    if field == "minimum_ap_delta" and metric_observation(report, task, "ap", budget, path)["status"] != "OBSERVED":
+        observation["reason"] = "Candidate AP is not measurable; an AP-regression comparison cannot be verified."
+        return observation
+    value = report.get("comparison", {}).get(task, {}).get("ap_delta") if field == "minimum_ap_delta" else row.get(field)
+    if value is None:
+        observation["reason"] = f"Required metric {field} is missing/null."
+        return observation
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        observation["reason"] = f"Required metric {field} is not a finite numeric measurement."
+        return observation
+    if field == "benign_false_positives":
+        valid = isinstance(value, int) and value >= 0
+    else:
+        valid = (-1 if field == "minimum_ap_delta" else 0) <= value <= 1
+    if not valid:
+        observation["reason"] = f"Required metric {field} is outside its valid range."
+        return observation
+    observation.update(status="OBSERVED", value=value)
+    return observation
+
+
 def aggregate(paths, budget):
+    if not paths:
+        raise ValueError("at least one evaluation report is required")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
+        raise ValueError("review budget must be a nonnegative integer")
     reports = [json.loads(path.read_text()) for path in paths]
     releases = {row["model"]["release_id"] for row in reports}
     if len(releases) != 1:
         raise ValueError("worst-case summary must compare one frozen candidate release")
-    if any(row.get("review_budget") != budget for report in reports for row in report["results"].values()):
+    if any(row.get("review_budget") is not None and row["review_budget"] != budget
+           for report in reports for row in report.get("results", {}).values()):
         raise ValueError("review budgets differ; cannot silently compare different analyst capacities")
-    worst, gates = {}, {}
+    worst, gates, details, coverage = {}, {}, {}, {}
+    fields = ("ap", "p_at_100", "p_at_review_budget", "recall_at_review_budget", "benign_false_positives", "minimum_ap_delta")
+    thresholds = {"ap_preferred": ("ap", .85), "ap_stretch": ("ap", .90),
+        "p100": ("p_at_100", .90), "no_ap_regression": ("minimum_ap_delta", 0)}
     for task in TASKS:
-        rows = [report["results"][task] for report in reports]
-        worst[task] = {field: min((row[field] for row in rows if row.get(field) is not None), default=None) for field in ("ap", "p_at_100", "p_at_review_budget", "recall_at_review_budget")}
-        worst[task]["max_benign_false_positives"] = max((row.get("benign_false_positives") or 0 for row in rows), default=0)
-        delta = [report.get("comparison", {}).get(task, {}).get("ap_delta") for report in reports]
-        worst[task]["minimum_ap_delta"] = min((value for value in delta if value is not None), default=None)
-        gates[task] = {"ap_preferred": worst[task]["ap"] is not None and worst[task]["ap"] >= .85,
-            "ap_stretch": worst[task]["ap"] is not None and worst[task]["ap"] >= .90,
-            "p100": "NOT APPLICABLE" if worst[task]["p_at_100"] is None else worst[task]["p_at_100"] >= .90,
-            "no_ap_regression": worst[task]["minimum_ap_delta"] is not None and worst[task]["minimum_ap_delta"] >= 0}
-    return {"status": "EVALUATED_NOT_PROMOTED", "procedure": "frozen-transfer per-dataset summaries; AP is not accuracy; no automatic universal/generalization certification",
+        worst[task], gates[task], details[task], coverage[task] = {}, {}, {}, {}
+        for field in fields:
+            observations = [metric_observation(report, task, field, budget, path)
+                for path, report in zip(paths, reports, strict=True)]
+            values = [item["value"] for item in observations if item["status"] == "OBSERVED"]
+            incomplete = any(item["status"] == "NOT EVALUABLE" for item in observations)
+            status = "INCOMPLETE" if incomplete else "COMPLETE" if values else "NOT APPLICABLE"
+            coverage[task][field] = {"status": status, "datasets": observations}
+            output_field = "max_benign_false_positives" if field == "benign_false_positives" else field
+            reducer = max if field == "benign_false_positives" else min
+            # A partial minimum/maximum is not the worst dataset for the matrix.
+            worst[task][output_field] = reducer(values) if status == "COMPLETE" else None
+        for name, (field, threshold) in thresholds.items():
+            metric = coverage[task][field]
+            value = worst[task][field]
+            if metric["status"] == "INCOMPLETE":
+                status = "NOT EVALUABLE"
+            elif metric["status"] == "NOT APPLICABLE":
+                status = "NOT APPLICABLE"
+            else:
+                status = "PASS" if value >= threshold else "FAIL"
+            gates[task][name] = status == "PASS"
+            details[task][name] = {"status": status, "metric": field, "value": value, "threshold": threshold,
+                "reasons": [item for item in metric["datasets"] if item["status"] != "OBSERVED"]}
+    incomplete = any(metric["status"] == "INCOMPLETE" for task in coverage.values() for metric in task.values())
+    queue_coverage = []
+    if any("queue_comparison" in report for report in reports):
+        for report in reports:
+            queue = report.get("queue_comparison", {})
+            queue_coverage.append({"dataset": report["dataset"], "status": queue.get("status", "NOT EVALUABLE"),
+                "reasons": queue.get("reasons", ["Product queue comparison is missing."] if not queue else []),
+                "eligible_transactions": queue.get("eligible_transactions"), "labelled_transactions": queue.get("labelled_transactions")})
+        incomplete = incomplete or any(row["status"] != "EVALUATED" for row in queue_coverage)
+    return {"schema": "quality-matrix-v2", "status": "INCOMPLETE" if incomplete else "EVALUATED_NOT_PROMOTED",
+        "quality_gates_passed": not incomplete and all(passed for task in gates.values() for passed in task.values()),
+        "procedure": "frozen-transfer per-dataset summaries; AP is not accuracy; no automatic universal/generalization certification",
         "model": {"release_id": next(iter(releases))}, "results": reports, "worst_case": worst, "gates": gates,
+        "gate_details": details, "metric_coverage": coverage, "queue_coverage": queue_coverage,
         "matrix_coverage": {"datasets": [row["dataset"] for row in reports], "review_budget": budget,
             "limitations": "require independent authored positives, varied prevalence, unseen families and representative labels; stress copies are correlated; benign FP/calibration acceptability is an owner judgement"}}
 
@@ -144,7 +231,7 @@ def main(argv=None):
     variant.add_argument("--protocol", type=Path, required=True)
     variant.add_argument("--variant", choices=VARIANTS, required=True)
     variant.add_argument("--seed", type=int, required=True)
-    summary = sub.add_parser("aggregate")
+    summary = sub.add_parser("aggregate", description="Save a fail-closed quality summary: exit 0 for all threshold gates passing, 1 for failed/unexercised gates, 2 for incomplete metrics. No automatic promotion.")
     summary.add_argument("--result", type=Path, action="append", required=True)
     summary.add_argument("--output", type=Path, required=True)
     summary.add_argument("--review-budget", type=int, default=100)
@@ -183,8 +270,12 @@ def main(argv=None):
             parser.error("stress final must be reserved before selection")
         stress(args.source, args.output, args.variant, args.seed)
     else:
+        report = aggregate(args.result, args.review_budget)
         with args.output.open("x") as stream:
-            json.dump(aggregate(args.result, args.review_budget), stream, indent=2)
+            json.dump(report, stream, indent=2)
+        if report["status"] == "INCOMPLETE":
+            return 2
+        return 0 if report["quality_gates_passed"] else 1
     return 0
 
 
