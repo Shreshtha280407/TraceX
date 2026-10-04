@@ -1,0 +1,332 @@
+{
+  "status": "BLOCKED",
+  "large_run": "NOT RUN",
+  "errors": [
+    "global/native/scratch memory admission rejected; choose a safe budget/VM allocation, do not skip a stage",
+    "Docker evidence filesystem lacks conservative source/scratch/WAL/reserve space",
+    "host filesystem lacks conservative preparation/run space",
+    "actual PostgreSQL/Docker filesystem lacks conservative run space"
+  ],
+  "counts_scope": "ESTIMATED METADATA ONLY; exact source counts still required",
+  "admission_counts": {
+    "transactions": 1000000,
+    "inputs": 1500000,
+    "outputs": 2700000
+  },
+  "warnings": [],
+  "host": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.44",
+    "machine_model": null,
+    "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+    "logical_cpus": 12,
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "memory": {
+      "physical_bytes": 16366317568,
+      "available_bytes": 5387034624,
+      "method": "psutil.virtual_memory",
+      "available_is_estimate": false
+    },
+    "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages."
+  },
+  "docker_vm": {
+    "Architecture": "x86_64",
+    "MemTotal": 16366317568,
+    "NCPU": 12,
+    "ServerVersion": "29.7.2",
+    "OperatingSystem": "Arch Linux",
+    "separate_vm": false
+  },
+  "worker": {
+    "pid1_rss_bytes": 318382080,
+    "pid1_tree_rss_bytes": 318382080,
+    "cgroup": {
+      "memory.max": "max",
+      "memory.current": "257155072",
+      "memory.peak": "287662080",
+      "cpu.max": "max 100000"
+    },
+    "effective_available_bytes": 5387935744,
+    "scope": "actual worker Linux environment; child RSS can double-count shared pages",
+    "host": {
+      "system": "Linux",
+      "architecture": "x86_64",
+      "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.41",
+      "machine_model": null,
+      "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+      "logical_cpus": 12,
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "memory": {
+        "physical_bytes": 16366317568,
+        "available_bytes": 5253767168,
+        "method": "proc_meminfo",
+        "available_is_estimate": false
+      },
+      "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages."
+    },
+    "resource_plan": {
+      "total_memory_bytes": 16366317568,
+      "available_memory_bytes": 5259501568,
+      "memory_budget_bytes": 3670016000,
+      "cpu_count": 12,
+      "insert_chunk_rows": 17920,
+      "duckdb_memory_limit_mb": 1750,
+      "duckdb_threads": 12
+    },
+    "unsupervised_fallback_scorer": {
+      "release_id": "anomaly-stack-v2",
+      "layers": [
+        "A_global",
+        "D_burst"
+      ],
+      "fusion_method": "stouffer",
+      "default_review_budget": 0.01,
+      "training_seed": 42,
+      "layer_a_score": "isolation_forest ranks; ECOD per-feature contributions as attribution",
+      "feature_contract_version": "anomaly-stack-v2",
+      "feature_columns_sha256": "f06f0f171479affef70a7284da4f126c1c3b8ea9677f9e82561dc489f77f7eec",
+      "fitting_strategy": "dynamic: refit on each snapshot's own earliest reference_fraction of transactions at scoring time; no static model artifact is loaded or shipped"
+    },
+    "default_selection_policy": "auto_eligible: exact approved data domain and measured queue gates, otherwise v2",
+    "requested_workers": "1",
+    "effective_workers": 1,
+    "ml_enabled": true,
+    "geoip_integrity": {
+      "status": "verified",
+      "files_verified": 16,
+      "sources": [
+        {
+          "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv4.csv",
+          "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f",
+          "bytes": 14120487,
+          "kind": "country",
+          "rows_v4": 355800,
+          "rows_v6": 0,
+          "licence": "CC-BY-4.0",
+          "attribution": "IP Geolocation by DB-IP (https://db-ip.com)"
+        },
+        {
+          "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv6.csv",
+          "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f",
+          "bytes": 14120487,
+          "kind": "country",
+          "rows_v4": 0,
+          "rows_v6": 345868,
+          "licence": "CC-BY-4.0",
+          "attribution": "IP Geolocation by DB-IP (https://db-ip.com)"
+        },
+        {
+          "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv4.csv",
+          "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f",
+          "bytes": 16517602,
+          "kind": "asn",
+          "rows_v4": 394519,
+          "rows_v6": 0,
+          "licence": "PDDL-1.0",
+          "attribution": "IPtoASN (https://iptoasn.com)"
+        },
+        {
+          "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv6.csv",
+          "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f",
+          "bytes": 16517602,
+          "kind": "asn",
+          "rows_v4": 0,
+          "rows_v6": 94917,
+          "licence": "PDDL-1.0",
+          "attribution": "IPtoASN (https://iptoasn.com)"
+        }
+      ]
+    },
+    "candidate_configured": false,
+    "candidate_manifest_sha256": null,
+    "evidence_filesystem": {
+      "total": 216105816064,
+      "used": 194574094336,
+      "free": 10479575040
+    },
+    "versions": {
+      "duckdb": "1.5.5",
+      "pyarrow": "23.0.1",
+      "numpy": "2.4.6",
+      "scikit-learn": "1.9.1",
+      "scipy": "1.17.1",
+      "SQLAlchemy": "2.1.1",
+      "psycopg": "3.3.6"
+    },
+    "code_sha256": {
+      "app/__init__.py": "13dc5f69d13f9b5459f2d7b197b658a9f74f59a4b1d1c4b16f7b3f12af89f86b",
+      "app/api/__init__.py": "d93b5f927d5548a8ac36fcb08ff9ea4d61844066f86244c9564b8b01c01428b4",
+      "app/api/analysis_routes.py": "fe6a6f098e6e3b84a66998ac361ff3cb63aee0c2bb58a8f8ec547515cac2b3b1",
+      "app/api/analytics_routes.py": "708675a88634299439e8b924c79f10e7429f825151affcc5b876405c4a34fe07",
+      "app/api/group_routes.py": "6d77e7d0398915916d03b439666642ef5b00ce54fbcc869dfd529196c4c1c051",
+      "app/api/routes.py": "55b58f92177d380c56e193d1ec769146651e9656e5987c646f3adae1669435d5",
+      "app/auth/__init__.py": "e027eb0235b3e0047e1993e9862199e7071f1480c85d5f3def83897198045940",
+      "app/auth/dependencies.py": "41cf7fc13f110beff4abb28af384e9b5a9a40885b4e28d92ac9045c06442c19a",
+      "app/auth/security.py": "fc8d8cbfcb79e0787c4d27a9184850b5c0548a6d8837ea80f5675fe955f78935",
+      "app/config.py": "cde8f04387ce8fc3aef366ee562d6560ad2188720276fc18ec1002c79e60c466",
+      "app/db.py": "1f1ab5f656f15349c51647f20fae283499730adccf13d21cdd0176dfed9be833",
+      "app/engine/__init__.py": "90e8784103bbb278eaceee5a5e00e2117b7a5e16798052096cd9efbc96becca5",
+      "app/engine/adapters/__init__.py": "68ebf05e6d94a746e36f7046acddd71610253d25ac2fbf28a85d2387f25f7310",
+      "app/engine/adapters/source.py": "82ba2e5e2e6e40619088ad68bef6bfff7c7606053d93a23e6c716334ab3ac7c1",
+      "app/engine/analytics.py": "072ff6553ac54e53fb74946baf92e424d8f4fba51b0cafa3957e1cbe7ea50254",
+      "app/engine/bounded.py": "c1a8fac404ee3ef07dc064085652d08f733a8c1169f71afa0c219ab82a735aa8",
+      "app/engine/canonical/__init__.py": "5c3ea36121df3439efddc359be43c158fd1a337f2ddd3dfcebba4c8ccfcbb015",
+      "app/engine/canonical/batch.py": "364d8a8ec504a9bbe862cc79a7e39fdf8254eb49db1b40a399e8bf59b77cee4b",
+      "app/engine/canonical/normalize.py": "b68bf88f2ab66388468225558e986a4dbf15023043be597292fd3399bc95c0e8",
+      "app/engine/canonical/profiles.py": "658e585040610cffe7d7baa233e4eb5249bcd637ec40a95cde186c0da6474a5c",
+      "app/engine/catalogue/__init__.py": "3cf0a26670c3074c5ff1522dec6234b9550b782862b0e542036cc8fb0f871190",
+      "app/engine/catalogue/fragments.py": "23304dda8901774966fcb11ef18879cf304217352dfaa5f8c1e679276990277b",
+      "app/engine/confidence.py": "de9cd633a7eae4a81e6e1dfc8e244924614ab49cc479399d5d49bcbffd9f6915",
+      "app/engine/dataset_cli.py": "5372d8d1135c05a99e9cf0d752b87260407ccb7a48dc404ffdf3b12370cd9ae1",
+      "app/engine/evidence.py": "c6e9bbdabe8183bdd28183043651b13fd9e85dd84ec7f60fbc45a8fd18cea48b",
+      "app/engine/feature_store.py": "0eada05f111ce1ec4a2d0fb2f2287298d4f75f58ed3424b4e90670974750e9c9",
+      "app/engine/findings/__init__.py": "dc41e312c606942f39d00b651de2ff84d291792ffe75cc1f455b8c7e2a3d1200",
+      "app/engine/findings/deterministic.py": "8d4cf4e3d89b1412d76afb8c9706c92ac575cf72ab17f6bfba20ce50fc646acb",
+      "app/engine/geoip.py": "d87d0b196104d321d027429867cfbf9a23f68cba509a0b720f1f3d7ffd98a2d1",
+      "app/engine/graph/__init__.py": "f1c0ca402f1123f3a7e7fabd19cc3db03d6f92455ef6ff3b4ea2fbf626e6ad64",
+      "app/engine/graph/builder.py": "ecff3fa28a1c95c0161ed0f7547e59e2720766fadd7013a1bc091133ae757eb4",
+      "app/engine/graph/query.py": "f50b1c5c4d16476d64ea8b0fd719419ca05d1cac67ec648bf2834409ea74767e",
+      "app/engine/ingestion/__init__.py": "c3a413e31b7e6b916587c388c5a9c859fa16785feca45ce022cee535c2daea65",
+      "app/engine/ingestion/pipeline.py": "b0b71872205f9c76023db150ce871ef60d77a843d9487ba9e398205cf1a581bd",
+      "app/engine/investigations.py": "184dcebd75ae454525562ec6bd5af80cfc99af6b727b2da6b2affe86eb8f093a",
+      "app/engine/motifs/__init__.py": "56822cb4aa2b8693cca0fd1edd0891c214adf28d26e1192193baf48245f0f110",
+      "app/engine/motifs/deterministic.py": "3c8ef395a9b4790454055c49475d78abd320d33ab72f1fab65379e3caf1b1d6d",
+      "app/engine/process_pool.py": "5413486acc56f16b8dec4645470ca96954ef5cd92b8ae9a997a149a06e844892",
+      "app/events.py": "d3b42783ef151b36f6534b31bb9fa9ac32f80c9477161e5b9f5357f60a3ca75e",
+      "app/jobs/__init__.py": "a6dc15e5382828746581952565afdb88b4dc6d742a984ce8ea7838aad27c3825",
+      "app/jobs/analysis.py": "89617fba824cf66b1c4168389ba042b0357c60d76a33f937ae44f6bbb1572333",
+      "app/jobs/service.py": "589471ef09826c0a5c6bd78e8b6a6f202bb5d3dea7627a62a37f7226341c0b87",
+      "app/main.py": "c0e04f9ef9f557d09d390655cb8829f69e405458f78454e2e2b7a173338f6d59",
+      "app/ml/__init__.py": "b6a993e4a0c5f8251d18d47b02e8f692240049fc6fc0f86931ed7d3ac506a34d",
+      "app/ml/analyst_labels.py": "b1eb686c7d1718ecd26b72b0358167ac4cc8f78de5740c6b9a1704b0397deb82",
+      "app/ml/candidate.py": "ceec54a3812387c0077871d086671c760756df977229395fd303533a96a9465b",
+      "app/ml/candidate_findings.py": "c4351998a2264410e0035cd6a017f384d01ac9a8121b658b1301bab2273512de",
+      "app/ml/detectors.py": "a8cc84a86338064fb9925c36ba9c224d1fef8bab6123a4afdb4be7a7e0eeb5a0",
+      "app/ml/evaluate.py": "5e2b242de71f475353819c886eec2e9ba0e1b82fa9a195eaf1e39ba995561dcc",
+      "app/ml/evaluation_identity.py": "bd6e905d90f569b21b6d974fbcdefadaa809845e03f48f0cc430d782c43b87b1",
+      "app/ml/facts.py": "a5394c1bab19c9c45d71fd4a9affe2c37b56cbb382f4ec7b9fc69dcc5ef6045d",
+      "app/ml/findings.py": "675acab2bca6f96698a8ba178dce08e077825f02f97e27755f93a227681fdd1d",
+      "app/ml/fusion.py": "a9701d269018a6e41264eb6300ed470b9de6d869eb4c0b6c0b17b8faaefa4e26",
+      "app/ml/grains.py": "e68171a2cba6926253495ff9e66852b1fae2b170bc736668c4cc18cb383b857e",
+      "app/ml/layers.py": "44627f60ee4112a649958ca2a9ca6477a2652e11f0f6d6ecd138bae65fb8dd62",
+      "app/ml/promotion.py": "5ad3dbb94f3942a2993c5210ce1fcda5ffa439f7c8a7fc121612570f3e1890ac",
+      "app/ml/recipient_history.py": "6772ad4c4095d46fdc0bc51785ea24d26558eeec91f29a56872375266409a87e",
+      "app/ml/stack.py": "1e7fb3252a3e0263823c9547516bb0967daf54a91e4942ceaf78260fae64c38f",
+      "app/ml_release_constants.py": "a56aa783dfe1014c786e14d7fb1262d25180d0f11f4da0d3c97a812319029d2a",
+      "app/models.py": "abdc45c91a13dee48fcece2130e7a2b59ffccab442c801e21e70802daf57d8f0",
+      "app/resources.py": "cf267cc4e761f6cf0f9169b2d6135c2a30d581b94bfa3082b94c7a3d51cc77cd",
+      "app/storage/__init__.py": "ac05eda8f48d944c77e43c83e0d39c8ebc9c4abb35a49ea064bcd50ded2a520f",
+      "app/storage/raw.py": "331bcd77a1b509534b96d1216c8a34c8dc12eab244a87ac476e625343196f80b",
+      "app/telemetry.py": "4220463394b0d84d6ef8350f8036878086ddedd88d045eb5a04a187d43b85def",
+      "workers/__init__.py": "8b491c878ff53e5a814e2f68edefad26ac096a1b9710423bec5d93a6105a8a3c",
+      "workers/runner.py": "033ae80e373e7b56e58c977ce93848cbf72413afbcc14354ad8d86794a866e4d"
+    },
+    "native_threads": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1"
+    },
+    "geoip_files": {
+      "compiled/asn_v4.start": "5e305de6bd5f81e96494496ba0c39f932584f3a0cbf553538f6b14b84487b968",
+      "compiled/country_v6.start": "0c0783719c2129b6eb88d10e362671ae7a11019ba844803cfc4f32ccc1f53a85",
+      "compiled/asn_v6.start": "2ae6e6abac237a470e366d02de979288e50e7ba3f2a4921b914b37ed955696e1",
+      "compiled/asn_v4.end": "f666f9caaf221c75f98a35dcfbcebb6b4663b6fbf147297eec30cc524b90b71d",
+      "compiled/asn_orgs.json": "2ab67f55c6b59fff8322cdcd767939e25e0be1507a22bbb8cf6eed6481bc9d4f",
+      "compiled/country_v6.end": "772c444cc964538e799abcca5b64e26fc87479ad87a3a0f2ca060e60d889d496",
+      "compiled/manifest.json": "b095441a3f5106a8694dd246fc7044e30b906e6ebd94d284dd940b5c17e2ba57",
+      "compiled/country_v4.value": "48025c29935b714df31c9607f55122f945d1ebd42c8f2c49d302709793bd8162",
+      "compiled/country_v6.value": "9274d563f9cf275175fd20f26f9651964b938a58b3df56252e694b3f58c34d24",
+      "compiled/country_v4.end": "9a8d0edd04f22260ca46530813779bb4aecdaa2edabad76d28a22c686f44e3dc",
+      "compiled/asn_v6.org": "35f6cc25c2f87fdad2a1243bfa4e059c757bdd9b0469a5fb317b8618ec41f414",
+      "compiled/asn_v6.value": "72170fc535c5d21a9ecf036df492f01f7282d14858392c5d81c1368fc49b47d2",
+      "compiled/country_v4.start": "95dc83c850ce5c7e7b4aa9fe021c3ec7094aa15850d97cd338d8e992dd33bddd",
+      "compiled/asn_v6.end": "40221e9d914e028c21bc08c71c9922dd2b01b52c5cd0775f39cad8c76b6549f6",
+      "compiled/asn_v4.org": "96ff1abf623b8a7a536434e55b3d59fd1c9f70896d33f31a8fad7b0f2f278647",
+      "compiled/asn_v4.value": "1e97e12697e1126a93990cba90b9a45ec69730aa7a35b429f85f53d63932f6c2",
+      "compiled/SHA256SUMS": "ca15e424a33b348ee9fe958b47b42b1e2e5e8604513900878d3e1f15ec2ce78e"
+    },
+    "estimates": {
+      "ml_global_bytes": 2756800000,
+      "ml_joint_bytes": 3808521728,
+      "candidate_extra_bytes": 0,
+      "analytics_joint_bytes": 1970121728,
+      "risk_joint_bytes": 2856521728,
+      "dense_fact_array_bytes": 140300000,
+      "scratch_bytes": 12536870912,
+      "scope": "Conservative admission estimates, not measured peaks; no large arrays allocated"
+    },
+    "new_case_scorer_policy": "auto_eligible; declared approved domain and measured gates, otherwise v2 fallback"
+  },
+  "image": {
+    "Id": "sha256:5699ef7175cceb6eeb69e89a5f4ff34d8698701e1c24d44f960216e5f253a844",
+    "Architecture": "amd64",
+    "Os": "linux",
+    "RepoTags": [
+      "tracex-group-review:20261004-08"
+    ]
+  },
+  "container_memory_limit": 0,
+  "disk_required_bytes": 46200547328,
+  "containers": {
+    "worker": {
+      "image_architecture": "amd64",
+      "memory_limit": 0
+    },
+    "api": {
+      "image_architecture": "amd64",
+      "memory_limit": 0,
+      "image_id": "sha256:5699ef7175cceb6eeb69e89a5f4ff34d8698701e1c24d44f960216e5f253a844"
+    },
+    "postgres": {
+      "image_architecture": "amd64",
+      "memory_limit": 0,
+      "image_id": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea"
+    }
+  },
+  "postgres_version": "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "postgres_filesystem_free_bytes": 10479460352,
+  "recommendations": {
+    "worker_budget_ceiling_mb": 3500,
+    "docker_vm_upper_recommendation_mb": null,
+    "basis": "time-varying availability; retain OS and PostgreSQL/API headroom; native Linux has no separate Docker VM allocation"
+  },
+  "network_scope": "Mac loopback UI routing is NOT native-Linux strict internal-network isolation evidence",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

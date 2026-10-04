@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.events import append_event
 from app.models import AnalysisStage
 
-REQUIRED_STAGES = ("source_verification", "ingesting", "graph_building", "findings", "ml_scoring", "analytics")
+REQUIRED_STAGES = ("source_verification", "ingesting", "graph_building", "findings", "ml_scoring", "analytics", "investigation_grouping")
 SUCCESS = {"complete", "written", "no_rows_flagged"}
 
 

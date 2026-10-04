@@ -1,0 +1,50 @@
+{
+  "schema": "frontend-check-summary-v1",
+  "status": "PASS_WITH_WARNINGS",
+  "scope": "Final local grouped-review frontend; no large-data browser rendering claim",
+  "checks": [
+    {
+      "command": "node_modules/.bin/tsc -b --pretty false",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "npm run build",
+      "status": "PASS",
+      "exit_code": 0,
+      "javascript_bundle_kb": 449.92
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS_WITH_WARNINGS",
+      "exit_code": 0,
+      "reason": "Existing React set-state-in-effect, purity and Fast Refresh warnings remain; not a warning-free certification."
+    },
+    {
+      "command": "node --test e2e/graph-window.test.mjs",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests": 1
+    },
+    {
+      "command": "npm run typecheck",
+      "status": "UNSUPPORTED_ALIAS",
+      "exit_code": 1,
+      "reason": "No typecheck npm script exists. The actual tsc -b command and build both succeeded; no guessed alias is required."
+    }
+  ],
+  "limitations": [
+    "Unrelated pre-existing frontend styling was preserved.",
+    "Browser behavior is separately recorded by the actual 65-check small acceptance report."
+  ],
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

@@ -157,7 +157,7 @@ def main(argv=None) -> int:
     parser.add_argument("--poll-timeout", type=float, default=10)
     parser.add_argument("--startup-timeout", type=float, default=30)
     parser.add_argument("--sample-seconds", type=float, default=1)
-    parser.add_argument("--required-stages", default="source_verification,ingesting,graph_building,findings,ml_scoring,analytics")
+    parser.add_argument("--required-stages", default="source_verification,ingesting,graph_building,findings,ml_scoring,analytics,investigation_grouping")
     parser.add_argument("--allow-missing-geoip", action="store_true", help="diagnostic runs; excludes the Geo-IP gate")
     parser.add_argument("--expected-counts", type=Path, help="JSON object containing exact canonical counts")
     parser.add_argument("--min-transactions", type=int)

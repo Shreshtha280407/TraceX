@@ -24,7 +24,7 @@ from app.engine.motifs.deterministic import (
     propagate_synthetic_review_seeds,
 )
 from app.events import append_event
-from app.models import FeatureRecord, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed
+from app.models import FeatureRecord, FindingParticipation, FindingRecord, GraphSnapshot, Snapshot, SyntheticReviewSeed
 from app.resources import current_plan
 
 RULE_VERSION = "deterministic-v1"
@@ -647,6 +647,7 @@ def _materialize(
     candidates = dedupe_and_rank(candidates)
     opposing_json = opposing_evidence_json()
     rows: list[dict[str, Any]] = []
+    participants = []
     row_ids = _uuid4_strings()
     for rank, candidate in enumerate(candidates, 1):
         rows.append(
@@ -655,10 +656,14 @@ def _materialize(
                 coverage_json=coverage_json, opposing_json=opposing_json,
             )
         )
-        if len(rows) >= plan.insert_chunk_rows:
+        participants.extend({"finding_id": rows[-1]["id"], "transaction_ref": tx} for tx in candidate_transactions(candidate))
+        if len(rows) >= plan.insert_chunk_rows or len(participants) >= 8192:
             bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
+            bulk_insert_serialized(session, FindingParticipation, participants, frozenset())
             rows = []
+            participants = []
     bulk_insert_serialized(session, FindingRecord, rows, _FINDING_JSON_COLUMNS)
+    bulk_insert_serialized(session, FindingParticipation, participants, frozenset())
     record_findings_event(session, snapshot, len(candidates))
     return len(candidates)
 
@@ -1012,6 +1017,20 @@ def opposing_evidence_json() -> str:
             }
         ]
     )
+
+
+def candidate_transactions(candidate):
+    """Complete canonical fact participation already used by this detector.
+
+    No feature/model score changes. Normalize separately from detector JSON so
+    membership/evidence pages never duplicate a large transaction list.
+    """
+    txs = {"tx:" + str(fact["txid"]) for fact in candidate.get("facts", []) if fact.get("txid")}
+    if candidate["entity_ref"].startswith("tx:"):
+        txs.add(candidate["entity_ref"])
+    detector = (candidate.get("feature") or {}).get("detector_result") or {}
+    txs.update(node for node in (detector.get("graph_path") or {}).get("nodes", []) if node.startswith("tx:"))
+    return sorted(txs)
 
 
 def finding_row(

@@ -59,7 +59,14 @@ from app.engine.motifs.deterministic import (
     detect_coinjoin_like_transactions,
 )
 from app.engine.process_pool import ProcessPool
-from app.models import FindingRecord, FragmentReceipt, GraphSnapshot, Snapshot, SyntheticReviewSeed
+from app.models import (
+    FindingParticipation,
+    FindingRecord,
+    FragmentReceipt,
+    GraphSnapshot,
+    Snapshot,
+    SyntheticReviewSeed,
+)
 from app.resources import ResourcePlan, admit_disk_allocation, admit_global_allocation, current_plan
 
 logger = logging.getLogger(__name__)
@@ -1048,6 +1055,7 @@ def materialize_findings_bounded(
                 "SELECT r.rank, c.row FROM cand c JOIN ranked r USING (pos) WHERE r.rank BETWEEN ? AND ?", [low, high]
             )
         }
+        participants = []
         for rank in range(low, min(high, ranked_total) + 1):
             row = json.loads(by_rank.pop(rank))
             total += 1
@@ -1055,8 +1063,10 @@ def materialize_findings_bounded(
             row["rank"] = rank
             row["window_start"] = _to_datetime(row.pop("window_start_us"))
             row["window_end"] = _to_datetime(row.pop("window_end_us"))
+            participants.extend({"finding_id": row["id"], "transaction_ref": tx} for tx in row.pop("_participation", []))
             finding_rows.append(row)
         bulk_insert_serialized(session, FindingRecord, finding_rows, det._FINDING_JSON_COLUMNS)
+        bulk_insert_serialized(session, FindingParticipation, participants, frozenset())
         finding_rows = []
         _release_freed_memory()
     bulk_insert_serialized(session, FindingRecord, finding_rows, det._FINDING_JSON_COLUMNS)
@@ -1076,6 +1086,7 @@ def _candidate_row(candidate, pos, snapshot, graph, coverage_json, opposing_json
     )
     row.pop("id")
     row.pop("rank")
+    row["_participation"] = det.candidate_transactions(candidate)
     row["window_start_us"] = _to_micros(row.pop("window_start"))
     row["window_end_us"] = _to_micros(row.pop("window_end"))
     return (

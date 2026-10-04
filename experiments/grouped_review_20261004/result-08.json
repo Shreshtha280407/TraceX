@@ -1,0 +1,91 @@
+{
+  "manifest_sha256": "45d41079ada5b4ca2f7e586ce395d49d48e949fe10420daec4f05463cb543724",
+  "release_id": "anomaly-stack-candidate-v2-5b6a0313d77a94ab",
+  "protocol_sha256": "ea4febf32f3e04a4d1748fecf9b7c6fa3b34cb14e81d3044da2557123213b293",
+  "validation_report_sha256": "92b9546f8e5230613074f05c770a85c3884162698b9ca39491931c8e9c94b993",
+  "final_registry": {
+    "3bd39cbf1ce469fb81b96982fcb1ffc72f747276377d4774696d196f4c870b7d": {
+      "source_sha256": "4670f9cf954b12280347c7a4a17877a785473b783ff949a40e966337b3596b15",
+      "files": {
+        "transactions.ndjson": {
+          "sha256": "d4d44ff460cdc6279f7661acfd28016416af5964f0c97bc43f53251787dd456e",
+          "bytes": 957728
+        },
+        "inputs.ndjson": {
+          "sha256": "93245e671f941276063b918e4127fede34c4affedc007c9bef2a1abe06696f0c",
+          "bytes": 2214837
+        },
+        "outputs.ndjson": {
+          "sha256": "b2d648afbe0d9e03ddabbe4eb7aaadc1bc58fd7b7ac5dae51ad1496fd5678bd5",
+          "bytes": 2763324
+        },
+        "network_observations.ndjson": {
+          "sha256": "58c89804918d810afca5eb0f10adedfdadfbf8ab0255608fc4426b72a06458c7",
+          "bytes": 73510
+        },
+        "ingestion_rows.ndjson": {
+          "sha256": "92cf76d0eb164942fc6f1373161480a8969eacebd33d83d5667057140d0f5602",
+          "bytes": 6178115
+        }
+      },
+      "truth_sha256": "7adbc3f9c477f9bf368d78db6911ddffc9eaf7b8d04b34c9f8d9546f5f31211b"
+    },
+    "206024a59269a07667a8dbfa933a832c35e0e87adf4b615ee566320d0d7fc54d": {
+      "source_sha256": "c7a1636917b24b39414eef1a2f33b7558968d3564953abea073403b6ced31d41",
+      "files": {
+        "transactions.ndjson": {
+          "sha256": "159fd22832f2476bd42698f072d0adf30285626041aacecfce12695328d32845",
+          "bytes": 1028474
+        },
+        "inputs.ndjson": {
+          "sha256": "b0e1ac3038f12b68bab2071a0300a633ce1bb8958ed188942412324fc43d9f9a",
+          "bytes": 2324681
+        },
+        "outputs.ndjson": {
+          "sha256": "3a3f16f1e89377f0e250573a9e220475e5ab58e471247f0691a7d3ff95c8c7e1",
+          "bytes": 2906291
+        },
+        "ingestion_rows.ndjson": {
+          "sha256": "5610c876d38c8e170eea6f8ab34ff3bc6889051797f12afd0554efcc52da820b",
+          "bytes": 6551492
+        }
+      },
+      "truth_sha256": "7adbc3f9c477f9bf368d78db6911ddffc9eaf7b8d04b34c9f8d9546f5f31211b"
+    },
+    "1b048b15833a11be04e3c4e8df8efd1035e2105ecbf8a9b0516f704f482e36e2": {
+      "source_sha256": "a600696befb8315a2527adf96930db78933d66a7133fa3343a1557afe61b6989",
+      "files": {
+        "transactions.ndjson": {
+          "sha256": "89b401dc55571fad9e8b3915165b3c4c0cbc35a819d81300b5cc4f55dad4f617",
+          "bytes": 1002728
+        },
+        "inputs.ndjson": {
+          "sha256": "acdaf7551f4db9a1ddae7246db48f33f1c7e5deb1e290c06112eba5bcf9c9ac3",
+          "bytes": 2322492
+        },
+        "outputs.ndjson": {
+          "sha256": "e54469f108b4538da4c20fbc663730a22b210825a04c7b93e631d128ee20756e",
+          "bytes": 2902551
+        },
+        "ingestion_rows.ndjson": {
+          "sha256": "51ed4e7aeab6eb69ab0c2c4c4d0cee696e9d7a7826641aa8dc35d26cdc08e9b3",
+          "bytes": 6387928
+        }
+      },
+      "truth_sha256": "7adbc3f9c477f9bf368d78db6911ddffc9eaf7b8d04b34c9f8d9546f5f31211b"
+    }
+  },
+  "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+  "reason": "Fixed validation-only max-min AP selection for diagnostic transfer; production remains v2 because surge and population/group gates do not pass",
+  "inference_adaptation": "NONE",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

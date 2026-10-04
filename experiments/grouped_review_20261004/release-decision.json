@@ -1,0 +1,334 @@
+{
+  "benchmark": {
+    "fresh_1m": {
+      "canonical_transactions": null,
+      "diagnostic_timeout_seconds": 7200,
+      "disk_deficit_bytes": 21654556672,
+      "disk_floor_bytes": 33663676416,
+      "disk_free_bytes": 12009119744,
+      "errors": [
+        "Insufficient free SSD space even at the predeclared 1M gate's lower bound; generation/upload safely withheld. No existing data deleted."
+      ],
+      "host": {
+        "affinity": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "architecture": "x86_64",
+        "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+        "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages.",
+        "logical_cpus": 12,
+        "machine_model": null,
+        "memory": {
+          "available_bytes": 5837193216,
+          "available_is_estimate": false,
+          "method": "psutil.virtual_memory",
+          "physical_bytes": 16366317568
+        },
+        "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.44",
+        "system": "Linux"
+      },
+      "large_run": "NOT RUN",
+      "minimum_canonical_transactions": 1000000,
+      "resource_admission": {
+        "allocations": "None; metadata only",
+        "limitations": "Conservative supported admission, not measured actual minimum disk usage. Other volumes must be checked separately.",
+        "method": "Existing orchestrator source/scratch/WAL/reserve gate, at zero source/input/output bytes (strict lower bound)",
+        "worker_configurations": "All worker/thread choices have this same disk floor; no stage may be skipped"
+      },
+      "scope": "No fresh 1M processing result or timing/AP acceptance claimed",
+      "status": "BLOCKED",
+      "target_seconds": 1800,
+      "total_seconds": null
+    },
+    "small": {
+      "canonical_counts": {
+        "inputs": 3,
+        "network_observations": 128,
+        "outputs": 304,
+        "quarantine": 0,
+        "transactions": 128
+      },
+      "groups": {
+        "authenticated": true,
+        "backlog_groups": 0,
+        "duration_seconds": 0.06895470900053624,
+        "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+        "grouping_version": "observed-episode-groups-v1",
+        "investigation_groups": 42,
+        "policy": "group-family-round-robin-v1",
+        "queued_groups": 42,
+        "returned_member_evidence": true,
+        "underlying_findings": 42,
+        "unresolved_groups": 42
+      },
+      "resource_peaks": {
+        "api": {
+          "container_usage_peak_bytes": 129425408,
+          "rss_peak_bytes": 178307072,
+          "tree_rss_peak_bytes": 178307072
+        },
+        "postgres": {
+          "container_usage_peak_bytes": null,
+          "rss_peak_bytes": null,
+          "tree_rss_peak_bytes": null
+        },
+        "worker": {
+          "container_usage_peak_bytes": 219578368,
+          "rss_peak_bytes": 323256320,
+          "tree_rss_peak_bytes": 323256320
+        }
+      },
+      "scope": "128-TX functional check only; not large-scale parity or 1M acceptance",
+      "stages": {
+        "analytics": {
+          "duration_seconds": 0.4393060169968521,
+          "reason": null,
+          "status": "complete"
+        },
+        "embeddings": {
+          "duration_seconds": 0.00674348599568475,
+          "reason": null,
+          "status": "complete"
+        },
+        "findings": {
+          "duration_seconds": 0.4820361169986427,
+          "reason": null,
+          "status": "complete"
+        },
+        "geoip": {
+          "duration_seconds": 0.0075821239879587665,
+          "reason": null,
+          "status": "complete"
+        },
+        "graph_building": {
+          "duration_seconds": 0.5383151459973305,
+          "reason": null,
+          "status": "complete"
+        },
+        "ingesting": {
+          "duration_seconds": 0.07635716799995862,
+          "reason": null,
+          "status": "complete"
+        },
+        "investigation_grouping": {
+          "duration_seconds": 0.2570501100126421,
+          "reason": null,
+          "status": "complete"
+        },
+        "ml_scoring": {
+          "duration_seconds": 0.9582233260007342,
+          "reason": null,
+          "status": "written"
+        },
+        "network_coverage": {
+          "duration_seconds": 0.0060392730083549395,
+          "reason": null,
+          "status": "complete"
+        },
+        "source_verification": {
+          "duration_seconds": 0.007326699997065589,
+          "reason": null,
+          "status": "complete"
+        }
+      },
+      "status": "pass",
+      "total_seconds": 4.1906439940066775,
+      "upload_seconds": 0.03142281199689023
+    }
+  },
+  "browser_summary": {
+    "checks_passed": 65,
+    "external_requests": 0,
+    "javascript_errors": 0,
+    "scope": "small fixture only",
+    "status": "pass"
+  },
+  "domain_policy": {
+    "future_domain_promotion": "exact trusted artifact, frozen protocol/source/truth/queue/grouping provenance, measured full-population gates AND owner representative-label approval",
+    "real_or_unknown": "unsupervised v2; no approved candidate is shipped",
+    "synthetic_demo": "explicit opt-in only; frozen hybrid is a diagnostic artifact, not the chosen deployment"
+  },
+  "fallback": "v2 on missing/ineligible/incompatible candidate; retain durable failure/applicability reason",
+  "group_capacity": 100,
+  "group_policy": {
+    "connection": "fixed representative canonical UTXO transaction overlap for peeling; otherwise exact source-record overlap plus same focal and rule/version",
+    "group_target": "observed connected pattern episode requiring investigation; not transaction criminality or confirmation of every member claim",
+    "max_members": 256,
+    "max_representative_anchors": 256,
+    "no_transitive_anchor_expansion": true,
+    "priority": "workflow band, independent rule/version family rank, family, stable group ID; no member-count boost",
+    "queue": "group-family-round-robin-v1",
+    "unknown_connectivity": "singleton",
+    "utc_episode_seconds": 86400,
+    "version": "observed-episode-groups-v1"
+  },
+  "group_queue_policy": "group-family-round-robin-v1",
+  "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+  "grouping_version": "observed-episode-groups-v1",
+  "limitations": [
+    "No fresh 1M run: disk lower-bound and all-stage memory admission blocked; no 3M run",
+    "No candidate satisfies both task objectives with nonregression/full eligible-population and applicable group truth",
+    "Final variants are correlated derivatives, not three independent populations; shifted surge labels require applicability review",
+    "Finals were consumed once; any later selection needs new registered finals",
+    "Existing reports predate final promotion/capacity hardening; their unpinned capacity provenance cannot be retroactively repaired into passing evidence",
+    "No independently representative real-case labels, address/entity-disjoint generalization evidence or official PS certification"
+  ],
+  "manifest_sha256": "eaa862db090baf74db92ff69cddc53eb89e44389f48734eae381f9180542dda4",
+  "model": {
+    "default_review_budget": 0.01,
+    "feature_columns_sha256": "f06f0f171479affef70a7284da4f126c1c3b8ea9677f9e82561dc489f77f7eec",
+    "feature_contract_version": "anomaly-stack-v2",
+    "fitting_strategy": "dynamic: refit on each snapshot's own earliest reference_fraction of transactions at scoring time; no static model artifact is loaded or shipped",
+    "fusion_method": "stouffer",
+    "layer_a_score": "isolation_forest ranks; ECOD per-feature contributions as attribution",
+    "layers": [
+      "A_global",
+      "D_burst"
+    ],
+    "release_id": "anomaly-stack-v2",
+    "training_seed": 42
+  },
+  "procedure": "v2 refits label-free on each snapshot's earliest reference period; retrospective burst; CPU path, not GPU accelerated",
+  "protocol_sha256": "ea4febf32f3e04a4d1748fecf9b7c6fa3b34cb14e81d3044da2557123213b293",
+  "quality": {
+    "calibration": "synthetic task frequency only; v2 confidence is applicability-pinned, not criminality probability",
+    "candidate_promotion": {
+      "datasets": [
+        "final-base",
+        "final-shift",
+        "final-coverage"
+      ],
+      "errors": [
+        {
+          "dataset": "final-base",
+          "reason": "Actual frozen investigation-group queue quality is missing or not evaluable."
+        },
+        {
+          "dataset": "final-base",
+          "reason": "surge: AP must be measured; motif/surge preferred target is >=0.85."
+        },
+        {
+          "dataset": "final-base",
+          "reason": "surge: measurable P@100 >=0.90 is required for promotion, not an unexercised gate."
+        },
+        {
+          "dataset": "final-base",
+          "reason": "surge: AP regression is unknown or negative."
+        },
+        {
+          "dataset": "final-base",
+          "reason": "Full eligible-population truth coverage is missing; subset AP is not deployed-queue precision/recall."
+        },
+        {
+          "dataset": "final-base",
+          "reason": "Exact deployed queue policy was not evaluated at matched capacity."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "Actual frozen investigation-group queue quality is missing or not evaluable."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "surge: AP must be measured; motif/surge preferred target is >=0.85."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "surge: measurable P@100 >=0.90 is required for promotion, not an unexercised gate."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "surge: AP regression is unknown or negative."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "Full eligible-population truth coverage is missing; subset AP is not deployed-queue precision/recall."
+        },
+        {
+          "dataset": "final-shift",
+          "reason": "Exact deployed queue policy was not evaluated at matched capacity."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "Actual frozen investigation-group queue quality is missing or not evaluable."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "surge: AP must be measured; motif/surge preferred target is >=0.85."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "surge: measurable P@100 >=0.90 is required for promotion, not an unexercised gate."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "surge: AP regression is unknown or negative."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "Full eligible-population truth coverage is missing; subset AP is not deployed-queue precision/recall."
+        },
+        {
+          "dataset": "final-coverage",
+          "reason": "Exact deployed queue policy was not evaluated at matched capacity."
+        },
+        {
+          "dataset": null,
+          "reason": "No measured merchant queue false-positive reduction; better explanations alone are not precision evidence."
+        }
+      ],
+      "feature_contract": "causal-structure-recipient-history-v2",
+      "feature_sha256": "4e8f13ee68f0bb31ff67d51e96448d6015356d79891302ad944689d35fb4f743",
+      "finding_budget_fraction": null,
+      "frozen_manifest_sha256": "45d41079ada5b4ca2f7e586ce395d49d48e949fe10420daec4f05463cb543724",
+      "group_capacity": 100,
+      "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+      "limitations": "Quantitative gates are necessary, not representative-label approval or a guarantee on arbitrary uploads. Point estimates do not establish statistical significance.",
+      "merchant_false_positive_reductions": [],
+      "payload_sha256": "5b6a0313d77a94abfe695c750ca03f9ab4c8dfd9c811afc008a6f34907c8ca96",
+      "policy": "product-queue-quality-gate-v2",
+      "protocol_sha256": "ea4febf32f3e04a4d1748fecf9b7c6fa3b34cb14e81d3044da2557123213b293",
+      "queue_policy": "review-contrast-stable-txid-v2",
+      "registered_final_ids": [
+        "3bd39cbf1ce469fb81b96982fcb1ffc72f747276377d4774696d196f4c870b7d",
+        "206024a59269a07667a8dbfa933a832c35e0e87adf4b615ee566320d0d7fc54d",
+        "1b048b15833a11be04e3c4e8df8efd1035e2105ecbf8a9b0516f704f482e36e2"
+      ],
+      "release_id": "anomaly-stack-candidate-v2-5b6a0313d77a94ab",
+      "review_budget": null,
+      "status": "BLOCKED"
+    },
+    "group_p_at_100": null,
+    "group_status": "NOT EVALUABLE",
+    "merchant_false_positive_reduction": "NOT DEMONSTRATED",
+    "transaction_metric_scope": "499 labelled of 5000 eligible per final; not product-queue precision or arbitrary-domain accuracy"
+  },
+  "release_decision": "FINALIZED_V2_NO_CANDIDATE_PROMOTED",
+  "reproduction": [
+    "See docs/laptop_1m_runbook.md. Stop on rejected admission; no force override or data deletion.",
+    "Review git status/diff and compact evidence before owner commit/push; no agent commit/push."
+  ],
+  "schema": "grouped-deployment-policy-v1",
+  "selected_scorer": "anomaly-stack-v2",
+  "selection_reason": "Validation only: no candidate meets both motif/surge AP objectives; all four candidate surge AP values trail retrospective v2. Eligible-population labels, merchant-control coverage and actual group proposition precision are insufficient for promotion.",
+  "test_summary": [
+    {
+      "errors": "0",
+      "failures": "0",
+      "name": "pytest",
+      "skipped": "0",
+      "tests": "196",
+      "time": "33.084"
+    }
+  ]
+}

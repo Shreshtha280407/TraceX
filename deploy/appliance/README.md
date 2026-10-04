@@ -73,3 +73,18 @@ The current release contains no LLM/chat. Explanations are deterministic,
 source-backed evidence views. For native ARM64/amd64 macOS benchmark preparation,
 Docker VM resource admission and loopback UI routing see `docs/macbook_runbook.md`.
 Never include `.env`, databases, generated datasets or image tarballs in Git.
+
+## Current grouped-review release
+
+`investigation_grouping` is a required durable analysis stage. New tables are
+added at startup without deleting existing reviews/evidence. Existing completed
+jobs predating this stage require case-authorized analysis retry to materialize
+groups. A grouping failure is not a successful final acceptance. See
+`docs/grouped_review_2026-10-04.md` for stable episode boundaries, retained
+historical generations and group-versus-individual decision scope.
+
+The deployment decision remains unsupervised `anomaly-stack-v2`. No candidate
+artifact is shipped or promoted by this work. Unknown data is not benign;
+synthetic/demo candidates require explicit opt-in. Current fresh 1M acceptance
+is resource-blocked; prior 1M reports are historical, not verification of this
+grouped release. `docs/laptop_1m_runbook.md` gives the exact admitted-run sequence.

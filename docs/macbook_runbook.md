@@ -12,7 +12,9 @@ large commands on the implementation machine.
 No commit or push was made by the agent. Review the diff and compact results first.
 The original integrated implementation started at `d88af37c2377f6aed72604b72b2f116a87ae39b2`
 and was subsequently committed by the owner as `c70fcb4`. The current scoring/reporting
-follow-up builds on that commit; its changes remain uncommitted. Recheck upstream
+follow-up was subsequently committed as `84dd826`. The current grouped-review
+work builds on that actual HEAD; see `docs/laptop_1m_runbook.md` for its owner-only
+review/staging commands and measured resource blockers. Recheck upstream
 before your commit if others have since pushed. Stage only the changes you reviewed;
 the commands below assume the displayed changes are all intended.
 
@@ -210,7 +212,8 @@ uv run python -m scripts.macbook_benchmark --context "$TRACEX_DOCKER_CONTEXT" ac
 This starts at upload initiation, includes immutable source verification, receipt
 ingestion/quarantine, UTXO graph, deterministic findings/features, ML fitting and
 inference, clustering, embeddings and network/Geo-IP analytics. It stops only
-after terminal snapshot and authenticated findings retrieval for that snapshot.
+after terminal snapshot and authenticated investigation-group/member evidence
+retrieval for that snapshot. `investigation_grouping` is mandatory, not optional.
 Provisional receipt activity time is recorded separately. A 7,200-second timeout
 allows failure diagnostics; it does **not** weaken the strict `<1,800` gate.
 No mandatory stage is disabled. A degraded/failed/mismatched scorer, count/hash
@@ -263,20 +266,21 @@ preparation populations without substituting their quality for representative
 large finals. Never tune a generator to favor the candidate.
 
 Choose a candidate using **validation only**, accounting for all three tasks and
-benign controls, not just best motif AP. Freeze its artifact digest before
-generating/opening final data. Set `TRACEX_MODEL` to one actual compared artifact
+benign controls, not just best motif AP. Record the selection before final data
+generation; generate registered finals without opening labels, then freeze
+their source/truth fingerprints before evaluation. Set `TRACEX_MODEL` to one actual compared artifact
 directory (`hist`, `xgboost`, `lightgbm`, `hybrid`).
 
 ```sh
 export TRACEX_MODEL="$TRACEX_QUALITY/comparison/hist"
 export TRACEX_MODEL_SHA=$(shasum -a 256 "$TRACEX_MODEL/manifest.json" | awk '{print $1}')
-uv run python -m scripts.candidate_lifecycle freeze --protocol "$TRACEX_QUALITY/protocol.json" --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --validation-report "$TRACEX_QUALITY/comparison/comparison.json" --reason "OWNER_RECORDED_VALIDATION_SELECTION_REASON"
 uv run python generator.py --rows 100000 --seed "quality-final-a-$TRACEX_MAC_RUN" --scenario-scale 0.5 --workers 2 --formats ndjson --verify --output "$TRACEX_QUALITY/final-a"
 uv run python generator.py --rows 100000 --seed "quality-final-b-$TRACEX_MAC_RUN" --scenario-scale 1.5 --workers 2 --formats ndjson --verify --output "$TRACEX_QUALITY/final-b"
 uv run python -m scripts.quality_matrix fixture --count 1000 --seed 41004 --role independent-final --output "$TRACEX_QUALITY/final-independent"
 for TRACEX_VARIANT in missing_network noisy_network incomplete_prevouts reuse_degree timing_value; do
   uv run python -m scripts.quality_matrix stress --protocol "$TRACEX_QUALITY/protocol.json" --source "$TRACEX_QUALITY/final-a" --output "$TRACEX_QUALITY/final-$TRACEX_VARIANT" --variant "$TRACEX_VARIANT" --seed 51004
 done
+uv run python -m scripts.candidate_lifecycle freeze --protocol "$TRACEX_QUALITY/protocol.json" --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --validation-report "$TRACEX_QUALITY/comparison/comparison.json" --reason "OWNER_RECORDED_VALIDATION_SELECTION_REASON"
 for TRACEX_FINAL in final-a final-b final-independent final-missing_network final-noisy_network final-incomplete_prevouts final-reuse_degree final-timing_value; do
   uv run python -m scripts.candidate_lifecycle evaluate --protocol "$TRACEX_QUALITY/protocol.json" --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --dataset "$TRACEX_QUALITY/$TRACEX_FINAL" --truth "$TRACEX_QUALITY/$TRACEX_FINAL/ground_truth.json" --review-budget 100 --output "$TRACEX_QUALITY/$TRACEX_FINAL-result.json"
 done
@@ -357,7 +361,7 @@ AP. Supply owner-reviewed approval JSON with `representative_labels`, `domain`,
 result (not a training table or the tiny unit-test demonstration):
 
 ```sh
-uv run python -m scripts.candidate_lifecycle promote --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --approval OWNER_REVIEWED_APPROVAL.json --quality-result "$TRACEX_QUALITY/final-a-result.json" --quality-result "$TRACEX_QUALITY/final-b-result.json" --quality-result "$TRACEX_QUALITY/final-independent-result.json" --quality-result "$TRACEX_QUALITY/final-missing_network-result.json" --quality-result "$TRACEX_QUALITY/final-noisy_network-result.json" --quality-result "$TRACEX_QUALITY/final-incomplete_prevouts-result.json" --quality-result "$TRACEX_QUALITY/final-reuse_degree-result.json" --quality-result "$TRACEX_QUALITY/final-timing_value-result.json" --output "$TRACEX_QUALITY/approved-artifact"
+uv run python -m scripts.candidate_lifecycle promote --protocol "$TRACEX_QUALITY/protocol.json" --artifact "$TRACEX_MODEL" --manifest-sha256 "$TRACEX_MODEL_SHA" --approval OWNER_REVIEWED_APPROVAL.json --quality-result "$TRACEX_QUALITY/final-a-result.json" --quality-result "$TRACEX_QUALITY/final-b-result.json" --quality-result "$TRACEX_QUALITY/final-independent-result.json" --quality-result "$TRACEX_QUALITY/final-missing_network-result.json" --quality-result "$TRACEX_QUALITY/final-noisy_network-result.json" --quality-result "$TRACEX_QUALITY/final-incomplete_prevouts-result.json" --quality-result "$TRACEX_QUALITY/final-reuse_degree-result.json" --quality-result "$TRACEX_QUALITY/final-timing_value-result.json" --output "$TRACEX_QUALITY/approved-artifact"
 ```
 
 Promotion now requires measurable motif/surge AP >=.85, all-task P@100 >=.90 and

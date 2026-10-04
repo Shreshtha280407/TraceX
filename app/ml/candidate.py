@@ -221,7 +221,9 @@ def promote_verified(directory, output, expected_manifest_sha, approval, approva
     proof = approval.get("quality_validation", {})
     if not (approval.get("representative_labels") is True and approval.get("domain") and approval.get("decision_reason")
             and approval.get("approved_by") and proof.get("policy") == POLICY and proof.get("status") == "PASSED" and proof.get("reports_sha256")
-            and all(proof.get(field) == manifest.get(field) for field in ("release_id", "payload_sha256", "feature_sha256"))):
+            and proof.get("frozen_manifest_sha256") == expected_manifest_sha
+            and proof.get("protocol_sha256") == manifest.get("provenance", {}).get("protocol_sha256")
+            and all(proof.get(field) == manifest.get(field) for field in ("release_id", "payload_sha256", "feature_sha256", "feature_contract", "queue_policy"))):
         raise ValueError("promotion requires exact-weight quality evidence and owner domain applicability approval")
     payload = (directory / "weights.joblib").read_bytes()
     if hashlib.sha256(payload).hexdigest() != manifest["payload_sha256"]:
@@ -245,8 +247,11 @@ def eligibility(manifest, case, *, finding_budget=None):
         if proof_required:
             from app.ml.promotion import POLICY
             proof = decision.get("quality_validation", {})
-            eligible = eligible and proof.get("policy") == POLICY and proof.get("status") == "PASSED" and proof.get("reports_sha256") and all(
-                proof.get(field) == manifest.get(field) for field in ("release_id", "payload_sha256", "feature_sha256"))
+            from app.engine.investigations import PROCEDURE_SHA256
+            provenance = manifest.get("provenance", {})
+            eligible = eligible and proof.get("policy") == POLICY and proof.get("status") == "PASSED" and proof.get("reports_sha256") and proof.get("grouping_sha256") == PROCEDURE_SHA256 and proof.get("group_capacity") == 100 and proof.get("review_budget") == 100 and all(
+                proof.get(field) == manifest.get(field) for field in ("release_id", "payload_sha256", "feature_sha256", "feature_contract", "queue_policy"))
+            eligible = eligible and bool(provenance.get("parent_manifest_sha256")) and proof.get("frozen_manifest_sha256") == provenance.get("parent_manifest_sha256") and bool(provenance.get("protocol_sha256")) and proof.get("protocol_sha256") == provenance.get("protocol_sha256") and bool(provenance.get("registered_final_ids")) and proof.get("registered_final_ids") == provenance.get("registered_final_ids") and proof.get("grouping_sha256") == provenance.get("grouping_sha256")
             if finding_budget is not None:
                 eligible = eligible and proof.get("finding_budget_fraction") == finding_budget
         return bool(eligible), ("representative-label approval, exact domain, retained-finding fraction and version-matched measured queue gates required"

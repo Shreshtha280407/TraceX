@@ -1,0 +1,52 @@
+{
+  "schema": 2,
+  "reserved_finals": [
+    "[HOME]/documents/TraceX/var/grouped-study-20261004-03/final-base",
+    "[HOME]/documents/TraceX/var/grouped-study-20261004-03/final-shift",
+    "[HOME]/documents/TraceX/var/grouped-study-20261004-03/final-coverage"
+  ],
+  "registered_final_ids": [
+    "3bd39cbf1ce469fb81b96982fcb1ffc72f747276377d4774696d196f4c870b7d",
+    "206024a59269a07667a8dbfa933a832c35e0e87adf4b615ee566320d0d7fc54d",
+    "1b048b15833a11be04e3c4e8df8efd1035e2105ecbf8a9b0516f704f482e36e2"
+  ],
+  "grouping_version": "observed-episode-groups-v1",
+  "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+  "group_queue_policy": "group-family-round-robin-v1",
+  "group_capacity": 100,
+  "selection": "validation only; no final labels enter fitting",
+  "feature_contract": "causal-structure-recipient-history-v2",
+  "grid": [
+    "hist",
+    "xgboost",
+    "lightgbm",
+    "hybrid"
+  ],
+  "generalization": [
+    "fresh seeds/prevalence",
+    "unseen pattern families",
+    "payroll/merchant/exchange/batching/consolidation",
+    "missing/noisy IP/ASN",
+    "incomplete prevouts",
+    "degree/reuse skew",
+    "timing/value shifts",
+    "independent author fixtures"
+  ],
+  "targets": {
+    "motif_ap": 0.85,
+    "surge_ap": 0.85,
+    "stretch_ap": 0.9,
+    "p100": 0.9
+  },
+  "status": "NOT RUN",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

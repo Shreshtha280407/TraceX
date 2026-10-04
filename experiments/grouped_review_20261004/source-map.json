@@ -1,0 +1,46 @@
+{
+  "result-00.json": {
+    "purpose": "result.json",
+    "original_sha256": "31e16ea149f20c154f6c8aff6fcfc421d3ef998331574c1da9cefcb385a8ab37"
+  },
+  "result-01.json": {
+    "purpose": "one-million-admission-release.json",
+    "original_sha256": "092446ca06a3d8ae66c242f78586638bfc89e0effe266076b08f0c66a2451c70"
+  },
+  "result-02.json": {
+    "purpose": "comparison/comparison.json",
+    "original_sha256": "92b9546f8e5230613074f05c770a85c3884162698b9ca39491931c8e9c94b993"
+  },
+  "result-03.json": {
+    "purpose": "grouped-study-20261004-03/final-base-transfer.json",
+    "original_sha256": "2f88c8dd107b7db1b3ced4cb08fec18878b7bd5687d282a31780f7ec441a9a47"
+  },
+  "result-04.json": {
+    "purpose": "grouped-study-20261004-03/final-shift-transfer.json",
+    "original_sha256": "6a3b594ef987ac3dcff6192f750cdf67b6a56604873e8592aad0b8c1903879d7"
+  },
+  "result-05.json": {
+    "purpose": "grouped-study-20261004-03/final-coverage-transfer.json",
+    "original_sha256": "2f8acc2839b0772a394a66b20f61bf7a6afed49ac829e5e92bfa36377edf590f"
+  },
+  "result-06.json": {
+    "purpose": "grouped-study-20261004-03/quality-matrix.json",
+    "original_sha256": "3aeeb08ea8c3faa8f8f45fefcdfb4aa52c21cc46029f44d1751c1ffab764e5c3"
+  },
+  "result-07.json": {
+    "purpose": "grouped-study-20261004-03/protocol.json",
+    "original_sha256": "ea4febf32f3e04a4d1748fecf9b7c6fa3b34cb14e81d3044da2557123213b293"
+  },
+  "result-08.json": {
+    "purpose": "grouped-study-20261004-03/protocol.json.frozen.json",
+    "original_sha256": "bd1ee55fafc4e8c7e3bf644dc483edf54bf5ec0948eeecf1823f203fecd17dad"
+  },
+  "result-09.json": {
+    "purpose": "worker-screen-small.json",
+    "original_sha256": "a28a018a26355914d230b2acb7517c51ebc7333ec26d4972ccff1da3f6de899a"
+  },
+  "result-10.json": {
+    "purpose": "result.json",
+    "original_sha256": "40caac0b315ce8bc38c9be35d7d564f73555374a420f82a464892853d5c75414"
+  }
+}

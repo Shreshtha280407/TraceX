@@ -4,11 +4,11 @@ import { Shell } from "../components/Shell";
 import { Modal } from "../components/Modal";
 import { NeoCard, StatTile, Badge, NoticeBanner, ErrorBanner } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ApiError, type CaseWithRole, type Finding, type ScoringMode } from "../lib/api";
+import { api, ApiError, type CaseWithRole, type InvestigationGroup, type ScoringMode } from "../lib/api";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 import { getSessionStats } from "../lib/sessionStats";
 
-type QueueItem = Finding & { caseName: string };
+type QueueItem = InvestigationGroup & { caseName: string; queue_position: number };
 
 function timeOfDayGreeting(): string {
   const hour = new Date().getHours();
@@ -41,16 +41,14 @@ export function InvestigatorOverview() {
       Promise.all(
         result.cases.map((c) =>
           api
-            .listFindings(c.case_id, 200, 0)
-            .then((r) => r.findings.filter((f) => f.status === "open").map((f) => ({ ...f, caseName: c.name })))
+            .getInvestigationQueue(c.case_id)
+            .then((r) => r.items.map((f, queue_position) => ({ ...f, caseName: c.name, queue_position })))
         )
       ).then((lists) => setQueue(lists.flat().sort((a, b) =>
         Number(b.status === "escalated") - Number(a.status === "escalated") ||
-        (a.family_rank ?? Infinity) - (b.family_rank ?? Infinity) ||
-        a.rule_id.localeCompare(b.rule_id) || a.caseName.localeCompare(b.caseName) ||
-        a.finding_id.localeCompare(b.finding_id)).slice(0, 8)));
-      Promise.all(result.cases.map((c) => api.getFindingsSummary(c.case_id).catch(() => null))).then((summaries) =>
-        setOpenTotal(summaries.reduce((sum, s) => sum + (s?.open ?? 0), 0))
+        a.queue_position - b.queue_position || a.caseName.localeCompare(b.caseName) || a.group_id.localeCompare(b.group_id)).slice(0, 8)));
+      Promise.all(result.cases.map((c) => api.getInvestigationQueue(c.case_id).catch(() => null))).then((summaries) =>
+        setOpenTotal(summaries.every(s => s !== null) ? summaries.reduce((sum, s) => sum + (s?.unresolved_groups ?? 0), 0) : null)
       );
     });
   }, []);
@@ -92,7 +90,7 @@ export function InvestigatorOverview() {
   }
 
   const pendingReview = openTotal;
-  const highPriority = queue?.filter((f) => (f.family_rank ?? Infinity) <= 10).length ?? null;
+  const highPriority = queue?.filter((f) => f.status === "escalated").length ?? null;
 
   return (
     <Shell>
@@ -100,7 +98,7 @@ export function InvestigatorOverview() {
         <div>
           <h1>{timeOfDayGreeting()}, {actor}</h1>
           <p className="subtitle">
-            {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} findings awaiting your review
+            {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} investigation groups awaiting your review
           </p>
         </div>
         <button type="button" className="btn-mustard" onClick={openNewCase}>
@@ -153,7 +151,7 @@ export function InvestigatorOverview() {
       <div className="stat-grid">
         <StatTile label="Assigned cases" value={cases?.length ?? "—"} sub={cases ? `${cases.filter((c) => c.role === "case_lead").length} as case lead` : ""} />
         <StatTile label="Pending review" value={pendingReview ?? "—"} sub="across all assigned cases" />
-        <StatTile label="Leading family rows" value={highPriority ?? "—"} sub="displayed queue, family rank ≤ 10; not calibrated risk" />
+        <StatTile label="Escalated groups" value={highPriority ?? "—"} sub="displayed queue; not calibrated risk" />
         <StatTile label="Reviewed this session" value={stats.findingsReviewed} sub={`${stats.reversedOnAppeal} reversed on appeal`} />
       </div>
 
@@ -192,22 +190,22 @@ export function InvestigatorOverview() {
             ) : (
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 {queue.map((item) => (
-                  <li key={item.finding_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <li key={item.group_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <Badge tone="deterministic">{item.finding_type}</Badge>
-                      <span className="mono-id">{item.entity_ref}</span>
+                      <Badge tone="deterministic">{item.family}</Badge>
+                      <span className="mono-id">{item.member_count} observations</span>
                       <span className="coverage-note">
                         {item.caseName} · window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}
                       </span>
                     </div>
                     <div style={{ display: "flex", gap: 14 }}>
                       <a
-                        href={`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.entity_ref)}`}
-                        onClick={(e) => { e.preventDefault(); navigate(`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.entity_ref)}`); }}
+                        href={`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.focal_ref)}`}
+                        onClick={(e) => { e.preventDefault(); navigate(`/cases/${item.case_id}/graph?seed=${encodeURIComponent(item.focal_ref)}`); }}
                       >
                         Graph
                       </a>
-                      <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
+                      <a href={`/investigations/${item.group_id}`} onClick={(e) => { e.preventDefault(); navigate(`/investigations/${item.group_id}`); }}>
                         Review
                       </a>
                     </div>
@@ -244,7 +242,7 @@ export function InvestigatorOverview() {
           </NeoCard>
           {pendingReview !== null && pendingReview > 0 && (
             <NoticeBanner>
-              You have {pendingReview} open finding{pendingReview === 1 ? "" : "s"} awaiting review across{" "}
+              You have {pendingReview} unresolved investigation group{pendingReview === 1 ? "" : "s"} awaiting review across{" "}
               {new Set(queue?.map((q) => q.caseName)).size} case(s).
             </NoticeBanner>
           )}

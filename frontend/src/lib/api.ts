@@ -2,6 +2,22 @@
 
 const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"}/v1`;
 
+export type InvestigationGroup = {
+  group_id: string; case_id: string; snapshot_id: string; run_id: string; family: string; episode_type: string;
+  proposition: string; focal_ref: string; window_start: string; window_end: string;
+  member_count: number; transaction_count: number; entity_count: number; representative_finding_id: string;
+  status: string; review_version: number;
+};
+export type InvestigationQueue = {
+  policy: string; capacity: number; underlying_findings: number; investigation_groups: number; unresolved_groups: number;
+  queued_groups: number; backlog_groups: number; filtered_total: number; scope: string; items: InvestigationGroup[];
+};
+export type InvestigationDetail = InvestigationGroup & {
+  grouping_version: string; procedure_sha256: string; active_generation: boolean; rationale: unknown;
+  representative_evidence: StructuredFindingEvidence; member_decisions: Record<string, number>; mixed_member_decisions: boolean;
+  group_decision_scope: string; evidence_scope: string;
+};
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
@@ -570,6 +586,14 @@ export const api = {
   retryAnalysis: (caseId: string, jobId: string) => request<ImportJob>(`/cases/${caseId}/analysis/retry?job_id=${encodeURIComponent(jobId)}`, { method: "POST" }),
   getActivity: (caseId: string, jobId: string, offset = 0) => request<ReceiptActivity>(`/cases/${caseId}/activity?job_id=${encodeURIComponent(jobId)}&limit=20&offset=${offset}`),
   getReviewQueue: (caseId: string, k = 100, offset = 0) => request<ReviewQueue>(`/cases/${caseId}/review-queue?k=${k}&limit=20&offset=${offset}`),
+  getInvestigationQueue: (caseId: string, capacity = 100, offset = 0, scope = "queue", reviewState = "") =>
+    request<InvestigationQueue>(`/cases/${caseId}/investigation-queue?capacity=${capacity}&limit=20&offset=${offset}&scope=${scope}${reviewState ? `&review_state=${reviewState}` : ""}`),
+  getInvestigation: (id: string) => request<InvestigationDetail>(`/investigation-groups/${id}`),
+  getInvestigationMembers: (id: string, offset = 0) => request<{total: number; items: {finding: Finding; structured_evidence: unknown}[]}>(`/investigation-groups/${id}/members?limit=20&offset=${offset}`),
+  getInvestigationReviews: (id: string, offset = 0) => request<{items: {review_id: string; disposition: string; reason: string; review_version: number; counterevidence_refs: EvidenceReference[]}[]}>(`/investigation-groups/${id}/reviews?offset=${offset}&limit=20`),
+  getInvestigationReplacements: (id: string) => request<{items: {prior_id: string; replacement_id: string; reason: string}[]}>(`/investigation-groups/${id}/replacements`),
+  reviewInvestigation: (id: string, expected_review_version: number, disposition: string, reason: string, counterevidence_refs: EvidenceReference[] = []) =>
+    request<{group: InvestigationGroup}>(`/investigation-groups/${id}/reviews`, {method: "POST", body: JSON.stringify({expected_review_version, disposition, reason, counterevidence_refs})}),
   getEvidenceRecord: (sourceId: string, locator: string) =>
     request<{ source_id: string; source_sha256: string; locator_type: string; locator: string; record: unknown }>(
       `/evidence/${sourceId}/records?locator=${encodeURIComponent(locator)}`

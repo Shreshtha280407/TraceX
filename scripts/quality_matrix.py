@@ -101,9 +101,10 @@ def stress(source, output, variant, seed):
                             value["fee_sats"] *= 2
                 stream.write(json.dumps(row) + "\n")
     # Truth is not consulted for perturbation; copied only after feature inputs finish.
-    (output / "ground_truth.json").write_bytes((source / "ground_truth.json").read_bytes())
+    truth_path = source / ("ground_truth.json" if (source / "ground_truth.json").exists() else "evaluation_truth.json")
+    (output / "ground_truth.json").write_bytes(truth_path.read_bytes())
     inventory(output, {"source_manifest_sha256": sha(source / "quality_manifest.json") if (source / "quality_manifest.json").exists() else None,
-        "source_truth_sha256": sha(source / "ground_truth.json"), "variant": variant, "seed": seed,
+        "source_truth_sha256": sha(truth_path), "variant": variant, "seed": seed,
         "limitation": "source labels retained; review task-label validity after timing/value/reuse perturbation; not independent populations"})
 
 
@@ -254,9 +255,9 @@ def main(argv=None):
         lifecycle.main(["compare", "--protocol", str(protocol), *inputs, "--output", str(comparison), "--exclude-family", "independent_equal_outputs"])
         artifact = comparison / "hist"
         digest = sha(artifact / "manifest.json")
+        independent_fixture(final, 64, 4, "final")
         lifecycle.main(["freeze", "--protocol", str(protocol), "--artifact", str(artifact), "--manifest-sha256", digest,
             "--validation-report", str(comparison / "comparison.json"), "--reason", "Fixed HGB for tiny command wiring only; NOT selected for quality/promotion"])
-        independent_fixture(final, 64, 4, "final")
         lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(artifact), "--manifest-sha256", digest,
             "--dataset", str(final), "--truth", str(final / "ground_truth.json"), "--output", str(args.output / "transfer.json"), "--review-budget", "10"])
         (args.output / "summary.json").write_text(json.dumps({"status": "PASS_WIRING_ONLY", "scope": "4 independently authored 64-row populations; NOT 3M or AP/generalization acceptance; no production promotion",

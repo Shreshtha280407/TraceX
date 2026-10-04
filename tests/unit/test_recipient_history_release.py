@@ -124,8 +124,17 @@ def test_queue_comparison_uses_actual_priority_same_capacity_and_missing_control
 
 
 def promotable_report(manifest, fraction=1.):
+    from app.engine.investigations import PROCEDURE_SHA256, QUEUE_POLICY
+    provenance = manifest.setdefault("provenance", {})
+    provenance.setdefault("protocol_sha256", "test-protocol")
+    provenance.update(registered_final_ids=["test-final-id"], grouping_sha256=PROCEDURE_SHA256,
+                      review_budget=100, finding_budget_fraction=fraction)
     return {"dataset": "metadata-only-validation", "model": manifest,
-        "procedure": "frozen fitted-weight transfer; test only", "truth_sha256": "test-truth", "protocol_sha256": "test-protocol",
+        "final_id": "test-final-id", "source_sha256": "test-source-fingerprint", "grouping_sha256": PROCEDURE_SHA256,
+        "group_quality": {"status": "EVALUATED", "grouping_sha256": PROCEDURE_SHA256, "capacity": 100, "p_at_100": .95,
+                          "final_id": "test-final-id", "source_sha256": "test-source-fingerprint", "protocol_sha256": provenance["protocol_sha256"],
+                          "release_id": manifest["release_id"], "queue_policy": QUEUE_POLICY},
+        "procedure": "frozen fitted-weight transfer; test only", "truth_sha256": "test-truth", "protocol_sha256": provenance["protocol_sha256"],
         "results": {task: {"ap": .9, "p_at_100": .95, "population": 200, "review_budget": 100} for task in candidate.TASKS},
         "comparison": {task: {"ap_delta": .05} for task in candidate.TASKS},
         "queue_comparison": {"status": "EVALUATED", "population_scope": "all time-eligible canonical transactions", "eligible_transactions": 200, "labelled_transactions": 200,
@@ -133,6 +142,14 @@ def promotable_report(manifest, fraction=1.):
             "candidate_policy": manifest["queue_policy"], "review_budget": 100, "merchant_controls": 30,
             "candidate": {"precision": .95, "recall": .5, "merchant_false_positives": 2, "benign_in_queue": 5},
             "baseline": {"precision": .9, "recall": .45, "merchant_false_positives": 6, "benign_in_queue": 10}}}
+
+
+def frozen_metadata(manifest):
+    """Fabricated METADATA UNIT TEST only; never product quality evidence."""
+    return {"protocol_sha256": manifest["provenance"]["protocol_sha256"], "release_id": manifest["release_id"],
+            "manifest_sha256": hashlib.sha256(json.dumps(manifest, indent=2, sort_keys=True).encode()).hexdigest(),
+            "final_registry": {"test-final-id": {"source_sha256": "test-source-fingerprint", "truth_sha256": "test-truth"}},
+            "review_budget": manifest["provenance"]["review_budget"], "finding_budget_fraction": manifest["provenance"]["finding_budget_fraction"]}
 
 
 @pytest.mark.parametrize("failure", ["missing_ap", "wrong_weights", "wrong_policy", "precision_regression", "recall_regression", "merchant_regression", "no_reduction", "missing_controls", "missing_merchant_metric", "missing_capacity", "partial_truth", "candidate_capacity", "baseline_capacity", "unknown_fraction"])
@@ -161,9 +178,11 @@ def test_production_gate_blocks_missing_metrics_and_regressions(failure):
 def test_production_gate_requires_quality_plus_independent_applicability():
     manifest = {"release_id": "test-v2", "payload_sha256": "weights", "feature_sha256": "features", "queue_policy": candidate.QUEUE_POLICIES[candidate.CONTRACT],
         "feature_contract": candidate.CONTRACT, "eligibility": "validated_candidate"}
-    proof = promotion.assess(manifest, [promotable_report(manifest.copy())])
+    report = promotable_report(manifest)
+    proof = promotion.assess(manifest, [report], frozen=frozen_metadata(manifest))
     assert proof["status"] == "PASSED"
     proof["reports_sha256"] = ["test-metadata-only"]
+    manifest["provenance"]["parent_manifest_sha256"] = proof["frozen_manifest_sha256"]
     manifest["promotion"] = {"representative_labels": True, "domain": "approved-test-domain", "quality_validation": proof}
     case = SimpleNamespace(scoring_mode="validated_candidate", candidate_domain="approved-test-domain")
     assert candidate.eligibility(manifest, case)[0]
@@ -250,13 +269,17 @@ def test_promotion_cli_preserves_exact_frozen_payload_and_blocked_diagnostics(tm
     matrix, labels, _ = demo_population("promotion-unit", count=128)
     models = candidate.train(matrix, labels, matrix, labels)
     source, approved = tmp_path / "source", tmp_path / "approved"
-    manifest = candidate.save(source, models, name="hist", provenance={"test_only": True})
+    protocol = tmp_path / "protocol.json"
+    protocol.write_text(json.dumps({"TEST_METADATA_ONLY": True}))
+    manifest = candidate.save(source, models, name="hist", provenance={"test_only": True, "protocol_sha256": candidate.sha(protocol)})
     truth_report, approval = tmp_path / "metadata-only.json", tmp_path / "approval.json"
     truth_report.write_text(json.dumps(promotable_report(manifest)))
+    (source / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    protocol.with_name(protocol.name + ".frozen.json").write_text(json.dumps(frozen_metadata(manifest)))
     approval.write_text(json.dumps({"representative_labels": True, "domain": "metadata-test-only", "approved_by": "unit-test",
         "decision_reason": "TEST ONLY, not a real promotion", "label_provenance": "unit metadata", "validation_reports": [str(truth_report)], "limitations": ["not production evidence"]}))
     flags = ["promote", "--artifact", str(source), "--manifest-sha256", candidate.sha(source / "manifest.json"),
-        "--approval", str(approval), "--quality-result", str(truth_report)]
+        "--approval", str(approval), "--quality-result", str(truth_report), "--protocol", str(protocol)]
     assert lifecycle.main([*flags, "--output", str(approved)]) == 0
     new_manifest, _ = candidate.load(approved, candidate.sha(approved / "manifest.json"))
     assert (approved / "weights.joblib").read_bytes() == (source / "weights.joblib").read_bytes()
@@ -284,7 +307,9 @@ def test_real_worker_auto_approved_routing_retains_structures_and_source_opposit
     models = candidate.train(matrix, labels, matrix, labels)
     source = tmp_path / "source"
     manifest = candidate.save(source, models, name="hist", provenance={"test_only": True})
-    proof = promotion.assess(manifest, [promotable_report(manifest, fraction=.5)])
+    report = promotable_report(manifest, fraction=.5)
+    (source / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    proof = promotion.assess(manifest, [report], frozen=frozen_metadata(manifest))
     proof["reports_sha256"] = ["metadata-only-test"]
     approved = tmp_path / "approved"
     candidate.promote_verified(source, approved, candidate.sha(source / "manifest.json"),

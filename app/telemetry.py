@@ -91,6 +91,18 @@ def process_rss_bytes(pid, *, tree=False):
         return None
 
 
+def peak_rss_bytes():
+    """Cumulative SELF high-water mark; macOS reports bytes, Linux reports KiB."""
+    try:
+        import resource
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if platform.system() not in {"Linux", "Darwin"}:
+            return None
+        return int(value * (1024 if platform.system() == "Linux" else 1))
+    except (ImportError, ValueError, OSError):
+        return None
+
+
 def host_metrics():
     model, cpu_model = None, platform.processor() or None
     if platform.system() == "Darwin":

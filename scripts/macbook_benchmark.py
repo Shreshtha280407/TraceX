@@ -56,9 +56,15 @@ def preflight(args):
     worker = output(compose(args, "ps", "-q", "worker")).strip()
     if not worker:
         raise ValueError("worker is not running; run start first")
+    nominal = getattr(args, "estimate_transactions", None)
+    if args.counts:
+        counts = json.loads(args.counts.read_text())
+    elif nominal is not None:
+        counts = {"transactions": nominal, "inputs": (nominal * 3 + 1) // 2, "outputs": (nominal * 27 + 9) // 10}
+    else:
+        counts = {"transactions": 3_050_000, "outputs": 8_050_000, "inputs": 4_550_000}
     runtime = json.loads(output(docker(args, "exec", worker, "python", "-m", "scripts.runtime_probe",
-        "--counts-json", json.dumps(json.loads(args.counts.read_text()) if args.counts else {
-            "transactions": 3_050_000, "outputs": 8_050_000, "inputs": 4_550_000}))))
+        "--counts-json", json.dumps(counts))))
     inspected = json.loads(output(docker(args, "inspect", worker)))[0]
     image = json.loads(output(docker(args, "image", "inspect", inspected["Image"])))[0]
     native = architecture(platform.machine())
@@ -113,15 +119,19 @@ def preflight(args):
     if pg_free < disk_required:
         errors.append("actual PostgreSQL/Docker filesystem lacks conservative run space")
     physical = host["memory"]["physical_bytes"]
-    if physical and vm["MemTotal"] > physical * .80:
+    # Native Linux reports host RAM here; it is not a separately allocated VM.
+    vm_backed = host.get("system") == "Darwin" or "desktop" in str(vm.get("OperatingSystem", "")).lower()
+    if vm_backed and physical and vm["MemTotal"] > physical * .80:
         warnings.append("Docker VM allocation exceeds 80% of physical RAM; macOS pressure may be severe")
     recommendations = {"worker_budget_ceiling_mb": ceiling >> 20,
-        "docker_vm_upper_recommendation_mb": int(min(physical * .72, (host["memory"]["available_bytes"] or physical) * .85)) >> 20 if physical else None,
-        "basis": "time-varying availability; retain macOS and PostgreSQL/API headroom; do not force a fixed Docker allocation"}
+        "docker_vm_upper_recommendation_mb": int(min(physical * .72, (host["memory"]["available_bytes"] or physical) * .85)) >> 20 if vm_backed and physical else None,
+        "basis": "time-varying availability; retain OS and PostgreSQL/API headroom; native Linux has no separate Docker VM allocation"}
     from scripts.appliance_acceptance import request
     readiness = request(args.base, "/readyz", timeout=10)
     return {"status": "BLOCKED" if errors else "ADMITTED_NOT_RUN", "large_run": "NOT RUN", "errors": errors,
-        "warnings": warnings, "host": host, "docker_vm": {key: vm.get(key) for key in ("Architecture", "MemTotal", "NCPU", "ServerVersion")},
+        "counts_scope": "independently counted source" if args.counts and args.source else "ESTIMATED METADATA ONLY; exact source counts still required",
+        "admission_counts": counts,
+        "warnings": warnings, "host": host, "docker_vm": {**{key: vm.get(key) for key in ("Architecture", "MemTotal", "NCPU", "ServerVersion", "OperatingSystem")}, "separate_vm": vm_backed},
         "worker": runtime, "image": {key: image.get(key) for key in ("Id", "Architecture", "Os", "RepoTags")},
         "container_memory_limit": inspected["HostConfig"]["Memory"], "disk_required_bytes": disk_required,
         "containers": services, "postgres_version": postgres_version, "postgres_filesystem_free_bytes": pg_free,
@@ -163,6 +173,8 @@ def main(argv=None):
             p.add_argument("--source", type=Path, required=command in {"accept", "screen", "profile"})
             p.add_argument("--counts", type=Path, required=command in {"accept", "screen", "profile"})
             p.add_argument("--output", type=Path, required=True)
+        if command == "preflight":
+            p.add_argument("--estimate-transactions", type=int, help="Metadata-only pre-generation screening; estimates 1.5 inputs/2.7 outputs per TX. Never a canonical count or substitute for exact admission.")
         if command in {"accept", "screen", "profile"}:
             p.add_argument("--minimum", type=int, default=3_000_000)
             p.add_argument("--target", type=float, default=1800)
@@ -247,18 +259,25 @@ def main(argv=None):
         from app.ml.candidate import sha
         from scripts.dataset_acceptance_counts import counts
         values, rows = counts(args.source)
-        manifest = json.loads((args.source.parent / "dataset_manifest.json").read_text())
+        manifest_path = args.source.parent / "dataset_manifest.json"
+        if not manifest_path.is_file():
+            manifest_path = args.source.parent / "quality_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
         if manifest["files"][args.source.name]["sha256"] != sha(args.source):
             raise ValueError("generator manifest source checksum mismatch")
-        declared = manifest["counts"].get("canonical_transaction_count", manifest["counts"].get("transactions"))
+        declared_counts = manifest.get("counts", {})
+        declared = declared_counts.get("canonical_transaction_count", declared_counts.get("transactions",
+            manifest.get("provenance", {}).get("count")))
         if declared != values["transactions"]:
             raise ValueError(f"independent canonical count {values['transactions']} != manifest {declared}")
         with args.output.open("x") as stream:
             json.dump(values, stream, indent=2)
         with args.output.with_suffix(".provenance.json").open("x") as stream:
             json.dump({"method": "independent SQLite disk-indexed raw row counting; truth not read", "counts": values,
-                "source_rows": rows, "source_sha256": sha(args.source), "manifest_sha256": sha(args.source.parent / "dataset_manifest.json")}, stream, indent=2)
+                "source_rows": rows, "source_sha256": sha(args.source), "manifest_sha256": sha(manifest_path), "manifest_kind": manifest_path.name}, stream, indent=2)
         return 0
+    if getattr(args, "estimate_transactions", None) is not None and (args.estimate_transactions < 1 or args.counts or args.source):
+        parser.error("positive --estimate-transactions is for metadata-only preflight; do not combine with actual source/counts")
     try:
         report = preflight(args)
     except Exception as error:  # noqa: BLE001 - failed admission diagnostics must be retained
@@ -270,8 +289,10 @@ def main(argv=None):
         print(json.dumps({"status": report["status"], "errors": report["errors"], "output": str(args.output)}))
         return int(bool(report["errors"]))
     if report["errors"]:
+        report.update(exit_code=1, acceptance_outcome="BLOCKED_PREFLIGHT")
         with args.output.open("x") as stream:
             json.dump(report, stream, indent=2)
+        print(json.dumps({"status": "BLOCKED", "errors": report["errors"], "output": str(args.output)}))
         return 1
     run = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     if args.command == "accept":

@@ -1,0 +1,659 @@
+{
+  "status": "pass",
+  "scope": "copied-image API and worker, PostgreSQL, bearer [REDACTED]",
+  "acceptance_errors": [],
+  "run_id": "20261004-223707-44b90cfd",
+  "target_seconds": 1800.0,
+  "diagnostic_timeout_seconds": 300.0,
+  "minimum_canonical_transactions": 128,
+  "containers": {
+    "api": {
+      "image_id": "sha256:90f64a87edfa6b8941bf2fb1e80f04807e5dc7bbe978ad384c432895ebfcde09",
+      "memory_limit": 0,
+      "nano_cpus": 0
+    },
+    "worker": {
+      "image_id": "sha256:90f64a87edfa6b8941bf2fb1e80f04807e5dc7bbe978ad384c432895ebfcde09",
+      "memory_limit": 0,
+      "nano_cpus": 0
+    },
+    "postgres": {
+      "image_id": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+      "memory_limit": 0,
+      "nano_cpus": 0
+    }
+  },
+  "container_runtime": {
+    "python": "3.11.17 (main, Oct  1 2026, 21:51:14) [GCC 14.2.0]",
+    "effective_ml_enabled": true,
+    "release_identity": {
+      "release_id": "anomaly-stack-v2",
+      "layers": [
+        "A_global",
+        "D_burst"
+      ],
+      "fusion_method": "stouffer",
+      "default_review_budget": 0.01,
+      "training_seed": 42,
+      "layer_a_score": "isolation_forest ranks; ECOD per-feature contributions as attribution",
+      "feature_contract_version": "anomaly-stack-v2",
+      "feature_columns_sha256": "f06f0f171479affef70a7284da4f126c1c3b8ea9677f9e82561dc489f77f7eec",
+      "fitting_strategy": "dynamic: refit on each snapshot's own earliest reference_fraction of transactions at scoring time; no static model artifact is loaded or shipped"
+    },
+    "release_manifest_sha256": "eaa862db090baf74db92ff69cddc53eb89e44389f48734eae381f9180542dda4",
+    "configured_candidate_manifest_sha256": null,
+    "calibration_sha256": {
+      "app/engine/calibration/confidence-v1.json": "ee850e84dffd5875bd40a1007a960b6cc50d8b29d99712dce4d4e6651595e789"
+    },
+    "versions": {
+      "duckdb": "1.5.5",
+      "pyarrow": "23.0.1",
+      "numpy": "2.4.6",
+      "scikit-learn": "1.9.1",
+      "scipy": "1.17.1",
+      "SQLAlchemy": "2.1.1",
+      "psycopg": "3.3.6"
+    },
+    "runtime_source_sha256": {
+      "app/__init__.py": "13dc5f69d13f9b5459f2d7b197b658a9f74f59a4b1d1c4b16f7b3f12af89f86b",
+      "app/api/__init__.py": "d93b5f927d5548a8ac36fcb08ff9ea4d61844066f86244c9564b8b01c01428b4",
+      "app/api/analysis_routes.py": "fe6a6f098e6e3b84a66998ac361ff3cb63aee0c2bb58a8f8ec547515cac2b3b1",
+      "app/api/analytics_routes.py": "708675a88634299439e8b924c79f10e7429f825151affcc5b876405c4a34fe07",
+      "app/api/group_routes.py": "6d77e7d0398915916d03b439666642ef5b00ce54fbcc869dfd529196c4c1c051",
+      "app/api/routes.py": "55b58f92177d380c56e193d1ec769146651e9656e5987c646f3adae1669435d5",
+      "app/auth/__init__.py": "e027eb0235b3e0047e1993e9862199e7071f1480c85d5f3def83897198045940",
+      "app/auth/dependencies.py": "41cf7fc13f110beff4abb28af384e9b5a9a40885b4e28d92ac9045c06442c19a",
+      "app/auth/security.py": "fc8d8cbfcb79e0787c4d27a9184850b5c0548a6d8837ea80f5675fe955f78935",
+      "app/config.py": "cde8f04387ce8fc3aef366ee562d6560ad2188720276fc18ec1002c79e60c466",
+      "app/db.py": "1f1ab5f656f15349c51647f20fae283499730adccf13d21cdd0176dfed9be833",
+      "app/engine/__init__.py": "90e8784103bbb278eaceee5a5e00e2117b7a5e16798052096cd9efbc96becca5",
+      "app/engine/adapters/__init__.py": "68ebf05e6d94a746e36f7046acddd71610253d25ac2fbf28a85d2387f25f7310",
+      "app/engine/adapters/source.py": "82ba2e5e2e6e40619088ad68bef6bfff7c7606053d93a23e6c716334ab3ac7c1",
+      "app/engine/analytics.py": "072ff6553ac54e53fb74946baf92e424d8f4fba51b0cafa3957e1cbe7ea50254",
+      "app/engine/bounded.py": "c1a8fac404ee3ef07dc064085652d08f733a8c1169f71afa0c219ab82a735aa8",
+      "app/engine/canonical/__init__.py": "5c3ea36121df3439efddc359be43c158fd1a337f2ddd3dfcebba4c8ccfcbb015",
+      "app/engine/canonical/batch.py": "364d8a8ec504a9bbe862cc79a7e39fdf8254eb49db1b40a399e8bf59b77cee4b",
+      "app/engine/canonical/normalize.py": "b68bf88f2ab66388468225558e986a4dbf15023043be597292fd3399bc95c0e8",
+      "app/engine/canonical/profiles.py": "658e585040610cffe7d7baa233e4eb5249bcd637ec40a95cde186c0da6474a5c",
+      "app/engine/catalogue/__init__.py": "3cf0a26670c3074c5ff1522dec6234b9550b782862b0e542036cc8fb0f871190",
+      "app/engine/catalogue/fragments.py": "23304dda8901774966fcb11ef18879cf304217352dfaa5f8c1e679276990277b",
+      "app/engine/confidence.py": "de9cd633a7eae4a81e6e1dfc8e244924614ab49cc479399d5d49bcbffd9f6915",
+      "app/engine/dataset_cli.py": "5372d8d1135c05a99e9cf0d752b87260407ccb7a48dc404ffdf3b12370cd9ae1",
+      "app/engine/evidence.py": "c6e9bbdabe8183bdd28183043651b13fd9e85dd84ec7f60fbc45a8fd18cea48b",
+      "app/engine/feature_store.py": "0eada05f111ce1ec4a2d0fb2f2287298d4f75f58ed3424b4e90670974750e9c9",
+      "app/engine/findings/__init__.py": "dc41e312c606942f39d00b651de2ff84d291792ffe75cc1f455b8c7e2a3d1200",
+      "app/engine/findings/deterministic.py": "8d4cf4e3d89b1412d76afb8c9706c92ac575cf72ab17f6bfba20ce50fc646acb",
+      "app/engine/geoip.py": "d87d0b196104d321d027429867cfbf9a23f68cba509a0b720f1f3d7ffd98a2d1",
+      "app/engine/graph/__init__.py": "f1c0ca402f1123f3a7e7fabd19cc3db03d6f92455ef6ff3b4ea2fbf626e6ad64",
+      "app/engine/graph/builder.py": "ecff3fa28a1c95c0161ed0f7547e59e2720766fadd7013a1bc091133ae757eb4",
+      "app/engine/graph/query.py": "f50b1c5c4d16476d64ea8b0fd719419ca05d1cac67ec648bf2834409ea74767e",
+      "app/engine/ingestion/__init__.py": "c3a413e31b7e6b916587c388c5a9c859fa16785feca45ce022cee535c2daea65",
+      "app/engine/ingestion/pipeline.py": "b0b71872205f9c76023db150ce871ef60d77a843d9487ba9e398205cf1a581bd",
+      "app/engine/investigations.py": "184dcebd75ae454525562ec6bd5af80cfc99af6b727b2da6b2affe86eb8f093a",
+      "app/engine/motifs/__init__.py": "56822cb4aa2b8693cca0fd1edd0891c214adf28d26e1192193baf48245f0f110",
+      "app/engine/motifs/deterministic.py": "3c8ef395a9b4790454055c49475d78abd320d33ab72f1fab65379e3caf1b1d6d",
+      "app/engine/process_pool.py": "5413486acc56f16b8dec4645470ca96954ef5cd92b8ae9a997a149a06e844892",
+      "app/events.py": "d3b42783ef151b36f6534b31bb9fa9ac32f80c9477161e5b9f5357f60a3ca75e",
+      "app/jobs/__init__.py": "a6dc15e5382828746581952565afdb88b4dc6d742a984ce8ea7838aad27c3825",
+      "app/jobs/analysis.py": "89617fba824cf66b1c4168389ba042b0357c60d76a33f937ae44f6bbb1572333",
+      "app/jobs/service.py": "589471ef09826c0a5c6bd78e8b6a6f202bb5d3dea7627a62a37f7226341c0b87",
+      "app/main.py": "c0e04f9ef9f557d09d390655cb8829f69e405458f78454e2e2b7a173338f6d59",
+      "app/ml/__init__.py": "b6a993e4a0c5f8251d18d47b02e8f692240049fc6fc0f86931ed7d3ac506a34d",
+      "app/ml/analyst_labels.py": "b1eb686c7d1718ecd26b72b0358167ac4cc8f78de5740c6b9a1704b0397deb82",
+      "app/ml/candidate.py": "ceec54a3812387c0077871d086671c760756df977229395fd303533a96a9465b",
+      "app/ml/candidate_findings.py": "c4351998a2264410e0035cd6a017f384d01ac9a8121b658b1301bab2273512de",
+      "app/ml/detectors.py": "a8cc84a86338064fb9925c36ba9c224d1fef8bab6123a4afdb4be7a7e0eeb5a0",
+      "app/ml/evaluate.py": "5e2b242de71f475353819c886eec2e9ba0e1b82fa9a195eaf1e39ba995561dcc",
+      "app/ml/evaluation_identity.py": "bd6e905d90f569b21b6d974fbcdefadaa809845e03f48f0cc430d782c43b87b1",
+      "app/ml/facts.py": "a5394c1bab19c9c45d71fd4a9affe2c37b56cbb382f4ec7b9fc69dcc5ef6045d",
+      "app/ml/findings.py": "675acab2bca6f96698a8ba178dce08e077825f02f97e27755f93a227681fdd1d",
+      "app/ml/fusion.py": "a9701d269018a6e41264eb6300ed470b9de6d869eb4c0b6c0b17b8faaefa4e26",
+      "app/ml/grains.py": "e68171a2cba6926253495ff9e66852b1fae2b170bc736668c4cc18cb383b857e",
+      "app/ml/layers.py": "44627f60ee4112a649958ca2a9ca6477a2652e11f0f6d6ecd138bae65fb8dd62",
+      "app/ml/promotion.py": "463cc49dfc08e1523bf8c7380d3d2b4f607b3929637c3da5d060151cfb417f24",
+      "app/ml/recipient_history.py": "6772ad4c4095d46fdc0bc51785ea24d26558eeec91f29a56872375266409a87e",
+      "app/ml/stack.py": "1e7fb3252a3e0263823c9547516bb0967daf54a91e4942ceaf78260fae64c38f",
+      "app/ml_release_constants.py": "a56aa783dfe1014c786e14d7fb1262d25180d0f11f4da0d3c97a812319029d2a",
+      "app/models.py": "abdc45c91a13dee48fcece2130e7a2b59ffccab442c801e21e70802daf57d8f0",
+      "app/resources.py": "cf267cc4e761f6cf0f9169b2d6135c2a30d581b94bfa3082b94c7a3d51cc77cd",
+      "app/storage/__init__.py": "ac05eda8f48d944c77e43c83e0d39c8ebc9c4abb35a49ea064bcd50ded2a520f",
+      "app/storage/raw.py": "331bcd77a1b509534b96d1216c8a34c8dc12eab244a87ac476e625343196f80b",
+      "app/telemetry.py": "4220463394b0d84d6ef8350f8036878086ddedd88d045eb5a04a187d43b85def",
+      "workers/__init__.py": "8b491c878ff53e5a814e2f68edefad26ac096a1b9710423bec5d93a6105a8a3c",
+      "workers/runner.py": "033ae80e373e7b56e58c977ce93848cbf72413afbcc14354ad8d86794a866e4d"
+    },
+    "configuration": {
+      "TRACEX_WORKERS": "1",
+      "TRACEX_MEMORY_BUDGET_MB": "3500",
+      "TRACEX_EXECUTION_MODE": "bounded",
+      "TRACEX_ML_FINDINGS": "1",
+      "TRACEX_LEASE_SECONDS": "600",
+      "TRACEX_MAX_UPLOAD_BYTES": "68719476736"
+    }
+  },
+  "postgres_version": "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "upload_seconds": 0.03142281199689023,
+  "first_provisional_activity_seconds": 2.076329547999194,
+  "final_group_retrieval": {
+    "underlying_findings": 42,
+    "investigation_groups": 42,
+    "unresolved_groups": 42,
+    "queued_groups": 42,
+    "backlog_groups": 0,
+    "policy": "group-family-round-robin-v1",
+    "authenticated": true,
+    "returned_member_evidence": true,
+    "duration_seconds": 0.06895470900053624,
+    "grouping_version": "observed-episode-groups-v1",
+    "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769"
+  },
+  "final_findings_retrieval": {
+    "total": 42,
+    "returned": 1,
+    "snapshot_ids": [
+      "a33d6301-1960-463a-8140-045b8b944b69"
+    ],
+    "authenticated": true
+  },
+  "first_useful_output_seconds": 2.076329547999194,
+  "first_useful_output_scope": "receipt-approved provisional address participation, not final graph conclusions; null if not observed by polling",
+  "clock_contract": "fresh upload initiation through terminal snapshot and authenticated final investigation group/member evidence retrieval; no resume",
+  "total_seconds": 4.1906439940066775,
+  "source_sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+  "expected_counts": {
+    "values": {
+      "transactions": 128,
+      "inputs": 3,
+      "outputs": 304,
+      "network_observations": 128,
+      "quarantine": 0
+    },
+    "sha256": "a133255357765f13fb4e1ad4fb07d8d1de760113c7a61fa15ff033b067e41afa"
+  },
+  "count_provenance": {
+    "method": "independent raw generator row/array counting; no production parser or truth",
+    "source_sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+    "source_rows": 128,
+    "counts": {
+      "transactions": 128,
+      "inputs": 3,
+      "outputs": 304,
+      "network_observations": 128,
+      "quarantine": 0
+    }
+  },
+  "time_target_status": "MET",
+  "acceptance_outcome": "PASS",
+  "resource_peaks": {
+    "api": {
+      "rss_peak_bytes": 178307072,
+      "tree_rss_peak_bytes": 178307072,
+      "container_usage_peak_bytes": 129425408
+    },
+    "worker": {
+      "rss_peak_bytes": 323256320,
+      "tree_rss_peak_bytes": 323256320,
+      "container_usage_peak_bytes": 219578368
+    },
+    "postgres": {
+      "rss_peak_bytes": null,
+      "tree_rss_peak_bytes": null,
+      "container_usage_peak_bytes": null
+    }
+  },
+  "elapsed_seconds": 6.35371915900032,
+  "memory_measurement": "sampled INSIDE actual Linux API/worker; child RSS sums may double-count; unsupported metrics are null",
+  "container_cgroup_peak_bytes": {
+    "api": "225759232",
+    "worker": "242323456",
+    "postgres": "109592576"
+  },
+  "cgroup_peak_scope": "container lifetime; may include preceding cases, not reset per benchmark",
+  "scratch_measurement": "~5s sampled logical .work/.staging sizes across review cases; sampling overhead included",
+  "exit_code": 0,
+  "bottleneck": {
+    "name": "ml_scoring",
+    "status": "written",
+    "reason": null,
+    "attempt": 1,
+    "started_at": "2026-10-04T17:07:11.743881+00:00",
+    "completed_at": "2026-10-04T17:07:12.702697+00:00",
+    "duration_seconds": 0.9582233260007342,
+    "details": {
+      "written": 1,
+      "status": "written",
+      "scored_transactions": 128,
+      "threshold_flagged": 1,
+      "model_run_id": "53a04476b3b5a461c6370686",
+      "release_id": "anomaly-stack-v2",
+      "eligibility_decision": {
+        "status": "fallback",
+        "reason": "explicit unsupervised v2 case policy"
+      },
+      "global_memory_estimate_bytes": 321776,
+      "joint_memory_estimate_bytes": 1052043504,
+      "worker_cpu_seconds": 0.9111244110000012,
+      "reaped_child_cpu_seconds": 0.0,
+      "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+      "cpu_scope": "parent worker only; excludes child CPU"
+    }
+  },
+  "pipeline": {
+    "state": "completed",
+    "rows_seen": 128,
+    "rows_accepted": 128,
+    "rows_quarantined": 0,
+    "analysis": {
+      "state": "complete",
+      "stages": [
+        {
+          "name": "source_verification",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:10.557806+00:00",
+          "completed_at": "2026-10-04T17:07:10.566937+00:00",
+          "duration_seconds": 0.007326699997065589,
+          "details": {
+            "sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+            "byte_size": 69927,
+            "worker_cpu_seconds": 0.002260009999999646,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ingesting",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:10.619645+00:00",
+          "completed_at": "2026-10-04T17:07:10.696689+00:00",
+          "duration_seconds": 0.07635716799995862,
+          "details": {
+            "rows_seen": 128,
+            "rows_accepted": 128,
+            "rows_quarantined": 0,
+            "worker_cpu_seconds": 0.03482052599999985,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "graph_building",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:10.707576+00:00",
+          "completed_at": "2026-10-04T17:07:11.246450+00:00",
+          "duration_seconds": 0.5383151459973305,
+          "details": {
+            "worker_cpu_seconds": 0.28186095499999997,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "findings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:11.255289+00:00",
+          "completed_at": "2026-10-04T17:07:11.738657+00:00",
+          "duration_seconds": 0.4820361169986427,
+          "details": {
+            "worker_cpu_seconds": 0.28418979899999997,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ml_scoring",
+          "status": "written",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:11.743881+00:00",
+          "completed_at": "2026-10-04T17:07:12.702697+00:00",
+          "duration_seconds": 0.9582233260007342,
+          "details": {
+            "written": 1,
+            "status": "written",
+            "scored_transactions": 128,
+            "threshold_flagged": 1,
+            "model_run_id": "53a04476b3b5a461c6370686",
+            "release_id": "anomaly-stack-v2",
+            "eligibility_decision": {
+              "status": "fallback",
+              "reason": "explicit unsupervised v2 case policy"
+            },
+            "global_memory_estimate_bytes": 321776,
+            "joint_memory_estimate_bytes": 1052043504,
+            "worker_cpu_seconds": 0.9111244110000012,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "analytics",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:12.710262+00:00",
+          "completed_at": "2026-10-04T17:07:13.150129+00:00",
+          "duration_seconds": 0.4393060169968521,
+          "details": {
+            "status": "complete",
+            "analytics_snapshot_id": "b082d489-3ecc-4405-9dab-47d753738f72",
+            "network_findings": 0,
+            "entity_count": 1,
+            "geoip_installed": true,
+            "summary": {
+              "analytics_version": "entity-network-v1",
+              "multi_input_transactions": 1,
+              "mixing_excluded_transactions": 0,
+              "entity_count": 1,
+              "clustered_addresses": 3,
+              "largest_entity_addresses": 3,
+              "clustering_method": "common-input-ownership (CoinJoin-shaped inputs excluded)",
+              "wallet_count": 17,
+              "geoip_installed": true,
+              "geoip_sources": [
+                {
+                  "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv4.csv",
+                  "kind": "country",
+                  "licence": "CC-BY-4.0",
+                  "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                  "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                },
+                {
+                  "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv6.csv",
+                  "kind": "country",
+                  "licence": "CC-BY-4.0",
+                  "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                  "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                },
+                {
+                  "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv4.csv",
+                  "kind": "asn",
+                  "licence": "PDDL-1.0",
+                  "attribution": "IPtoASN (https://iptoasn.com)",
+                  "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                },
+                {
+                  "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv6.csv",
+                  "kind": "asn",
+                  "licence": "PDDL-1.0",
+                  "attribution": "IPtoASN (https://iptoasn.com)",
+                  "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                }
+              ],
+              "geoip_compiled_at": "2026-10-02T21:30:03+00:00",
+              "endpoint_ips": 2,
+              "endpoint_scopes": {
+                "public": 2
+              },
+              "observation_country_checks": {
+                "verified": 128
+              },
+              "observation_asn_checks": {
+                "verified": 128
+              },
+              "observed_transactions": 128,
+              "correlation_wallets_tested": 0,
+              "relay_concentrations": 0,
+              "relay_coherent_endpoints": 0,
+              "geo_mismatch_endpoints": 0,
+              "embedded_wallets": 17,
+              "embedding_dimensions": 16,
+              "embedding_method": "truncated SVD of the degree-normalised wallet x transaction incidence matrix",
+              "embedding_status": "complete",
+              "timings_s": {
+                "dense_ids": 0.011,
+                "clustering": 0.041,
+                "flows": 0.046,
+                "geoip": 0.057,
+                "network_correlation": 0.055,
+                "embeddings": 0.018
+              },
+              "global_memory_estimate_bytes": 91424,
+              "execution_mode": "bounded",
+              "revision": 0,
+              "supersedes_analytics_id": null,
+              "finding_refresh_policy": "append new natural keys; preserve prior findings, reviews and confidence",
+              "network_findings": 0,
+              "new_network_findings": 0
+            },
+            "worker_cpu_seconds": 0.31656876999999994,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "geoip",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:13.172055+00:00",
+          "completed_at": "2026-10-04T17:07:13.182435+00:00",
+          "duration_seconds": 0.0075821239879587665,
+          "details": {
+            "installed": true,
+            "worker_cpu_seconds": 0.004169220999999723,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "network_coverage",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:13.192857+00:00",
+          "completed_at": "2026-10-04T17:07:13.200025+00:00",
+          "duration_seconds": 0.0060392730083549395,
+          "details": {
+            "observed_transactions": 128,
+            "canonical_transactions": 128,
+            "worker_cpu_seconds": 0.0029464410000006325,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "embeddings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:13.210268+00:00",
+          "completed_at": "2026-10-04T17:07:13.218374+00:00",
+          "duration_seconds": 0.00674348599568475,
+          "details": {
+            "embedded_wallets": 17,
+            "worker_cpu_seconds": 0.00332905899999858,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "investigation_grouping",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:07:13.240278+00:00",
+          "completed_at": "2026-10-04T17:07:13.498362+00:00",
+          "duration_seconds": 0.2570501100126421,
+          "details": {
+            "run_id": "fb9b7ce2-e8c4-57c6-bd85-683ea81aab1f",
+            "procedure_version": "observed-episode-groups-v1",
+            "procedure_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+            "underlying_findings": 42,
+            "groups": 42,
+            "reused": false,
+            "worker_cpu_seconds": 0.17555697999999964,
+            "reaped_child_cpu_seconds": 0.0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        }
+      ],
+      "required_stages": [
+        "source_verification",
+        "ingesting",
+        "graph_building",
+        "findings",
+        "ml_scoring",
+        "analytics",
+        "investigation_grouping"
+      ],
+      "retry_supported": false
+    }
+  },
+  "counts": {
+    "transactions": 128,
+    "inputs": 3,
+    "outputs": 304,
+    "network_observations": 128,
+    "quarantine": 0
+  },
+  "code_identity": {
+    "commit": "84dd826d1581c2324c70232a44a154e34271c8b3",
+    "diff_sha256": "592bf2566778bad452fc6bbd1767d9ad6f76082950e59c3c300186f1b0b93395",
+    "untracked_sha256": {
+      "app/api/group_routes.py": "6d77e7d0398915916d03b439666642ef5b00ce54fbcc869dfd529196c4c1c051",
+      "app/engine/investigations.py": "184dcebd75ae454525562ec6bd5af80cfc99af6b727b2da6b2affe86eb8f093a",
+      "app/ml/evaluation_identity.py": "bd6e905d90f569b21b6d974fbcdefadaa809845e03f48f0cc430d782c43b87b1",
+      "docs/grouped_review_2026-10-04.md": "6b74bb10350d3660215901f0258af29079809c3ef473d9044310e1ef82501948",
+      "docs/laptop_1m_runbook.md": "55af523dcdb2a2cd30f8545616dfea5f2f9e9fd486d123a669179725a616b53b",
+      "frontend/src/components/GraphContinuation.css": "420983b2b9539dabbec6598166563cdb02bda1aa229f2ecb6c4951d76827f60c",
+      "frontend/src/components/InvestigationQueue.tsx": "cd14c59d2bb58e89abb9e83cc2026b3d4db5184bc346ad95fbfd0cb0cd9fdcbe",
+      "frontend/src/pages/InvestigationDetail.tsx": "0f466038da69f6d0edf4d31164f287548e167cdc6ec5ff138eceb6344961761d",
+      "scripts/bounded_study_fixture.py": "578c60d96dfc15d1b5a515a3b14831c080f82d124baded2c00369039e26b73a7",
+      "scripts/group_quality.py": "5d5422e07ca29813623a76bde3dc7700ee420641a28495a63c152f67ef56c7e5",
+      "scripts/grouped_release_report.py": "f0d739cfeaf916491a36825ebe7a3cf45a3547cbf8303cd85768940a40fe6a7f",
+      "scripts/laptop_admission.py": "ad9b95008521f34fa35e595224dbc38691fc11fb860973ca948b2a2acf1cb712",
+      "tests/unit/test_group_quality.py": "df04bc3437f8cdcef885d6d75506d3b448f299aee292bb6ea18013c211697777",
+      "tests/unit/test_investigations.py": "25ca6c09cfa41756193a34fc7c0201d1bfeb78e7efd273e226dbe1f83c23b85b",
+      "tests/unit/test_promotion_registry.py": "5802c77e09bfed6b4e528581dcdd0e7ef0d82a2cd53a14333b8b6f6e058f115e"
+    },
+    "locks": {
+      "uv.lock": "eae2c80a99dd945f3ac8d60ed2ec8cb044d3a9beb5e7e3f02f944ee1fd80b6ef",
+      "frontend/package-lock.json": "727baec17e38f4ee0e8d04e479b0ef3e21164b6e55fcd7598712849ad5a213ff"
+    },
+    "runtime_source_sha256": {
+      "app/__init__.py": "13dc5f69d13f9b5459f2d7b197b658a9f74f59a4b1d1c4b16f7b3f12af89f86b",
+      "app/api/__init__.py": "d93b5f927d5548a8ac36fcb08ff9ea4d61844066f86244c9564b8b01c01428b4",
+      "app/api/analysis_routes.py": "fe6a6f098e6e3b84a66998ac361ff3cb63aee0c2bb58a8f8ec547515cac2b3b1",
+      "app/api/analytics_routes.py": "708675a88634299439e8b924c79f10e7429f825151affcc5b876405c4a34fe07",
+      "app/api/group_routes.py": "6d77e7d0398915916d03b439666642ef5b00ce54fbcc869dfd529196c4c1c051",
+      "app/api/routes.py": "55b58f92177d380c56e193d1ec769146651e9656e5987c646f3adae1669435d5",
+      "app/auth/__init__.py": "e027eb0235b3e0047e1993e9862199e7071f1480c85d5f3def83897198045940",
+      "app/auth/dependencies.py": "41cf7fc13f110beff4abb28af384e9b5a9a40885b4e28d92ac9045c06442c19a",
+      "app/auth/security.py": "fc8d8cbfcb79e0787c4d27a9184850b5c0548a6d8837ea80f5675fe955f78935",
+      "app/config.py": "cde8f04387ce8fc3aef366ee562d6560ad2188720276fc18ec1002c79e60c466",
+      "app/db.py": "1f1ab5f656f15349c51647f20fae283499730adccf13d21cdd0176dfed9be833",
+      "app/engine/__init__.py": "90e8784103bbb278eaceee5a5e00e2117b7a5e16798052096cd9efbc96becca5",
+      "app/engine/adapters/__init__.py": "68ebf05e6d94a746e36f7046acddd71610253d25ac2fbf28a85d2387f25f7310",
+      "app/engine/adapters/source.py": "82ba2e5e2e6e40619088ad68bef6bfff7c7606053d93a23e6c716334ab3ac7c1",
+      "app/engine/analytics.py": "072ff6553ac54e53fb74946baf92e424d8f4fba51b0cafa3957e1cbe7ea50254",
+      "app/engine/bounded.py": "c1a8fac404ee3ef07dc064085652d08f733a8c1169f71afa0c219ab82a735aa8",
+      "app/engine/canonical/__init__.py": "5c3ea36121df3439efddc359be43c158fd1a337f2ddd3dfcebba4c8ccfcbb015",
+      "app/engine/canonical/batch.py": "364d8a8ec504a9bbe862cc79a7e39fdf8254eb49db1b40a399e8bf59b77cee4b",
+      "app/engine/canonical/normalize.py": "b68bf88f2ab66388468225558e986a4dbf15023043be597292fd3399bc95c0e8",
+      "app/engine/canonical/profiles.py": "658e585040610cffe7d7baa233e4eb5249bcd637ec40a95cde186c0da6474a5c",
+      "app/engine/catalogue/__init__.py": "3cf0a26670c3074c5ff1522dec6234b9550b782862b0e542036cc8fb0f871190",
+      "app/engine/catalogue/fragments.py": "23304dda8901774966fcb11ef18879cf304217352dfaa5f8c1e679276990277b",
+      "app/engine/confidence.py": "de9cd633a7eae4a81e6e1dfc8e244924614ab49cc479399d5d49bcbffd9f6915",
+      "app/engine/dataset_cli.py": "5372d8d1135c05a99e9cf0d752b87260407ccb7a48dc404ffdf3b12370cd9ae1",
+      "app/engine/evidence.py": "c6e9bbdabe8183bdd28183043651b13fd9e85dd84ec7f60fbc45a8fd18cea48b",
+      "app/engine/feature_store.py": "0eada05f111ce1ec4a2d0fb2f2287298d4f75f58ed3424b4e90670974750e9c9",
+      "app/engine/findings/__init__.py": "dc41e312c606942f39d00b651de2ff84d291792ffe75cc1f455b8c7e2a3d1200",
+      "app/engine/findings/deterministic.py": "8d4cf4e3d89b1412d76afb8c9706c92ac575cf72ab17f6bfba20ce50fc646acb",
+      "app/engine/geoip.py": "d87d0b196104d321d027429867cfbf9a23f68cba509a0b720f1f3d7ffd98a2d1",
+      "app/engine/graph/__init__.py": "f1c0ca402f1123f3a7e7fabd19cc3db03d6f92455ef6ff3b4ea2fbf626e6ad64",
+      "app/engine/graph/builder.py": "ecff3fa28a1c95c0161ed0f7547e59e2720766fadd7013a1bc091133ae757eb4",
+      "app/engine/graph/query.py": "f50b1c5c4d16476d64ea8b0fd719419ca05d1cac67ec648bf2834409ea74767e",
+      "app/engine/ingestion/__init__.py": "c3a413e31b7e6b916587c388c5a9c859fa16785feca45ce022cee535c2daea65",
+      "app/engine/ingestion/pipeline.py": "b0b71872205f9c76023db150ce871ef60d77a843d9487ba9e398205cf1a581bd",
+      "app/engine/investigations.py": "184dcebd75ae454525562ec6bd5af80cfc99af6b727b2da6b2affe86eb8f093a",
+      "app/engine/motifs/__init__.py": "56822cb4aa2b8693cca0fd1edd0891c214adf28d26e1192193baf48245f0f110",
+      "app/engine/motifs/deterministic.py": "3c8ef395a9b4790454055c49475d78abd320d33ab72f1fab65379e3caf1b1d6d",
+      "app/engine/process_pool.py": "5413486acc56f16b8dec4645470ca96954ef5cd92b8ae9a997a149a06e844892",
+      "app/events.py": "d3b42783ef151b36f6534b31bb9fa9ac32f80c9477161e5b9f5357f60a3ca75e",
+      "app/jobs/__init__.py": "a6dc15e5382828746581952565afdb88b4dc6d742a984ce8ea7838aad27c3825",
+      "app/jobs/analysis.py": "89617fba824cf66b1c4168389ba042b0357c60d76a33f937ae44f6bbb1572333",
+      "app/jobs/service.py": "589471ef09826c0a5c6bd78e8b6a6f202bb5d3dea7627a62a37f7226341c0b87",
+      "app/main.py": "c0e04f9ef9f557d09d390655cb8829f69e405458f78454e2e2b7a173338f6d59",
+      "app/ml/__init__.py": "b6a993e4a0c5f8251d18d47b02e8f692240049fc6fc0f86931ed7d3ac506a34d",
+      "app/ml/analyst_labels.py": "b1eb686c7d1718ecd26b72b0358167ac4cc8f78de5740c6b9a1704b0397deb82",
+      "app/ml/candidate.py": "ceec54a3812387c0077871d086671c760756df977229395fd303533a96a9465b",
+      "app/ml/candidate_findings.py": "c4351998a2264410e0035cd6a017f384d01ac9a8121b658b1301bab2273512de",
+      "app/ml/detectors.py": "a8cc84a86338064fb9925c36ba9c224d1fef8bab6123a4afdb4be7a7e0eeb5a0",
+      "app/ml/evaluate.py": "5e2b242de71f475353819c886eec2e9ba0e1b82fa9a195eaf1e39ba995561dcc",
+      "app/ml/evaluation_identity.py": "bd6e905d90f569b21b6d974fbcdefadaa809845e03f48f0cc430d782c43b87b1",
+      "app/ml/facts.py": "a5394c1bab19c9c45d71fd4a9affe2c37b56cbb382f4ec7b9fc69dcc5ef6045d",
+      "app/ml/findings.py": "675acab2bca6f96698a8ba178dce08e077825f02f97e27755f93a227681fdd1d",
+      "app/ml/fusion.py": "a9701d269018a6e41264eb6300ed470b9de6d869eb4c0b6c0b17b8faaefa4e26",
+      "app/ml/grains.py": "e68171a2cba6926253495ff9e66852b1fae2b170bc736668c4cc18cb383b857e",
+      "app/ml/layers.py": "44627f60ee4112a649958ca2a9ca6477a2652e11f0f6d6ecd138bae65fb8dd62",
+      "app/ml/promotion.py": "463cc49dfc08e1523bf8c7380d3d2b4f607b3929637c3da5d060151cfb417f24",
+      "app/ml/recipient_history.py": "6772ad4c4095d46fdc0bc51785ea24d26558eeec91f29a56872375266409a87e",
+      "app/ml/stack.py": "1e7fb3252a3e0263823c9547516bb0967daf54a91e4942ceaf78260fae64c38f",
+      "app/ml_release_constants.py": "a56aa783dfe1014c786e14d7fb1262d25180d0f11f4da0d3c97a812319029d2a",
+      "app/models.py": "abdc45c91a13dee48fcece2130e7a2b59ffccab442c801e21e70802daf57d8f0",
+      "app/resources.py": "cf267cc4e761f6cf0f9169b2d6135c2a30d581b94bfa3082b94c7a3d51cc77cd",
+      "app/storage/__init__.py": "ac05eda8f48d944c77e43c83e0d39c8ebc9c4abb35a49ea064bcd50ded2a520f",
+      "app/storage/raw.py": "331bcd77a1b509534b96d1216c8a34c8dc12eab244a87ac476e625343196f80b",
+      "app/telemetry.py": "4220463394b0d84d6ef8350f8036878086ddedd88d045eb5a04a187d43b85def",
+      "workers/__init__.py": "8b491c878ff53e5a814e2f68edefad26ac096a1b9710423bec5d93a6105a8a3c",
+      "workers/runner.py": "033ae80e373e7b56e58c977ce93848cbf72413afbcc14354ad8d86794a866e4d"
+    },
+    "resources": {
+      "system": "Linux",
+      "architecture": "x86_64",
+      "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.44",
+      "machine_model": null,
+      "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+      "logical_cpus": 12,
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "memory": {
+        "physical_bytes": 16366317568,
+        "available_bytes": 5904642048,
+        "method": "psutil.virtual_memory",
+        "available_is_estimate": false
+      },
+      "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages."
+    },
+    "versions": {
+      "duckdb": "1.5.5",
+      "pyarrow": "23.0.1",
+      "numpy": "2.5.3",
+      "scikit-learn": "1.9.1",
+      "scipy": "1.18.1",
+      "SQLAlchemy": "2.1.1",
+      "psycopg": "3.3.6"
+    }
+  },
+  "dirty_tree": true
+}

@@ -95,7 +95,9 @@ def main(argv=None):
     work = REPO / "var/appliance-runs" / args.name
     work.mkdir(parents=True, exist_ok=False)
     report = {"status": "failed", "scope": "copied-image API and worker, PostgreSQL, bearer authentication",
-              "base": args.base, "acceptance_errors": []}
+              "base": args.base, "acceptance_errors": [], "run_id": args.name,
+              "target_seconds": args.max_seconds, "diagnostic_timeout_seconds": args.timeout,
+              "minimum_canonical_transactions": args.min_transactions}
     docker = ["docker", "--context", args.context]
     compose = [*docker, "compose", "-p", args.project, "-f", str(args.compose.resolve())]
     if args.compose_override:
@@ -207,6 +209,19 @@ def main(argv=None):
         findings = request(args.base, f"/cases/{case_id}/findings?limit=1", token=token, timeout=remaining())
         if "findings" not in findings or "total" not in findings:
             raise ValueError("final findings retrieval returned an invalid schema")
+        retrieval_started = time.monotonic()
+        groups = request(args.base, f"/cases/{case_id}/investigation-queue?capacity=100&limit=1", token=token, timeout=remaining())
+        if not groups.get("items") or groups.get("underlying_findings") != findings["total"]:
+            raise ValueError("final group retrieval/count completeness failed")
+        group_id = groups["items"][0]["group_id"]
+        group_detail = request(args.base, f"/investigation-groups/{group_id}", token=token, timeout=remaining())
+        group_members = request(args.base, f"/investigation-groups/{group_id}/members?limit=1", token=token, timeout=remaining())
+        if not group_members.get("items") or group_detail.get("snapshot_id") != job.get("snapshot_id"):
+            raise ValueError("final group evidence is absent or belongs to another snapshot")
+        report["final_group_retrieval"] = {key: groups[key] for key in ("underlying_findings", "investigation_groups", "unresolved_groups", "queued_groups", "backlog_groups", "policy")}
+        report["final_group_retrieval"].update(authenticated=True, returned_member_evidence=True,
+            duration_seconds=time.monotonic() - retrieval_started, grouping_version=group_detail["grouping_version"],
+            grouping_sha256=group_detail["procedure_sha256"])
         seconds = time.monotonic() - started
         if seconds >= args.timeout:
             raise TimeoutError("deadline exceeded during final findings retrieval")
@@ -214,7 +229,7 @@ def main(argv=None):
             "snapshot_ids": sorted({f["snapshot_id"] for f in findings["findings"]}), "authenticated": True}
         report["first_useful_output_seconds"] = report.get("first_provisional_activity_seconds")
         report["first_useful_output_scope"] = "receipt-approved provisional address participation, not final graph conclusions; null if not observed by polling"
-        report["clock_contract"] = "fresh upload initiation through terminal snapshot and authenticated final findings retrieval; no resume"
+        report["clock_contract"] = "fresh upload initiation through terminal snapshot and authenticated final investigation group/member evidence retrieval; no resume"
         inspection = request(args.base, f"/cases/{case_id}/analysis?job_id={job_id}", token=token)
         inspection["geoip"] = request(args.base, "/geoip/status", token=token)
         sources = request(args.base, f"/cases/{case_id}/sources", token=token)
@@ -227,7 +242,7 @@ def main(argv=None):
         if provenance.exists():
             report["count_provenance"] = json.loads(provenance.read_text())
         errors = acceptance_errors(job, inspection,
-            required_stages=["source_verification", "ingesting", "graph_building", "findings", "ml_scoring", "analytics"],
+            required_stages=["source_verification", "ingesting", "graph_building", "findings", "ml_scoring", "analytics", "investigation_grouping"],
             expected_counts=json.loads(args.expected_counts.read_text()), min_transactions=args.min_transactions,
             max_seconds=args.max_seconds, seconds=seconds, expected_release=args.expected_release)
         if (job.get("analysis") or {}).get("state") != "complete":
@@ -245,6 +260,10 @@ def main(argv=None):
         if report.get("sampling_error"):
             errors.append("resource sampler failed")
         report.update(acceptance_errors=errors, status="failed" if errors else "pass")
+        time_missed = args.max_seconds is not None and seconds >= args.max_seconds
+        report["time_target_status"] = "TIME TARGET MISSED" if time_missed else "MET" if args.max_seconds is not None else "NOT SPECIFIED"
+        only_time = errors and all("must be less than target" in error for error in errors)
+        report["acceptance_outcome"] = "TIME TARGET MISSED" if only_time else "FAILED" if errors else "PASS"
     except Exception as error:  # noqa: BLE001 - every failure retained, never count as success
         report["error"] = f"{type(error).__name__}: {error}"
         report["acceptance_errors"].append(report["error"])

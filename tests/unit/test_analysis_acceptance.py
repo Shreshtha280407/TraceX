@@ -119,6 +119,18 @@ def test_top_k_ties_zero_and_case_authorization(system):
     assert [r["transaction"] for r in tied["items"]] == expected
 
 
+def test_absent_quarantine_is_a_known_zero_not_missing(system):
+    client, _ = system
+    case, _, headers = upload(client, 3)
+    assert runner.process_one("zero-count-worker")
+    response = client.get(f"/v1/cases/{case}/analysis", headers=headers)
+    assert response.status_code == 200
+    counts = response.json()["canonical_counts"]
+    assert counts["transactions"] == 3
+    assert counts["inputs"] == 3 and counts["outputs"] == 3
+    assert counts["quarantine"] == 0 and counts["network_observations"] == 0
+
+
 def test_analyst_labels_are_proposition_scoped_and_review_versions_match(system):
     client, sessions = system
     case, job_id, headers = upload(client)

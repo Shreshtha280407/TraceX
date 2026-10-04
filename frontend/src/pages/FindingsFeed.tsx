@@ -4,6 +4,7 @@ import { Shell } from "../components/Shell";
 import { NeoCard, Badge, ConfidenceBadge, FilterPills, methodOf, relativeTime, priorityTier, priorityOf, type PriorityId } from "../components/primitives";
 import { api, ML_RULE_PREFIX, type Finding, type FindingsListResponse } from "../lib/api";
 import "./FindingsFeed.css";
+import { InvestigationQueue } from "../components/InvestigationQueue";
 
 type MlReleaseInfo = { releaseId: string; modelRunId: string; layers: string[] };
 
@@ -109,19 +110,21 @@ export function FindingsFeed() {
         <div>
           <h1>Findings Feed</h1>
           <p className="subtitle">Observed structural patterns, anomaly triage and network measurements — not identity or criminality verdicts</p>
-          <label>Reviewer context <select value={reviewState} onChange={(event) => { setReviewState(event.target.value); setOffset(0); }}>
+          <label>Reviewer context <select className="inline-control" value={reviewState} onChange={(event) => { setReviewState(event.target.value); setOffset(0); }}>
             <option value="">All dispositions</option><option value="open">Unreviewed</option><option value="escalated">Reviewer escalated</option><option value="dismissed">Dismissed — observations retained</option><option value="needs_data_review">Needs more evidence</option><option value="confirmed">Confirmed proposition</option>
           </select></label>
           {findingsError && <p role="alert">Findings could not be loaded: {findingsError}. Check analysis status and API readiness.</p>}
         </div>
         {response && (
           <div className="ff-counters">
-            <span>Open <b>{openTotal.toLocaleString()}</b></span>
-            <span>Total <b>{total.toLocaleString()}</b></span>
+            <span>Unreviewed findings <b>{openTotal.toLocaleString()}</b></span>
+            <span>Underlying findings <b>{total.toLocaleString()}</b></span>
           </div>
         )}
       </div>
 
+      {caseId && <InvestigationQueue caseId={caseId} />}
+      <h2>Underlying observations — individual history retained</h2>
       {truncated && (
         <p className="coverage-note" style={{ marginBottom: 10 }}>
           Showing {findings.length.toLocaleString()} of {total.toLocaleString()} findings. Families are independently ranked
@@ -129,14 +132,14 @@ export function FindingsFeed() {
         </p>
       )}
       <p className="coverage-note">{response?.review_policy?.version}: per-family rank is a workflow priority, not calibrated cross-family risk. An analyst's confirmation concerns only the stated pattern.</p>
-      <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))}>Previous findings page</button>
-      <button type="button" disabled={offset + findings.length >= total} onClick={() => setOffset(offset + 200)}>Next findings page</button>
+      <button type="button" className="btn-ghost" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))}>Previous findings page</button>
+      <button type="button" className="btn-ghost" disabled={offset + findings.length >= total} onClick={() => setOffset(offset + 200)}>Next findings page</button>
 
       <div className="two-col">
         <div>
           <NeoCard>
-            <h2>ML review capacity</h2>
-            <label>Transactions to queue <input type="number" min={0} max={1000000} value={capacity}
+            <h2>Separate ML transaction triage queue</h2>
+            <label>Transactions to queue <input className="inline-control" type="number" min={0} max={1000000} value={capacity}
               onChange={(e) => { setCapacity(Math.max(0, Math.floor(Number(e.target.value) || 0))); setQueueOffset(0); }} /></label>
             <p className="coverage-note">A separate queue for the current ML scorer. Threshold flags and deterministic findings remain available below.</p>
             {queueError && <p className="coverage-note">{queueError}</p>}
@@ -144,11 +147,11 @@ export function FindingsFeed() {
               <p className="coverage-note">{queue.eligible_scored_transactions.toLocaleString()} scored · {queue.threshold_flagged_transactions.toLocaleString()} threshold flagged · capacity {queue.capacity} · {queue.queued_transactions} queued · {queue.additional_flagged_transactions} additional flags outside the queue</p>
               {!queue.items.length && <p className="coverage-note">No flagged transactions in this queue page.</p>}
               {queue.items.map((item) => <p key={item.transaction}>
-                <button type="button" className="btn-secondary" onClick={() => navigate(`/findings/${item.finding_ids[0]}`)}>{item.transaction.slice(0, 22)}…</button>
+                <button type="button" className="btn-ghost" onClick={() => navigate(`/findings/${item.finding_ids[0]}`)}>{item.transaction.slice(0, 22)}…</button>
                 {" "}score {item.score.toFixed(3)} · {item.deterministic_finding_ids.length} linked deterministic findings
               </p>)}
-              <button type="button" disabled={queueOffset === 0} onClick={() => setQueueOffset(Math.max(0, queueOffset - 20))}>Previous queue page</button>
-              <button type="button" disabled={queueOffset + 20 >= queue.filtered_total} onClick={() => setQueueOffset(queueOffset + 20)}>Next queue page</button>
+              <button type="button" className="btn-ghost" disabled={queueOffset === 0} onClick={() => setQueueOffset(Math.max(0, queueOffset - 20))}>Previous queue page</button>
+              <button type="button" className="btn-ghost" disabled={queueOffset + 20 >= queue.filtered_total} onClick={() => setQueueOffset(queueOffset + 20)}>Next queue page</button>
             </>}
           </NeoCard>
           <div style={{ marginBottom: 10 }}>

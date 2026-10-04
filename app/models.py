@@ -280,6 +280,97 @@ class ReviewDecisionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class InvestigationRun(Base):
+    """Atomically published grouping generation; previous generations are retained."""
+
+    __tablename__ = "investigation_runs"
+    __table_args__ = (UniqueConstraint("snapshot_id", "procedure_version", "input_sha256", name="uq_grouping_input"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id"), index=True)
+    procedure_version: Mapped[str] = mapped_column(String(64))
+    procedure_sha256: Mapped[str] = mapped_column(String(64))
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32), default="building")
+    active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InvestigationGroup(Base):
+    __tablename__ = "investigation_groups"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("investigation_runs.id"), index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("snapshots.id"), index=True)
+    family: Mapped[str] = mapped_column(String(160), index=True)
+    episode_type: Mapped[str] = mapped_column(String(64))
+    proposition: Mapped[str] = mapped_column(Text)
+    focal_ref: Mapped[str] = mapped_column(String(512))
+    episode_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    representative_id: Mapped[str] = mapped_column(ForeignKey("findings.id"))
+    representative_score: Mapped[float] = mapped_column()
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    transaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    entity_count: Mapped[int] = mapped_column(Integer, default=0)
+    rationale: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    review_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class InvestigationMember(Base):
+    __tablename__ = "investigation_members"
+    __table_args__ = (UniqueConstraint("group_id", "ordinal", name="uq_group_ordinal"),)
+    group_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"), primary_key=True, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class FindingParticipation(Base):
+    """Normalized canonical participation, not labels, ownership or a verdict."""
+
+    __tablename__ = "finding_participation"
+    finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"), primary_key=True)
+    transaction_ref: Mapped[str] = mapped_column(String(512), primary_key=True)
+
+
+class InvestigationAnchor(Base):
+    """Only the fixed representative's anchors: never a transitive union."""
+
+    __tablename__ = "investigation_anchors"
+    group_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+
+
+class InvestigationSubject(Base):
+    __tablename__ = "investigation_subjects"
+    group_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ref: Mapped[str] = mapped_column(String(512), primary_key=True)
+
+
+class InvestigationReplacement(Base):
+    __tablename__ = "investigation_replacements"
+    prior_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), primary_key=True)
+    replacement_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), primary_key=True)
+    reason: Mapped[str] = mapped_column(Text)
+
+
+class InvestigationReview(Base):
+    """Append-only proposition decisions, independent of individual reviews."""
+
+    __tablename__ = "investigation_reviews"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    group_id: Mapped[str] = mapped_column(ForeignKey("investigation_groups.id"), index=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    review_version: Mapped[int] = mapped_column(Integer)
+    disposition: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    counterevidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CaseEvent(Base):
     __tablename__ = "case_events"
     __table_args__ = (UniqueConstraint("case_id", "sequence", name="uq_case_event_sequence"),)

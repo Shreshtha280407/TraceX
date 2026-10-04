@@ -11,6 +11,7 @@ import { Settings } from "./pages/Settings";
 import { ExportDeployment } from "./pages/ExportDeployment";
 import { EntitiesRisk } from "./pages/EntitiesRisk";
 import { NetworkIntel } from "./pages/NetworkIntel";
+import { InvestigationDetail } from "./pages/InvestigationDetail";
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
       <Route path="/cases/:caseId/network" element={<RequireAuth><NetworkIntel /></RequireAuth>} />
       <Route path="/cases/:caseId/export" element={<RequireAuth><ExportDeployment /></RequireAuth>} />
       <Route path="/findings/:findingId" element={<RequireAuth><EvidencePackage /></RequireAuth>} />
+      <Route path="/investigations/:groupId" element={<RequireAuth><InvestigationDetail /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -1,0 +1,503 @@
+{
+  "models": {
+    "hist": {
+      "manifest_sha256": "c65fa7e91ec2c5005f2c3eaa8cfb1bc2a547ebc55a5f74b2d73c449958fcf0c7",
+      "release": "anomaly-stack-candidate-v2-ed51ad6226f61196",
+      "validation": {
+        "motif": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.981413633820613,
+          "precision": 0.9295774647887324,
+          "recall": 0.9850746268656716,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 1,
+            "tp": 66
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.01017887145280838,
+          "ap_95": [
+            0.9598919529075342,
+            0.998103073024948
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 378,
+          "prevalence": 0.04497354497354497,
+          "ap": 0.348601808136523,
+          "precision": 0.4,
+          "recall": 0.7058823529411765,
+          "p_at_100": 0.17,
+          "review_budget": 100,
+          "p_at_review_budget": 0.17,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 343,
+            "fp": 18,
+            "fn": 5,
+            "tp": 12
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 30,
+          "brier": 0.039371050894260406,
+          "ap_95": [
+            0.16771794122191502,
+            0.526216930980954
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.981413633820613,
+          "precision": 0.9295774647887324,
+          "recall": 0.9850746268656716,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 1,
+            "tp": 66
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.01017887145280838,
+          "ap_95": [
+            0.958949647733929,
+            0.9973838797814207
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "queue_comparison": {
+        "status": "NOT EVALUABLE",
+        "reasons": [
+          "Truth does not cover all eligible canonical transactions; labelled-subset ranking is not the deployed queue. Unlabelled transactions are not negatives.",
+          "candidate_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "baseline_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "No labelled benign merchant controls; merchant false positives cannot be evaluated."
+        ],
+        "eligible_transactions": 4000,
+        "labelled_transactions": 378,
+        "population_scope": "all time-eligible canonical transactions",
+        "finding_budget_fraction": 0.01,
+        "baseline_available_findings": 42,
+        "candidate_available_findings": 40,
+        "population": 378,
+        "review_budget": 100,
+        "merchant_controls": 0,
+        "unit": "labelled transaction at fixed review capacity, NOT historical episode-touch rate",
+        "target": "discrimination review-interest proposition, NOT criminality or structural-match correctness",
+        "candidate_policy": "review-contrast-stable-txid-v2",
+        "baseline_policy": "v2 fused ranking; label-free per-dataset refit, retrospective burst",
+        "scope": "ranking comparison; actual findings availability and immutable source replay require product-path verification"
+      },
+      "resources": {
+        "training_validation_seconds": 0.43098919299518457,
+        "process_peak_rss_bytes": 693362688,
+        "peak_scope": "Cumulative process peak, including previous candidate models and baseline; not isolated per-model peak"
+      }
+    },
+    "xgboost": {
+      "manifest_sha256": "09c2ff9c82ec8058ddf6658fc4a35d7e03972fd1026fcee802dd1ac072663b79",
+      "release": "anomaly-stack-candidate-v2-aa4a88587d809cb0",
+      "validation": {
+        "motif": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9822209520891991,
+          "precision": 0.9285714285714286,
+          "recall": 0.9701492537313433,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 2,
+            "tp": 65
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.012129217386245728,
+          "ap_95": [
+            0.9607053813392902,
+            0.9990852869490929
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 378,
+          "prevalence": 0.04497354497354497,
+          "ap": 0.37805673740574103,
+          "precision": 0.42857142857142855,
+          "recall": 0.17647058823529413,
+          "p_at_100": 0.17,
+          "review_budget": 100,
+          "p_at_review_budget": 0.17,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 357,
+            "fp": 4,
+            "fn": 14,
+            "tp": 3
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 31,
+          "brier": 0.04317076876759529,
+          "ap_95": [
+            0.15768010598560822,
+            0.6244498295398154
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9822209520891991,
+          "precision": 0.9285714285714286,
+          "recall": 0.9701492537313433,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 2,
+            "tp": 65
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.012129217386245728,
+          "ap_95": [
+            0.9583306847635554,
+            0.9987139283433766
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "queue_comparison": {
+        "status": "NOT EVALUABLE",
+        "reasons": [
+          "Truth does not cover all eligible canonical transactions; labelled-subset ranking is not the deployed queue. Unlabelled transactions are not negatives.",
+          "candidate_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "baseline_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "No labelled benign merchant controls; merchant false positives cannot be evaluated."
+        ],
+        "eligible_transactions": 4000,
+        "labelled_transactions": 378,
+        "population_scope": "all time-eligible canonical transactions",
+        "finding_budget_fraction": 0.01,
+        "baseline_available_findings": 42,
+        "candidate_available_findings": 40,
+        "population": 378,
+        "review_budget": 100,
+        "merchant_controls": 0,
+        "unit": "labelled transaction at fixed review capacity, NOT historical episode-touch rate",
+        "target": "discrimination review-interest proposition, NOT criminality or structural-match correctness",
+        "candidate_policy": "review-contrast-stable-txid-v2",
+        "baseline_policy": "v2 fused ranking; label-free per-dataset refit, retrospective burst",
+        "scope": "ranking comparison; actual findings availability and immutable source replay require product-path verification"
+      },
+      "resources": {
+        "training_validation_seconds": 0.3077422389978892,
+        "process_peak_rss_bytes": 693362688,
+        "peak_scope": "Cumulative process peak, including previous candidate models and baseline; not isolated per-model peak"
+      }
+    },
+    "lightgbm": {
+      "manifest_sha256": "4a30dc34900ed74fce558169470962baeb91d9ca332fa92d88f11f77aca9c9e7",
+      "release": "anomaly-stack-candidate-v2-3baa115d460e6b21",
+      "validation": {
+        "motif": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9979270315091211,
+          "precision": 0.9558823529411765,
+          "recall": 0.9701492537313433,
+          "p_at_100": 0.67,
+          "review_budget": 100,
+          "p_at_review_budget": 0.67,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 308,
+            "fp": 3,
+            "fn": 2,
+            "tp": 65
+          },
+          "benign_false_positives": 3,
+          "benign_in_review_budget": 29,
+          "brier": 0.006891458295285702,
+          "ap_95": [
+            0.9938799601763618,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 378,
+          "prevalence": 0.04497354497354497,
+          "ap": 0.3168500863321001,
+          "precision": 0.5714285714285714,
+          "recall": 0.23529411764705882,
+          "p_at_100": 0.16,
+          "review_budget": 100,
+          "p_at_review_budget": 0.16,
+          "recall_at_review_budget": 0.9411764705882353,
+          "confusion": {
+            "tn": 358,
+            "fp": 3,
+            "fn": 13,
+            "tp": 4
+          },
+          "benign_false_positives": 0,
+          "benign_in_review_budget": 31,
+          "brier": 0.04222900792956352,
+          "ap_95": [
+            0.12008736567729769,
+            0.5864248517998515
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9979270315091211,
+          "precision": 0.9558823529411765,
+          "recall": 0.9701492537313433,
+          "p_at_100": 0.67,
+          "review_budget": 100,
+          "p_at_review_budget": 0.67,
+          "recall_at_review_budget": 1.0,
+          "confusion": {
+            "tn": 308,
+            "fp": 3,
+            "fn": 2,
+            "tp": 65
+          },
+          "benign_false_positives": 3,
+          "benign_in_review_budget": 29,
+          "brier": 0.006891458295285702,
+          "ap_95": [
+            0.994698609008871,
+            1.0
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "queue_comparison": {
+        "status": "NOT EVALUABLE",
+        "reasons": [
+          "Truth does not cover all eligible canonical transactions; labelled-subset ranking is not the deployed queue. Unlabelled transactions are not negatives.",
+          "candidate_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "baseline_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "No labelled benign merchant controls; merchant false positives cannot be evaluated."
+        ],
+        "eligible_transactions": 4000,
+        "labelled_transactions": 378,
+        "population_scope": "all time-eligible canonical transactions",
+        "finding_budget_fraction": 0.01,
+        "baseline_available_findings": 42,
+        "candidate_available_findings": 40,
+        "population": 378,
+        "review_budget": 100,
+        "merchant_controls": 0,
+        "unit": "labelled transaction at fixed review capacity, NOT historical episode-touch rate",
+        "target": "discrimination review-interest proposition, NOT criminality or structural-match correctness",
+        "candidate_policy": "review-contrast-stable-txid-v2",
+        "baseline_policy": "v2 fused ranking; label-free per-dataset refit, retrospective burst",
+        "scope": "ranking comparison; actual findings availability and immutable source replay require product-path verification"
+      },
+      "resources": {
+        "training_validation_seconds": 0.30866835699998774,
+        "process_peak_rss_bytes": 693362688,
+        "peak_scope": "Cumulative process peak, including previous candidate models and baseline; not isolated per-model peak"
+      }
+    },
+    "hybrid": {
+      "manifest_sha256": "45d41079ada5b4ca2f7e586ce395d49d48e949fe10420daec4f05463cb543724",
+      "release": "anomaly-stack-candidate-v2-5b6a0313d77a94ab",
+      "validation": {
+        "motif": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9480142815073381,
+          "precision": 0.9295774647887324,
+          "recall": 0.9850746268656716,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 1,
+            "tp": 66
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.012324810959398746,
+          "ap_95": [
+            0.905962611752384,
+            0.9966300021210406
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "surge": {
+          "population": 378,
+          "prevalence": 0.04497354497354497,
+          "ap": 0.5724815039323087,
+          "precision": 0.625,
+          "recall": 0.5882352941176471,
+          "p_at_100": 0.16,
+          "review_budget": 100,
+          "p_at_review_budget": 0.16,
+          "recall_at_review_budget": 0.9411764705882353,
+          "confusion": {
+            "tn": 355,
+            "fp": 6,
+            "fn": 7,
+            "tp": 10
+          },
+          "benign_false_positives": 1,
+          "benign_in_review_budget": 49,
+          "brier": 0.03021431155502796,
+          "ap_95": [
+            0.2305911585457467,
+            0.8005489000338152
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        },
+        "discrimination": {
+          "population": 378,
+          "prevalence": 0.17724867724867724,
+          "ap": 0.9480142815073381,
+          "precision": 0.9295774647887324,
+          "recall": 0.9850746268656716,
+          "p_at_100": 0.66,
+          "review_budget": 100,
+          "p_at_review_budget": 0.66,
+          "recall_at_review_budget": 0.9850746268656716,
+          "confusion": {
+            "tn": 306,
+            "fp": 5,
+            "fn": 1,
+            "tp": 66
+          },
+          "benign_false_positives": 5,
+          "benign_in_review_budget": 30,
+          "brier": 0.012324810959398746,
+          "ap_95": [
+            0.8923349246766811,
+            0.9865883674170323
+          ],
+          "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+        }
+      },
+      "queue_comparison": {
+        "status": "NOT EVALUABLE",
+        "reasons": [
+          "Truth does not cover all eligible canonical transactions; labelled-subset ranking is not the deployed queue. Unlabelled transactions are not negatives.",
+          "candidate_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "baseline_available_findings is unknown or below reviewer capacity; the materialized product queue cannot exercise this K.",
+          "No labelled benign merchant controls; merchant false positives cannot be evaluated."
+        ],
+        "eligible_transactions": 4000,
+        "labelled_transactions": 378,
+        "population_scope": "all time-eligible canonical transactions",
+        "finding_budget_fraction": 0.01,
+        "baseline_available_findings": 42,
+        "candidate_available_findings": 40,
+        "population": 378,
+        "review_budget": 100,
+        "merchant_controls": 0,
+        "unit": "labelled transaction at fixed review capacity, NOT historical episode-touch rate",
+        "target": "discrimination review-interest proposition, NOT criminality or structural-match correctness",
+        "candidate_policy": "review-contrast-stable-txid-v2",
+        "baseline_policy": "v2 fused ranking; label-free per-dataset refit, retrospective burst",
+        "scope": "ranking comparison; actual findings availability and immutable source replay require product-path verification"
+      },
+      "resources": {
+        "training_validation_seconds": 0.6674245890026214,
+        "process_peak_rss_bytes": 693362688,
+        "peak_scope": "Cumulative process peak, including previous candidate models and baseline; not isolated per-model peak"
+      }
+    }
+  },
+  "split_overlap": {
+    "0/1": 0,
+    "0/2": 0,
+    "1/2": 0
+  },
+  "baseline_validation": {
+    "motif": {
+      "population": 378,
+      "prevalence": 0.17724867724867724,
+      "ap": 0.6953292787918087,
+      "p_at_100": 0.67,
+      "review_budget": 100,
+      "p_at_review_budget": 0.67,
+      "recall_at_review_budget": 1.0,
+      "benign_in_review_budget": 28,
+      "ap_95": [
+        0.5954804461171053,
+        0.8328271763477454
+      ],
+      "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+    },
+    "surge": {
+      "population": 378,
+      "prevalence": 0.04497354497354497,
+      "ap": 0.6758658274933006,
+      "p_at_100": 0.17,
+      "review_budget": 100,
+      "p_at_review_budget": 0.17,
+      "recall_at_review_budget": 1.0,
+      "benign_in_review_budget": 28,
+      "ap_95": [
+        0.3914322226705265,
+        0.8874636209805215
+      ],
+      "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+    },
+    "discrimination": {
+      "population": 378,
+      "prevalence": 0.17724867724867724,
+      "ap": 0.6953292787918087,
+      "p_at_100": 0.67,
+      "review_budget": 100,
+      "p_at_review_budget": 0.67,
+      "recall_at_review_budget": 1.0,
+      "benign_in_review_budget": 28,
+      "ap_95": [
+        0.5267856664761225,
+        0.8039607419232339
+      ],
+      "uncertainty": "episode/scenario cluster bootstrap, conditional on frozen fitted weights; AP is not accuracy"
+    }
+  },
+  "promotion": "NONE; explicit representative-label decision required",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

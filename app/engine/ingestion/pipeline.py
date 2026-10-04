@@ -584,8 +584,12 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
                        reason=None if embedding_status == "complete" else embedding_status,
                        details={"embedded_wallets": summary.get("embedded_wallets", 0)})
     from app.engine.confidence import pin_snapshot_confidence
-
+    from app.engine.investigations import materialize
     pin_snapshot_confidence(session, snapshot.id)
+    _stage("investigation_grouping")
+    grouping = materialize(session, case_id=job.case_id, snapshot_id=snapshot.id,
+                           graph=session.get(GraphSnapshot, graph.graph_snapshot_id), evidence_root=settings.evidence_root)
+    tracker.finish(details=grouping)
     snapshot.provisional = False
     snapshot.state = "complete"
     snapshot.completed_at = utcnow()

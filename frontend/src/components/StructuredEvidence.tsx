@@ -3,7 +3,7 @@ import { api, type EvidenceReference, type StructuredFindingEvidence } from "../
 import { NeoCard } from "./primitives";
 import { RecordPreview } from "./RecordPreview";
 
-function References({ refs, label }: { refs: EvidenceReference[]; label: string }) {
+export function References({ refs, label }: { refs: EvidenceReference[]; label: string }) {
   const [page, setPage] = useState(0);
   const [raw, setRaw] = useState<{ key: string; record: unknown; csv: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);

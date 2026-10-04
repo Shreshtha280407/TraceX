@@ -18,19 +18,24 @@ def test_four_backend_cli_training_freeze_transfer_stress_and_worst_case(tmp_pat
         quality_matrix.main(["fixture", "--output", str(directory), "--seed", str(i + 1), "--role", role])
         datasets.extend(["--" + role, str(directory), "--" + role + "-truth", str(directory / "ground_truth.json")])
     comparison = tmp_path / "comparison"
-    assert lifecycle.main(["compare", "--protocol", str(protocol), *datasets, "--exclude-family", "independent_equal_outputs", "--finding-budget", ".5", "--output", str(comparison)]) == 0
+    assert lifecycle.main(["compare", "--protocol", str(protocol), *datasets, "--exclude-family", "independent_equal_outputs", "--finding-budget", ".5", "--review-budget", "10", "--output", str(comparison)]) == 0
     results = json.loads((comparison / "comparison.json").read_text())
     assert set(results["models"]) == {"hist", "xgboost", "lightgbm", "hybrid"}
     assert not any(results["split_overlap"].values())
     path = comparison / "hist"
     digest = candidate.sha(path / "manifest.json")
-    assert lifecycle.main(["freeze", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
-        "--validation-report", str(comparison / "comparison.json"), "--reason", "Tiny wiring test, NOT promotion or AP acceptance"]) == 0
+    # Freeze pins source/truth bytes without reading final labels. Registration
+    # occurred before selection; generation is separate from final evaluation.
     quality_matrix.main(["fixture", "--output", str(final), "--seed", "4", "--role", "final"])
     quality_matrix.main(["stress", "--source", str(final), "--output", str(shifted), "--protocol", str(protocol), "--variant", "missing_network", "--seed", "5"])
+    assert lifecycle.main(["freeze", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
+        "--validation-report", str(comparison / "comparison.json"), "--reason", "Tiny wiring test, NOT promotion or AP acceptance"]) == 0
     reports = []
     for dataset in (final, shifted):
         report = tmp_path / (dataset.name + ".json")
+        with pytest.raises(SystemExit):
+            lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
+                "--dataset", str(dataset), "--truth", str(dataset / "ground_truth.json"), "--output", str(report), "--review-budget", "11", "--finding-budget", ".5"])
         assert lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
             "--dataset", str(dataset), "--truth", str(dataset / "ground_truth.json"), "--output", str(report), "--review-budget", "10", "--finding-budget", ".5"]) == 0
         reports.append(report)
@@ -47,7 +52,8 @@ def test_four_backend_cli_training_freeze_transfer_stress_and_worst_case(tmp_pat
         assert summary["gate_details"][task]["p100"]["status"] == "NOT APPLICABLE"
     with pytest.raises(FileExistsError):
         lifecycle.main(["evaluate", "--protocol", str(protocol), "--artifact", str(path), "--manifest-sha256", digest,
-            "--dataset", str(final), "--truth", str(final / "ground_truth.json"), "--output", str(tmp_path / "forbidden.json")])
+            "--dataset", str(final), "--truth", str(final / "ground_truth.json"), "--output", str(tmp_path / "forbidden.json"),
+            "--review-budget", "10", "--finding-budget", ".5"])
     with pytest.raises(SystemExit):
         lifecycle.main(["train", "--protocol", str(protocol), *datasets, "--output", str(tmp_path / "forbidden-selection")])
 

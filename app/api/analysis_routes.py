@@ -65,8 +65,12 @@ def scoped_job(session, case_id, job_id=None):
 def status(case_id: str, job_id: str | None = None, user: User = Depends(current_user), session: Session = Depends(get_session)):
     require_case_member(case_id, user, session)
     job = scoped_job(session, case_id, job_id)
-    counts = dict(session.execute(select(FragmentReceipt.record_type, func.sum(FragmentReceipt.record_count))
-                                 .where(FragmentReceipt.job_id == job.id).group_by(FragmentReceipt.record_type)).all())
+    # No quarantine receipt means zero rejected canonical records, not unknown.
+    # Return a stable count contract even when a supported record type is absent.
+    counts = {kind: 0 for kind in ("transactions", "inputs", "outputs", "network_observations", "quarantine")}
+    counts.update(dict(session.execute(select(FragmentReceipt.record_type, func.sum(FragmentReceipt.record_count))
+                                      .where(FragmentReceipt.job_id == job.id)
+                                      .group_by(FragmentReceipt.record_type)).all()))
     graph = session.scalar(select(GraphSnapshot).where(GraphSnapshot.snapshot_id == job.snapshot_id))
     from app.engine.analytics import latest_analytics
 

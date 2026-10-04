@@ -130,7 +130,7 @@ export function EntitiesRisk() {
 
   return (
     <Shell>
-      <AnalysisStatus caseId={caseId} />
+      <AnalysisStatus caseId={caseId} hideComplete />
       <div className="page-header">
         <div>
           <h1>Entities &amp; Risk</h1>

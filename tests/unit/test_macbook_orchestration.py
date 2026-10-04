@@ -7,6 +7,16 @@ import pytest
 from scripts import macbook_benchmark as orchestration
 
 
+def test_one_million_disk_floor_rejects_without_allocating_or_deleting(tmp_path, monkeypatch):
+    from scripts import laptop_admission
+    monkeypatch.setattr(laptop_admission.shutil, "disk_usage", lambda _: SimpleNamespace(free=20_000_000_000))
+    before = list(tmp_path.iterdir())
+    report = laptop_admission.inspect(tmp_path, 1_000_000)
+    assert report["status"] == "BLOCKED" and report["large_run"] == "NOT RUN"
+    assert report["disk_floor_bytes"] == 33_663_676_416
+    assert report["canonical_transactions"] is None and list(tmp_path.iterdir()) == before
+
+
 def test_native_arm_preflight_checks_actual_worker_budget_not_host_ram(tmp_path, monkeypatch):
     from scripts import appliance_acceptance
     monkeypatch.setattr(orchestration.platform, "machine", lambda: "arm64")
@@ -37,6 +47,10 @@ def test_native_arm_preflight_checks_actual_worker_budget_not_host_ram(tmp_path,
     monkeypatch.setattr(appliance_acceptance, "request", lambda *a, **k: {"status": "ready"})
     args = SimpleNamespace(context="default", project="tracex-benchmark-test", install=tmp_path, counts=None, source=None, base="http://localhost:8000")
     assert orchestration.preflight(args)["status"] == "ADMITTED_NOT_RUN"
+    args.estimate_transactions = 1_000_000
+    estimated = orchestration.preflight(args)
+    assert estimated["admission_counts"] == {"transactions": 1_000_000, "inputs": 1_500_000, "outputs": 2_700_000}
+    assert estimated["counts_scope"].startswith("ESTIMATED METADATA ONLY")
     runtime["candidate_configured"] = True
     runtime["candidate_admission"] = {"status": "failed", "error": "test integrity mismatch"}
     blocked = orchestration.preflight(args)
@@ -92,6 +106,16 @@ def test_independent_count_manifest_and_duplicate_reconciliation_on_64_rows(tmp_
     provenance = json.loads(result.with_suffix(".provenance.json").read_text())
     assert counts["transactions"] == 64 and counts["quarantine"] == 1 and counts["inputs"] == 3
     assert provenance["source_rows"] == 65 and provenance["source_sha256"] == sha(source)
+
+
+def test_runbook_small_fixture_count_uses_its_real_manifest(tmp_path):
+    from scripts.quality_matrix import independent_fixture
+    directory = tmp_path / "small"
+    independent_fixture(directory, 64, 19, "count")
+    output = tmp_path / "counts.json"
+    assert orchestration.main(["count", "--source", str(directory / "ingestion_rows.ndjson"), "--output", str(output)]) == 0
+    assert json.loads(output.read_text())["transactions"] == 64
+    assert json.loads(output.with_suffix(".provenance.json").read_text())["manifest_kind"] == "quality_manifest.json"
 
 
 @pytest.mark.parametrize("command", ["init", "build", "start", "configure", "candidate", "preflight", "screen", "accept", "profile", "generate", "count"])

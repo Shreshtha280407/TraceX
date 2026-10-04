@@ -6,13 +6,18 @@ command, never in product imports. No large study runs without an explicit call.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import time
 from pathlib import Path
 
 import numpy as np
 from sklearn.metrics import average_precision_score, confusion_matrix
 
+from app.engine.investigations import PROCEDURE_SHA256
+from app.engine.investigations import VERSION as GROUPING_VERSION
 from app.ml import candidate
+from app.ml.evaluation_identity import final_id, fingerprint
 from app.ml.facts import load_facts
 
 
@@ -28,7 +33,10 @@ def population(path, truth_path, exclude_families=(), *, return_families=False, 
     targets = {"motif": np.asarray([bool(r.get("motif_positive", r.get("family") in {"coinjoin_like", "peel_step"})) for r in rows]),
                "surge": np.asarray([bool(r.get("surge_positive", r.get("in_surge"))) for r in rows])}
     targets["discrimination"] = np.asarray([bool(r.get("discrimination_positive", targets["motif"][i] or targets["surge"][i])) for i, r in enumerate(rows)])
-    groups = [str(r.get("episode_id") or r.get("scenario_id") or facts.txids[i]) for r, i in zip(rows, selected, strict=True)]
+    # Local ep-001 IDs from independent seeds are not the same episode. Scope
+    # to the actual canonical TX population, not directory basenames.
+    population_id = hashlib.sha256("\n".join(sorted(facts.txids)).encode()).hexdigest()
+    groups = [population_id + ":" + str(r.get("episode_id") or r.get("scenario_id") or facts.txids[i]) for r, i in zip(rows, selected, strict=True)]
     benign = np.asarray([bool(r.get("benign_control") or str(r.get("family", "")).startswith("benign")
         or r.get("family") in {"nearmiss_rule_positive", "batch_fanout", "consolidation", "nearmiss_batch"}) for r in rows])
     result = candidate.features(facts, contract=contract)[selected], targets, groups, benign
@@ -199,10 +207,12 @@ def main(argv=None):
     transfer.add_argument("--output", type=Path, required=True)
     transfer.add_argument("--review-budget", type=int, default=100)
     transfer.add_argument("--finding-budget", type=float, default=.01, help="Product retained-finding fraction; must match TRACEX_ML_REVIEW_BUDGET for deployment")
+    transfer.add_argument("--group-quality-result", type=Path, help="Actual same-source frozen-worker group queue evaluation; NOT inferred from transaction labels")
     promote = sub.add_parser("promote", help="OWNER decision only: never automatically promotes from a label count/AP")
     promote.add_argument("--artifact", type=Path, required=True)
     promote.add_argument("--manifest-sha256", required=True)
     promote.add_argument("--approval", type=Path, required=True)
+    promote.add_argument("--protocol", type=Path, required=True, help="Registered protocol with its immutable .frozen.json source registry")
     promote.add_argument("--quality-result", type=Path, action="append", required=True, help="Frozen transfer reports for these weights; measured matched-capacity product queue is required")
     promote.add_argument("--output", type=Path, required=True)
     freeze = sub.add_parser("freeze", help="Pin validation-selected weights before opening any fresh final")
@@ -220,7 +230,11 @@ def main(argv=None):
             parser.error("reserve fresh, distinct final paths before generation/selection; evaluated holdouts cannot be reused")
         args.protocol.parent.mkdir(parents=True, exist_ok=True)
         with args.protocol.open("x") as stream:
-            json.dump({"schema": 1, "reserved_finals": finals, "selection": "validation only; no final labels enter fitting",
+            json.dump({"schema": 2, "reserved_finals": finals, "registered_final_ids": [final_id(p) for p in finals],
+                "grouping_version": GROUPING_VERSION, "grouping_sha256": PROCEDURE_SHA256,
+                "group_target": "Connected observed pattern episode; no automatic any-positive group label",
+                "group_queue_policy": "group-family-round-robin-v1", "group_capacity": 100,
+                "selection": "validation only; no final labels enter fitting",
                 "feature_contract": candidate.CONTRACT, "grid": ["hist", "xgboost", "lightgbm", "hybrid"],
                 "generalization": ["fresh seeds/prevalence", "unseen pattern families", "payroll/merchant/exchange/batching/consolidation", "missing/noisy IP/ASN", "incomplete prevouts", "degree/reuse skew", "timing/value shifts", "independent author fixtures"],
                 "targets": {"motif_ap": .85, "surge_ap": .85, "stretch_ap": .90, "p100": .90},
@@ -233,7 +247,10 @@ def main(argv=None):
         for key in ("representative_labels", "domain", "decision_reason", "approved_by", "label_provenance", "validation_reports", "limitations"):
             if not approval.get(key):
                 parser.error(f"promotion requires explicit owner applicability judgement: {key}")
-        quality = assess(manifest, [json.loads(path.read_text()) for path in args.quality_result])
+        frozen = json.loads(args.protocol.with_name(args.protocol.name + ".frozen.json").read_text())
+        if frozen.get("protocol_sha256") != candidate.sha(args.protocol) or frozen.get("manifest_sha256") != args.manifest_sha256:
+            parser.error("promotion protocol/manifest differs from pinned frozen selection")
+        quality = assess(manifest, [json.loads(path.read_text()) for path in args.quality_result], frozen=frozen)
         quality["reports_sha256"] = [candidate.sha(path) for path in args.quality_result]
         decision = args.output.with_name(args.output.name + ".promotion-decision.json")
         decision.parent.mkdir(parents=True, exist_ok=True)
@@ -248,13 +265,27 @@ def main(argv=None):
     selection = args.protocol.with_name(args.protocol.name + ".frozen.json")
     if args.command == "freeze":
         manifest, _ = candidate.load(args.artifact, args.manifest_sha256)
+        if manifest.get("provenance", {}).get("protocol_sha256") != candidate.sha(args.protocol):
+            parser.error("artifact protocol provenance does not match registered protocol")
+        # Hash sources without opening truth labels. Freeze before any final
+        # evaluation; future substituted files cannot masquerade as the final.
+        registry = {}
+        for p in protocol["reserved_finals"]:
+            root = Path(p)
+            truth_path = root / ("ground_truth.json" if (root / "ground_truth.json").exists() else "evaluation_truth.json")
+            registry[final_id(p)] = {**fingerprint(p), "truth_sha256": candidate.sha(truth_path)}
         with selection.open("x") as stream:
             json.dump({"manifest_sha256": args.manifest_sha256, "release_id": manifest["release_id"],
                 "protocol_sha256": candidate.sha(args.protocol), "validation_report_sha256": candidate.sha(args.validation_report),
+                "final_registry": registry, "grouping_sha256": protocol.get("grouping_sha256"),
+                "review_budget": manifest.get("provenance", {}).get("review_budget"),
+                "finding_budget_fraction": manifest.get("provenance", {}).get("finding_budget_fraction"),
                 "reason": args.reason, "inference_adaptation": "NONE"}, stream, indent=2)
         return 0
     finals = protocol["reserved_finals"]
     if args.command in {"train", "compare"}:
+        if protocol.get("grouping_sha256") != PROCEDURE_SHA256:
+            parser.error("grouping procedure changed; reserve a genuinely new evaluation protocol before selection")
         if selection.exists() or list(args.protocol.parent.glob(args.protocol.name + ".*.evaluated")):
             parser.error("selection is frozen/finals consumed; register a genuinely new protocol/finals for a new study")
         paths = [getattr(args, split).resolve() for split in ("training", "calibration", "validation")]
@@ -274,10 +305,14 @@ def main(argv=None):
         args.output.mkdir(parents=True, exist_ok=False)
         results = {}
         for name in (["hist", "xgboost", "lightgbm", "hybrid"] if args.command == "compare" else [args.model]):
+            model_started = time.monotonic()
             try:
                 models = candidate.train(populations[0][0], populations[0][1], populations[1][0], populations[1][1], name=name, contract=contract)
                 manifest = candidate.save(args.output / name, models, name=name, provenance={
                     "protocol_sha256": candidate.sha(args.protocol), "split_group_overlap": overlap,
+                    "registered_final_ids": protocol["registered_final_ids"], "grouping_sha256": PROCEDURE_SHA256,
+                    "grouping_version": GROUPING_VERSION, "group_capacity": 100,
+                    "review_budget": args.review_budget, "finding_budget_fraction": args.finding_budget,
                     "procedure_code_sha256": {str(path.relative_to(Path(__file__).resolve().parents[1])): candidate.sha(path)
                         for path in (Path(__file__).resolve(), Path(candidate.__file__).resolve(), Path(__file__).resolve().parents[1] / "app/ml/grains.py",
                             Path(__file__).resolve().parents[1] / "app/ml/recipient_history.py")},
@@ -292,9 +327,19 @@ def main(argv=None):
                 results[name] = {"manifest_sha256": candidate.sha(args.output / name / "manifest.json"), "release": manifest["release_id"],
                     "validation": metrics(scores, populations[2][1], budget=args.review_budget, groups=populations[2][2], benign=populations[2][3]),
                     "queue_comparison": queue_comparison(scores, validation_previous, populations[2][1], populations[2][4], populations[2][3], args.review_budget, contract=contract, population_scope=populations[2][5])}
+                from app.telemetry import peak_rss_bytes
+                results[name]["resources"] = {"training_validation_seconds": time.monotonic() - model_started,
+                    "process_peak_rss_bytes": peak_rss_bytes(), "peak_scope": "Cumulative process peak, including previous candidate models and baseline; not isolated per-model peak"}
             except ImportError as error:
                 results[name] = {"status": "UNAVAILABLE", "error": str(error)}
-        (args.output / "comparison.json").write_text(json.dumps({"models": results, "split_overlap": overlap, "promotion": "NONE; explicit representative-label decision required"}, indent=2))
+        baseline_metrics = metrics(validation_previous, populations[2][1], budget=args.review_budget, groups=populations[2][2], benign=populations[2][3])
+        for row in baseline_metrics.values():
+            for field in ("brier", "confusion", "precision", "recall", "benign_false_positives"):
+                row.pop(field, None)
+        (args.output / "comparison.json").write_text(json.dumps({"models": results, "split_overlap": overlap,
+            "baseline_validation": baseline_metrics,
+            "baseline_limitations": "v2 label-free reference refit, retrospective; z-scores are not probabilities, so .5 confusion/Brier in the generic metric helper are inapplicable",
+            "promotion": "NONE; explicit representative-label decision required"}, indent=2))
         return int(all(result.get("status") == "UNAVAILABLE" for result in results.values()))
     if str(args.dataset.resolve()) not in finals:
         parser.error("transfer evaluation requires a newly registered final")
@@ -302,13 +347,26 @@ def main(argv=None):
     if frozen_identity["manifest_sha256"] != args.manifest_sha256 or frozen_identity["protocol_sha256"] != candidate.sha(args.protocol):
         parser.error("evaluation candidate/protocol differs from frozen validation selection")
     manifest, models = candidate.load(args.artifact, args.manifest_sha256)
-    import hashlib
-    final_id = hashlib.sha256(str(args.dataset.resolve()).encode()).hexdigest()[:16]
-    marker = args.protocol.with_name(args.protocol.name + "." + final_id + ".evaluated")
+    approved_queue = manifest.get("provenance", {})
+    if approved_queue.get("review_budget") != args.review_budget or approved_queue.get("finding_budget_fraction") != args.finding_budget:
+        parser.error("evaluation capacity/retention differs from fitted frozen provenance; legacy unpinned studies need a new registered protocol, never a reinterpretation")
+    identity = final_id(args.dataset)
+    source = fingerprint(args.dataset)
+    pinned = frozen_identity.get("final_registry", {}).get(identity, {})
+    if any(pinned.get(key) != value for key,value in source.items()) or pinned.get("truth_sha256") != candidate.sha(args.truth) or frozen_identity.get("grouping_sha256") != PROCEDURE_SHA256:
+        parser.error("final source substituted or frozen grouping procedure changed")
+    marker = args.protocol.with_name(args.protocol.name + "." + identity + ".evaluated")
     with marker.open("x") as stream:
         stream.write("Consumed final: frozen transfer, no refitting/selection\n")
     matrix, labels, groups, benign, families, population_scope = population(args.dataset, args.truth, return_families=True, return_scope=True, contract=manifest["feature_contract"])
     scores = candidate.infer(models, matrix)
+    group_quality = {"status": "NOT EVALUABLE", "reasons": ["Transaction labels alone do not establish the bounded group proposition. Evaluate the actual materialized group queue with independently declared episode truth."], "grouping_sha256": PROCEDURE_SHA256}
+    if args.group_quality_result:
+        group_quality = json.loads(args.group_quality_result.read_text())
+        binding = {"protocol_sha256": candidate.sha(args.protocol), "final_id": identity,
+                   "source_sha256": source["source_sha256"], "release_id": manifest["release_id"], "grouping_sha256": PROCEDURE_SHA256}
+        if any(group_quality.get(k) != v for k,v in binding.items()):
+            parser.error("group-quality report does not bind these exact frozen weights, protocol, source and grouping")
     frozen = metrics(scores, labels, budget=args.review_budget, groups=groups, benign=benign)
     strata = {}
     for family in sorted(set(families)):
@@ -327,6 +385,9 @@ def main(argv=None):
     with args.output.open("x") as stream:
         json.dump({"procedure": "frozen fitted-weight transfer; no test-label fitting or adaptation", "model": manifest,
             "dataset": args.dataset.name, "truth_sha256": candidate.sha(args.truth), "protocol_sha256": candidate.sha(args.protocol),
+            "final_id": identity, "source_sha256": source["source_sha256"], "source_inventory": source["files"],
+            "grouping_sha256": PROCEDURE_SHA256,
+            "group_quality": group_quality,
             "results": frozen, "strata": strata, "baseline": {"procedure": "v2 label-free per-dataset reference refit; retrospective D; not frozen transfer", "results": previous},
             "queue_comparison": queue_comparison(scores, previous_scores, labels, families, benign, args.review_budget, contract=manifest["feature_contract"], population_scope=population_scope),
             "candidate": {"procedure": "frozen transfer; no inference adaptation"},

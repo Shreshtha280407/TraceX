@@ -93,6 +93,10 @@
 .form-field input:focus, .form-field textarea:focus, .form-field select:focus { outline: 1px solid var(--mustard-glow); }
 .form-field textarea { resize: vertical; min-height: 72px; font-family: inherit; }
 
+.inline-control { background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--ink); color-scheme: dark; font-size: 13px; margin-left: 6px; padding: 8px 10px; }
+.inline-control:focus-visible { outline: 1px solid var(--mustard); outline-offset: 2px; }
+
 .btn-ghost { background: var(--surface-3); border: 1px solid var(--line); border-radius: 12px; color: var(--ink);
   padding: 10px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
 .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }

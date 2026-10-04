@@ -37,8 +37,14 @@ def test_candidate_frozen_serialization_batch_parity_integrity_and_eligibility(t
     assert not candidate.eligibility(manifest, SimpleNamespace(scoring_mode="unsupervised"))[0]
     approved = {**manifest, "eligibility": "validated_candidate", "promotion": {"representative_labels": True, "domain": "test-patterns"}}
     assert not candidate.eligibility(approved, SimpleNamespace(scoring_mode="validated_candidate", candidate_domain="test-patterns"))[0]
-    approved["promotion"]["quality_validation"] = {"policy": "product-queue-quality-gate-v1", "status": "PASSED", "reports_sha256": ["test-metadata-only"],
-        **{field: manifest[field] for field in ("release_id", "payload_sha256", "feature_sha256")}}
+    from app.engine.investigations import PROCEDURE_SHA256
+    from app.ml.promotion import POLICY
+    approved["promotion"]["quality_validation"] = {"policy": POLICY, "status": "PASSED", "reports_sha256": ["test-metadata-only"],
+        "grouping_sha256": PROCEDURE_SHA256, "group_capacity": 100, "review_budget": 100,
+        "protocol_sha256": "UNIT_TEST_ONLY", "registered_final_ids": ["UNIT_TEST_ONLY"], "frozen_manifest_sha256": trusted,
+        **{field: manifest[field] for field in ("release_id", "payload_sha256", "feature_sha256", "feature_contract", "queue_policy")}}
+    approved["provenance"] = {**manifest.get("provenance", {}), "parent_manifest_sha256": trusted,
+        "protocol_sha256": "UNIT_TEST_ONLY", "registered_final_ids": ["UNIT_TEST_ONLY"], "grouping_sha256": PROCEDURE_SHA256}
     assert candidate.eligibility(approved, SimpleNamespace(scoring_mode="validated_candidate", candidate_domain="test-patterns"))[0]
     assert not candidate.eligibility(approved, SimpleNamespace(scoring_mode="validated_candidate", candidate_domain="other-patterns"))[0]
     with pytest.raises(ValueError, match="externally trusted"):

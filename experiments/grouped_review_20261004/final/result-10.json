@@ -1,0 +1,892 @@
+{
+  "checks": [
+    {
+      "name": "real browser signup and bearer [REDACTED]",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI file upload accepted",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI exposes real stage progression",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "real worker completed all mandatory stages",
+      "ok": true,
+      "detail": {
+        "state": "complete",
+        "stages": [
+          {
+            "name": "source_verification",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:03.597299+00:00",
+            "completed_at": "2026-10-04T17:36:03.606089+00:00",
+            "duration_seconds": 0.007190518997958861,
+            "details": {
+              "sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+              "byte_size": 69927,
+              "worker_cpu_seconds": 0.004088588000000115,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "ingesting",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:03.615048+00:00",
+            "completed_at": "2026-10-04T17:36:03.695045+00:00",
+            "duration_seconds": 0.07867039799748454,
+            "details": {
+              "rows_seen": 128,
+              "rows_accepted": 128,
+              "rows_quarantined": 0,
+              "worker_cpu_seconds": 0.042013746000000296,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "graph_building",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:03.705475+00:00",
+            "completed_at": "2026-10-04T17:36:04.162982+00:00",
+            "duration_seconds": 0.4566485340037616,
+            "details": {
+              "worker_cpu_seconds": 0.28992700899999946,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "findings",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:04.169036+00:00",
+            "completed_at": "2026-10-04T17:36:04.603661+00:00",
+            "duration_seconds": 0.43387869201251306,
+            "details": {
+              "worker_cpu_seconds": 0.2633448970000005,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "ml_scoring",
+            "status": "written",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:04.608328+00:00",
+            "completed_at": "2026-10-04T17:36:04.860763+00:00",
+            "duration_seconds": 0.2519049270049436,
+            "details": {
+              "written": 1,
+              "status": "written",
+              "scored_transactions": 128,
+              "threshold_flagged": 1,
+              "model_run_id": "5778abae5f808eac087eeb8b",
+              "release_id": "anomaly-stack-v2",
+              "eligibility_decision": {
+                "status": "fallback",
+                "reason": "automatic approved routing requires a declared data domain; unknown applicability retains v2"
+              },
+              "global_memory_estimate_bytes": 321776,
+              "joint_memory_estimate_bytes": 1052043504,
+              "worker_cpu_seconds": 0.22044068200000044,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "analytics",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:04.868076+00:00",
+            "completed_at": "2026-10-04T17:36:05.283375+00:00",
+            "duration_seconds": 0.4149446539959172,
+            "details": {
+              "status": "complete",
+              "analytics_snapshot_id": "56b722d2-a3e5-415c-aec6-0ae8cdac3391",
+              "network_findings": 0,
+              "entity_count": 1,
+              "geoip_installed": true,
+              "summary": {
+                "analytics_version": "entity-network-v1",
+                "multi_input_transactions": 1,
+                "mixing_excluded_transactions": 0,
+                "entity_count": 1,
+                "clustered_addresses": 3,
+                "largest_entity_addresses": 3,
+                "clustering_method": "common-input-ownership (CoinJoin-shaped inputs excluded)",
+                "wallet_count": 17,
+                "geoip_installed": true,
+                "geoip_sources": [
+                  {
+                    "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv4.csv",
+                    "kind": "country",
+                    "licence": "CC-BY-4.0",
+                    "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                    "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                  },
+                  {
+                    "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv6.csv",
+                    "kind": "country",
+                    "licence": "CC-BY-4.0",
+                    "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                    "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                  },
+                  {
+                    "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv4.csv",
+                    "kind": "asn",
+                    "licence": "PDDL-1.0",
+                    "attribution": "IPtoASN (https://iptoasn.com)",
+                    "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                  },
+                  {
+                    "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv6.csv",
+                    "kind": "asn",
+                    "licence": "PDDL-1.0",
+                    "attribution": "IPtoASN (https://iptoasn.com)",
+                    "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                  }
+                ],
+                "geoip_compiled_at": "2026-10-02T21:30:03+00:00",
+                "endpoint_ips": 2,
+                "endpoint_scopes": {
+                  "public": 2
+                },
+                "observation_country_checks": {
+                  "verified": 128
+                },
+                "observation_asn_checks": {
+                  "verified": 128
+                },
+                "observed_transactions": 128,
+                "correlation_wallets_tested": 0,
+                "relay_concentrations": 0,
+                "relay_coherent_endpoints": 0,
+                "geo_mismatch_endpoints": 0,
+                "embedded_wallets": 17,
+                "embedding_dimensions": 16,
+                "embedding_method": "truncated SVD of the degree-normalised wallet x transaction incidence matrix",
+                "embedding_status": "complete",
+                "timings_s": {
+                  "dense_ids": 0.013,
+                  "clustering": 0.039,
+                  "flows": 0.045,
+                  "geoip": 0.028,
+                  "network_correlation": 0.044,
+                  "embeddings": 0.015
+                },
+                "global_memory_estimate_bytes": 91424,
+                "execution_mode": "bounded",
+                "revision": 0,
+                "supersedes_analytics_id": null,
+                "finding_refresh_policy": "append new natural keys; preserve prior findings, reviews and confidence",
+                "network_findings": 0,
+                "new_network_findings": 0
+              },
+              "worker_cpu_seconds": 0.3773655570000001,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "geoip",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:05.308657+00:00",
+            "completed_at": "2026-10-04T17:36:05.325431+00:00",
+            "duration_seconds": 0.014216752999345772,
+            "details": {
+              "installed": true,
+              "worker_cpu_seconds": 0.009281652000000307,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "network_coverage",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:05.343291+00:00",
+            "completed_at": "2026-10-04T17:36:05.349966+00:00",
+            "duration_seconds": 0.004793090003659017,
+            "details": {
+              "observed_transactions": 128,
+              "canonical_transactions": 128,
+              "worker_cpu_seconds": 0.0026539869999995247,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "embeddings",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:05.360779+00:00",
+            "completed_at": "2026-10-04T17:36:05.366341+00:00",
+            "duration_seconds": 0.004902248998405412,
+            "details": {
+              "embedded_wallets": 17,
+              "worker_cpu_seconds": 0.0019353470000007533,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          },
+          {
+            "name": "investigation_grouping",
+            "status": "complete",
+            "reason": null,
+            "attempt": 1,
+            "started_at": "2026-10-04T17:36:05.377079+00:00",
+            "completed_at": "2026-10-04T17:36:05.773727+00:00",
+            "duration_seconds": 0.39600439500645734,
+            "details": {
+              "run_id": "2402d839-9a0a-5fdc-88ee-c749825f07ff",
+              "procedure_version": "observed-episode-groups-v1",
+              "procedure_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+              "underlying_findings": 42,
+              "groups": 42,
+              "reused": false,
+              "worker_cpu_seconds": 0.26021394099999995,
+              "reaped_child_cpu_seconds": 0,
+              "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+              "cpu_scope": "parent worker only; excludes child CPU"
+            }
+          }
+        ],
+        "required_stages": [
+          "source_verification",
+          "ingesting",
+          "graph_building",
+          "findings",
+          "ml_scoring",
+          "analytics",
+          "investigation_grouping"
+        ],
+        "retry_supported": false
+      }
+    },
+    {
+      "name": "UI reconciles receipt activity at finalization",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "source hash matches the uploaded bytes",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "receipt-approved address activity is finalized",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "unfamiliar data has reviewable findings",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI and API honor the distinct-transaction cap",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI supports zero review capacity",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group queue counts reconcile with underlying findings",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "reviewable groups were durably materialized",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group queue supports zero and one without discarding backlog",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group detail opens with separate proposition and paginated member evidence",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group decision persists through ordinary UI",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group decision frees capacity without changing individual decisions",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "append-only group decision history survives reopening",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "group reviewer citation replays the pinned source without inventing a detector contradiction",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI reopens a provenance-linked raw record",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "UI review writes a versioned audit decision",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "review history and pinned evidence survive review",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "neighborhood controls share a compact dark card",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "actual evidence neighborhood renders committed graph data",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "signed graph page is drawn in the visual investigation view",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "neighborhood marks only the exact requested source",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "actual UI Load more advances the capped neighborhood",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "continuation data reaches bounded SVG rendering",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "neighborhood keyboard selection opens stored node details",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "source highlight survives selecting another node",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 1 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 2 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 3 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 4 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 5 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 6 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 7 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 8 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 9 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 10 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 11 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 12 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 13 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 14 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 15 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "graph continuation page 16 has no duplicates",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor traversal has no missing nodes or edges",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "neighborhood reset restores the empty state without a visual graph",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "Graph Explorer retains its main flow view without a duplicate neighborhood",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "entities and embeddings are available",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "risk propagation pins the analytics revision",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "Entities and Risk hides the completed-analysis banner",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "Entities retains degraded-analysis warnings (mocked response)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "entity and network pages render real analytics",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "export contains finding provenance and review history",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "actual UI export download succeeds",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied detail",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied /members",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied /reviews",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied /export",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied /subjects",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group access denied /replacements",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser cross-case group decision denied",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "removed language-model endpoint does not exist",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "browser requested no external resources",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "browser raised no runtime JavaScript exceptions",
+      "ok": true,
+      "detail": []
+    }
+  ],
+  "source_sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+  "status": "pass",
+  "pipeline": {
+    "state": "completed",
+    "rows_seen": 128,
+    "rows_accepted": 128,
+    "rows_quarantined": 0,
+    "analysis": {
+      "state": "complete",
+      "stages": [
+        {
+          "name": "source_verification",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:03.597299+00:00",
+          "completed_at": "2026-10-04T17:36:03.606089+00:00",
+          "duration_seconds": 0.007190518997958861,
+          "details": {
+            "sha256": "93d6cde59bde680eab98857cdc6388e1a78a26f562397b1771e5d83d9a491a3f",
+            "byte_size": 69927,
+            "worker_cpu_seconds": 0.004088588000000115,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ingesting",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:03.615048+00:00",
+          "completed_at": "2026-10-04T17:36:03.695045+00:00",
+          "duration_seconds": 0.07867039799748454,
+          "details": {
+            "rows_seen": 128,
+            "rows_accepted": 128,
+            "rows_quarantined": 0,
+            "worker_cpu_seconds": 0.042013746000000296,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "graph_building",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:03.705475+00:00",
+          "completed_at": "2026-10-04T17:36:04.162982+00:00",
+          "duration_seconds": 0.4566485340037616,
+          "details": {
+            "worker_cpu_seconds": 0.28992700899999946,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "findings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:04.169036+00:00",
+          "completed_at": "2026-10-04T17:36:04.603661+00:00",
+          "duration_seconds": 0.43387869201251306,
+          "details": {
+            "worker_cpu_seconds": 0.2633448970000005,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ml_scoring",
+          "status": "written",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:04.608328+00:00",
+          "completed_at": "2026-10-04T17:36:04.860763+00:00",
+          "duration_seconds": 0.2519049270049436,
+          "details": {
+            "written": 1,
+            "status": "written",
+            "scored_transactions": 128,
+            "threshold_flagged": 1,
+            "model_run_id": "5778abae5f808eac087eeb8b",
+            "release_id": "anomaly-stack-v2",
+            "eligibility_decision": {
+              "status": "fallback",
+              "reason": "automatic approved routing requires a declared data domain; unknown applicability retains v2"
+            },
+            "global_memory_estimate_bytes": 321776,
+            "joint_memory_estimate_bytes": 1052043504,
+            "worker_cpu_seconds": 0.22044068200000044,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "analytics",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:04.868076+00:00",
+          "completed_at": "2026-10-04T17:36:05.283375+00:00",
+          "duration_seconds": 0.4149446539959172,
+          "details": {
+            "status": "complete",
+            "analytics_snapshot_id": "56b722d2-a3e5-415c-aec6-0ae8cdac3391",
+            "network_findings": 0,
+            "entity_count": 1,
+            "geoip_installed": true,
+            "summary": {
+              "analytics_version": "entity-network-v1",
+              "multi_input_transactions": 1,
+              "mixing_excluded_transactions": 0,
+              "entity_count": 1,
+              "clustered_addresses": 3,
+              "largest_entity_addresses": 3,
+              "clustering_method": "common-input-ownership (CoinJoin-shaped inputs excluded)",
+              "wallet_count": 17,
+              "geoip_installed": true,
+              "geoip_sources": [
+                {
+                  "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv4.csv",
+                  "kind": "country",
+                  "licence": "CC-BY-4.0",
+                  "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                  "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                },
+                {
+                  "file": "dbip-country-2.3.2026060120.tgz!dbip-country-ipv6.csv",
+                  "kind": "country",
+                  "licence": "CC-BY-4.0",
+                  "attribution": "IP Geolocation by DB-IP (https://db-ip.com)",
+                  "sha256": "78a6009a9c18434e6b690d703431241900d6127ddcd7c26ed48852549ee0df4f"
+                },
+                {
+                  "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv4.csv",
+                  "kind": "asn",
+                  "licence": "PDDL-1.0",
+                  "attribution": "IPtoASN (https://iptoasn.com)",
+                  "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                },
+                {
+                  "file": "iptoasn-asn-2.3.2026061719.tgz!iptoasn-asn-ipv6.csv",
+                  "kind": "asn",
+                  "licence": "PDDL-1.0",
+                  "attribution": "IPtoASN (https://iptoasn.com)",
+                  "sha256": "3e8c478cf0774d653602c07bd91ca2d6a744652122b3ce5f8e94ca790035bc8f"
+                }
+              ],
+              "geoip_compiled_at": "2026-10-02T21:30:03+00:00",
+              "endpoint_ips": 2,
+              "endpoint_scopes": {
+                "public": 2
+              },
+              "observation_country_checks": {
+                "verified": 128
+              },
+              "observation_asn_checks": {
+                "verified": 128
+              },
+              "observed_transactions": 128,
+              "correlation_wallets_tested": 0,
+              "relay_concentrations": 0,
+              "relay_coherent_endpoints": 0,
+              "geo_mismatch_endpoints": 0,
+              "embedded_wallets": 17,
+              "embedding_dimensions": 16,
+              "embedding_method": "truncated SVD of the degree-normalised wallet x transaction incidence matrix",
+              "embedding_status": "complete",
+              "timings_s": {
+                "dense_ids": 0.013,
+                "clustering": 0.039,
+                "flows": 0.045,
+                "geoip": 0.028,
+                "network_correlation": 0.044,
+                "embeddings": 0.015
+              },
+              "global_memory_estimate_bytes": 91424,
+              "execution_mode": "bounded",
+              "revision": 0,
+              "supersedes_analytics_id": null,
+              "finding_refresh_policy": "append new natural keys; preserve prior findings, reviews and confidence",
+              "network_findings": 0,
+              "new_network_findings": 0
+            },
+            "worker_cpu_seconds": 0.3773655570000001,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "geoip",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:05.308657+00:00",
+          "completed_at": "2026-10-04T17:36:05.325431+00:00",
+          "duration_seconds": 0.014216752999345772,
+          "details": {
+            "installed": true,
+            "worker_cpu_seconds": 0.009281652000000307,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "network_coverage",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:05.343291+00:00",
+          "completed_at": "2026-10-04T17:36:05.349966+00:00",
+          "duration_seconds": 0.004793090003659017,
+          "details": {
+            "observed_transactions": 128,
+            "canonical_transactions": 128,
+            "worker_cpu_seconds": 0.0026539869999995247,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "embeddings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:05.360779+00:00",
+          "completed_at": "2026-10-04T17:36:05.366341+00:00",
+          "duration_seconds": 0.004902248998405412,
+          "details": {
+            "embedded_wallets": 17,
+            "worker_cpu_seconds": 0.0019353470000007533,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "investigation_grouping",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-04T17:36:05.377079+00:00",
+          "completed_at": "2026-10-04T17:36:05.773727+00:00",
+          "duration_seconds": 0.39600439500645734,
+          "details": {
+            "run_id": "2402d839-9a0a-5fdc-88ee-c749825f07ff",
+            "procedure_version": "observed-episode-groups-v1",
+            "procedure_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+            "underlying_findings": 42,
+            "groups": 42,
+            "reused": false,
+            "worker_cpu_seconds": 0.26021394099999995,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        }
+      ],
+      "required_stages": [
+        "source_verification",
+        "ingesting",
+        "graph_building",
+        "findings",
+        "ml_scoring",
+        "analytics",
+        "investigation_grouping"
+      ],
+      "retry_supported": false
+    }
+  },
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

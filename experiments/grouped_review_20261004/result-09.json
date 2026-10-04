@@ -1,0 +1,27 @@
+{
+  "results": [
+    {
+      "workers": 1,
+      "exit_code": 0,
+      "seconds": 4.130973708000965,
+      "result": "screen-20261004-214132-bdad021e-w1"
+    },
+    {
+      "workers": 2,
+      "exit_code": 0,
+      "seconds": 8.232871366002655,
+      "result": "screen-20261004-214132-bdad021e-w2"
+    }
+  ],
+  "selected_safe_workers": 1,
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

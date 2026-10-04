@@ -1,0 +1,38 @@
+{
+  "episode_fragmentation": null,
+  "functional_case_only": {
+    "authenticated": true,
+    "backlog_groups": 0,
+    "duration_seconds": 0.07339282899920363,
+    "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+    "grouping_version": "observed-episode-groups-v1",
+    "investigation_groups": 42,
+    "policy": "group-family-round-robin-v1",
+    "queued_groups": 42,
+    "returned_member_evidence": true,
+    "underlying_findings": 42,
+    "unresolved_groups": 42
+  },
+  "group_queue_policy": "group-family-round-robin-v1",
+  "grouping_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+  "grouping_version": "observed-episode-groups-v1",
+  "mixed_groups": null,
+  "not_claimed": [
+    "P@100 pass",
+    "benign merchant false-positive reduction",
+    "episode-quality improvement",
+    "arbitrary-domain accuracy"
+  ],
+  "overmerged_groups": null,
+  "precision_at_100": null,
+  "reasons": [
+    "No independently declared applicable group-proposition truth was available for these registered final populations.",
+    "Only 499 of 5000 eligible transactions have task labels per final; unknown labels cannot become negatives or group truth.",
+    "The actual 128-TX worker case verifies grouping functionality, not a group-quality final population."
+  ],
+  "recall_at_review_capacity": null,
+  "review_capacity": 100,
+  "schema": "group-quality-status-v1",
+  "status": "NOT EVALUABLE",
+  "target": "Review-worthiness of the stated bounded, observed pattern episode; not wrongdoing and not any-positive-transaction membership"
+}

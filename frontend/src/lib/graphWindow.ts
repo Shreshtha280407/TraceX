@@ -4,6 +4,11 @@ export const MAX_LOADED_NODES = 500;
 export const MAX_LOADED_EDGES = 1000;
 export const RENDER_NODES = 100;
 
+/** Match the graph API's seed normalization, not a label/ownership guess. */
+export function graphSourceId(seed: string) {
+  return /^[0-9a-f]{64}$/i.test(seed) ? `tx:${seed.toLowerCase()}` : seed;
+}
+
 export function mergeGraphPage(previous: GraphResponse | null, next: GraphResponse): GraphResponse {
   if (previous && previous.graph_snapshot_id !== next.graph_snapshot_id) throw new Error("Snapshot changed; reset the graph");
   return { ...next,

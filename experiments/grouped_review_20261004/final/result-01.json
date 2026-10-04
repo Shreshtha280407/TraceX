@@ -1,0 +1,61 @@
+{
+  "status": "BLOCKED",
+  "large_run": "NOT RUN",
+  "minimum_canonical_transactions": 1000000,
+  "disk_floor_bytes": 33663676416,
+  "disk_free_bytes": 10479861760,
+  "disk_deficit_bytes": 23183814656,
+  "host": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "platform": "Linux-7.2.4-arch1-2-x86_64-with-glibc2.44",
+    "machine_model": null,
+    "cpu_model": "13th Gen Intel(R) Core(TM) i5-13420H",
+    "logical_cpus": 12,
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "memory": {
+      "physical_bytes": 16366317568,
+      "available_bytes": 5329305600,
+      "method": "psutil.virtual_memory",
+      "available_is_estimate": false
+    },
+    "limitations": "Available RAM is time-varying; summed child RSS may double-count shared pages."
+  },
+  "resource_admission": {
+    "method": "Existing orchestrator source/scratch/WAL/reserve gate, at zero source/input/output bytes (strict lower bound)",
+    "allocations": "None; metadata only",
+    "worker_configurations": "All worker/thread choices have this same disk floor; no stage may be skipped",
+    "limitations": "Conservative supported admission, not measured actual minimum disk usage. Other volumes must be checked separately."
+  },
+  "errors": [
+    "Insufficient free SSD space even at the predeclared 1M gate's lower bound; generation/upload safely withheld. No existing data deleted."
+  ],
+  "target_seconds": 1800,
+  "total_seconds": null,
+  "canonical_transactions": null,
+  "diagnostic_timeout_seconds": 7200,
+  "scope": "No fresh 1M processing result or timing/AP acceptance claimed",
+  "code_identity": {
+    "commit": null,
+    "diff_sha256": null,
+    "untracked_sha256": null,
+    "locks": null,
+    "runtime_source_sha256": null,
+    "resources": null,
+    "versions": null
+  },
+  "dirty_tree": null
+}

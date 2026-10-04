@@ -16,6 +16,12 @@ KEEP = {"status", "scope", "acceptance_errors", "error", "exit_code", "total_sec
         "warnings", "errors", "large_run", "network_scope", "run_id", "test_summary", "checks", "passed", "failed",
         "schema", "quality_gates_passed", "gate_details", "metric_coverage", "queue_comparison", "queue_coverage",
         "baseline", "candidate", "comparison", "reproduction", "protocol", "feature_contract", "selected_safe_workers", "preflight", "bottleneck", "first_useful_output_seconds", "first_useful_output_scope", "matrix_coverage", "worst_case", "gates", "strata", "protocol_sha256", "reserved_finals", "selection", "grid", "generalization", "targets", "inference_adaptation", "manifest_sha256", "validation_report_sha256", "reason", "release_id"}
+KEEP.update({"final_group_retrieval", "group_quality", "grouping_sha256", "grouping_version", "procedure_sha256",
+             "release_decision", "selected_scorer", "domain_policy", "fallback", "quality", "benchmark", "limitations",
+             "target_seconds", "diagnostic_timeout_seconds", "canonical_transactions", "resource_admission",
+             "source_inventory", "final_id", "registered_final_ids", "final_registry", "baseline_validation", "resources",
+             "minimum_canonical_transactions", "disk_floor_bytes", "disk_free_bytes", "disk_deficit_bytes", "selection_reason"})
+KEEP.update({"counts_scope", "admission_counts", "postgres_filesystem_free_bytes", "acceptance_outcome", "time_target_status", "group_capacity", "group_queue_policy"})
 
 
 def sanitize(value):

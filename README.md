@@ -7,13 +7,24 @@ Current integrated implementation (2026-10-04): **no LLM/chat integration**.
 The 2026-10-03 reviewed release was subsequently committed as `d88af37`.
 See [current implementation report](docs/integrated_implementation_2026-10-04.md)
 and [executable MacBook runbook](docs/macbook_runbook.md). Fresh 3M/<1800s
-acceptance and new candidate generalization gates are **NOT RUN**.
+acceptance is **NOT RUN**. The current grouped-review follow-up builds on actual
+HEAD `84dd826` and finalizes `anomaly-stack-v2`, not a supervised candidate.
+See the [grouped implementation and measured quality report](docs/grouped_review_2026-10-04.md),
+[laptop 1M runbook](docs/laptop_1m_runbook.md) and
+[compact underlying results](experiments/grouped_review_20261004/final/).
+The requested fresh 1M acceptance is **BLOCKED by resource admission**, not passed:
+the existing disk gate's strict lower bound is 33.66 GB, exceeding available SSD
+space; all-stage container memory also rejects the screened large metadata.
+Only small all-stage PostgreSQL/browser acceptance and a bounded registered ML
+comparison were executed. No 3M workload was run.
 New API/UI cases default to `auto_eligible`: an installed, quality-approved
 candidate is used automatically for its declared approved data domain; missing
 approval, unknown domain or incompatible weights retain `anomaly-stack-v2`.
-Synthetic/demo candidates still require explicit opt-in. The new versioned
-recipient-history/contrast queue reduced merchant-control entries in a controlled
-unit test; representative real-case merchant precision remains **unverified**.
+Synthetic/demo candidates still require explicit opt-in. Controlled recipient-history
+unit tests are not evidence of improved deployed merchant precision: reduced
+merchant false positives remain **NOT DEMONSTRATED**. In the registered comparison,
+all four supervised candidates improved labelled-subset motif AP but trailed v2
+on surge AP. Applicable group truth and complete eligible-population labels are missing.
 No real-case candidate has been promoted. See the [scoring/deployment follow-up](docs/recipient_history_and_deployment_2026-10-04.md)
 and [quality-matrix reporting correction](docs/quality_matrix_reporting_2026-10-04.md)
 for fail-closed missing-metric handling. See
@@ -25,6 +36,10 @@ Import completion and analysis completion are distinct; degraded stages are
 visible and retryable. Calibration is pinned, synthetic-domain-specific and
 never evidence of criminality. Graph continuation and a separate distinct-TX
 review-capacity queue preserve access to evidence outside the current page.
+The primary human-review unit is now a durable, case/snapshot/version-scoped
+investigation group. Its default queue holds 100 unresolved groups (0–10,000
+configurable); reviewed groups free capacity, the backlog remains accessible,
+and no group decision overwrites individual finding reviews or labels transactions.
 
 | Item | Value |
 | --- | --- |
@@ -328,7 +343,7 @@ A job is reclaimable when its state is `running` or `checkpointed` and its lease
 | Ingestion pipeline | Stream, normalize, quarantine, commit fragments and checkpoints | Original source | Parquet fragments, receipts, events | `ijson`, `defusedxml`, `pyarrow` |
 | Graph builder | Build immutable node and edge tables with coverage counters | Receipt-approved fragments | DuckDB file plus `GraphSnapshot` record | DuckDB, PyArrow |
 | Deterministic findings | Address-window features, three window rules, peeling and CoinJoin-like detectors | Fragments, graph coverage | `FeatureRecord`, `FindingRecord` | Pure Python |
-| Anomaly stack | Transaction-structure and burst scoring, fusion, budgeted flagging | Fragments | `FindingRecord` rows with `rule_version=anomaly-stack-v1` | NumPy, SciPy, scikit-learn (optional extra) |
+| Anomaly stack | Transaction-structure and retrospective burst scoring, fusion, budgeted flagging | Fragments | `FindingRecord` rows with `rule_version=anomaly-stack-v2` (v1 retained historically) | NumPy, SciPy, scikit-learn (optional extra) |
 
 ### 6.7 Architectural constraints
 
@@ -438,7 +453,7 @@ All rules live in `app/engine/findings/deterministic.py` and `app/engine/motifs/
 
 The `coinjoin_like_structure` result is an observable shape only and does not assert CoinJoin or mixing activity. Peeling continuation selection is a structural convention, not a change-output inference.
 
-**Score scale and review order.** Address-window rules score on 0–100 and motif detectors on 0–1; these are not comparable cross-family risk scales. The current review API/UI uses `family-context-round-robin-v2`: independent rule/version/snapshot family ranks, round-robin inside reviewer workflow bands, stable ties and no raw-score comparison across families. Legacy stored ranks remain for provenance; the global ranks in `docs/phase7.md` describe the historical release. The separate ML transaction queue has its own versioned policy and does not hide findings outside that queue.
+**Score scale and review order.** Address-window rules score on 0–100 and motif detectors on 0–1; these are not comparable cross-family risk scales. Individual findings use `family-context-round-robin-v2`: independent rule/version/snapshot family ranks, round-robin inside reviewer workflow bands, stable ties and no raw-score comparison across families. The primary investigation-group queue uses `group-family-round-robin-v1`, likewise independent family ranks without a duplicate-count boost or a calibrated-probability claim. Legacy stored ranks remain for provenance; the global ranks in `docs/phase7.md` describe the historical release. The separate ML transaction queue has its own versioned policy and does not hide findings outside that queue.
 
 ### 8.4 Anomaly stack
 
@@ -447,7 +462,7 @@ Eligible unsupervised fallback `anomaly-stack-v2` (`app/ml/findings.py`) runs **
 | Element | Implementation |
 | --- | --- |
 | Transaction features | 32 columns (`app.ml.grains.TRANSACTION_COLUMNS`): input and output counts, equal-output group sizes at several tolerances, value entropy and Gini, output shares, fee terms, peel ratio, round-value counts, input value concentration, input ages, rapid-input share |
-| Layer A | Isolation Forest (100 trees, `max_samples` 256, seed 42) and an in-tree ECOD implementation, rank-normalized against reference rows and averaged |
+| Layer A | Isolation Forest ranks (100 trees, `max_samples` 256, seed 42) provide the deployed v2 score. In-tree ECOD contributions separately describe unusual feature values; they are not IF score contributions. The research IF+ECOD average is not the current release. |
 | Layer D | Per motif family (`coinjoin_like`, `peel_step`), a Poisson EWMA control statistic over 900-second count buckets (half-life 96 buckets). Bayesian online change-point posteriors are computed and stored in layer detail; the per-transaction score uses the EWMA burst statistic. Only transactions belonging to a family carry that family's burst score |
 | Family membership | Derived from structural predicates (at least 3 inputs, 3 outputs and 3 equal outputs within 100 sat; or a one-large-one-small output shape). Layer D therefore inherits part of the deterministic rule's predicate |
 | Fusion | Per-layer empirical-CDF p-values fitted on reference rows, weighted Stouffer combination (equal weights), threshold at the reference quantile matching the review budget (default 1%) |
@@ -467,7 +482,7 @@ Research-only legacy components include layers B (Kaplan–Meier spend latency),
 ### 8.6 Design trade-offs
 
 - Findings are computed once per snapshot after ingestion rather than incrementally, which simplifies consistency but delays the first result (Section 15.2).
-- The graph builder holds all nodes and edges in memory (Section 17).
+- The bounded graph path uses typed disk-backed construction; small memory-mode fallbacks and global ML/embedding/risk allocations retain explicit admission limits (Section 17). Grouping and full-stage 1M scalability have not been verified in this release.
 - ML scoring is refit per snapshot, which avoids stale artifacts but makes calibration depend on the snapshot's own early transactions.
 
 ## 9. Technology stack
@@ -878,10 +893,10 @@ Two interruption points (before the atomic fragment rename; after rename but bef
 - **Heuristic false positives.** Payroll, exchange batching, consolidation and treasury sweeps can satisfy the same predicates. The synthetic fixture includes such cases by construction and shows the rule and the model both rank them highly.
 - **Model limits.** The unsupervised ranking does not separate a benign rule-satisfying transaction from a true motif (Section 15.1). Calibration depends on the snapshot's own first 70% of transactions. Scores are not probabilities.
 - **Attribution.** TraceX does not attribute addresses to persons or entities. Address, script, IP and ASN values are observations. Graph proximity is not common ownership.
-- **Scale.** Typed disk-backed bounded graph/features now pass 1,014,581 transactions on this host. Global ML/embedding/risk arrays still scale with data and are resource-admitted, not constant memory. See the final report for actual 3M attempts and missed gates.
-- **Scoring scales.** Deterministic findings mix 0–100 and 0–1 scores in a single rank ordering (Section 8.3).
+- **Scale.** Historical pre-grouping reports measured 1,014,581 transactions on this host; they do not verify the current grouped release. Fresh 1M is resource-blocked and 3M is deferred. Global ML/embedding/risk arrays still scale with data and are resource-admitted, not constant memory. The current grouped report and older acceptance reports distinguish these scopes.
+- **Scoring scales.** Deterministic families retain 0–100 and 0–1 raw scores but are no longer compared directly across families (Section 8.3). Neither the individual nor group review policy is calibrated group risk.
 - **Graph cursor.** Continuation is query/case/snapshot-bound, validated server-side and consumed by actual UI Load more; full-graph rendering remains intentionally bounded.
-- **Storage engine.** Behavior on PostgreSQL under concurrency is untested by the committed suite.
+- **Storage engine.** The grouped release passed an actual small PostgreSQL/API/worker/browser workflow. Large-case and contended multi-worker PostgreSQL behavior remain unverified; small checks are not load acceptance.
 - **Production readiness.** Not claimed. See Sections 11.5 and 16.3.
 - **Interpretation.** Suspicious patterns and anomaly scores are investigative leads requiring human review. They are not proof of criminal conduct or identity.
 

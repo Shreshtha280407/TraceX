@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type ImportJob } from "../lib/api";
 import { NoticeBanner } from "./primitives";
 
-export function AnalysisStatus({ caseId }: { caseId: string }) {
-  return <CaseAnalysis key={caseId} caseId={caseId} />;
+export function AnalysisStatus({ caseId, hideComplete = false }: { caseId: string; hideComplete?: boolean }) {
+  return <CaseAnalysis key={caseId} caseId={caseId} hideComplete={hideComplete} />;
 }
 
-function CaseAnalysis({ caseId }: { caseId: string }) {
+function CaseAnalysis({ caseId, hideComplete }: { caseId: string; hideComplete: boolean }) {
   const [analysis, setAnalysis] = useState<ImportJob["analysis"]>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -21,6 +21,7 @@ function CaseAnalysis({ caseId }: { caseId: string }) {
   }, [caseId]);
   if (error) return <NoticeBanner>{error}</NoticeBanner>;
   if (!analysis) return null;
+  if (hideComplete && analysis.state === "complete") return null;
   const ml = analysis.stages.find((s) => s.name === "ml_scoring");
   const issues = analysis.stages.filter((s) => !["complete", "written", "no_rows_flagged"].includes(s.status));
   return <NoticeBanner>

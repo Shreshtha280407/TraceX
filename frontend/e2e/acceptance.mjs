@@ -90,8 +90,8 @@ try {
   const findings = await api(`/cases/${id}/findings?limit=200`);
   check("unfamiliar data has reviewable findings", findings.findings.length > 0);
   await page.goto(`${base}/cases/${id}/findings`);
-  await page.getByRole("heading", { name: "ML review capacity" }).waitFor();
-  const capacity = page.locator('input[type="number"]');
+  await page.getByRole("heading", { name: "Separate ML transaction triage queue" }).waitFor();
+  const capacity = page.getByLabel("Transactions to queue");
   await capacity.fill("2");
   await page.getByText(/capacity 2 ·/).waitFor();
   const queue = await api(`/cases/${id}/review-queue?k=2`);
@@ -99,6 +99,36 @@ try {
   await capacity.fill("0");
   await page.getByText(/capacity 0 · 0 queued/).waitFor();
   check("UI supports zero review capacity", true);
+  const groupQueue = await api(`/cases/${id}/investigation-queue?capacity=100`);
+  check("group queue counts reconcile with underlying findings", groupQueue.underlying_findings === findings.total && groupQueue.queued_groups + groupQueue.backlog_groups === groupQueue.unresolved_groups);
+  check("reviewable groups were durably materialized", groupQueue.items.length > 0 && job.analysis.stages.some(s => s.name === "investigation_grouping" && s.status === "complete"));
+  const groupCapacity = page.getByLabel("Unresolved group capacity");
+  await groupCapacity.fill("1");
+  await page.getByTestId("group-counts").filter({hasText: /1 in your review queue/}).waitFor();
+  await groupCapacity.fill("0");
+  await page.getByTestId("group-counts").filter({hasText: /0 in your review queue/}).waitFor();
+  check("group queue supports zero and one without discarding backlog", true);
+  const group = groupQueue.items[0];
+  await page.goto(`${base}/investigations/${group.group_id}`);
+  await page.getByRole("heading", {name:"Review proposition"}).waitFor();
+  check("group detail opens with separate proposition and paginated member evidence", await page.getByRole("heading",{name:"Member evidence"}).count() === 1);
+  const membersBefore = await api(`/investigation-groups/${group.group_id}/members?limit=20`);
+  const reviewGroupResponse = page.waitForResponse(r => r.url().endsWith(`/investigation-groups/${group.group_id}/reviews`) && r.request().method() === "POST");
+  const citedRef = membersBefore.items[0].finding.source_refs[0];
+  await page.getByLabel("Recorded reason").fill("Browser acceptance: triaged the observed episode only, no transaction verdict.");
+  await page.getByLabel("Opposing source ID").fill(citedRef.evidence_id);
+  await page.getByLabel("Exact opposing locator").fill(citedRef.locator);
+  await page.getByRole("button",{name:"Record group decision"}).click();
+  check("group decision persists through ordinary UI", (await reviewGroupResponse).status() === 201);
+  const membersAfter = await api(`/investigation-groups/${group.group_id}/members?limit=20`);
+  const queueAfter = await api(`/cases/${id}/investigation-queue?capacity=100`);
+  check("group decision frees capacity without changing individual decisions", queueAfter.unresolved_groups === groupQueue.unresolved_groups-1 && membersBefore.items.every((m,i) => m.finding.status === membersAfter.items[i].finding.status));
+  await page.reload();
+  await page.getByText(/Decision 1: triaged/).waitFor();
+  check("append-only group decision history survives reopening", true);
+  await page.getByRole("button", {name: /Reopen group review reference:/}).click();
+  await page.getByLabel("Reopen group review reference", {exact:true}).locator("pre").waitFor();
+  check("group reviewer citation replays the pinned source without inventing a detector contradiction", true);
   const finding = findings.findings.find((item) => item.entity_ref.startsWith("tx:")) ?? findings.findings[0];
   report.finding_id = finding.finding_id;
   await page.goto(`${base}/findings/${finding.finding_id}`);
@@ -114,12 +144,22 @@ try {
   const evidence = await api(`/findings/${finding.finding_id}/evidence`);
   check("review history and pinned evidence survive review", evidence.review_history.length > 0 && evidence.source_refs.length > 0);
   await page.getByLabel("Neighborhood page size", { exact: true }).fill("2");
+  check("neighborhood controls share a compact dark card", await page.locator(".neighborhood-card").evaluate((card) => {
+    const button = card.querySelector(".neighborhood-load");
+    const field = card.querySelector('input[aria-label="Neighborhood page size"]');
+    return Boolean(button && field && card.querySelector(".neighborhood-header")) &&
+      getComputedStyle(button).backgroundColor === getComputedStyle(field).backgroundColor &&
+      getComputedStyle(button).backgroundColor !== "rgb(255, 255, 255)";
+  }));
   await page.getByRole("button", { name: "Load neighborhood", exact: true }).click();
   await page.getByText(/nodes · .*edges loaded/).waitFor();
   check("actual evidence neighborhood renders committed graph data", true);
   const visual = page.getByRole("img", { name: "Bounded evidence association graph" });
   const firstVisualCount = await visual.locator("circle").count();
   check("signed graph page is drawn in the visual investigation view", firstVisualCount > 0 && firstVisualCount <= 100);
+  const highlightedSource = visual.locator(".neighborhood-node.source");
+  check("neighborhood marks only the exact requested source",
+    await highlightedSource.count() === 1 && (await highlightedSource.getAttribute("aria-label")) === `Source node; Inspect ${finding.entity_ref}`);
   const firstNeighborhood = await page.getByText(/nodes · .*edges loaded/).textContent();
   await page.getByRole("button", { name: "Load more neighborhood", exact: true }).click();
   await page.waitForFunction((prior) => Array.from(document.querySelectorAll("p")).some((item) =>
@@ -127,6 +167,15 @@ try {
   check("actual UI Load more advances the capped neighborhood", true);
   const nextVisualCount = await visual.locator("circle").count();
   check("continuation data reaches bounded SVG rendering", nextVisualCount > firstVisualCount && nextVisualCount <= 100);
+  await visual.getByRole("button").first().focus();
+  await page.keyboard.press("Enter");
+  await page.getByText("View stored node details", { exact: true }).waitFor();
+  check("neighborhood keyboard selection opens stored node details", true);
+  await visual.getByRole("button").last().click();
+  check("source highlight survives selecting another node",
+    await highlightedSource.count() === 1 && (await highlightedSource.getAttribute("aria-pressed")) === "false");
+  await page.getByRole("button", { name: "Clear selection", exact: true }).click();
+  await page.locator(".neighborhood-card").screenshot({ path: path.join(output, "evidence-neighborhood.png") });
   if (finding.entity_ref.startsWith("tx:")) {
     const params = new URLSearchParams({ seed: finding.entity_ref, depth: "2", node_limit: "2", edge_limit: "1" });
     const nodes = new Set(), edges = new Set();
@@ -143,14 +192,32 @@ try {
     const full = await api(`/cases/${id}/graph?${new URLSearchParams({ seed: finding.entity_ref, depth: "2", node_limit: "1000", edge_limit: "3000" })}`);
     check("cursor traversal has no missing nodes or edges", !full.cursor && full.nodes.length === nodes.size && full.edges.length === edges.size);
   }
+  await page.getByRole("button", { name: "Reset neighborhood", exact: true }).click();
+  check("neighborhood reset restores the empty state without a visual graph",
+    await page.getByRole("button", { name: "Load neighborhood", exact: true }).isVisible() && await visual.count() === 0);
+  await page.goto(`${base}/cases/${id}/graph?seed=${encodeURIComponent(finding.entity_ref)}`);
+  await page.getByRole("heading", { name: "UTXO Graph Explorer", exact: true }).waitFor();
+  await page.locator(".ff-toolbar").waitFor();
+  check("Graph Explorer retains its main flow view without a duplicate neighborhood", await page.locator(".neighborhood-card").count() === 0);
   const entityPage = await api(`/cases/${id}/entities?limit=2&min_addresses=1`);
   check("entities and embeddings are available", entityPage.summary.wallet_count > 0);
   const wallet = entityPage.entities[0].entity_id;
   await api(`/cases/${id}/risk/seeds`, { method: "POST", data: { wallet_ref: wallet, label: "synthetic-demo", reason: "Synthetic analyst seed, not attribution", weight: .5 } });
   const risk = await api(`/cases/${id}/risk/run`, { method: "POST" });
   check("risk propagation pins the analytics revision", Boolean(risk.parameters.analytics_sha256));
+  const entityAnalysisResponse = page.waitForResponse((response) => response.url().endsWith(`/cases/${id}/analysis`));
   await page.goto(`${base}/cases/${id}/entities`);
   await page.getByRole("heading", { name: /Entities/ }).first().waitFor();
+  await (await entityAnalysisResponse).finished();
+  check("Entities and Risk hides the completed-analysis banner", await page.getByText(/Analysis complete\./).count() === 0);
+  const analysisFixture = await api(`/cases/${id}/analysis`);
+  const analysisRoute = `**/v1/cases/${id}/analysis`;
+  await page.route(analysisRoute, (route) => route.fulfill({ json: { ...analysisFixture,
+    analysis: { ...analysisFixture.analysis, state: "degraded" } } }));
+  await page.reload();
+  await page.getByText(/Analysis degraded/).waitFor();
+  check("Entities retains degraded-analysis warnings (mocked response)", true);
+  await page.unroute(analysisRoute);
   await page.goto(`${base}/cases/${id}/network`);
   await page.getByRole("heading", { name: /Network Intelligence/ }).waitFor();
   check("entity and network pages render real analytics", true);
@@ -165,6 +232,22 @@ try {
   const download = await downloadEvent;
   await download.saveAs(path.join(output, "ui-findings-download.json"));
   check("actual UI export download succeeds", (await readFile(path.join(output, "ui-findings-download.json"))).length > 0);
+  const outsider = await context.request.post(`${base}/v1/auth/signup`, {data: {
+    display_name: `group-outsider-${Date.now()}`, password: "disposable-unauthorized-browser-password",
+  }});
+  const outsiderToken = (await outsider.json()).token;
+  for (const suffix of ["", "/members", "/reviews", "/export", "/subjects", "/replacements"]) {
+    const denied = await context.request.get(`${base}/v1/investigation-groups/${group.group_id}${suffix}`, {
+      headers: {Authorization: `Bearer ${outsiderToken}`},
+    });
+    check(`browser cross-case group access denied ${suffix || "detail"}`, denied.status() === 404);
+  }
+  const deniedDecision = await context.request.post(`${base}/v1/investigation-groups/${group.group_id}/reviews`, {
+    headers: {Authorization: `Bearer ${outsiderToken}`}, data: {
+      expected_review_version: 2, disposition: "confirmed", reason: "Unauthorized check; must never be recorded",
+    },
+  });
+  check("browser cross-case group decision denied", deniedDecision.status() === 404);
   const removed = await context.request.post(`${base}/v1/findings/${finding.finding_id}/chat`, { headers: { Authorization: `Bearer ${token}` }, data: {} });
   check("removed language-model endpoint does not exist", removed.status() === 404);
   check("browser requested no external resources", report.externalRequests.length === 0, report.externalRequests);

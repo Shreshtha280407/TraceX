@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ML_RULE_PREFIX, type CaseDetail, type FindingsSummary } from "../lib/api";
+import { api, type CaseDetail, type FindingsSummary, type InvestigationQueue } from "../lib/api";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -28,6 +28,7 @@ export function CaseDashboard() {
   // Real per-case counts. The findings list below is capped at a page, so its
   // length is a display limit and must never be reported as the workload.
   const [summary, setSummary] = useState<FindingsSummary | null>(null);
+  const [groups, setGroups] = useState<InvestigationQueue | null>(null);
 
   useEffect(() => {
     if (!caseId) return;
@@ -35,6 +36,7 @@ export function CaseDashboard() {
     setSummary(null);
     api.getCase(caseId).then(setCaseDetail);
     api.getFindingsSummary(caseId).then(setSummary).catch(() => setSummary(null));
+    api.getInvestigationQueue(caseId).then(setGroups).catch(() => setGroups(null));
   }, [caseId]);
 
   useEffect(() => {
@@ -49,10 +51,10 @@ export function CaseDashboard() {
   const activeJobs = trackedJobs.filter((job) => ["queued", "running", "checkpointed"].includes(job.state));
   const transactionsIngested = trackedJobs.length > 0 ? trackedJobs.reduce((sum, job) => sum + job.rows_accepted, 0) : null;
   const openFindings = summary?.open ?? null;
-  const pendingReviewCount = summary ? (summary.by_status.open ?? 0) + (summary.by_status.needs_data_review ?? 0) : null;
+  const pendingReviewCount = groups?.unresolved_groups ?? null;
   // The queue list itself is still the capped page — it is a "top N to work on
   // next" list, labelled as such, not the count.
-  const pendingReview = findings?.filter((f) => f.status === "open" || f.status === "needs_data_review") ?? null;
+  const pendingReview = groups?.items ?? null;
 
   if (!caseId) return null;
 
@@ -92,7 +94,7 @@ export function CaseDashboard() {
         <StatTile
           label="Pending human review"
           value={pendingReviewCount?.toLocaleString() ?? "—"}
-          sub="open + needs data review, this case"
+          sub="unresolved investigation groups, including escalated"
         />
         <StatTile
           label="Model status"
@@ -103,7 +105,8 @@ export function CaseDashboard() {
 
       <div className="two-col">
         <NeoCard>
-          <h2>Pending Review</h2>
+          <h2>Pending Investigation Groups</h2>
+          {groups && <p className="coverage-note">{groups.underlying_findings} findings / {groups.investigation_groups} groups / {groups.queued_groups} queued / {groups.backlog_groups} additional unresolved</p>}
           {pendingReview === null ? (
             <p className="coverage-note">Loading…</p>
           ) : pendingReview.length === 0 ? (
@@ -111,22 +114,22 @@ export function CaseDashboard() {
           ) : (
             <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
               {pendingReview.slice(0, 10).map((item) => (
-                <li key={item.finding_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <li key={item.group_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Badge tone={item.rule_version.startsWith(ML_RULE_PREFIX) ? "ml" : "deterministic"}>{item.finding_type}</Badge>
-                    <span className="mono-id">{item.entity_ref}</span>
+                    <Badge tone="deterministic">{item.family}</Badge>
+                    <span className="mono-id">{item.member_count} observations</span>
                     <span className="coverage-note">
                       window {new Date(item.window_start).toISOString().slice(11, 16)}–{new Date(item.window_end).toISOString().slice(11, 16)}
                     </span>
                   </div>
                   <div style={{ display: "flex", gap: 14 }}>
                     <a
-                      href={`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`}
-                      onClick={(e) => { e.preventDefault(); navigate(`/cases/${caseId}/graph?seed=${encodeURIComponent(item.entity_ref)}`); }}
+                      href={`/cases/${caseId}/graph?seed=${encodeURIComponent(item.focal_ref)}`}
+                      onClick={(e) => { e.preventDefault(); navigate(`/cases/${caseId}/graph?seed=${encodeURIComponent(item.focal_ref)}`); }}
                     >
                       Graph
                     </a>
-                    <a href={`/findings/${item.finding_id}`} onClick={(e) => { e.preventDefault(); navigate(`/findings/${item.finding_id}`); }}>
+                    <a href={`/investigations/${item.group_id}`} onClick={(e) => { e.preventDefault(); navigate(`/investigations/${item.group_id}`); }}>
                       Review
                     </a>
                   </div>
