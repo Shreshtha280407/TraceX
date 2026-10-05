@@ -16,13 +16,13 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.paint(3000));
   await page.screenshot({ path: path.join(output, "hero.png") });
-  for (let i = 0; i < 120; i++) {
-    await page.evaluate(t => window.paint(t), i * 100);
+  for (let i = 0; i < 288; i++) {
+    await page.evaluate(t => window.paint(t), i * 1000 / 24);
     await page.screenshot({ path: path.join(temporary, `hero-${String(i).padStart(3, '0')}.png`) });
   }
   await context.close();
-  const converted = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-framerate", "10", "-i", path.join(temporary, "hero-%03d.png"),
-    "-t", "12", "-vf", "scale=1200:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=96[p];[s1][p]paletteuse=dither=none:diff_mode=rectangle",
+  const converted = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-framerate", "24", "-i", path.join(temporary, "hero-%03d.png"),
+    "-t", "12", "-vf", "scale=1200:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=none:diff_mode=rectangle",
     "-loop", "0", path.join(output, "hero.gif")], { stdio: "inherit" });
   if (converted.status !== 0) throw new Error("Hero GIF conversion failed");
   console.log("Rendered hero GIF and static poster.");

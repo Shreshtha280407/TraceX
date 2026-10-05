@@ -5,38 +5,99 @@
 <style>
 @font-face{font-family:Space;src:url('../../../frontend/src/assets/fonts/space-grotesk-var.woff2')}
 @font-face{font-family:Plex;src:url('../../../frontend/src/assets/fonts/ibm-plex-mono-400.woff2')}
-*{box-sizing:border-box}html,body{margin:0;width:1400px;height:520px;overflow:hidden;background:#10100e;color:#f3efe4}
-main{position:relative;width:1400px;height:520px;border:1px solid #393227;background:radial-gradient(ellipse at 70% 15%,#2d2313 0%,transparent 55%)}
-canvas{position:absolute;inset:0;width:1400px;height:520px}.copy{position:absolute;top:51px;left:62px;z-index:1}
-.eyebrow{font:12px Plex,monospace;letter-spacing:3px;color:#b6a68a}.live{display:inline-block;width:7px;height:7px;background:#e3a62f;border-radius:50%;margin-right:12px;box-shadow:0 0 15px #e3a62f}
-.word{font:700 109px Space,sans-serif;letter-spacing:-7px;margin:23px 0 6px;line-height:1}.word span{color:#e3a62f}
-.tagline{font:500 31px Space,sans-serif;letter-spacing:-.8px;line-height:1.4;margin:20px 0;color:#f3efe4}
-.sub{font:12px Plex,monospace;color:#a8a08c;letter-spacing:1px;margin-top:24px}
-.label{position:absolute;right:66px;top:52px;font:11px Plex,monospace;color:#b6a68a;letter-spacing:2px}
-.stage{position:absolute;left:62px;bottom:41px;display:flex;gap:13px;align-items:center;font:11px Plex,monospace;letter-spacing:1px}
-.pill{padding:12px 15px;border:1px solid #383125;border-radius:5px;color:#b6a68a;background:#14130f}.pill.active{color:#17130c;background:#e3a62f;border-color:#e3a62f}
-.chev{color:#68604f}.status{position:absolute;right:65px;bottom:44px;text-align:right;font:11px Plex,monospace;line-height:1.8;letter-spacing:1px;color:#b6a68a}.status b{color:#e3a62f;font-weight:400}
+*{box-sizing:border-box}html,body{margin:0;width:1400px;height:520px;overflow:hidden;background:#10110f;color:#f3efe4}
+main{position:relative;width:1400px;height:520px;overflow:hidden;border:1px solid #39372d;background:radial-gradient(ellipse at 80% 12%,#282418 0%,transparent 58%),linear-gradient(130deg,#11120f,#0f1110)}
+main:before{content:"";position:absolute;inset:0;background-image:radial-gradient(#a8966720 .7px,transparent .7px);background-size:24px 24px;mask-image:linear-gradient(90deg,transparent 36%,#000 78%);pointer-events:none}
+.copy{position:absolute;top:51px;left:62px;z-index:1}.eyebrow{font:12px Plex,monospace;letter-spacing:3px;color:#b6a68a}.live{display:inline-block;width:7px;height:7px;background:#e3a62f;border-radius:50%;margin-right:12px;box-shadow:0 0 15px #e3a62f}
+.word{font:700 109px Space,sans-serif;letter-spacing:-7px;margin:23px 0 6px;line-height:1}.word span{color:#e3a62f}.tagline{font:500 31px Space,sans-serif;letter-spacing:-.8px;line-height:1.4;margin:20px 0;color:#f3efe4}.sub{font:12px Plex,monospace;color:#a8a08c;letter-spacing:1px;margin-top:24px}
+.label{position:absolute;right:48px;top:52px;font:10px Plex,monospace;color:#a69d85;letter-spacing:1.6px}.graph{position:absolute;left:638px;top:82px;width:714px;height:340px;filter:drop-shadow(0 15px 22px #0009)}
+.stage{position:absolute;left:62px;bottom:41px;display:flex;gap:13px;align-items:center;font:11px Plex,monospace;letter-spacing:1px}.pill{padding:12px 15px;border:1px solid #38382c;border-radius:7px;color:#b6a68a;background:#161711}.pill.active{color:#17130c;background:#e3a62f;border-color:#e3a62f}.chev{color:#68604f}.status{position:absolute;right:48px;bottom:42px;text-align:right;font:10px Plex,monospace;line-height:1.9;letter-spacing:1px;color:#a59e89}.status b{color:#e3a62f;font-weight:400}
+.graph text{font-family:Plex,monospace}.graph .heading{font-family:Space,sans-serif;font-weight:600;fill:#ede9dc}.graph .micro{fill:#999e8d;font-size:10px;letter-spacing:.5px}.graph .hash{fill:#ece9dd;font-size:13px}.graph .time{fill:#b2ad9b;font-size:10px}.graph .branch-value{fill:#c6d6da;font-size:14px}.graph .node-border{fill:url(#card);stroke:#665234;stroke-width:1}.graph .outpoint{fill:#211f15;stroke:#d0a553;stroke-width:1.2}.graph .branch-box{fill:#151d1c;stroke:#344849;stroke-width:1}.graph .connection{fill:none;stroke-linecap:round}.graph .flow-gold{stroke:#c7a25d;stroke-width:1.7}.graph .flow-blue{stroke:#668e9a;stroke-width:1.15}.graph .port{fill:#171b15;stroke:#d0a553;stroke-width:1.3}.graph .timeline{stroke:#3c4235;stroke-width:1;stroke-dasharray:2 5}
 </style>
-<main aria-label="TraceX animated identity: preserve evidence, reconstruct lineage, rank signals and review claims">
-<canvas width="1400" height="520"></canvas>
+<main aria-label="TraceX animated identity with a realistic illustrative UTXO flow: transaction hashes, spent outpoints, output values and branching payments">
 <div class="copy"><div class="eyebrow"><i class="live"></i>BITCOIN INTELLIGENCE / OFFLINE BY DESIGN</div><div class="word">Trace<span>X</span></div><p class="tagline">Follow the funds.<br>Keep the evidence.</p><div class="sub">SOURCE-BACKED LEADS. HUMAN-REVIEWED DECISIONS.</div></div>
-<div class="label">ILLUSTRATIVE EVIDENCE FLOW / NOT CASE DATA</div>
+<div class="label">ILLUSTRATIVE SYNTHETIC TRACE / NOT LIVE ACTIVITY</div>
+<svg class="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 714 340" role="img" aria-labelledby="graph-title graph-description">
+<title id="graph-title">A verified spend path with separate output branches</title>
+<desc id="graph-description">Three synthetic transactions spend previous outputs and create smaller continuing outputs. Side outputs retain their own values and spent status. Moving lights indicate the direction of recorded links, not live blockchain activity.</desc>
+<defs>
+  <linearGradient id="panel" x2="0" y2="1"><stop stop-color="#1b1e17"/><stop offset="1" stop-color="#121610"/></linearGradient>
+  <linearGradient id="card" x2=".3" y2="1"><stop stop-color="#25261c"/><stop offset="1" stop-color="#191d17"/></linearGradient>
+  <radialGradient id="ambient"><stop stop-color="#ac8037" stop-opacity=".13"/><stop offset="1" stop-color="#ac8037" stop-opacity="0"/></radialGradient>
+  <pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".65" fill="#646f462e"/></pattern>
+  <filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="2.3"/></filter>
+  <marker id="gold-arrow" viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="6.2" refY="4" orient="auto"><path d="M1 1L6 4L1 7" fill="none" stroke="#d9b36a" stroke-width="1.2"/></marker>
+  <marker id="blue-arrow" viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="6.2" refY="4" orient="auto"><path d="M1 1L6 4L1 7" fill="none" stroke="#789ea8" stroke-width="1.2"/></marker>
+</defs>
+<rect x=".5" y=".5" width="713" height="339" rx="18" fill="url(#panel)" stroke="#4c4a36"/>
+<rect x="1" y="47" width="712" height="259" fill="url(#dots)"/>
+<ellipse cx="365" cy="135" rx="330" ry="160" fill="url(#ambient)"/>
+<path d="M1 46H713M1 307H713" stroke="#373c2c"/>
+<g transform="translate(23 18)" stroke="#e3a62f" fill="none" stroke-width="1.3"><rect x="0" y="2" width="6" height="6" rx="1.5"/><rect x="16" y="10" width="6" height="6" rx="1.5"/><path d="M6 5H12Q16 5 16 10"/></g>
+<text class="heading" x="60" y="29" font-size="14">UTXO / FUND FLOW</text>
+<text class="micro" x="380" y="29" text-anchor="middle">03 SPENDS · OUTPUT-LEVEL LINEAGE</text>
+<rect x="595" y="14" width="96" height="20" rx="10" fill="#283022" stroke="#475539"/>
+<circle cx="608" cy="24" r="2.5" fill="#91af72"/><text x="619" y="27" font-size="9" letter-spacing="1" fill="#b7c8a4">SYNTHETIC</text>
+<!-- Transactions preserve realistic source semantics. Values below come from the recorded synthetic fixture. -->
+<g class="connection flow-gold">
+  <path id="create-1" d="M166 135C183 135 187 135 203 135" marker-end="url(#gold-arrow)"/>
+  <path id="spend-1" d="M242 135C258 135 264 119 280 119" marker-end="url(#gold-arrow)"/>
+  <path id="create-2" d="M418 119C435 119 439 119 455 119" marker-end="url(#gold-arrow)"/>
+  <path id="spend-2" d="M494 119C510 119 516 135 532 135" marker-end="url(#gold-arrow)"/>
+  <path id="continue" d="M670 135H696" marker-end="url(#gold-arrow)"/>
+</g>
+<g class="connection flow-blue">
+  <path id="branch-1" d="M97 188C97 219 140 212 140 244" marker-end="url(#blue-arrow)"/>
+  <path id="branch-2" d="M349 172C349 208 392 210 392 244" marker-end="url(#blue-arrow)"/>
+  <path id="branch-3" d="M601 188C601 217 620 214 620 244" marker-end="url(#blue-arrow)"/>
+</g>
+<!-- Continuing outputs are outpoints, rather than invented direct input-to-output allocations. -->
+<g>
+  <rect x="170" y="66" width="108" height="24" rx="6" fill="#282619" stroke="#5d4e2e"/><text x="224" y="82" text-anchor="middle" fill="#e9c37c" font-size="11">0.62912 BTC</text>
+  <path class="outpoint" d="M223 122L236 135L223 148L210 135Z"/><circle cx="223" cy="135" r="2" fill="#e3a62f"/>
+  <text class="micro" x="223" y="168" text-anchor="middle">vout 0</text><text x="223" y="183" text-anchor="middle" font-size="9" fill="#c7ac79">SPENT BY →</text>
+  <rect x="422" y="50" width="108" height="24" rx="6" fill="#282619" stroke="#5d4e2e"/><text x="476" y="66" text-anchor="middle" fill="#e9c37c" font-size="11">0.58610 BTC</text>
+  <path class="outpoint" d="M475 106L488 119L475 132L462 119Z"/><circle cx="475" cy="119" r="2" fill="#e3a62f"/>
+  <text class="micro" x="475" y="152" text-anchor="middle">vout 0</text><text x="475" y="167" text-anchor="middle" font-size="9" fill="#c7ac79">SPENT BY →</text>
+</g>
+<g class="tx" data-node="0" transform="translate(28 82)">
+  <rect class="node-border" width="138" height="106" rx="11"/><path d="M12 39H126" stroke="#3e412e"/>
+  <text class="heading" x="13" y="25" font-size="13">TX 01</text><text x="125" y="25" text-anchor="end" fill="#c8b382" font-size="9">P2WPKH</text>
+  <text class="hash" x="13" y="60">eed62b…91d2</text><text class="micro" x="13" y="79">1 input · 2 outputs</text><text class="time" x="13" y="95">02:25:24 UTC</text>
+  <circle class="port" cx="138" cy="53" r="3"/><circle class="port" cx="69" cy="106" r="3"/>
+</g>
+<g class="tx" data-node="1" transform="translate(280 66)">
+  <rect class="node-border" width="138" height="106" rx="11"/><path d="M12 39H126" stroke="#3e412e"/>
+  <text class="heading" x="13" y="25" font-size="13">TX 02</text><text x="125" y="25" text-anchor="end" fill="#c8b382" font-size="9">P2TR</text>
+  <text class="hash" x="13" y="60">92537b…9997</text><text class="micro" x="13" y="79">1 input · 2 outputs</text><text class="time" x="13" y="95">02:36:35 UTC</text>
+  <circle class="port" cx="0" cy="53" r="3"/><circle class="port" cx="138" cy="53" r="3"/><circle class="port" cx="69" cy="106" r="3"/>
+</g>
+<g class="tx" data-node="2" transform="translate(532 82)">
+  <rect class="node-border" width="138" height="106" rx="11"/><path d="M12 39H126" stroke="#3e412e"/>
+  <text class="heading" x="13" y="25" font-size="13">TX 03</text><text x="125" y="25" text-anchor="end" fill="#c8b382" font-size="9">P2TR</text>
+  <text class="hash" x="13" y="60">6a0680…d08b</text><text class="micro" x="13" y="79">1 input · 2 outputs</text><text class="time" x="13" y="95">02:45:38 UTC</text>
+  <circle class="port" cx="0" cy="53" r="3"/><circle class="port" cx="138" cy="53" r="3"/><circle class="port" cx="69" cy="106" r="3"/>
+</g>
+<g transform="translate(72 244)"><rect class="branch-box" width="136" height="56" rx="9"/><text x="12" y="16" fill="#8eaab0" font-size="9" letter-spacing=".8">OUTPUT 1</text><text class="branch-value" x="12" y="35">0.02058 BTC</text><text x="12" y="48" font-size="8" letter-spacing=".6" fill="#91a096">UNSPENT IN SOURCE</text></g>
+<g transform="translate(324 244)"><rect class="branch-box" width="136" height="56" rx="9"/><text x="12" y="16" fill="#8eaab0" font-size="9" letter-spacing=".8">OUTPUT 1</text><text class="branch-value" x="12" y="35">0.04302 BTC</text><text x="12" y="48" font-size="8" letter-spacing=".6" fill="#91a096">UNSPENT IN SOURCE</text></g>
+<g transform="translate(552 244)"><rect class="branch-box" width="136" height="56" rx="9"/><text x="12" y="16" fill="#8eaab0" font-size="9" letter-spacing=".8">OUTPUT 1</text><text class="branch-value" x="12" y="35">0.04770 BTC</text><text x="12" y="48" font-size="8" letter-spacing=".6" fill="#99b385">SPENT IN SOURCE</text></g>
+<g id="particles"></g>
+<path d="M23 323H42" stroke="#c7a25d" stroke-width="1.7"/><text class="micro" x="49" y="327">Spend path</text><path d="M156 323H175" stroke="#668e9a" stroke-width="1.2"/><text class="micro" x="182" y="327">Output branch</text><text x="688" y="327" text-anchor="end" font-size="10" fill="#c4b58d">0.64972 → 0.53838 BTC</text>
+</svg>
 <div class="stage"><span class="pill">01 PRESERVE</span><span class="chev">›</span><span class="pill">02 RECONSTRUCT</span><span class="chev">›</span><span class="pill">03 RANK</span><span class="chev">›</span><span class="pill">04 REVIEW</span></div>
 <div class="status"><b id="state">01 / ORIGINAL BYTES</b><br>EVERY LEAD → ITS SOURCE</div>
 </main>
 <script>
-const ctx=document.querySelector('canvas').getContext('2d');
-const points=[[775,159],[878,227],[989,159],[1101,227],[1213,159],[882,337],[1097,337],[1228,303],[713,290]];
-const edges=[[0,1],[1,2],[2,3],[3,4],[1,5],[3,6],[6,7],[8,1]];
-const labels=['TX 01','UTXO','TX 02','UTXO','TX 03','ADDRESS','ADDRESS','REVIEW','SOURCE'];
+const NS='http://www.w3.org/2000/svg';
 const names=['01 / ORIGINAL BYTES','02 / VERIFIED PREVOUTS','03 / PATTERN SIGNALS','04 / RECORDED DECISIONS'];
-function frame(time){const t=time/1000;ctx.clearRect(0,0,1400,520);ctx.lineWidth=1;
-  ctx.strokeStyle='#242116';for(let x=0;x<1400;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,520);ctx.stroke()}for(let y=0;y<520;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(1400,y);ctx.stroke()}
-  const g=ctx.createLinearGradient(560,0,1350,0);g.addColorStop(0,'#e3a62f00');g.addColorStop(.55,'#e3a62f33');g.addColorStop(1,'#e3a62f00');ctx.strokeStyle=g;ctx.beginPath();ctx.moveTo(600,410);ctx.lineTo(1330,410);ctx.stroke();
-  for(let i=0;i<edges.length;i++){const [a,b]=edges[i],p=points[a],q=points[b];ctx.strokeStyle=i<4?'#9b7738':'#494135';ctx.lineWidth=i<4?2:1;ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);ctx.stroke();const f=(t*.38+i*.16)%1;ctx.fillStyle=i<4?'#ffcc70':'#8aa2a5';ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=10;ctx.beginPath();ctx.arc(p[0]+(q[0]-p[0])*f,p[1]+(q[1]-p[1])*f,2.5,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0}
-  for(let i=0;i<points.length;i++){const [x,y]=points[i],r=i===7?19:i===5||i===6?12:17;ctx.fillStyle='#191710';ctx.strokeStyle=i===7?'#7fae63':i<5?'#e3a62f':'#696152';ctx.lineWidth=1.5;ctx.beginPath();if(i===1||i===3){ctx.moveTo(x,y-r);ctx.lineTo(x+r,y);ctx.lineTo(x,y+r);ctx.lineTo(x-r,y);ctx.closePath()}else ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.fillStyle=i===7?'#9db889':'#e3a62f';ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill();ctx.font='10px Plex,monospace';ctx.fillStyle='#c6b592';ctx.textAlign='center';ctx.fillText(labels[i],x,y+r+23);if(i<5){ctx.strokeStyle=`rgba(227,166,47,${.12+.08*Math.sin(t*2-i)})`;ctx.beginPath();ctx.arc(x,y,r+8+3*Math.sin(t*2-i),0,Math.PI*2);ctx.stroke()}}
-  ctx.textAlign='left';ctx.font='10px Plex,monospace';ctx.fillStyle='#8c8068';ctx.fillText('CREATES',793,184);ctx.fillText('SPENT BY',917,185);ctx.fillText('LOCKED TO',898,305);
-  const stage=Math.floor(t/3)%4;document.querySelectorAll('.pill').forEach((p,i)=>p.classList.toggle('active',i===stage));document.querySelector('#state').textContent=names[stage];
-}window.paint=frame;function animate(t){frame(t);requestAnimationFrame(animate)}document.fonts.ready.then(()=>new URLSearchParams(location.search).has('fixed')?frame(0):requestAnimationFrame(animate));
+const specs=[['create-1',0,'#f0cc87'],['spend-1',.7,'#f0cc87'],['create-2',1.4,'#f0cc87'],['spend-2',2.1,'#f0cc87'],['continue',2.8,'#f0cc87'],['branch-1',.5,'#a2c1ca'],['branch-2',1.9,'#a2c1ca'],['branch-3',3.1,'#a2c1ca']];
+const flows=specs.map(([id,delay,color])=>{const path=document.getElementById(id),length=path.getTotalLength();const group=document.createElementNS(NS,'g'),trail=document.createElementNS(NS,'path'),halo=document.createElementNS(NS,'circle'),dot=document.createElementNS(NS,'circle');trail.setAttribute('stroke',color);trail.setAttribute('stroke-width','2');trail.setAttribute('stroke-linecap','round');trail.setAttribute('fill','none');halo.setAttribute('r','4');halo.setAttribute('fill',color);halo.setAttribute('filter','url(#glow)');dot.setAttribute('r','1.8');dot.setAttribute('fill',color);group.append(trail,halo,dot);document.getElementById('particles').append(group);return {path,length,delay,group,trail,halo,dot}});
+const nodes=Array.from(document.querySelectorAll('.node-border'));
+function paint(time){const t=(time%12000)/1000;
+  flows.forEach(({path,length,delay,group,trail,halo,dot})=>{const progress=((t-delay+12)%6)/6;const distance=progress*length;const point=path.getPointAtLength(distance);const start=path.getPointAtLength(Math.max(0,distance-12));const alpha=Math.min(1,progress*9,(1-progress)*9);group.setAttribute('opacity',String(alpha));trail.setAttribute('d',`M${start.x} ${start.y}L${point.x} ${point.y}`);trail.setAttribute('opacity','.45');for(const particle of [halo,dot]){particle.setAttribute('cx',point.x);particle.setAttribute('cy',point.y)}halo.setAttribute('opacity','.55')});
+  nodes.forEach((node,i)=>{const energy=(1+Math.cos(2*Math.PI*(t/12-i/3)))/2;node.setAttribute('stroke',`rgb(${Math.round(101+energy*72)},${Math.round(89+energy*53)},${Math.round(56+energy*27)})`);node.setAttribute('stroke-width',String(1+energy*.35))});
+  const stage=Math.floor(t/3)%4;document.querySelectorAll('.pill').forEach((p,i)=>p.classList.toggle('active',i===stage));document.getElementById('state').textContent=names[stage];
+}
+window.paint=paint;function animate(t){paint(t);requestAnimationFrame(animate)}document.fonts.ready.then(()=>new URLSearchParams(location.search).has('fixed')?paint(0):requestAnimationFrame(animate));
 </script>
 </html>
