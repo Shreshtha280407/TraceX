@@ -11,6 +11,7 @@ export type InvestigationGroup = {
 export type InvestigationQueue = {
   policy: string; capacity: number; underlying_findings: number; investigation_groups: number; unresolved_groups: number;
   queued_groups: number; backlog_groups: number; filtered_total: number; scope: string; items: InvestigationGroup[];
+  grouping_coverage?: {state: "complete" | "incomplete"; grouped_findings: number; ungrouped_findings: number; scope: string; reason: string | null};
 };
 export type InvestigationDetail = InvestigationGroup & {
   grouping_version: string; procedure_sha256: string; active_generation: boolean; rationale: unknown;

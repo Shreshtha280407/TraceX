@@ -1,10 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { Modal } from "../components/Modal";
 import { NeoCard, StatTile, Badge, NoticeBanner, ErrorBanner } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, ApiError, type CaseWithRole, type InvestigationGroup, type ScoringMode } from "../lib/api";
+import { api, ApiError, type CaseWithRole, type InvestigationGroup, type InvestigationQueue, type ScoringMode } from "../lib/api";
+import { aggregateReviewCounts, REVIEW_COUNT_EVENTS } from "../lib/investigationCounts";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 import { getSessionStats } from "../lib/sessionStats";
 
@@ -21,10 +22,8 @@ export function InvestigatorOverview() {
   const { actor, token } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState<CaseWithRole[] | null>(null);
-  const [queue, setQueue] = useState<QueueItem[] | null>(null);
-  // Real open-finding count across assigned cases. The queue below is only the
-  // top few shown; its length is a display cap, never the workload.
-  const [openTotal, setOpenTotal] = useState<number | null>(null);
+  // Exact per-case summaries, independent of the eight-row preview and case names.
+  const [caseQueues, setCaseQueues] = useState<Record<string, InvestigationQueue | null>>({});
   const [activity, setActivity] = useState<(CaseEvent & { caseName: string })[]>([]);
   const [showNewCase, setShowNewCase] = useState(false);
   const [newCaseName, setNewCaseName] = useState("");
@@ -36,31 +35,34 @@ export function InvestigatorOverview() {
   const stats = getSessionStats();
 
   useEffect(() => {
-    api.listCases().then((result) => {
-      setCases(result.cases);
-      Promise.all(
-        result.cases.map((c) =>
-          api
-            .getInvestigationQueue(c.case_id)
-            .then((r) => r.items.map((f, queue_position) => ({ ...f, caseName: c.name, queue_position })))
-        )
-      ).then((lists) => setQueue(lists.flat().sort((a, b) =>
-        Number(b.status === "escalated") - Number(a.status === "escalated") ||
-        a.queue_position - b.queue_position || a.caseName.localeCompare(b.caseName) || a.group_id.localeCompare(b.group_id)).slice(0, 8)));
-      Promise.all(result.cases.map((c) => api.getInvestigationQueue(c.case_id).catch(() => null))).then((summaries) =>
-        setOpenTotal(summaries.every(s => s !== null) ? summaries.reduce((sum, s) => sum + (s?.unresolved_groups ?? 0), 0) : null)
-      );
-    });
+    api.listCases().then(result => setCases(result.cases));
   }, []);
 
   useEffect(() => {
     if (!cases) return;
+    let active = true;
+    const requests = new Map<string, number>();
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    async function refresh(caseId: string) {
+      const requestId = (requests.get(caseId) ?? 0) + 1;
+      requests.set(caseId, requestId);
+      const result = await api.getInvestigationQueue(caseId).catch(() => null);
+      if (active && requests.get(caseId) === requestId) setCaseQueues(prev => ({...prev, [caseId]: result}));
+    }
+    const schedule = (caseId: string) => {
+      clearTimeout(timers.get(caseId));
+      timers.set(caseId, setTimeout(() => refresh(caseId), 200));
+    };
+    cases.forEach(c => { void refresh(c.case_id); });
     const stops = cases.map((c) =>
-      streamCaseEvents(c.case_id, token, (event) =>
-        setActivity((prev) => [{ ...event, caseName: c.name }, ...prev].sort((a, b) => b.id - a.id).slice(0, 10))
-      )
+      streamCaseEvents(c.case_id, token, event => {
+        setActivity(prev => [{ ...event, caseName: c.name }, ...prev].sort((a, b) => b.id - a.id).slice(0, 10));
+        if (REVIEW_COUNT_EVENTS.has(event.event)) schedule(c.case_id);
+      })
     );
-    return () => stops.forEach((stop) => stop());
+    const onFocus = () => cases.forEach(c => schedule(c.case_id));
+    window.addEventListener("focus", onFocus);
+    return () => { active = false; stops.forEach(stop => stop()); timers.forEach(clearTimeout); window.removeEventListener("focus", onFocus); };
   }, [cases, token]);
 
   function openNewCase() {
@@ -89,7 +91,13 @@ export function InvestigatorOverview() {
     }
   }
 
-  const pendingReview = openTotal;
+  const totals = cases ? aggregateReviewCounts(cases.map(c => caseQueues[c.case_id] ?? null)) : null;
+  const queue = useMemo<QueueItem[] | null>(() => {
+    if (!cases || cases.some(c => !caseQueues[c.case_id])) return null;
+    return cases.flatMap(c => (caseQueues[c.case_id]?.items ?? []).map((f, queue_position) => ({...f, caseName: c.name, queue_position})))
+      .sort((a,b) => Number(b.status === "escalated") - Number(a.status === "escalated") || a.queue_position-b.queue_position || a.case_id.localeCompare(b.case_id) || a.group_id.localeCompare(b.group_id)).slice(0,8);
+  }, [cases, caseQueues]);
+  const pendingReview = totals?.queued ?? null;
   const highPriority = queue?.filter((f) => f.status === "escalated").length ?? null;
 
   return (
@@ -98,7 +106,7 @@ export function InvestigatorOverview() {
         <div>
           <h1>{timeOfDayGreeting()}, {actor}</h1>
           <p className="subtitle">
-            {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} investigation groups awaiting your review
+            {cases?.length ?? "…"} case{cases?.length === 1 ? "" : "s"} assigned · {pendingReview ?? "…"} groups in your review queues · {totals?.backlog ?? "…"} additional unresolved
           </p>
         </div>
         <button type="button" className="btn-mustard" onClick={openNewCase}>
@@ -150,7 +158,7 @@ export function InvestigatorOverview() {
 
       <div className="stat-grid">
         <StatTile label="Assigned cases" value={cases?.length ?? "—"} sub={cases ? `${cases.filter((c) => c.role === "case_lead").length} as case lead` : ""} />
-        <StatTile label="Pending review" value={pendingReview ?? "—"} sub="across all assigned cases" />
+        <StatTile label="In your review queues" value={pendingReview ?? "—"} sub={totals ? `${totals.backlog} additional unresolved · capacity 100 per case` : "loading grouped workload…"} />
         <StatTile label="Escalated groups" value={highPriority ?? "—"} sub="displayed queue; not calibrated risk" />
         <StatTile label="Reviewed this session" value={stats.findingsReviewed} sub={`${stats.reversedOnAppeal} reversed on appeal`} />
       </div>
@@ -163,7 +171,8 @@ export function InvestigatorOverview() {
               <thead>
                 <tr>
                   <th>Case</th>
-                  <th>Open findings</th>
+                  <th>Queued groups</th>
+                  <th>Additional unresolved</th>
                   <th>Role</th>
                 </tr>
               </thead>
@@ -171,7 +180,8 @@ export function InvestigatorOverview() {
                 {(cases ?? []).map((c) => (
                   <tr key={c.case_id} className="clickable" onClick={() => navigate(`/cases/${c.case_id}/dashboard`)}>
                     <td>{c.name}</td>
-                    <td>{queue?.filter((f) => f.caseName === c.name).length ?? "—"}</td>
+                    <td>{caseQueues[c.case_id]?.queued_groups ?? "—"}</td>
+                    <td>{caseQueues[c.case_id]?.backlog_groups ?? "—"}</td>
                     <td>
                       <Badge tone="muted">{c.role}</Badge>
                     </td>
@@ -182,11 +192,13 @@ export function InvestigatorOverview() {
           </NeoCard>
 
           <NeoCard>
-            <h2>Pending Review Queue</h2>
+            <h2>Investigation Review Queue — preview</h2>
+            {cases?.some(c => caseQueues[c.case_id] === null) && <p role="alert">Grouped workload is unavailable for a case. Check that the running API/worker uses the current release; raw finding counts are not review tasks.</p>}
+            {cases?.some(c => caseQueues[c.case_id]?.grouping_coverage?.state === "incomplete") && <p role="alert">Some underlying observations await grouping. Published queue counts are partial; check investigation_grouping before concluding review is complete.</p>}
             {queue === null ? (
               <p className="coverage-note">Loading…</p>
             ) : queue.length === 0 ? (
-              <p className="coverage-note">Nothing awaiting review right now.</p>
+              <p className="coverage-note">No published groups in this preview. Check grouping coverage and each case's backlog.</p>
             ) : (
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 {queue.map((item) => (
@@ -242,8 +254,8 @@ export function InvestigatorOverview() {
           </NeoCard>
           {pendingReview !== null && pendingReview > 0 && (
             <NoticeBanner>
-              You have {pendingReview} unresolved investigation group{pendingReview === 1 ? "" : "s"} awaiting review across{" "}
-              {new Set(queue?.map((q) => q.caseName)).size} case(s).
+              You have {pendingReview} queued investigation group{pendingReview === 1 ? "" : "s"} across{" "}
+              {cases?.filter(c => (caseQueues[c.case_id]?.queued_groups ?? 0) > 0).length} case(s), with {totals?.backlog} additional unresolved groups accessible in the backlog.
             </NoticeBanner>
           )}
         </div>

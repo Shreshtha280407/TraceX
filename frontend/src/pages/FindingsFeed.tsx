@@ -115,16 +115,14 @@ export function FindingsFeed() {
           </select></label>
           {findingsError && <p role="alert">Findings could not be loaded: {findingsError}. Check analysis status and API readiness.</p>}
         </div>
-        {response && (
-          <div className="ff-counters">
-            <span>Unreviewed findings <b>{openTotal.toLocaleString()}</b></span>
-            <span>Underlying findings <b>{total.toLocaleString()}</b></span>
-          </div>
-        )}
       </div>
 
       {caseId && <InvestigationQueue caseId={caseId} />}
       <h2>Underlying observations — individual history retained</h2>
+      {response && <p className="coverage-note" data-testid="underlying-observation-counts">
+        {total.toLocaleString()} underlying findings · {openTotal.toLocaleString()} without an individual decision.
+        These are detector observations, not {openTotal.toLocaleString()} separate human-review tasks. Group decisions deliberately do not overwrite individual histories.
+      </p>}
       {truncated && (
         <p className="coverage-note" style={{ marginBottom: 10 }}>
           Showing {findings.length.toLocaleString()} of {total.toLocaleString()} findings. Families are independently ranked

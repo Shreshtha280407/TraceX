@@ -3,7 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
 import { useAuth } from "../lib/auth";
-import { api, type CaseDetail, type FindingsSummary, type InvestigationQueue } from "../lib/api";
+import { api, type CaseDetail } from "../lib/api";
+import { useInvestigationQueue } from "../lib/useInvestigationQueue";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -27,16 +28,12 @@ export function CaseDashboard() {
   const [events, setEvents] = useState<CaseEvent[]>([]);
   // Real per-case counts. The findings list below is capped at a page, so its
   // length is a display limit and must never be reported as the workload.
-  const [summary, setSummary] = useState<FindingsSummary | null>(null);
-  const [groups, setGroups] = useState<InvestigationQueue | null>(null);
+  const { queue: groups, error: groupError } = useInvestigationQueue(caseId);
 
   useEffect(() => {
     if (!caseId) return;
     setCaseDetail(null);
-    setSummary(null);
     api.getCase(caseId).then(setCaseDetail);
-    api.getFindingsSummary(caseId).then(setSummary).catch(() => setSummary(null));
-    api.getInvestigationQueue(caseId).then(setGroups).catch(() => setGroups(null));
   }, [caseId]);
 
   useEffect(() => {
@@ -50,8 +47,7 @@ export function CaseDashboard() {
   const trackedJobs = useTrackedJobs(caseId);
   const activeJobs = trackedJobs.filter((job) => ["queued", "running", "checkpointed"].includes(job.state));
   const transactionsIngested = trackedJobs.length > 0 ? trackedJobs.reduce((sum, job) => sum + job.rows_accepted, 0) : null;
-  const openFindings = summary?.open ?? null;
-  const pendingReviewCount = groups?.unresolved_groups ?? null;
+  const pendingReviewCount = groups?.queued_groups ?? null;
   // The queue list itself is still the capped page — it is a "top N to work on
   // next" list, labelled as such, not the count.
   const pendingReview = groups?.items ?? null;
@@ -87,14 +83,14 @@ export function CaseDashboard() {
           sub={activeJobs.length ? "in progress" : "backpressure clear"}
         />
         <StatTile
-          label="Open findings"
-          value={openFindings?.toLocaleString() ?? "—"}
-          sub={summary ? `of ${summary.total.toLocaleString()} in this case` : "loading…"}
+          label="Underlying observations"
+          value={groups?.underlying_findings.toLocaleString() ?? "—"}
+          sub="retained evidence, not independent review tasks"
         />
         <StatTile
-          label="Pending human review"
+          label="In your review queue"
           value={pendingReviewCount?.toLocaleString() ?? "—"}
-          sub="unresolved investigation groups, including escalated"
+          sub={groups ? `${groups.backlog_groups.toLocaleString()} additional unresolved groups · capacity ${groups.capacity}` : "loading grouped workload…"}
         />
         <StatTile
           label="Model status"
@@ -105,12 +101,14 @@ export function CaseDashboard() {
 
       <div className="two-col">
         <NeoCard>
-          <h2>Pending Investigation Groups</h2>
+          <h2>Investigation Review Queue</h2>
+          {groupError && <p role="alert">Group queue unavailable: {groupError}. Restart an outdated local API/worker with the current release; do not use individual finding counts as review tasks.</p>}
           {groups && <p className="coverage-note">{groups.underlying_findings} findings / {groups.investigation_groups} groups / {groups.queued_groups} queued / {groups.backlog_groups} additional unresolved</p>}
+          {groups?.grouping_coverage?.state === "incomplete" && <p role="alert">Grouping incomplete: {groups.grouping_coverage.ungrouped_findings.toLocaleString()} observations await group membership. {groups.grouping_coverage.reason}</p>}
           {pendingReview === null ? (
             <p className="coverage-note">Loading…</p>
           ) : pendingReview.length === 0 ? (
-            <p className="coverage-note">Nothing awaiting human review for this case.</p>
+            <p className="coverage-note">No groups currently published in this queue. Check incomplete grouping and the backlog before concluding review is complete.</p>
           ) : (
             <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
               {pendingReview.slice(0, 10).map((item) => (

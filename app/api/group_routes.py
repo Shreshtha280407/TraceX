@@ -69,7 +69,17 @@ def queue(case_id: str, capacity: int = Query(100, ge=0, le=10000), limit: int =
     active = select(InvestigationGroup).join(InvestigationRun).where(InvestigationRun.case_id == case_id,
         InvestigationRun.active.is_(True), InvestigationRun.state == "complete")
     total = session.scalar(select(func.count()).select_from(active.subquery()))
-    underlying = session.scalar(select(func.count()).select_from(FindingRecord).where(FindingRecord.case_id == case_id))
+    # A pre-grouping import or failed/in-flight generation must not look like
+    # a successfully empty review workload. Count distinct covered findings by
+    # indexed membership existence, not by materializing evidence or summing
+    # historical generations (which would double-count replacements).
+    covered = select(InvestigationMember.finding_id).join(InvestigationGroup).join(InvestigationRun).where(
+        InvestigationMember.finding_id == FindingRecord.id, InvestigationRun.case_id == case_id,
+        InvestigationRun.active.is_(True), InvestigationRun.state == "complete").exists()
+    underlying, grouped = session.execute(select(func.count(), func.coalesce(func.sum(
+        sql_case((covered, 1), else_=0)), 0)).select_from(FindingRecord).where(
+        FindingRecord.case_id == case_id)).one()
+    ungrouped = underlying - grouped
     ranked = queue_query(case_id)
     unresolved = session.scalar(select(func.count()).select_from(ranked))
     order = (ranked.c.band, ranked.c.family_rank, ranked.c.family, ranked.c.id)
@@ -90,6 +100,10 @@ def queue(case_id: str, capacity: int = Query(100, ge=0, le=10000), limit: int =
     return {"policy": QUEUE_POLICY, "priority_is_probability": False, "capacity": capacity,
             "underlying_findings": underlying, "investigation_groups": total, "unresolved_groups": unresolved,
             "queued_groups": min(capacity, unresolved), "backlog_groups": max(0, unresolved - capacity),
+            "grouping_coverage": {"state": "incomplete" if ungrouped else "complete",
+                "grouped_findings": underlying - ungrouped, "ungrouped_findings": ungrouped,
+                "scope": "Currently stored findings only; not a declaration of analysis completion",
+                "reason": "Some findings have no membership in a published active generation. Check investigation_grouping; older imports require authorized analysis retry." if ungrouped else None},
             "filtered_total": filtered, "offset": offset, "scope": scope,
             "items": [view(row) for row in session.scalars(query.offset(offset).limit(limit))]}
 

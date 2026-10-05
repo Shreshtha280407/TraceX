@@ -5,12 +5,20 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 const base = process.env.TRACEX_E2E_BASE ?? "http://127.0.0.1:8770";
+// A Vite frontend and local API may be separate origins. Single-origin appliance
+// checks remain the default; declaring a local API is not network-isolation proof.
+const apiBase = process.env.TRACEX_E2E_API_BASE ?? base;
+if (new URL(apiBase).origin !== new URL(base).origin && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(apiBase).hostname)) {
+  throw new Error("Separate-origin development testing requires an explicitly local API, not an external runtime service");
+}
+const allowedOrigins = new Set([new URL(base).origin, new URL(apiBase).origin]);
 const source = process.env.TRACEX_E2E_SOURCE;
 const missingVariant = process.env.TRACEX_E2E_EXPECT_MISSING === "1";
 if (!source) throw new Error("TRACEX_E2E_SOURCE must name a real unfamiliar NDJSON demo file");
 const output = process.env.TRACEX_E2E_OUTPUT ?? path.resolve("../var/browser-runs", `acceptance-${Date.now()}`);
 await mkdir(output, { recursive: true });
-const report = { base, source, checks: [], externalRequests: [], consoleErrors: [], httpErrors: [] };
+const report = { base, api_base: apiBase, source, checks: [], externalRequests: [], consoleErrors: [], httpErrors: [],
+  network_scope: apiBase === base ? "Single-origin appliance browser checks" : "Local development frontend/API origins; not native-Linux appliance isolation proof" };
 const check = (name, ok, detail = null) => {
   report.checks.push({ name, ok, detail });
   console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
@@ -21,7 +29,7 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1000
 const page = await context.newPage();
 await context.route("**/*", async (route) => {
   const url = route.request().url();
-  if (/^https?:/.test(url) && new URL(url).origin !== new URL(base).origin) {
+    if (/^https?:/.test(url) && !allowedOrigins.has(new URL(url).origin)) {
     report.externalRequests.push(url);
     await route.abort();
   } else await route.continue();
@@ -30,7 +38,7 @@ page.on("pageerror", (error) => report.consoleErrors.push(error.message));
 page.on("response", (response) => { if (response.status() >= 400) report.httpErrors.push({ status: response.status(), url: response.url() }); });
 let token;
 async function api(endpoint, options = {}) {
-  const response = await context.request.fetch(`${base}/v1${endpoint}`, {
+  const response = await context.request.fetch(`${apiBase}/v1${endpoint}`, {
     ...options, headers: { Authorization: `Bearer ${token}`, ...(options.headers ?? {}) }, timeout: 120000,
   });
   if (!response.ok()) throw new Error(`${response.status()} ${endpoint}: ${(await response.text()).slice(0, 300)}`);
@@ -89,6 +97,12 @@ try {
   check("receipt-approved address activity is finalized", activity.total > 0 && !activity.provisional);
   const findings = await api(`/cases/${id}/findings?limit=200`);
   check("unfamiliar data has reviewable findings", findings.findings.length > 0);
+  const workload = await api(`/cases/${id}/investigation-queue?capacity=100`);
+  await page.goto(`${base}/cases/${id}/dashboard`);
+  await page.locator(".stat-grid").getByText(`${workload.backlog_groups.toLocaleString()} additional unresolved groups · capacity 100`, {exact:true}).waitFor();
+  const stats = await page.locator(".stat-grid").textContent();
+  check("dashboard separates the grouped queue from raw open observations", stats.includes("In your review queue") && !stats.includes("Open findings") && stats.includes(`${workload.backlog_groups.toLocaleString()} additional unresolved groups`));
+  check("actual import has complete published grouping coverage", workload.grouping_coverage?.state === "complete" && workload.grouping_coverage.grouped_findings === findings.total);
   await page.goto(`${base}/cases/${id}/findings`);
   await page.getByRole("heading", { name: "Separate ML transaction triage queue" }).waitFor();
   const capacity = page.getByLabel("Transactions to queue");
@@ -232,23 +246,23 @@ try {
   const download = await downloadEvent;
   await download.saveAs(path.join(output, "ui-findings-download.json"));
   check("actual UI export download succeeds", (await readFile(path.join(output, "ui-findings-download.json"))).length > 0);
-  const outsider = await context.request.post(`${base}/v1/auth/signup`, {data: {
+  const outsider = await context.request.post(`${apiBase}/v1/auth/signup`, {data: {
     display_name: `group-outsider-${Date.now()}`, password: "disposable-unauthorized-browser-password",
   }});
   const outsiderToken = (await outsider.json()).token;
   for (const suffix of ["", "/members", "/reviews", "/export", "/subjects", "/replacements"]) {
-    const denied = await context.request.get(`${base}/v1/investigation-groups/${group.group_id}${suffix}`, {
+    const denied = await context.request.get(`${apiBase}/v1/investigation-groups/${group.group_id}${suffix}`, {
       headers: {Authorization: `Bearer ${outsiderToken}`},
     });
     check(`browser cross-case group access denied ${suffix || "detail"}`, denied.status() === 404);
   }
-  const deniedDecision = await context.request.post(`${base}/v1/investigation-groups/${group.group_id}/reviews`, {
+  const deniedDecision = await context.request.post(`${apiBase}/v1/investigation-groups/${group.group_id}/reviews`, {
     headers: {Authorization: `Bearer ${outsiderToken}`}, data: {
       expected_review_version: 2, disposition: "confirmed", reason: "Unauthorized check; must never be recorded",
     },
   });
   check("browser cross-case group decision denied", deniedDecision.status() === 404);
-  const removed = await context.request.post(`${base}/v1/findings/${finding.finding_id}/chat`, { headers: { Authorization: `Bearer ${token}` }, data: {} });
+  const removed = await context.request.post(`${apiBase}/v1/findings/${finding.finding_id}/chat`, { headers: { Authorization: `Bearer ${token}` }, data: {} });
   check("removed language-model endpoint does not exist", removed.status() === 404);
   check("browser requested no external resources", report.externalRequests.length === 0, report.externalRequests);
   check("browser raised no runtime JavaScript exceptions", report.consoleErrors.length === 0, report.consoleErrors);

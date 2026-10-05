@@ -169,3 +169,35 @@ def test_failed_materialization_is_atomic_and_required_stage_retries(system,monk
     job=client.get(f"/v1/jobs/{job_id}",headers=headers).json()
     assert job["state"]=="completed"
     assert any(s["name"]=="investigation_grouping" and s["status"]=="complete" for s in job["analysis"]["stages"])
+
+
+def test_queue_coverage_does_not_treat_legacy_or_unpublished_groups_as_empty_review(system, monkeypatch):
+    client, sessions, case, headers, _, result, _ = fixture_groups(system, monkeypatch)
+    endpoint = f"/v1/cases/{case}/investigation-queue"
+    complete = client.get(endpoint, headers=headers).json()
+    assert complete["grouping_coverage"]["state"] == "complete"
+    assert complete["grouping_coverage"]["grouped_findings"] == complete["underlying_findings"]
+    assert complete["grouping_coverage"]["ungrouped_findings"] == 0
+    with sessions() as session:
+        run = session.get(InvestigationRun, result["run_id"])
+        run.state = "building"
+        session.commit()
+    incomplete = client.get(endpoint, headers=headers).json()
+    assert incomplete["queued_groups"] == 0
+    assert incomplete["grouping_coverage"]["state"] == "incomplete"
+    assert incomplete["grouping_coverage"]["ungrouped_findings"] == complete["underlying_findings"]
+    assert "authorized analysis retry" in incomplete["grouping_coverage"]["reason"]
+    with sessions() as session:
+        run = session.get(InvestigationRun, result["run_id"])
+        run.state = "complete"
+        run.active = False
+        session.commit()
+    legacy = client.get(endpoint, headers=headers).json()
+    assert legacy["grouping_coverage"]["ungrouped_findings"] == complete["underlying_findings"]
+    with sessions() as session:
+        session.get(InvestigationRun, result["run_id"]).active = True
+        session.commit()
+    restored = client.get(endpoint, headers=headers).json()
+    assert restored["grouping_coverage"] == complete["grouping_coverage"]
+    assert restored["investigation_groups"] == complete["investigation_groups"]
+    assert client.get(endpoint, headers={"X-TraceX-Actor": "outsider"}).status_code == 404

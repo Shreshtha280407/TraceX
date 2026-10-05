@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
+import sqlalchemy
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -128,6 +129,38 @@ def _upload(client: TestClient, *, case_id: str, headers: dict, key: str) -> tup
     )
     assert response.status_code == 202, response.text
     return response.json()["job_id"], payload
+
+
+def test_worker_retries_transient_deadlock_before_failing_job(tmp_path: Path, monkeypatch) -> None:
+    client, sessions, settings = _test_app(tmp_path, monkeypatch)
+    headers = {"X-TraceX-Actor": "phase6-deadlock"}
+    try:
+        case_id = client.post("/v1/cases", headers=headers, json={"name": "Phase 6 deadlock", "synthetic": True}).json()["case_id"]
+        _upload(client, case_id=case_id, headers=headers, key="deadlock-retry")
+
+        calls = {"count": 0}
+
+        def flaky_ingest(session, settings, job, source):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise sqlalchemy.exc.OperationalError(
+                    "deadlock detected",
+                    None,
+                    None,
+                    orig=RuntimeError("simulated deadlock"),
+                )
+
+        monkeypatch.setattr(runner, "ingest_source", flaky_ingest)
+        assert runner.process_one("worker-deadlock") is True
+        assert calls["count"] == 2, "deadlock retry should reattempt the job before reporting failure"
+
+        with sessions() as session:
+            job = session.scalar(
+                select(ImportJob).where(ImportJob.case_id == case_id).order_by(ImportJob.created_at.desc())
+            )
+            assert job.state == "queued" or job.state == "running", job.state
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_kill_mid_fragment_write_before_atomic_rename_then_retry_reaches_identical_canonical_counts(
