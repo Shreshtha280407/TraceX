@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { aggregateReviewCounts, reviewCounts, REVIEW_COUNT_EVENTS } from '../src/lib/investigationCounts.ts';
+import { aggregateReviewCounts, pendingReviewQueueCount, reviewCounts, REVIEW_COUNT_EVENTS } from '../src/lib/investigationCounts.ts';
 
 const summary = (overrides = {}) => ({ underlying_findings: 23000, investigation_groups: 180,
   unresolved_groups: 180, queued_groups: 100, backlog_groups: 80, items: [{ group_id: 'preview-one' }],
@@ -27,6 +27,20 @@ test('terminal import and independent group decisions refresh the workload; raw 
   assert.ok(REVIEW_COUNT_EVENTS.has('import.completed'));
   assert.ok(REVIEW_COUNT_EVENTS.has('import.failed'));
   assert.ok(REVIEW_COUNT_EVENTS.has('investigation_group.reviewed'));
+  assert.ok(REVIEW_COUNT_EVENTS.has('analysis.grouping_queued'));
   assert.ok(!REVIEW_COUNT_EVENTS.has('finding.reviewed'));
   assert.ok(!REVIEW_COUNT_EVENTS.has('batch.committed'));
+});
+
+test('a legacy ungrouped case is not zero pending reviews, and real queues stay bounded', () => {
+  assert.equal(pendingReviewQueueCount(null), null);
+  assert.equal(pendingReviewQueueCount(summary({queued_groups: 0, capacity: 100,
+    grouping_coverage: {state: 'incomplete', ungrouped_findings: 23000}})), null);
+  assert.equal(pendingReviewQueueCount(summary({queued_groups: 0, capacity: 100,
+    grouping_coverage: {state: 'complete', ungrouped_findings: 0, active_jobs: 1}})), null);
+  for (const queued_groups of [0, 1, 42, 100]) {
+    assert.equal(pendingReviewQueueCount(summary({queued_groups, capacity: 100})), queued_groups);
+  }
+  assert.equal(pendingReviewQueueCount(summary({queued_groups: 0, capacity: 0,
+    grouping_coverage: {state: 'incomplete', ungrouped_findings: 23000}})), 0);
 });

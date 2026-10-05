@@ -16,6 +16,7 @@ await context.addInitScript(() => localStorage.setItem('tracex.auth', JSON.strin
 let unresolved = 180;
 let incomplete = false;
 let unavailable = false;
+let recoveryRequests = 0;
 const streams = [];
 const cases = ['counter-one', 'counter-two'].map(case_id => ({case_id, name: 'Same display name', role: 'case_lead', synthetic: true, created_at: '2026-01-01T00:00:00Z'}));
 const counts = (caseId, capacity, offset) => {
@@ -27,6 +28,7 @@ const counts = (caseId, capacity, offset) => {
     unresolved_groups, queued_groups, backlog_groups: Math.max(0, unresolved_groups-capacity), filtered_total: queued_groups,
     items: queued_groups && !offset ? [group] : [], scope: 'queue', grouping_coverage: {
       state: incomplete ? 'incomplete' : 'complete', grouped_findings: incomplete ? 0 : 23000, ungrouped_findings: incomplete ? 23000 : 0,
+      active_jobs: 0,
       reason: incomplete ? 'Older import requires authorized analysis retry.' : null}};
 };
 await context.route('**/v1/**', async route => {
@@ -36,6 +38,13 @@ await context.route('**/v1/**', async route => {
   if (endpoint.endsWith('/events')) { streams.push(route); return; }
   if (endpoint === '/cases') return json({cases});
   const caseId = endpoint.split('/')[2];
+  if (endpoint.endsWith('/investigation-queue/build')) {
+    check('legacy recovery is an explicit POST, not a queue GET side effect', route.request().method() === 'POST');
+    recoveryRequests += 1;
+    incomplete = false;
+    unresolved = 42;
+    return json({state: 'queued', grouping_only: true, jobs: []});
+  }
   if (endpoint.endsWith('/investigation-queue')) {
     if (unavailable) return route.fulfill({status: 404, json: {detail: 'Not Found'}});
     return json(counts(caseId, Number(url.searchParams.get('capacity') ?? 100), Number(url.searchParams.get('offset') ?? 0)));
@@ -76,6 +85,16 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.getByRole('alert').filter({hasText: /Grouping incomplete: 23,000/}).waitFor();
   check('unmaterialized older imports do not silently appear fully reviewed', true);
+  await page.goto(`${base}/cases/counter-one/dashboard`);
+  await page.getByText('Not ready', {exact: true}).waitFor();
+  check('dashboard does not report zero pending reviews when groups are missing', (await page.locator('.stat-grid').textContent()).includes('Not ready'));
+  await page.getByRole('button', {name: 'Generate review groups', exact: true}).click();
+  await page.locator('.stat-grid').getByText('42', {exact: true}).waitFor();
+  check('group-only recovery refreshes the real smaller queue, not a hard-coded 100', recoveryRequests === 1);
+  unresolved = 0;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.getByText('23000 findings / 180 groups / 0 queued / 0 additional unresolved', {exact: true}).waitFor();
+  check('a truly resolved grouped case still reports zero pending groups', (await page.locator('.stat-grid').textContent()).includes('In your review queue0'));
   unavailable = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.getByRole('alert').filter({hasText: /Group queue unavailable/}).waitFor();

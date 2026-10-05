@@ -2,13 +2,15 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useInvestigationQueue } from "../lib/useInvestigationQueue";
 import { NeoCard } from "./primitives";
+import { GroupQueueRepair } from "./GroupQueueRepair";
+import { pendingReviewQueueCount } from "../lib/investigationCounts";
 
 export function InvestigationQueue({ caseId }: { caseId: string }) {
   const [capacity, setCapacity] = useState(100);
   const [offset, setOffset] = useState(0);
   const [scope, setScope] = useState("queue");
   const [status, setStatus] = useState("");
-  const { queue, error } = useInvestigationQueue(caseId, capacity, offset, scope, status);
+  const { queue, error, refresh } = useInvestigationQueue(caseId, capacity, offset, scope, status);
   const navigate = useNavigate();
   return <NeoCard>
     <h2>Investigation review queue</h2>
@@ -24,9 +26,10 @@ export function InvestigationQueue({ caseId }: { caseId: string }) {
     <p className="coverage-note">One task reviews one stated pattern episode, not every member transaction. Queue priority is not a probability. Individual finding history is retained below.</p>
     {error && <p role="alert">Group queue unavailable: {error}. Check that the local API and worker run the current grouped-review release; inspect investigation_grouping. Individual alert counts are not substituted for review tasks.</p>}
     {queue && <>
-      <p data-testid="review-workload">{queue.queued_groups.toLocaleString()} groups in your current review queue · {queue.backlog_groups.toLocaleString()} additional unresolved groups</p>
+      <p data-testid="review-workload">{pendingReviewQueueCount(queue) === null ? "Pending group count not ready — generate review groups" : `${queue.queued_groups.toLocaleString()} groups in your current review queue · ${queue.backlog_groups.toLocaleString()} additional unresolved groups`}</p>
       <p data-testid="group-counts">{queue.underlying_findings.toLocaleString()} underlying findings / {queue.investigation_groups.toLocaleString()} investigation groups / {queue.unresolved_groups.toLocaleString()} unresolved / {queue.queued_groups.toLocaleString()} in your review queue / {queue.backlog_groups.toLocaleString()} additional unresolved groups</p>
       {queue.grouping_coverage?.state === "incomplete" && <p role="alert">Grouping incomplete: {queue.grouping_coverage.ungrouped_findings.toLocaleString()} underlying observations are not grouped yet. These are not extra independent review tasks. {queue.grouping_coverage.reason}</p>}
+      <GroupQueueRepair key={caseId} caseId={caseId} queue={queue} onRefresh={refresh} />
       {!queue.items.length && <p className="coverage-note">No published groups in this view. This does not certify analysis completion or an empty backlog.</p>}
       {queue.items.map(g => <p key={g.group_id}><button className="btn-ghost" type="button" onClick={() => navigate(`/investigations/${g.group_id}`)}>
         {g.family} · {g.member_count} findings · {g.status}</button><br />{g.window_start} — {g.window_end}</p>)}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -463,6 +463,7 @@ class AnalysisRequest(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("import_jobs.id", ondelete="CASCADE"), primary_key=True)
     attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
     refresh_analytics: Mapped[bool] = mapped_column(Boolean, default=False)
+    grouping_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     fulfilled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

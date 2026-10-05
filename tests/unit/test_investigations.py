@@ -186,7 +186,7 @@ def test_queue_coverage_does_not_treat_legacy_or_unpublished_groups_as_empty_rev
     assert incomplete["queued_groups"] == 0
     assert incomplete["grouping_coverage"]["state"] == "incomplete"
     assert incomplete["grouping_coverage"]["ungrouped_findings"] == complete["underlying_findings"]
-    assert "authorized analysis retry" in incomplete["grouping_coverage"]["reason"]
+    assert "Generate review groups" in incomplete["grouping_coverage"]["reason"]
     with sessions() as session:
         run = session.get(InvestigationRun, result["run_id"])
         run.state = "complete"

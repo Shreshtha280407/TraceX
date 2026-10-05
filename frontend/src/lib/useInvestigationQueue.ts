@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type InvestigationQueue } from "./api";
 import { useAuth } from "./auth";
 import { REVIEW_COUNT_EVENTS } from "./investigationCounts";
@@ -12,6 +12,7 @@ export function useInvestigationQueue(caseId: string | undefined, capacity = 100
   const [revision, setRevision] = useState(0);
   const key = JSON.stringify([caseId, capacity, offset, scope, status]);
   const [result, setResult] = useState<{key: string; queue: InvestigationQueue | null; error: string}>({key: "", queue: null, error: ""});
+  const refresh = useCallback(() => setRevision(n => n + 1), []);
   useEffect(() => {
     if (!caseId) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -28,6 +29,14 @@ export function useInvestigationQueue(caseId: string | undefined, capacity = 100
     }).catch(err => { if (active) setResult({key, queue: null, error: String(err)}); });
     return () => { active = false; };
   }, [caseId, capacity, offset, scope, status, revision, key]);
+  const current = result.key === key ? result : {queue: null, error: ""};
+  useEffect(() => {
+    // Finite work-state polling supplements SSE during group recovery. Stop
+    // when jobs finish/fail, on request errors, or when the case/page changes.
+    if (!(current.queue?.grouping_coverage?.active_jobs ?? 0)) return;
+    const timer = setTimeout(refresh, 3000);
+    return () => clearTimeout(timer);
+  }, [current.queue, refresh]);
   // Do not show a previous case/page's counts while its replacement is loading.
-  return result.key === key ? result : {queue: null, error: ""};
+  return {...current, refresh};
 }

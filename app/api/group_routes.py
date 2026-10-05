@@ -13,17 +13,23 @@ from app.db import get_session
 from app.engine.evidence import reference_status, structured_evidence
 from app.engine.investigations import POLICY, QUEUE_POLICY, UNRESOLVED
 from app.events import append_event
+from app.jobs.grouping import latest_pending_request, published_membership
+from app.jobs.service import job_view
 from app.models import (
+    AnalysisRequest,
     AuditRecord,
     CaseMembership,
     EvidenceSource,
     FindingRecord,
+    GraphSnapshot,
+    ImportJob,
     InvestigationGroup,
     InvestigationMember,
     InvestigationReplacement,
     InvestigationReview,
     InvestigationRun,
     InvestigationSubject,
+    Snapshot,
     User,
 )
 
@@ -73,13 +79,13 @@ def queue(case_id: str, capacity: int = Query(100, ge=0, le=10000), limit: int =
     # a successfully empty review workload. Count distinct covered findings by
     # indexed membership existence, not by materializing evidence or summing
     # historical generations (which would double-count replacements).
-    covered = select(InvestigationMember.finding_id).join(InvestigationGroup).join(InvestigationRun).where(
-        InvestigationMember.finding_id == FindingRecord.id, InvestigationRun.case_id == case_id,
-        InvestigationRun.active.is_(True), InvestigationRun.state == "complete").exists()
+    covered = published_membership(case_id)
     underlying, grouped = session.execute(select(func.count(), func.coalesce(func.sum(
         sql_case((covered, 1), else_=0)), 0)).select_from(FindingRecord).where(
         FindingRecord.case_id == case_id)).one()
     ungrouped = underlying - grouped
+    active_jobs = session.scalar(select(func.count()).select_from(ImportJob).where(
+        ImportJob.case_id == case_id, ImportJob.state.in_({"queued", "running", "checkpointed"})))
     ranked = queue_query(case_id)
     unresolved = session.scalar(select(func.count()).select_from(ranked))
     order = (ranked.c.band, ranked.c.family_rank, ranked.c.family, ranked.c.id)
@@ -102,10 +108,56 @@ def queue(case_id: str, capacity: int = Query(100, ge=0, le=10000), limit: int =
             "queued_groups": min(capacity, unresolved), "backlog_groups": max(0, unresolved - capacity),
             "grouping_coverage": {"state": "incomplete" if ungrouped else "complete",
                 "grouped_findings": underlying - ungrouped, "ungrouped_findings": ungrouped,
+                "active_jobs": active_jobs,
                 "scope": "Currently stored findings only; not a declaration of analysis completion",
-                "reason": "Some findings have no membership in a published active generation. Check investigation_grouping; older imports require authorized analysis retry." if ungrouped else None},
+                "reason": "Some findings have no membership in a published active generation. Generate review groups from the completed snapshot; no transaction reimport or ML rerun is required." if ungrouped else None},
             "filtered_total": filtered, "offset": offset, "scope": scope,
             "items": [view(row) for row in session.scalars(query.offset(offset).limit(limit))]}
+
+
+@router.post("/cases/{case_id}/investigation-queue/build", status_code=202)
+def build_queue(case_id: str, limit: int = Query(20, ge=1, le=20),
+                user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Queue bounded, idempotent group-only recovery; GET never mutates a case."""
+    require_case_member(case_id, user, session)
+    missing = select(FindingRecord.snapshot_id).where(
+        FindingRecord.case_id == case_id, ~published_membership(case_id)).distinct()
+    jobs = list(session.scalars(select(ImportJob).join(Snapshot, Snapshot.id == ImportJob.snapshot_id)
+        .join(GraphSnapshot, GraphSnapshot.snapshot_id == Snapshot.id).where(
+            ImportJob.case_id == case_id, Snapshot.case_id == case_id, Snapshot.job_id == ImportJob.id,
+            Snapshot.state == "complete", Snapshot.provisional.is_(False), GraphSnapshot.case_id == case_id,
+            GraphSnapshot.state == "complete", ImportJob.snapshot_id.in_(missing))
+        .order_by(ImportJob.created_at, ImportJob.id).limit(limit).with_for_update(of=ImportJob)))
+    queued = []
+    for job in jobs:
+        pending = latest_pending_request(session, job)
+        # Requests for the queued next attempt are not visible to the worker
+        # until claim_next_job increments attempt, but repeated POSTs reuse them.
+        next_request = session.get(AnalysisRequest, (job.id, job.attempt + 1))
+        group_intent = next_request or pending
+        if job.state in {"queued", "running", "checkpointed"}:
+            if group_intent is not None and group_intent.grouping_only and not group_intent.fulfilled:
+                queued.append(job)
+            continue
+        if job.state != "completed" and not (job.state == "failed" and pending and pending.grouping_only):
+            continue
+        session.add(AnalysisRequest(job_id=job.id, attempt=job.attempt + 1,
+                                    grouping_only=True, refresh_analytics=False))
+        job.state, job.stage = "queued", "queued"
+        job.lease_owner = job.lease_expires_at = job.error_code = job.error_detail = job.completed_at = None
+        append_event(session, case_id=case_id, event_type="analysis.grouping_queued", stage="queued", job=job,
+                     payload={"grouping_only": True, "snapshot_id": job.snapshot_id,
+                              "no_reimport_or_rescoring": True})
+        session.add(AuditRecord(case_id=case_id, actor_id=user.id, action="analysis.grouping_queued",
+                                target_type="import_job", target_id=job.id,
+                                detail={"snapshot_id": job.snapshot_id, "grouping_only": True}))
+        queued.append(job)
+    if not queued and session.scalar(select(FindingRecord.id).where(
+            FindingRecord.case_id == case_id, ~published_membership(case_id)).limit(1)) is not None:
+        raise HTTPException(409, "No completed snapshot is ready for group-only recovery. Allow active analysis to finish or retry its failed stages from Evidence Intake.")
+    session.commit()
+    return {"state": "queued" if queued else "complete", "grouping_only": True,
+            "jobs": [job_view(job, session) for job in queued], "max_jobs_per_request": limit}
 
 
 @router.get("/investigation-groups/{group_id}")

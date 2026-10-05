@@ -589,6 +589,9 @@ def ingest_source(session: Session, *, settings: Settings, job: ImportJob, sourc
     _stage("investigation_grouping")
     grouping = materialize(session, case_id=job.case_id, snapshot_id=snapshot.id,
                            graph=session.get(GraphSnapshot, graph.graph_snapshot_id), evidence_root=settings.evidence_root)
+    from app.jobs.grouping import fulfill_grouping_requests
+
+    fulfill_grouping_requests(session, job)
     tracker.finish(details=grouping)
     snapshot.provisional = False
     snapshot.state = "complete"

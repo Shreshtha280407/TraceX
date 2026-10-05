@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Shell } from "../components/Shell";
 import { NeoCard, StatTile, Badge } from "../components/primitives";
+import { GroupQueueRepair } from "../components/GroupQueueRepair";
 import { useAuth } from "../lib/auth";
 import { api, type CaseDetail } from "../lib/api";
 import { useInvestigationQueue } from "../lib/useInvestigationQueue";
+import { pendingReviewQueueCount } from "../lib/investigationCounts";
 import { useFindings, useTrackedJobs } from "../lib/hooks";
 import { streamCaseEvents, type CaseEvent } from "../lib/sse";
 
@@ -28,7 +30,7 @@ export function CaseDashboard() {
   const [events, setEvents] = useState<CaseEvent[]>([]);
   // Real per-case counts. The findings list below is capped at a page, so its
   // length is a display limit and must never be reported as the workload.
-  const { queue: groups, error: groupError } = useInvestigationQueue(caseId);
+  const { queue: groups, error: groupError, refresh: refreshGroups } = useInvestigationQueue(caseId);
 
   useEffect(() => {
     if (!caseId) return;
@@ -47,7 +49,7 @@ export function CaseDashboard() {
   const trackedJobs = useTrackedJobs(caseId);
   const activeJobs = trackedJobs.filter((job) => ["queued", "running", "checkpointed"].includes(job.state));
   const transactionsIngested = trackedJobs.length > 0 ? trackedJobs.reduce((sum, job) => sum + job.rows_accepted, 0) : null;
-  const pendingReviewCount = groups?.queued_groups ?? null;
+  const pendingReviewCount = pendingReviewQueueCount(groups);
   // The queue list itself is still the capped page — it is a "top N to work on
   // next" list, labelled as such, not the count.
   const pendingReview = groups?.items ?? null;
@@ -89,8 +91,8 @@ export function CaseDashboard() {
         />
         <StatTile
           label="In your review queue"
-          value={pendingReviewCount?.toLocaleString() ?? "—"}
-          sub={groups ? `${groups.backlog_groups.toLocaleString()} additional unresolved groups · capacity ${groups.capacity}` : "loading grouped workload…"}
+          value={pendingReviewCount?.toLocaleString() ?? (groups ? (groups.grouping_coverage?.active_jobs ?? 0) > 0 ? "Preparing" : "Not ready" : "—")}
+          sub={groups ? pendingReviewCount === null ? `Pending group count is not ready · capacity ${groups.capacity}` : `${groups.backlog_groups.toLocaleString()} additional unresolved groups · capacity ${groups.capacity}` : "loading grouped workload…"}
         />
         <StatTile
           label="Model status"
@@ -105,6 +107,7 @@ export function CaseDashboard() {
           {groupError && <p role="alert">Group queue unavailable: {groupError}. Restart an outdated local API/worker with the current release; do not use individual finding counts as review tasks.</p>}
           {groups && <p className="coverage-note">{groups.underlying_findings} findings / {groups.investigation_groups} groups / {groups.queued_groups} queued / {groups.backlog_groups} additional unresolved</p>}
           {groups?.grouping_coverage?.state === "incomplete" && <p role="alert">Grouping incomplete: {groups.grouping_coverage.ungrouped_findings.toLocaleString()} observations await group membership. {groups.grouping_coverage.reason}</p>}
+          <GroupQueueRepair key={caseId} caseId={caseId} queue={groups} onRefresh={refreshGroups} />
           {pendingReview === null ? (
             <p className="coverage-note">Loading…</p>
           ) : pendingReview.length === 0 ? (

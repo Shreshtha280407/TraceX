@@ -11,7 +11,7 @@ export type InvestigationGroup = {
 export type InvestigationQueue = {
   policy: string; capacity: number; underlying_findings: number; investigation_groups: number; unresolved_groups: number;
   queued_groups: number; backlog_groups: number; filtered_total: number; scope: string; items: InvestigationGroup[];
-  grouping_coverage?: {state: "complete" | "incomplete"; grouped_findings: number; ungrouped_findings: number; scope: string; reason: string | null};
+  grouping_coverage?: {state: "complete" | "incomplete"; grouped_findings: number; ungrouped_findings: number; scope: string; reason: string | null; active_jobs?: number};
 };
 export type InvestigationDetail = InvestigationGroup & {
   grouping_version: string; procedure_sha256: string; active_generation: boolean; rationale: unknown;
@@ -589,6 +589,8 @@ export const api = {
   getReviewQueue: (caseId: string, k = 100, offset = 0) => request<ReviewQueue>(`/cases/${caseId}/review-queue?k=${k}&limit=20&offset=${offset}`),
   getInvestigationQueue: (caseId: string, capacity = 100, offset = 0, scope = "queue", reviewState = "") =>
     request<InvestigationQueue>(`/cases/${caseId}/investigation-queue?capacity=${capacity}&limit=20&offset=${offset}&scope=${scope}${reviewState ? `&review_state=${reviewState}` : ""}`),
+  buildInvestigationQueue: (caseId: string) => request<{state: "queued" | "complete"; grouping_only: true; jobs: ImportJob[]}>(
+    `/cases/${caseId}/investigation-queue/build`, {method: "POST"}),
   getInvestigation: (id: string) => request<InvestigationDetail>(`/investigation-groups/${id}`),
   getInvestigationMembers: (id: string, offset = 0) => request<{total: number; items: {finding: Finding; structured_evidence: unknown}[]}>(`/investigation-groups/${id}/members?limit=20&offset=${offset}`),
   getInvestigationReviews: (id: string, offset = 0) => request<{items: {review_id: string; disposition: string; reason: string; review_version: number; counterevidence_refs: EvidenceReference[]}[]}>(`/investigation-groups/${id}/reviews?offset=${offset}&limit=20`),

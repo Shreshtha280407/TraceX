@@ -212,9 +212,9 @@ def test_schema_upgrade_preserves_unfulfilled_analysis_requests(tmp_path: Path) 
         connection.execute(text("CREATE TABLE analysis_requests (job_id VARCHAR(36), attempt INTEGER, "
                                 "refresh_analytics BOOLEAN, PRIMARY KEY (job_id, attempt))"))
         connection.execute(text("INSERT INTO analysis_requests VALUES ('retained-job', 2, TRUE)"))
-    assert ensure_schema(engine) == ["import_jobs.total_records", "analysis_requests.fulfilled"]
+    assert ensure_schema(engine) == ["import_jobs.total_records", "analysis_requests.fulfilled", "analysis_requests.grouping_only"]
     with engine.connect() as connection:
         assert connection.execute(text("SELECT id, total_records FROM import_jobs")).one() == ("retained-job", None)
-        assert connection.execute(text("SELECT job_id, attempt, refresh_analytics, fulfilled FROM analysis_requests")).one() == ("retained-job", 2, True, False)
+        assert connection.execute(text("SELECT job_id, attempt, refresh_analytics, fulfilled, grouping_only FROM analysis_requests")).one() == ("retained-job", 2, True, False, False)
     assert ensure_schema(engine) == []
     engine.dispose()

@@ -123,6 +123,7 @@ ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("cases", "candidate_domain", "VARCHAR(128)"),
     ("import_jobs", "total_records", "INTEGER"),
     ("analysis_requests", "fulfilled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("analysis_requests", "grouping_only", "BOOLEAN NOT NULL DEFAULT FALSE"),
 )
 
 

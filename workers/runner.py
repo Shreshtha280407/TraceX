@@ -19,6 +19,7 @@ from app.db import SessionLocal, ensure_schema
 from app.engine.ingestion import ingest_source
 from app.events import append_event
 from app.jobs.analysis import StageTracker, fail_running_stage
+from app.jobs.grouping import run_grouping_only
 from app.jobs.service import claim_next_job, fail_job, record_worker_heartbeat, utcnow
 from app.models import EvidenceSource, ImportJob
 from app.resources import current_plan
@@ -77,6 +78,8 @@ def process_one(worker_id: str) -> bool:
                 if path.stat().st_size != source.byte_size:
                     raise RuntimeError("immutable source byte-size mismatch")
                 verification.finish(details={"sha256": actual, "byte_size": source.byte_size})
+                if run_grouping_only(session, job=job, evidence_root=settings.evidence_root):
+                    return True
                 ingest_source(session, settings=settings, job=job, source=source)
                 return True
             except Exception as exc:  # every worker failure must be recorded durably.
