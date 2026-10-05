@@ -1,0 +1,436 @@
+{
+  "schema": "tracex-readme-recording-v1",
+  "synthetic": true,
+  "mocked_responses": false,
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "clips": [
+    {
+      "name": "intake",
+      "file": "intake.webm",
+      "playback": "continuous Playwright browser video; GIF is a downsampled preview",
+      "duration_seconds": 22.48
+    },
+    {
+      "name": "graph",
+      "file": "graph.webm",
+      "playback": "continuous Playwright browser video; GIF is a downsampled preview",
+      "duration_seconds": 14.64
+    },
+    {
+      "name": "review",
+      "file": "review.webm",
+      "playback": "continuous Playwright browser video; GIF is a downsampled preview",
+      "duration_seconds": 19.84
+    }
+  ],
+  "checks": [
+    {
+      "name": "Real browser signup and bearer authentication",
+      "passed": true
+    },
+    {
+      "name": "UI creates a synthetic case with pinned unsupervised scoring",
+      "passed": true
+    },
+    {
+      "name": "UI upload accepted by the real API",
+      "passed": true
+    },
+    {
+      "name": "Real worker finishes the synthetic import",
+      "passed": true
+    },
+    {
+      "name": "Required stage: source_verification",
+      "passed": true
+    },
+    {
+      "name": "Required stage: ingesting",
+      "passed": true
+    },
+    {
+      "name": "Required stage: graph_building",
+      "passed": true
+    },
+    {
+      "name": "Required stage: findings",
+      "passed": true
+    },
+    {
+      "name": "Required stage: ml_scoring",
+      "passed": true
+    },
+    {
+      "name": "Required stage: analytics",
+      "passed": true
+    },
+    {
+      "name": "Required stage: investigation_grouping",
+      "passed": true
+    },
+    {
+      "name": "Uploaded source SHA-256 matches original bytes",
+      "passed": true
+    },
+    {
+      "name": "Stored findings exist",
+      "passed": true
+    },
+    {
+      "name": "Durable grouping coverage is complete",
+      "passed": true
+    },
+    {
+      "name": "Real peeling-chain finding exists for graph recording",
+      "passed": true
+    },
+    {
+      "name": "Browser reopens the exact provenance-linked raw record",
+      "passed": true
+    },
+    {
+      "name": "Real API persists the group decision",
+      "passed": true
+    },
+    {
+      "name": "Group decision preserves individual finding review state",
+      "passed": true
+    },
+    {
+      "name": "Real UI evidence download succeeds",
+      "passed": true
+    },
+    {
+      "name": "No external browser requests",
+      "passed": true
+    },
+    {
+      "name": "No browser JavaScript exceptions",
+      "passed": true
+    }
+  ],
+  "external_requests": [],
+  "page_errors": [],
+  "case_id": "31e3bd3c-a4e8-47b0-9008-6a9a112336d2",
+  "import_job": {
+    "state": "completed",
+    "analysis": {
+      "state": "degraded",
+      "stages": [
+        {
+          "name": "source_verification",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:34.718376",
+          "completed_at": "2026-10-05T15:51:34.724074",
+          "duration_seconds": 0.004608657996868715,
+          "details": {
+            "sha256": "5c7e22c3863145bffa6006c9d1478c9c38179ee54ca8c7c329ee7c65dc03e23c",
+            "byte_size": 1314691,
+            "worker_cpu_seconds": 0.003807875000000016,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ingesting",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:34.745715",
+          "completed_at": "2026-10-05T15:51:35.047599",
+          "duration_seconds": 0.3012594669999089,
+          "details": {
+            "rows_seen": 1000,
+            "rows_accepted": 1000,
+            "rows_quarantined": 0,
+            "worker_cpu_seconds": 0.293895428,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "graph_building",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:35.052432",
+          "completed_at": "2026-10-05T15:51:35.291403",
+          "duration_seconds": 0.23850618599681184,
+          "details": {
+            "worker_cpu_seconds": 0.2941638609999999,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "findings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:35.294314",
+          "completed_at": "2026-10-05T15:51:35.768212",
+          "duration_seconds": 0.4734837510040961,
+          "details": {
+            "worker_cpu_seconds": 0.46192197300000015,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "ml_scoring",
+          "status": "written",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:35.771383",
+          "completed_at": "2026-10-05T15:51:37.507308",
+          "duration_seconds": 1.735647262976272,
+          "details": {
+            "written": 7,
+            "status": "written",
+            "scored_transactions": 1000,
+            "threshold_flagged": 7,
+            "model_run_id": "eeb83b66c1655047a752d272",
+            "release_id": "anomaly-stack-v2",
+            "eligibility_decision": {
+              "status": "fallback",
+              "reason": "explicit unsupervised v2 case policy"
+            },
+            "global_memory_estimate_bytes": null,
+            "joint_memory_estimate_bytes": null,
+            "worker_cpu_seconds": 1.6035890369999999,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "analytics",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:37.510712",
+          "completed_at": "2026-10-05T15:51:37.818768",
+          "duration_seconds": 0.30772397201508284,
+          "details": {
+            "status": "complete",
+            "analytics_snapshot_id": "5ebea48d-b3aa-4768-a0eb-13adc37e3c6e",
+            "network_findings": 0,
+            "entity_count": 258,
+            "geoip_installed": false,
+            "summary": {
+              "analytics_version": "entity-network-v1",
+              "multi_input_transactions": 289,
+              "mixing_excluded_transactions": 13,
+              "entity_count": 258,
+              "clustered_addresses": 618,
+              "largest_entity_addresses": 12,
+              "clustering_method": "common-input-ownership (CoinJoin-shaped inputs excluded)",
+              "wallet_count": 2443,
+              "geoip_installed": false,
+              "geoip_sources": [],
+              "geoip_compiled_at": null,
+              "endpoint_ips": 376,
+              "endpoint_scopes": {
+                "documentation": 376
+              },
+              "observation_country_checks": {
+                "unverifiable_non_public": 1000
+              },
+              "observation_asn_checks": {
+                "unverifiable_non_public": 1000
+              },
+              "observed_transactions": 1000,
+              "correlation_wallets_tested": 10,
+              "relay_concentrations": 0,
+              "relay_coherent_endpoints": 0,
+              "geo_mismatch_endpoints": 0,
+              "embedded_wallets": 973,
+              "embedding_dimensions": 16,
+              "embedding_method": "truncated SVD of the degree-normalised wallet x transaction incidence matrix",
+              "embedding_status": "complete",
+              "timings_s": {
+                "dense_ids": 0.013,
+                "clustering": 0.049,
+                "flows": 0.019,
+                "geoip": 0.023,
+                "network_correlation": 0.061,
+                "embeddings": 0.026
+              },
+              "global_memory_estimate_bytes": 978208,
+              "execution_mode": "memory",
+              "revision": 0,
+              "supersedes_analytics_id": null,
+              "finding_refresh_policy": "append new natural keys; preserve prior findings, reviews and confidence",
+              "network_findings": 0,
+              "new_network_findings": 0
+            },
+            "worker_cpu_seconds": 0.52838816,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "geoip",
+          "status": "unavailable",
+          "reason": "offline Geo-IP database missing",
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:37.822202",
+          "completed_at": "2026-10-05T15:51:37.825217",
+          "duration_seconds": 0.002486564975697547,
+          "details": {
+            "installed": false,
+            "worker_cpu_seconds": 0.0024506300000002312,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "network_coverage",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:37.827772",
+          "completed_at": "2026-10-05T15:51:37.830590",
+          "duration_seconds": 0.0023285800125449896,
+          "details": {
+            "observed_transactions": 1000,
+            "canonical_transactions": 1000,
+            "worker_cpu_seconds": 0.002311607999999854,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "embeddings",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:37.833448",
+          "completed_at": "2026-10-05T15:51:37.836411",
+          "duration_seconds": 0.002573316014604643,
+          "details": {
+            "embedded_wallets": 973,
+            "worker_cpu_seconds": 0.0025278959999996964,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        },
+        {
+          "name": "investigation_grouping",
+          "status": "complete",
+          "reason": null,
+          "attempt": 1,
+          "started_at": "2026-10-05T15:51:37.841504",
+          "completed_at": "2026-10-05T15:51:38.018015",
+          "duration_seconds": 0.17612260099849664,
+          "details": {
+            "run_id": "e2b3ef9e-07ad-5a8b-bb67-000f5692d345",
+            "procedure_version": "observed-episode-groups-v1",
+            "procedure_sha256": "b429e8ee965ab3fe7ac78edd719cd565ee06c31fe38da4da9890e2e0780a0769",
+            "underlying_findings": 184,
+            "execution_version": "disk-indexed-grouping-v1",
+            "execution_sha256": "d7ba26f6008d58d94cce9088d1dd39aad35217ac83970fa04cbfe708982f2560",
+            "groups": 140,
+            "reused": false,
+            "worker_cpu_seconds": 0.17377581399999986,
+            "reaped_child_cpu_seconds": 0,
+            "child_cpu_scope": "reaped direct children; unavailable on unsupported platforms",
+            "cpu_scope": "parent worker only; excludes child CPU"
+          }
+        }
+      ],
+      "required_stages": [
+        "source_verification",
+        "ingesting",
+        "graph_building",
+        "findings",
+        "ml_scoring",
+        "analytics",
+        "investigation_grouping"
+      ],
+      "retry_supported": true
+    },
+    "rows_accepted": 1000
+  },
+  "queue": {
+    "underlying_findings": 184,
+    "investigation_groups": 140,
+    "queued_groups": 100,
+    "backlog_groups": 40
+  },
+  "status": "pass",
+  "source_sha256": "5c7e22c3863145bffa6006c9d1478c9c38179ee54ca8c7c329ee7c65dc03e23c",
+  "source_rows": 1000,
+  "git_commit": "d41b80d157182bba18d8a6cbd2755a46b4200876",
+  "database": "disposable SQLite; not PostgreSQL or scale acceptance",
+  "geoip": "No cache installed in this recording; missing enrichment remains visible",
+  "temporary_workspace": "/tmp/tracex-readme-n3kdn94n",
+  "recorded_at": "2026-10-05T15:52:19Z",
+  "assets": {
+    "intake.webm": {
+      "bytes": 2293031,
+      "sha256": "ef53fedbe2a97839574c4d98441dac4aef2411156359a3d47a9a5e022b9413f3"
+    },
+    "graph.webm": {
+      "bytes": 1335939,
+      "sha256": "64c186fe3a59d22f8f3a6556ca3607dce916f3c438502499a2b68736da1919db"
+    },
+    "review.webm": {
+      "bytes": 1996805,
+      "sha256": "55213e94b7923bdf8c97f2e723a01679fd2a3729d4f43a38c5cbf82eee657858"
+    },
+    "intake.gif": {
+      "bytes": 1816840,
+      "sha256": "606c25d082581c8fd33b70ae3966f9e17eaaf0d3f41c76003d1a037cbeb350d0"
+    },
+    "graph.gif": {
+      "bytes": 3054146,
+      "sha256": "fc9b37a976b5898e038e396de30049b01ef55efad21080b74e7decc43cba007f"
+    },
+    "review.gif": {
+      "bytes": 5154146,
+      "sha256": "b38d7671e6bb803e51082b5502c94f0a2534af797622b480d17749e36ec99e05"
+    },
+    "landing.png": {
+      "bytes": 233884,
+      "sha256": "5ad24e9fccb8deb5bc4c2cd34379e81f8f2a41ef6e4be6995cd20a6154b95997"
+    },
+    "dashboard.png": {
+      "bytes": 290551,
+      "sha256": "61066cda257daadbc41327605ce53d086b2750ca04d10d0bd29027338061ab29"
+    },
+    "graph.png": {
+      "bytes": 326902,
+      "sha256": "7b1bf29ccc05ef45ed4d6e2796d55e330651fe0c939e18f4e1fb4cba7f5aab66"
+    },
+    "evidence.png": {
+      "bytes": 322990,
+      "sha256": "09127db7df9f8af6919dc36018471a7202b03fdeac1b49453cb45a968d4d1e28"
+    },
+    "groups.png": {
+      "bytes": 180473,
+      "sha256": "6e9d8d6979c685ee6df5024287dcb1c03d696c0073d2a3411fb7b692294319e5"
+    },
+    "network.png": {
+      "bytes": 331566,
+      "sha256": "d84967951d4cccff0b4b52e8b811c7cdfc34a3ea01cf0fb4ccdb551b2818cabe"
+    },
+    "export.png": {
+      "bytes": 231057,
+      "sha256": "f8acd6c140929f0eb97bb3ed1df5fe588c13b249c061c775e87eda0b050f6a1a"
+    }
+  }
+}

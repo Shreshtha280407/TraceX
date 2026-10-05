@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="255" viewBox="0 0 1400 255" role="img" aria-labelledby="title desc">
+<title id="title">The TraceX evidence contract</title><desc id="desc">Preserve original source bytes, attach versioned claims to exact source locators and record human review independently from individual transaction labels.</desc>
+<rect width="1400" height="255" rx="14" fill="#11110f"/><rect x=".5" y=".5" width="1399" height="254" rx="14" fill="none" stroke="#393227"/>
+<g font-family="Arial,Helvetica,sans-serif"><text x="40" y="34" fill="#e3a62f" font-size="11" letter-spacing="3">TRACEX / EVIDENCE CONTRACT</text>
+<g fill="#1b1914" stroke="#4e422c"><rect x="40" y="58" width="410" height="150" rx="10"/><rect x="495" y="58" width="410" height="150" rx="10"/><rect x="950" y="58" width="410" height="150" rx="10"/></g>
+<g font-size="11" fill="#e3a62f" letter-spacing="2"><text x="62" y="87">01 / PRESERVED SOURCE</text><text x="517" y="87">02 / VERSIONED CLAIM</text><text x="972" y="87">03 / RECORDED REVIEW</text></g>
+<g font-size="22" font-weight="700" fill="#f3efe4"><text x="62" y="122">The bytes you supplied.</text><text x="517" y="122">The observations we used.</text><text x="972" y="122">The decision you made.</text></g>
+<g font-size="14" fill="#c9bea8"><text x="62" y="155">SHA-256 + case-scoped source + exact locator</text><text x="62" y="181">Reopen the original record. Check the coverage.</text><text x="517" y="155">Detector / scorer identity + supporting evidence</text><text x="517" y="181">Opposing observations + plausible alternatives</text><text x="972" y="155">Reason + reviewer + pinned version + history</text><text x="972" y="181">Group decisions preserve individual reviews.</text></g>
+<g stroke="#e3a62f" fill="none"><path d="M459 130H486M479 124L486 130L479 136"/><path d="M914 130H941M934 124L941 130L934 136"/></g>
+<text x="40" y="236" font-size="12" fill="#9a9480">A finding is an investigative lead. Human interpretation remains part of the evidence trail.</text></g></svg>

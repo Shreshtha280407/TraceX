@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>TraceX · README motion artwork</title>
+<style>
+@font-face{font-family:Space;src:url('../../../frontend/src/assets/fonts/space-grotesk-var.woff2')}
+@font-face{font-family:Plex;src:url('../../../frontend/src/assets/fonts/ibm-plex-mono-400.woff2')}
+*{box-sizing:border-box}html,body{margin:0;width:1400px;height:520px;overflow:hidden;background:#10100e;color:#f3efe4}
+main{position:relative;width:1400px;height:520px;border:1px solid #393227;background:radial-gradient(ellipse at 70% 15%,#2d2313 0%,transparent 55%)}
+canvas{position:absolute;inset:0;width:1400px;height:520px}.copy{position:absolute;top:51px;left:62px;z-index:1}
+.eyebrow{font:12px Plex,monospace;letter-spacing:3px;color:#b6a68a}.live{display:inline-block;width:7px;height:7px;background:#e3a62f;border-radius:50%;margin-right:12px;box-shadow:0 0 15px #e3a62f}
+.word{font:700 109px Space,sans-serif;letter-spacing:-7px;margin:23px 0 6px;line-height:1}.word span{color:#e3a62f}
+.tagline{font:500 31px Space,sans-serif;letter-spacing:-.8px;line-height:1.4;margin:20px 0;color:#f3efe4}
+.sub{font:12px Plex,monospace;color:#a8a08c;letter-spacing:1px;margin-top:24px}
+.label{position:absolute;right:66px;top:52px;font:11px Plex,monospace;color:#b6a68a;letter-spacing:2px}
+.stage{position:absolute;left:62px;bottom:41px;display:flex;gap:13px;align-items:center;font:11px Plex,monospace;letter-spacing:1px}
+.pill{padding:12px 15px;border:1px solid #383125;border-radius:5px;color:#b6a68a;background:#14130f}.pill.active{color:#17130c;background:#e3a62f;border-color:#e3a62f}
+.chev{color:#68604f}.status{position:absolute;right:65px;bottom:44px;text-align:right;font:11px Plex,monospace;line-height:1.8;letter-spacing:1px;color:#b6a68a}.status b{color:#e3a62f;font-weight:400}
+</style>
+<main aria-label="TraceX animated identity: preserve evidence, reconstruct lineage, rank signals and review claims">
+<canvas width="1400" height="520"></canvas>
+<div class="copy"><div class="eyebrow"><i class="live"></i>BITCOIN INTELLIGENCE / OFFLINE BY DESIGN</div><div class="word">Trace<span>X</span></div><p class="tagline">Follow the funds.<br>Keep the evidence.</p><div class="sub">SOURCE-BACKED LEADS. HUMAN-REVIEWED DECISIONS.</div></div>
+<div class="label">ILLUSTRATIVE EVIDENCE FLOW / NOT CASE DATA</div>
+<div class="stage"><span class="pill">01 PRESERVE</span><span class="chev">›</span><span class="pill">02 RECONSTRUCT</span><span class="chev">›</span><span class="pill">03 RANK</span><span class="chev">›</span><span class="pill">04 REVIEW</span></div>
+<div class="status"><b id="state">01 / ORIGINAL BYTES</b><br>EVERY LEAD → ITS SOURCE</div>
+</main>
+<script>
+const ctx=document.querySelector('canvas').getContext('2d');
+const points=[[775,159],[878,227],[989,159],[1101,227],[1213,159],[882,337],[1097,337],[1228,303],[713,290]];
+const edges=[[0,1],[1,2],[2,3],[3,4],[1,5],[3,6],[6,7],[8,1]];
+const labels=['TX 01','UTXO','TX 02','UTXO','TX 03','ADDRESS','ADDRESS','REVIEW','SOURCE'];
+const names=['01 / ORIGINAL BYTES','02 / VERIFIED PREVOUTS','03 / PATTERN SIGNALS','04 / RECORDED DECISIONS'];
+function frame(time){const t=time/1000;ctx.clearRect(0,0,1400,520);ctx.lineWidth=1;
+  ctx.strokeStyle='#242116';for(let x=0;x<1400;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,520);ctx.stroke()}for(let y=0;y<520;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(1400,y);ctx.stroke()}
+  const g=ctx.createLinearGradient(560,0,1350,0);g.addColorStop(0,'#e3a62f00');g.addColorStop(.55,'#e3a62f33');g.addColorStop(1,'#e3a62f00');ctx.strokeStyle=g;ctx.beginPath();ctx.moveTo(600,410);ctx.lineTo(1330,410);ctx.stroke();
+  for(let i=0;i<edges.length;i++){const [a,b]=edges[i],p=points[a],q=points[b];ctx.strokeStyle=i<4?'#9b7738':'#494135';ctx.lineWidth=i<4?2:1;ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);ctx.stroke();const f=(t*.38+i*.16)%1;ctx.fillStyle=i<4?'#ffcc70':'#8aa2a5';ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=10;ctx.beginPath();ctx.arc(p[0]+(q[0]-p[0])*f,p[1]+(q[1]-p[1])*f,2.5,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0}
+  for(let i=0;i<points.length;i++){const [x,y]=points[i],r=i===7?19:i===5||i===6?12:17;ctx.fillStyle='#191710';ctx.strokeStyle=i===7?'#7fae63':i<5?'#e3a62f':'#696152';ctx.lineWidth=1.5;ctx.beginPath();if(i===1||i===3){ctx.moveTo(x,y-r);ctx.lineTo(x+r,y);ctx.lineTo(x,y+r);ctx.lineTo(x-r,y);ctx.closePath()}else ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.fillStyle=i===7?'#9db889':'#e3a62f';ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill();ctx.font='10px Plex,monospace';ctx.fillStyle='#c6b592';ctx.textAlign='center';ctx.fillText(labels[i],x,y+r+23);if(i<5){ctx.strokeStyle=`rgba(227,166,47,${.12+.08*Math.sin(t*2-i)})`;ctx.beginPath();ctx.arc(x,y,r+8+3*Math.sin(t*2-i),0,Math.PI*2);ctx.stroke()}}
+  ctx.textAlign='left';ctx.font='10px Plex,monospace';ctx.fillStyle='#8c8068';ctx.fillText('CREATES',793,184);ctx.fillText('SPENT BY',917,185);ctx.fillText('LOCKED TO',898,305);
+  const stage=Math.floor(t/3)%4;document.querySelectorAll('.pill').forEach((p,i)=>p.classList.toggle('active',i===stage));document.querySelector('#state').textContent=names[stage];
+}window.paint=frame;function animate(t){frame(t);requestAnimationFrame(animate)}document.fonts.ready.then(()=>new URLSearchParams(location.search).has('fixed')?frame(0):requestAnimationFrame(animate));
+</script>
+</html>
