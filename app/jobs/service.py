@@ -34,7 +34,7 @@ _STAGE_SPAN: dict[str, tuple[float, float]] = {
 }
 
 
-def job_progress(job: ImportJob) -> dict:
+def job_progress(job: ImportJob, analysis: dict | None = None) -> dict:
     """Real progress where it can be measured, and an explicit admission where
     it cannot -- never a fabricated moving number."""
     if job.state == "completed":
@@ -46,6 +46,18 @@ def job_progress(job: ImportJob) -> dict:
         }
     if job.state == "failed":
         return {"percent": None, "basis": "failed", "determinate": False}
+    if job.stage == "investigation_grouping":
+        row = next((stage for stage in (analysis or {}).get("stages", [])
+                    if stage["name"] == "investigation_grouping"), {})
+        details = (row.get("details") or {}).get("grouping_progress") or {}
+        done, total = details.get("prepared_findings", 0), details.get("total_findings")
+        if isinstance(total, int) and total > 0:
+            # Real finding denominator; 100% is reserved for atomic publication.
+            return {"percent": round(min(99.9, 99.5 + .4 * min(1., done / total)), 2),
+                    "basis": f"{done:,} of {total:,} observations prepared into {details.get('prepared_groups', 0):,} review groups · {details.get('phase', 'building')} · groups publish together on success",
+                    "determinate": True}
+        return {"percent": None, "basis": "preparing review groups · verifying inputs; groups publish together on success",
+                "determinate": False}
     start, end = _STAGE_SPAN.get(job.stage, (0.0, 0.55))
     if job.stage in ("ingesting", "queued") and job.total_records:
         fraction = min(1.0, job.rows_seen / job.total_records)
@@ -73,10 +85,11 @@ def job_progress(job: ImportJob) -> dict:
 def job_view(job: ImportJob, session=None) -> dict:
     from app.jobs.analysis import analysis_view
 
+    analysis = analysis_view(session, job) if session is not None else None
     return {
         "job_id": job.id,
         "total_records": job.total_records,
-        "progress": job_progress(job),
+        "progress": job_progress(job, analysis),
         "case_id": job.case_id,
         "source_id": job.source_id,
         "state": job.state,
@@ -93,7 +106,7 @@ def job_view(job: ImportJob, session=None) -> dict:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "analysis": analysis_view(session, job) if session is not None else None,
+        "analysis": analysis,
     }
 
 

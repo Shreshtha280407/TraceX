@@ -78,7 +78,8 @@ def process_one(worker_id: str) -> bool:
                 if path.stat().st_size != source.byte_size:
                     raise RuntimeError("immutable source byte-size mismatch")
                 verification.finish(details={"sha256": actual, "byte_size": source.byte_size})
-                if run_grouping_only(session, job=job, evidence_root=settings.evidence_root):
+                if run_grouping_only(session, job=job, evidence_root=settings.evidence_root,
+                                     lease_seconds=settings.lease_seconds):
                     return True
                 ingest_source(session, settings=settings, job=job, source=source)
                 return True

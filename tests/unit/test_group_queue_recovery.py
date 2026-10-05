@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import delete, func, select
 
-from app.engine import investigations
+from app.engine import grouping_materializer, investigations
 from app.models import (
     AnalysisRequest,
     AnalysisStage,
@@ -30,13 +30,13 @@ def system(tmp_path, monkeypatch):
 
 def legacy_case(system, monkeypatch):
     client, sessions = system
-    original = investigations.materialize
+    original = grouping_materializer.materialize
     # Simulate a pre-grouping release on sixty real canonical transactions,
     # without deleting any existing owner case, dataset or evidence.
-    monkeypatch.setattr(investigations, "materialize", lambda *args, **kwargs: {"legacy_fixture": True})
+    monkeypatch.setattr(grouping_materializer, "materialize", lambda *args, **kwargs: {"legacy_fixture": True})
     case, job_id, headers = upload(client, 60)
     assert runner.process_one("legacy-fixture")
-    monkeypatch.setattr(investigations, "materialize", original)
+    monkeypatch.setattr(grouping_materializer, "materialize", original)
     with sessions() as session:
         session.execute(delete(AnalysisStage).where(AnalysisStage.job_id == job_id,
                                                    AnalysisStage.name == "investigation_grouping"))
