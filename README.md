@@ -18,7 +18,7 @@ Turn supplied transaction and network metadata into a UTXO graph, explainable pa
 
 [**Watch the investigation**](#watch-a-real-investigation) · [**Run TraceX**](#quickstart) · [**See the architecture**](#how-it-works) · [**Check the results**](#measured-results) · [**Explore the docs**](#documentation)
 
-<sub>[Static cover](docs/assets/readme/hero.png) · [Recording provenance](docs/readme-media.md) · Package version 0.1.0 · Documentation updated 5 October 2026</sub>
+<sub>Package version 0.1.0 · Documentation updated 5 October 2026</sub>
 
 </div>
 
@@ -43,25 +43,25 @@ These are **Playwright recordings of the running application**, using a real Fas
 
 Create a synthetic case, select the deployed unsupervised procedure, upload the source, and watch the worker produce persistent findings and investigation groups.
 
-<a href="docs/assets/readme/intake.webm"><img src="docs/assets/readme/intake.gif" alt="Real browser recording: TraceX signup, synthetic case creation, evidence upload, worker stage progression and the resulting case dashboard" width="100%"></a>
+![Real browser recording: TraceX signup, synthetic case creation, evidence upload, worker stage progression and the resulting case dashboard](docs/assets/readme/intake.gif)
 
-<sub>[Full browser recording](docs/assets/readme/intake.webm) · [Dashboard still](docs/assets/readme/dashboard.png)</sub>
+<sub>Real browser capture · Synthetic evidence · Persisted API and worker results</sub>
 
 ### 02 · Follow the verified UTXO path
 
 Open a stored peeling-chain candidate, inspect its observed spend sequence, change zoom, and trace a source into its direct inputs and outputs.
 
-<a href="docs/assets/readme/graph.webm"><img src="docs/assets/readme/graph.gif" alt="Real Graph Explorer recording: select a stored peeling-chain candidate, inspect its transaction and output path, adjust zoom and trace a source-centred fund-flow view" width="100%"></a>
+![Real Graph Explorer recording: select a stored peeling-chain candidate, inspect its transaction and output path, adjust zoom and trace a source-centred fund-flow view](docs/assets/readme/graph.gif)
 
-<sub>[Full browser recording](docs/assets/readme/graph.webm) · [Graph still](docs/assets/readme/graph.png) · The displayed risk label describes a detector signal.</sub>
+<sub>The displayed risk label describes a detector signal.</sub>
 
 ### 03 · Reopen the evidence. Record the decision.
 
 Adjust the review capacity, open an investigation proposition, replay an original source record, save a group decision, and download a real JSON evidence export.
 
-<a href="docs/assets/readme/review.webm"><img src="docs/assets/readme/review.gif" alt="Real review recording: grouped queue controls, investigation details, original record replay, persisted group triage, network context and a successful JSON evidence download" width="100%"></a>
+![Real review recording: grouped queue controls, investigation details, original record replay, persisted group triage, network context and a successful JSON evidence download](docs/assets/readme/review.gif)
 
-<sub>[Full browser recording](docs/assets/readme/review.webm) · [Evidence still](docs/assets/readme/evidence.png) · [Export still](docs/assets/readme/export.png)</sub>
+<sub>Original-record replay → Independent group decision → Evidence export</sub>
 
 The captured dashboard, **before the recorded triage decision**, shows:
 
@@ -71,9 +71,7 @@ The captured dashboard, **before the recorded triage decision**, shows:
 
 These counts belong to this synthetic fixture. The 100-item capacity limits the current queue; the backlog remains accessible. [Capture manifest](docs/assets/readme/capture-manifest.json).
 
-<details>
-<summary><b>Explore the console without animation</b></summary>
-<br>
+### The console · real screenshots
 
 <table>
 <tr>
@@ -90,9 +88,7 @@ These counts belong to this synthetic fixture. The 100-item capacity limits the 
 </tr>
 </table>
 
-All stills come from the same successful browser run. See the [media guide](docs/readme-media.md) for the exact capture method and regeneration commands.
-
-</details>
+All stills come from the same successful browser run.
 
 ## Why TraceX exists
 
